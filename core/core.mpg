@@ -1,16 +1,6 @@
-
-literal int: "${number}";
-literal float: "${number}", 
-  ".${number}", 
-  "${number}.${number}";
-literal char: "'${alpha}'";
-literal string: "${string}";
-identifier identifier: "${alpha*}" low;
-keyword returnl(): "return ${literal}";
-keyword returni(): "return ${identifier}";
-keyword functiond(): "${datatype} ${identifier} ${stmntend}";
-keyword functioni(): "${datatype} $(identifier) {${stmnts}}";
-stmnt statement: "${expr} ${stmntend}";
-stmnt statementl(): "${expr} ${stmntlog}";
-stmnts statements: "${stmnt*}";
-
+literal int "${NUMBER}", "${DIGIT}";
+literal float 
+  ".${NUMBER}", 
+  "${NUMBER}.${NUMBER}";
+literal char "'${ALPHA}'", "'${DIGIT}'", "'${OTHER}'";
+literal string "\"${IDENTIFIER}\"";
