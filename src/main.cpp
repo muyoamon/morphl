@@ -1,9 +1,16 @@
-#include "interpreter/Lexer.h"
+#include "lexer.h"
 #include <iostream>
-using namespace interpreter;
+#include <ostream>
 int main (int argc, char *argv[]) {
-  Lexer l;
-  l.tokenize();
-  std::cout << l;
+  if (argc > 1) {
+    for (auto i=1;i<argc;i++) {
+      morphl::Lexer lexer(argv[i]);
+      for (auto& i:lexer.tokens()) {
+        std::cout << i << std::endl;
+      }
+    }
+  }
+
+
   return 0;
 }
