@@ -12,7 +12,7 @@ enum TokenType {
   ERROR_,
   // Keywords
   KEYWORD_START,
-  ALIAS = KEYWORD_START,
+  ALIAS,
   MORPH,
   IF,
   WHILE,
@@ -34,55 +34,57 @@ enum TokenType {
   BI_OPERATOR_START,
   ASSIGN,
   CALL,
-  
+  DECL, 
   
   // integer operator
   INT_OPERATOR,
-  ADD = INT_OPERATOR,
+  ADD,
   SUB,
   MUL,
   DIV,
   MOD,
-  INT_OPERATOR_END = MOD,
+  INT_OPERATOR_END,
   
   // float operator
   FLOAT_OPERATOR,
-  FADD = FLOAT_OPERATOR,
+  FADD,
   FSUB,
   FMUL,
   FDIV,
-  FLOAT_OPERATOR_END = FDIV,
+  FLOAT_OPERATOR_END,
   
   // string operator
   STR_OPERATOR,
-  CONCAT = STR_OPERATOR,
+  CONCAT,
   SUBSTR, // expect <str> <int> where int is the number of char to be SUBSTR
   STRMUL, // expect <str> <int> where int is the time string to be multiple 
           // e.g. STRMUL "abc" 2 -> "abcabc"
-  STR_OPERATOR_END = STRMUL,
+  STR_OPERATOR_END,
   
   // binary operator
   BIN_OPERATOR,
-  BAND = BIN_OPERATOR,
+  BAND,
   BOR,
   SHIFTL,
   SHIFTR,
   LSHIFTR, // logical right shift
-  BIN_OPERATOR_END = LSHIFTR,
+  BIN_OPERATOR_END,
 
   // logical operator
-  LOG_OPERATOR,
-  AND = LOG_OPERATOR,
+  LOGIC_OPERATOR,
+  AND,
   OR,
-  LOG_OPERATOR_END = OR,
+  LOGIC_OPERATOR_END,
 
   // block operator, if applicable, should be resolved at compile-time
   BLOCK_OPERATOR,
-  EXTEND = BLOCK_OPERATOR,
+  EXTEND,
   PROJECT,
   MAP,
+  BLOCK_OPERATOR_END,
 
   // comparison operator
+  CMP_OPERATOR,
   EQ,
   NE,
   LT,
@@ -108,10 +110,10 @@ enum TokenType {
   OPERAND,
   // literals
   LITERAL_START,
-  INT_LITERAL = LITERAL_START,
+  INT_LITERAL,
   FLOAT_LITERAL,
   STRING_LITERAL,
-  LITERAL_END = STRING_LITERAL,
+  LITERAL_END,
   // others
   EOF_
 
@@ -125,20 +127,23 @@ struct Token {
 };
 
 bool operator==(const Token lhs, const Token rhs);
+bool operator!=(const Token lhs, const Token rhs);
 std::ostream& operator<<(std::ostream& ostr, const Token t);
 
 class Lexer {
-  public:
-    Lexer(const std::string& input);
-    Token nextToken();
-    std::vector<Token> tokens() const;
   private:
     static std::map<std::string, TokenType> tokenMap;
-    void tokenize();
-    TokenType checkKeyword(const std::string& token);
     std::vector<Token> tokens_;
     std::string input_;
     size_t currentPosition_;
+    
+    void tokenize();
+    TokenType checkKeyword(const std::string& token);
+  public:
+    static std::string getTokenTypeName(const TokenType);
+    Lexer(const std::string& input);
+    Token nextToken();
+    std::vector<Token> tokens() const;
 };
 
 bool isBinaryOperator(Token& token);

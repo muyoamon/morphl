@@ -15,6 +15,7 @@ namespace morphl {
     {"RETURN", RETURN},
     {"ASSIGN", ASSIGN},
     {"CALL", CALL},
+    {"DECL", DECL},
     {"SIZE", SIZE},
     {"TYPE", TYPE},
     {"ADD", ADD},
@@ -199,6 +200,10 @@ bool operator==(const Token lhs, const Token rhs) {
   return lhs.type == rhs.type && lhs.value == rhs.value;
 }
 
+bool operator!=(const Token lhs, const Token rhs) {
+  return !(lhs == rhs);
+}
+
 std::ostream& operator<<(std::ostream& ostr, const Token t) {
   ostr << "{type: " << t.type << ", value: \"" << t.value << "\"}";
   return ostr;
@@ -212,6 +217,15 @@ bool isBinaryOperator(Token& token) {
 bool isUnaryOperator(Token &token) {
   return (token.type > TokenType::UN_OPERATOR_START &&
       token.type < TokenType::UN_OPERATOR_END);
+}
+
+std::string Lexer::getTokenTypeName(const TokenType t) {
+  for (auto& i: tokenMap) {
+    if (i.second == t) {
+      return i.first;
+    }
+  }
+  return "Unknown Token Type";
 }
 
 }
