@@ -4,11 +4,15 @@
 #include <vector>
 #include "../lexer/lexer.h"
 #include "../ast/ast.h"
+#include "../error/error.h"
+#include "scope.h"
 namespace morphl {
   class Parser {
     std::vector<Token> tokens_;
     std::shared_ptr<std::unique_ptr<AST::ASTNode>> astNode_;
     size_t currentPos_;
+    ScopeManager scopeManager_;
+    error::ErrorManager errorManager_;
     
     bool expectToken(const Token expect);
     
@@ -18,11 +22,17 @@ namespace morphl {
     std::unique_ptr<AST::ASTNode> parseExpression();
     std::unique_ptr<AST::ASTNode> parseIf();
     std::unique_ptr<AST::ASTNode> parseWhile();
+    // parse generic binary operation
     std::unique_ptr<AST::ASTNode> parseBinaryOp();
     std::unique_ptr<AST::ASTNode> parseUnaryOp();
     std::unique_ptr<AST::ASTNode> parseLiteral();
     std::unique_ptr<AST::ASTNode> parseParen();
     std::unique_ptr<AST::ASTNode> parseIdentifier();
+
+    //
+    // parse specific operation
+    //
+    std::unique_ptr<AST::ASTNode> parseDeclaration();
 
     public:
     Parser(std::vector<Token>);
@@ -31,8 +41,9 @@ namespace morphl {
     Parser& parse();
 
     std::shared_ptr<std::unique_ptr<AST::ASTNode>> astNode() const;
-    std::string string() const;
+    operator std::string() const;
     void printNode() const;
+    const ScopeManager& getScopeManager() const;
     
   };
 }

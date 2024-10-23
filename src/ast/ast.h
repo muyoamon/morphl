@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 #include "../lexer/lexer.h"
+#include "../parser/type.h"
 namespace morphl {
 namespace AST {
   enum ASTNodeType {
@@ -17,6 +18,7 @@ namespace AST {
     WHILENODE,
     BINARYOPNODE,
     UNARYOPNODE,
+    EXPRGROUPNODE,
     
     IDENTIFIERNODE,
     INT_LITERALNODE,
@@ -86,6 +88,13 @@ namespace AST {
       : ASTNode(UNARYOPNODE), operand_(std::move(op)), opType_{type} {}
   };
 
+  struct ExprGroupNode : public ASTNode {
+    std::vector<std::unique_ptr<ASTNode>> members_;
+
+    ExprGroupNode(std::vector<std::unique_ptr<ASTNode>>&& members)
+      : ASTNode(EXPRGROUPNODE), members_(std::move(members)) {}
+  };
+
   struct IdentifierNode : public ASTNode {
     std::string name_;
 
@@ -111,9 +120,11 @@ namespace AST {
     StringLiteralNode(std::string value) : ASTNode(STRING_LITERALNODE), value_{value} {}
   };
 
-  std::string string(const ASTNode *, size_t indent);
+  std::string toString(const ASTNode *, size_t indent);
 
   std::ostream& operator<<(std::ostream&, const ASTNode *);
+
+  std::shared_ptr<type::TypeObject> getType(const ASTNode *);
 
 }
 }
