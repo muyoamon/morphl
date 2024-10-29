@@ -174,7 +174,7 @@ namespace morphl {
     }
     
     // handle operand
-    if(currentChar == '%') {
+    if(currentChar == OPERAND_SYMBOL) {
       //will treat any string until whitespace as operand name
       std::stringstream ss;
       currentPosition_++;

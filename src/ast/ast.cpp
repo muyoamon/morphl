@@ -68,6 +68,12 @@ std::string toString(const ASTNode *node, size_t indent) {
     result += ((StringLiteralNode *)node)->value_;
     result += "\n";
     break;
+  case GROUPNODE:
+    result += "GROUP:\n";
+    for (auto &i : ((GroupNode *)node)->members_) {
+      result += toString(i.get(), indent + 1);
+    }
+    break;
   default:
     result += "TODO\n";
     break;
@@ -111,6 +117,14 @@ std::shared_ptr<type::TypeObject> getType(const ASTNode *node) {
       }
     }
     return std::make_shared<type::BlockType>(typeMap);
+  }
+  case AST::GROUPNODE: {
+    AST::GroupNode *pGroupNode =  (AST::GroupNode *) node;
+    type::GroupTypeMembers typeArr;
+    for (auto &member : pGroupNode->members_) {
+      typeArr.push_back(getType(member.get()));
+    }
+    return std::make_shared<type::GroupType>(typeArr);
   }
   default:
     return std::make_shared<type::TypeObject>(type::NONE);

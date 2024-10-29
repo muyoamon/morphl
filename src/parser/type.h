@@ -22,7 +22,7 @@ namespace type {
     FUNC,
 
     PSEUDO_FUNC, // block with either operands or returns.   
-    IDENTIFIER // not a type
+    IDENTIFIER // not a type, used to define that type is referenced from identifier.
   };
 
   struct TypeObject {
@@ -83,6 +83,14 @@ namespace type {
       : BlockType(members), pReturnType_{pReturnType} {
         type_ = PSEUDO_FUNC;
       }
+  };
+
+  struct IdentifierType : public TypeObject {
+    std::string name_;
+    std::shared_ptr<TypeObject> pType_;
+
+    IdentifierType(std::string name, std::shared_ptr<TypeObject> pType)
+      : TypeObject(IDENTIFIER), name_(name), pType_(pType) {}
   };
 
 

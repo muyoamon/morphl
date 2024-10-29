@@ -63,6 +63,10 @@ TypeObject::operator std::string() const {
     auto ppf = static_cast<const PseudoFunctionType *>(this);
     return static_cast<std::string>(b) + " -> " + static_cast<std::string>(*ppf->pReturnType_);
   }
+  case IDENTIFIER: {
+    auto pi = static_cast<const IdentifierType *>(this);
+    return pi->name_ + " AKA " + static_cast<std::string>(*pi->pType_);
+  }
   default:
     return "Unknown Type";
   }
@@ -71,5 +75,16 @@ TypeObject::operator std::string() const {
 std::ostream &operator<<(std::ostream &ostr, const TypeObject *t) {
   return ostr << static_cast<std::string>(*t);
 }
+
+bool operator==(const TypeObject lhs, const TypeObject rhs) {
+  if (lhs.type_ == IDENTIFIER) {
+    return *static_cast<const IdentifierType *>(&lhs) == rhs;
+  }
+  if (rhs.type_ == IDENTIFIER) {
+    return *static_cast<const IdentifierType *>(&rhs) == lhs;
+  }
+  return static_cast<std::string>(lhs) == static_cast<std::string>(rhs);
+}
+
 } // namespace type
 } // namespace morphl

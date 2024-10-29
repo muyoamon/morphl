@@ -1,18 +1,17 @@
 #ifndef MORPHL_PARSER_H
 #define MORPHL_PARSER_H
+//#include <memory>
 #include <memory>
 #include <vector>
 #include "../lexer/lexer.h"
 #include "../ast/ast.h"
-#include "../error/error.h"
 #include "scope.h"
 namespace morphl {
   class Parser {
     std::vector<Token> tokens_;
     std::shared_ptr<std::unique_ptr<AST::ASTNode>> astNode_;
     size_t currentPos_;
-    ScopeManager scopeManager_;
-    error::ErrorManager errorManager_;
+    std::shared_ptr<ScopeManager> scopeManager_;
     
     bool expectToken(const Token expect);
     
@@ -32,11 +31,12 @@ namespace morphl {
     //
     // parse specific operation
     //
+
     std::unique_ptr<AST::ASTNode> parseDeclaration();
 
     public:
-    Parser(std::vector<Token>);
-    Parser(std::string);
+    Parser(std::vector<Token>, std::shared_ptr<ScopeManager> = std::make_shared<ScopeManager>());
+    Parser(std::string, std::shared_ptr<ScopeManager> = std::make_shared<ScopeManager>());
 
     Parser& parse();
 

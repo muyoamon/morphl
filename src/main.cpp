@@ -1,7 +1,13 @@
+#include "error.h"
 #include "lexer.h"
 #include "parser.h"
 #include <iostream>
 #include <ostream>
+
+
+
+
+
 int main (int argc, char *argv[]) {
   if (argc > 1) {
     for (auto i=1;i<argc;i++) {

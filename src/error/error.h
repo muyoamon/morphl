@@ -135,6 +135,8 @@ public:
   }
 };
 
+extern ErrorManager errorManager;
+
 } // namespace error
 } // namespace morphl
 

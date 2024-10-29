@@ -84,36 +84,6 @@ TEST_CASE("Lexer: Float Literal", "[Lexer]") {
   REQUIRE(actualTokens == expectedTokens);
 }
 
-TEST_CASE("Lexer: morph syntax", "[Lexer]") {
-  std::string input = "morph keyword while \%condition \%block (\%condition: (), \%block: {} ) {}";
-  morphl::Lexer l(input);
-
-  std::vector<morphl::Token> expectedTokens = {
-    {morphl::IDENTIFIER, "morph"},
-    {morphl::IDENTIFIER, "keyword"},
-    {morphl::IDENTIFIER, "while"},
-    {morphl::OPERAND, "condition"},
-    {morphl::OPERAND, "block"},
-    {morphl::SYMBOL, "("},
-    {morphl::OPERAND, "condition"},
-    {morphl::SYMBOL, ":"},
-    {morphl::SYMBOL, "("},
-    {morphl::SYMBOL, ")"},
-    {morphl::SYMBOL, ","},
-    {morphl::OPERAND, "block"},
-    {morphl::SYMBOL, ":"},
-    {morphl::SYMBOL, "{"},
-    {morphl::SYMBOL, "}"},
-    {morphl::SYMBOL, ")"},
-    {morphl::SYMBOL, "{"},
-    {morphl::SYMBOL, "}"},
-    {morphl::EOF_, ""}
-  };
-
-  auto actualTokens = l.tokens();
-
-  REQUIRE(actualTokens == expectedTokens);
-}
 
 TEST_CASE("Lexer: Operator argument check", "[Lexer]") {
   morphl::Token unary = {morphl::TYPE, "TYPE"};

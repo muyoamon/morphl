@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+#define OPERAND_SYMBOL '$'
+
+
+
 namespace morphl {
 
 enum TokenType {
