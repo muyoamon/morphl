@@ -22,6 +22,9 @@ static std::string delimiterInsert(InputIt begin, InputIt end,
 }
 
 TypeObject::operator std::string() const {
+  if (this == nullptr) {
+    return "NONE";
+  }
   switch (this->type_) {
   case PRIMITIVE: {
     auto pp = static_cast<const PrimitiveType *>(this);
@@ -61,7 +64,8 @@ TypeObject::operator std::string() const {
     auto pb = static_cast<const BlockType *>(this);
     BlockType b(pb->members_);
     auto ppf = static_cast<const PseudoFunctionType *>(this);
-    return static_cast<std::string>(b) + " -> " + static_cast<std::string>(*ppf->pReturnType_);
+    return static_cast<std::string>(b) + " -> " +
+           static_cast<std::string>(*ppf->pReturnType_);
   }
   case IDENTIFIER: {
     auto pi = static_cast<const IdentifierType *>(this);
@@ -76,15 +80,28 @@ std::ostream &operator<<(std::ostream &ostr, const TypeObject *t) {
   return ostr << static_cast<std::string>(*t);
 }
 
-bool operator==(const TypeObject lhs, const TypeObject rhs) {
+bool operator==(const TypeObject &lhs, const TypeObject &rhs) {
   if (lhs.type_ == IDENTIFIER) {
-    return *static_cast<const IdentifierType *>(&lhs) == rhs;
+    return *static_cast<const IdentifierType *>(&lhs)->pType_ == rhs;
   }
   if (rhs.type_ == IDENTIFIER) {
-    return *static_cast<const IdentifierType *>(&rhs) == lhs;
+    return *static_cast<const IdentifierType *>(&rhs)->pType_ == lhs;
   }
   return static_cast<std::string>(lhs) == static_cast<std::string>(rhs);
 }
+
+bool operator!=(const TypeObject &lhs, const TypeObject &rhs) {
+  return !(lhs == rhs);
+}
+
+const std::shared_ptr<TypeObject> TypeObject::none =
+    std::make_shared<TypeObject>(NONE);
+const std::shared_ptr<TypeObject> PrimitiveType::INTEGER =
+    std::make_shared<PrimitiveType>("int");
+const std::shared_ptr<TypeObject> PrimitiveType::FLOAT =
+    std::make_shared<PrimitiveType>("float");
+const std::shared_ptr<TypeObject> PrimitiveType::STRING =
+    std::make_shared<PrimitiveType>("string");
 
 } // namespace type
 } // namespace morphl

@@ -1,7 +1,9 @@
 #include "parser.h"
-#include "scope.h"
-#include "type.h"
 #include "../error/error.h"
+#include "../type/type.h"
+#include "../type/operatorType.h"
+#include "scope.h"
+#include <algorithm>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -18,27 +20,43 @@ static const Token PAREN_START = {SYMBOL, "("};
 static const Token PAREN_END = {SYMBOL, ")"};
 
 
-error::ErrorManager error::errorManager = error::ErrorManager();
-
-
 Parser::Parser(std::vector<Token> t, std::shared_ptr<ScopeManager> scopeManager)
-    : tokens_(t), astNode_{nullptr}, currentPos_{0}, scopeManager_(scopeManager) {}
+    : tokens_(t), astNode_{nullptr}, currentPos_{0},
+      scopeManager_(scopeManager) {
+  for (auto i : tokens_) {
+    if (i.type == OPERAND &&
+        std::find(operandNames_.begin(), operandNames_.end(), i.value) ==
+            operandNames_.end()) {
+      operandNames_.push_back(i.value);
+    }
+  }
+}
 
-Parser::Parser(std::string s, std::shared_ptr<ScopeManager> scopeManager) : Parser(Lexer(s).tokens(),scopeManager) {}
+Parser::Parser(std::string s, std::shared_ptr<ScopeManager> scopeManager)
+    : Parser(Lexer(s).tokens(), scopeManager) {}
 
 bool Parser::expectToken(const Token expect) {
   auto actual = tokens_[currentPos_];
   if (expect == actual) {
     return true;
   }
-  error::errorManager.addError(error::Error("Error: Unexpect Token \%, expected \%\n",
-                                      error::Severity::Critical, actual,
-                                      expect));
+  error::errorManager.addError(
+      error::Error("Error: Unexpect Token \%, expected \%\n",
+                   error::Severity::Critical, actual, expect));
   return false;
 }
 
-Parser &Parser::parse() {
-  astNode_ = std::make_shared<std::unique_ptr<AST::ASTNode>>(parseProgram());
+Parser &Parser::parse(std::vector<std::unique_ptr<AST::ASTNode>> operands) {
+  for (const auto &i : operands) {
+    operands_.push_back(i->clone());
+  }
+  if (operands_.size() != operandNames_.size()) {
+    error::errorManager.addError({"Insufficient operands expect \%, got \%\n",
+                                  error::Severity::Critical,
+                                  operandNames_.size(), operands_.size()});
+    return *this;
+  }
+  astNode_ = std::move(parseProgram());
   return *this;
 }
 
@@ -46,7 +64,10 @@ std::unique_ptr<AST::ASTNode> Parser::parseProgram() {
   std::vector<std::unique_ptr<AST::ASTNode>> v;
   scopeManager_->pushScope();
   while (currentPos_ < tokens_.size() && tokens_[currentPos_].type != EOF_) {
-    v.push_back(std::move(parseStatement()));
+    auto statement = parseStatement();
+    if (statement != nullptr) {
+      v.push_back(std::move(statement));
+    }
   }
   return std::make_unique<AST::ProgramNode>(std::move(v));
 }
@@ -59,10 +80,14 @@ std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
   std::vector<std::unique_ptr<AST::ASTNode>> v;
   while (tokens_[currentPos_] != BLOCK_END &&
          tokens_[currentPos_] != Token({EOF_, ""})) {
-    v.push_back(std::move(parseStatement()));
+    auto statement = parseStatement();
+    if (statement != nullptr) {
+      v.push_back(std::move(statement));
+    }
   }
   if (tokens_[currentPos_].type == EOF_) {
-    error::errorManager.addError({"Unterminated Block\n", error::Severity::Warning});
+    error::errorManager.addError(
+        {"Unterminated Block\n", error::Severity::Warning});
   }
   expectToken(BLOCK_END);
   currentPos_++;
@@ -73,10 +98,12 @@ std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
 std::unique_ptr<AST::ASTNode> Parser::parseStatement() {
 
   std::unique_ptr<AST::ASTNode> value = nullptr;
-  if (tokens_[currentPos_] != STATEMENT_END &&
-      tokens_[currentPos_] != STATEMENT_PRINT) {
-    value = std::move(parseExpression());
+  if (tokens_[currentPos_] == STATEMENT_END ||
+      tokens_[currentPos_] == STATEMENT_PRINT) {
+    currentPos_++;
+    return nullptr;
   }
+  value = std::move(parseGroup());
   bool isPrint = false;
   auto currToken = tokens_[currentPos_];
   if (currToken == STATEMENT_END) {
@@ -84,6 +111,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseStatement() {
   } else if (currToken == STATEMENT_PRINT) {
     isPrint = true;
   } else {
+    return value; // return expression if there is no statement end
     error::errorManager.addError(
         {"Unterminated Statement\n", error::Severity::Warning});
   }
@@ -94,7 +122,12 @@ std::unique_ptr<AST::ASTNode> Parser::parseStatement() {
 std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
   auto currToken = tokens_[currentPos_];
   std::unique_ptr<AST::ASTNode> expression = nullptr;
-  if (currToken.type == IF) {
+  if (currToken.type == OPERAND) {
+    size_t index =
+        std::find(operandNames_.begin(), operandNames_.end(), currToken.value) -
+        operandNames_.begin();
+    expression = operands_[index]->clone();
+  } else if (currToken.type == IF) {
     expression = parseIf();
   } else if (currToken.type == WHILE) {
     expression = parseWhile();
@@ -113,46 +146,54 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
   }
 
   if (expression == nullptr) {
-    error::errorManager.addError({"Error: Unexpected token \%\n", error::Severity::Critical, currToken});
+    error::errorManager.addError(
+        {"Error: Unexpected token \%\n", error::Severity::Critical, currToken});
   }
-
-  // current token after expression
-  if (tokens_[currentPos_] == Token(SYMBOL, ",")) {
-    std::vector<std::unique_ptr<AST::ASTNode>> groupMember;
-    groupMember.push_back(std::move(expression));
-    while (tokens_[currentPos_] == Token(SYMBOL, ",")) {
-      currentPos_++;
-      expression = parseExpression();
-      if (expression->type_ == AST::GROUPNODE) {
-        auto innerGroup = static_cast<AST::GroupNode*>(expression.get());
-        groupMember.insert(
-            groupMember.end(),
-            std::make_move_iterator(innerGroup->members_.begin()),
-            std::make_move_iterator(innerGroup->members_.end())
-            );
-      } else {
-        groupMember.push_back(std::move(expression));
-      }
-    }
-    expression = std::make_unique<AST::GroupNode>(std::move(groupMember));
-  }
-
-  
   return expression;
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseIf() {
   expectToken({IF, "IF"});
   currentPos_++;
-  auto ifBlock = parseBlock();
+  auto ifBlock = parseGroup();
+  if (ifBlock->type_ == AST::GROUPNODE) {
+    auto ifGroupPtr = static_cast<AST::GroupNode *>(ifBlock.get());
+    if (ifGroupPtr->members_.size() > 2) {
+      if (*ifGroupPtr->members_[1]->getType() !=
+          *ifGroupPtr->members_[2]->getType()) {
+        error::errorManager.addError(
+            {"Error:Type of if body does not match the type of else body (% != "
+             "%)\n",
+             error::Severity::Critical,
+             static_cast<std::string>(*ifGroupPtr->members_[1]->getType()),
+             static_cast<std::string>(*ifGroupPtr->members_[2]->getType())});
+      }
+    } 
+    if (ifGroupPtr->members_.size() > 3) {
+      error::errorManager.addError({"Provide more expression(s) than needed to "
+                                    "IF, the last \% expression(s) will be ignored\n",
+                                    error::Severity::Warning,
+                                    ifGroupPtr->members_.size() - 3});
+    }
+  }
   return std::make_unique<AST::IfNode>(std::move(ifBlock));
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseWhile() {
   expectToken({WHILE, "WHILE"});
   currentPos_++;
-  auto whileBlock = parseBlock();
-  return std::make_unique<AST::IfNode>(std::move(whileBlock));
+  auto whileBlock = parseGroup();
+  if (whileBlock->type_ == AST::GROUPNODE) {
+    auto whileGroupPtr = static_cast<AST::GroupNode*>(whileBlock.get());
+    if (whileGroupPtr->members_.size() > 2) {
+      error::errorManager.addError({
+          "Provide more expression(s) than needed to WHILE, the last \% expression(s) will be ignored\n",
+          error::Severity::Warning,
+          whileGroupPtr->members_.size() - 2
+          });
+    }
+  }
+  return std::make_unique<AST::WhileNode>(std::move(whileBlock));
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
@@ -161,8 +202,18 @@ std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
   if (type == DECL) {
     return parseDeclaration();
   }
+  if (type == FUNC) {
+    return parseFunction();
+  }
+  if (type == CALL) {
+    return parseCall();
+  }
   auto operand1 = parseExpression();
   auto operand2 = parseExpression();
+  
+  if (*operand1->getType() != *type::operatorTypeMap.at(type).operand1_) {
+    
+  }
   return std::make_unique<AST::BinaryOpNode>(type, std::move(operand1),
                                              std::move(operand2));
 }
@@ -185,7 +236,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseLiteral() {
     return std::make_unique<AST::StringLiteralNode>(t.value);
   } else {
     error::errorManager.addError(error::Error("Error: Unexpected Token \%\n",
-                                           error::Severity::Critical, t));
+                                              error::Severity::Critical, t));
     return nullptr;
   }
 }
@@ -198,55 +249,130 @@ std::unique_ptr<AST::ASTNode> Parser::parseParen() {
     return std::make_unique<AST::GroupNode>(
         std::vector<std::unique_ptr<AST::ASTNode>>());
   }
-  auto expression = parseExpression();
+  auto expression = parseGroup();
   expectToken(PAREN_END);
   currentPos_++;
   return expression;
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
-  auto identifier = parseExpression();
+  auto identifier = parseIdentifier(true);
   auto type = parseExpression();
   if (identifier->type_ != AST::IDENTIFIERNODE) {
-    error::errorManager.addError({"Error: The first operand must be an identifier\n",
-                           error::Severity::Critical});
+    error::errorManager.addError(
+        {"Error: The first operand must be an identifier\n",
+         error::Severity::Critical});
     return nullptr;
   }
   auto varName = static_cast<AST::IdentifierNode *>(identifier.get())->name_;
   if (scopeManager_->getType(varName) != nullptr) {
-    error::errorManager.addError({"Error: Identifier \% is already declared\n", error::Severity::Critical, varName});
+    error::errorManager.addError({"Error: Identifier \% is already declared\n",
+                                  error::Severity::Critical, varName});
     return nullptr;
   }
   std::shared_ptr<type::TypeObject> declType;
   // if second operand is identifier
   if (type->type_ == AST::IDENTIFIERNODE) {
     auto name = static_cast<AST::IdentifierNode *>(type.get())->name_;
-    declType = scopeManager_->getType(name);
-    declType = std::make_shared<type::IdentifierType>(name, declType);
+    auto typeFound = scopeManager_->getType(name);
+    if (typeFound == nullptr) {
+      error::errorManager.addError(
+          {"Unknown Type Identifier: %\n", error::Severity::Critical, name});
+    }
+    declType = std::make_shared<type::IdentifierType>(name, typeFound);
   } else {
     declType = AST::getType(type.get());
   }
-  scopeManager_->addScopeObject(std::make_shared<IdentifierType>(varName, declType));
+  if (declType == nullptr) {
+    error::errorManager.addError({"Type Error\n", error::Severity::Critical});
+  }
+  scopeManager_->addScopeObject(
+      std::make_shared<IdentifierType>(varName, declType));
+  static_cast<AST::IdentifierNode *>(identifier.get())->identifierType_ =
+      declType;
 
   return std::make_unique<AST::BinaryOpNode>(DECL, std::move(identifier),
                                              std::move(type));
 }
 
-std::unique_ptr<AST::ASTNode> Parser::parseIdentifier() {
+std::unique_ptr<AST::ASTNode> Parser::parseIdentifier(bool isDecl) {
   Token t = tokens_[currentPos_];
   currentPos_++;
-  return std::make_unique<AST::IdentifierNode>(t.value);
+  auto identifierNode = std::make_unique<AST::IdentifierNode>(t.value);
+  identifierNode->identifierType_ = scopeManager_->getType(t.value);
+  if (!isDecl) {
+    if (identifierNode->identifierType_ == nullptr) {
+      error::errorManager.addError({"Use of undeclared variable '\%'\n",
+                                    error::Severity::Critical,
+                                    identifierNode->name_});
+    }
+  }
+  return identifierNode;
 }
 
-std::shared_ptr<std::unique_ptr<AST::ASTNode>> Parser::astNode() const {
-  return astNode();
+std::unique_ptr<AST::ASTNode> Parser::parseFunction() {
+  scopeManager_->pushScope();
+  auto operandsType = parseExpression();
+  auto value = parseExpression();
+  scopeManager_->popScope();
+  return std::make_unique<AST::FunctionNode>(std::move(operandsType),
+                                             std::move(value));
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseCall() {
+  auto func = parseExpression();
+  if (func->getType()->type_ != type::FUNC) {
+    error::errorManager.addError({"Error: Used CALL on non-function object\n",
+                                  error::Severity::Critical});
+    return nullptr;
+  }
+  auto args = parseExpression();
+  auto funcNodePtr = static_cast<type::FunctionType *>(func->getType().get());
+  auto funcArgsType = funcNodePtr->pOperandsType_;
+  auto callArgsType = args->getType();
+  if (*funcArgsType != *callArgsType) {
+    error::errorManager.addError(
+        {"Error: Argument(s) type mismatch, got: %, expected: %\n",
+         error::Severity::Critical, static_cast<std::string>(*args->getType()),
+         static_cast<std::string>(*funcNodePtr->pOperandsType_)});
+  }
+  return std::make_unique<AST::BinaryOpNode>(CALL, std::move(func),
+                                             std::move(args));
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseGroup() {
+  auto expression = parseExpression();
+  // current token after expression
+  if (tokens_[currentPos_] == Token(SYMBOL, ",")) {
+    std::vector<std::unique_ptr<AST::ASTNode>> groupMember;
+    groupMember.push_back(std::move(expression));
+    while (tokens_[currentPos_] == Token(SYMBOL, ",")) {
+      currentPos_++;
+      expression = parseExpression();
+      if (expression->type_ == AST::GROUPNODE) {
+        auto innerGroup = static_cast<AST::GroupNode *>(expression.get());
+        groupMember.insert(
+            groupMember.end(),
+            std::make_move_iterator(innerGroup->members_.begin()),
+            std::make_move_iterator(innerGroup->members_.end()));
+      } else {
+        groupMember.push_back(std::move(expression));
+      }
+    }
+    expression = std::make_unique<AST::GroupNode>(std::move(groupMember));
+  }
+  return expression;
+}
+
+std::unique_ptr<AST::ASTNode> Parser::astNode() const {
+  return astNode_->clone();
 }
 
 Parser::operator std::string() const {
-  return AST::toString(astNode_->get(), 0);
+  return AST::toString(astNode_.get(), 0);
 }
 
-void Parser::printNode() const { std::cout << astNode_->get(); }
+void Parser::printNode() const { std::cout << astNode_.get(); }
 
 const ScopeManager &Parser::getScopeManager() const { return *scopeManager_; }
 

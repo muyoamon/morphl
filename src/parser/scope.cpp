@@ -1,5 +1,5 @@
 #include "scope.h"
-#include "type.h"
+#include "../type/type.h"
 #include <memory>
 #include <string>
 namespace morphl {
@@ -32,7 +32,7 @@ namespace morphl {
   }
 
   ScopeManager::operator std::string() const {
-    std::string str = "Program:\n";
+    std::string str = "Current Scope:\n";
     for (auto& i:scope_.top()) {
       if (i->scopeObjectType_ == ScopeObjectType::IDENTIFIER_TYPE) {
         const type::TypeObject* pTypeObj = static_cast<IdentifierType*>(i.get())->type_.get();

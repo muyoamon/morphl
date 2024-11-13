@@ -20,13 +20,14 @@ enum TokenType {
   MORPH,
   IF,
   WHILE,
-  RETURN,
   OPERATOR_START,
   UN_OPERATOR_START = OPERATOR_START,
   // resolved at compile-time operator
   SIZE,
   TYPE,
   // compile-time operator end
+  RETURN,
+  
   NEG, // flip the sign, undefined for unsign
   FNEG,
   BNOT, // flip all bits
@@ -38,7 +39,8 @@ enum TokenType {
   BI_OPERATOR_START,
   ASSIGN,
   CALL,
-  DECL, 
+  DECL,
+  FUNC,
   
   // integer operator
   INT_OPERATOR,

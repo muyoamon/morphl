@@ -16,6 +16,7 @@ namespace morphl {
     {"ASSIGN", ASSIGN},
     {"CALL", CALL},
     {"DECL", DECL},
+    {"FUNC", FUNC},
     {"SIZE", SIZE},
     {"TYPE", TYPE},
     {"ADD", ADD},

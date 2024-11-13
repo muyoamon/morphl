@@ -1,5 +1,5 @@
-#ifndef MORPHL_PARSER_TYPE_H
-#define MORPHL_PARSER_TYPE_H
+#ifndef MORPHL_TYPE_TYPE_H
+#define MORPHL_TYPE_TYPE_H
 
 #include <map>
 #include <memory>
@@ -30,9 +30,10 @@ namespace type {
     TypeObject() : type_{NONE} {}
     TypeObject(Type t) : type_{t} {}
     operator std::string() const;
+    //virtual bool operator==(TypeObject) const = 0;
+    static const std::shared_ptr<TypeObject> none;
   };
 
-  const TypeObject none = {NONE};
 
   using BlockTypeMembers = std::map<std::string, std::shared_ptr<TypeObject>>;
   using GroupTypeMembers = std::vector<std::shared_ptr<TypeObject>>;
@@ -41,6 +42,9 @@ namespace type {
     std::string typeName_;
 
     PrimitiveType(std::string typeName) : TypeObject(PRIMITIVE), typeName_{typeName} {}
+    static const std::shared_ptr<TypeObject> INTEGER;
+    static const std::shared_ptr<TypeObject> FLOAT;
+    static const std::shared_ptr<TypeObject> STRING;
   };
 
   struct BlockType : public TypeObject {
@@ -96,9 +100,11 @@ namespace type {
 
   std::ostream& operator<< (std::ostream& ostr, const TypeObject* t);
 
-    
+  bool operator==(const TypeObject&, const TypeObject&);
+
+  bool operator!=(const TypeObject&, const TypeObject&);
 }
 }
 
-#endif // !MORPHL_PARSER_TYPE_H
+#endif // !MORPHL_TYPE_TYPE_H
 

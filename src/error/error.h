@@ -69,8 +69,9 @@ public:
   void addError(const Error err) {
     errors_.push_back(err);
 
-    if (static_cast<unsigned>(err.getSeverity()) == throwLevel_) {
-      throwErrors();
+    if (static_cast<unsigned>(err.getSeverity()) >= throwLevel_) {
+      exit(1);
+      //throwErrors();
     }
   }
   
@@ -113,6 +114,7 @@ public:
         std::cerr << static_cast<std::string>(err);
       }
     }
+    exit(1);
   }
 
   void throwErrors() const {

@@ -1,7 +1,7 @@
 #ifndef MORPHL_PARSER_SCOPE_H
 #define MORPHL_PARSER_SCOPE_H
 
-#include "type.h"
+#include "../type/type.h"
 #include <memory>
 #include <stack>
 #include <string>
@@ -22,10 +22,6 @@ struct IdentifierType : public ScopeObject {
   IdentifierType(std::string name, std::shared_ptr<type::TypeObject> type)
       : ScopeObject(ScopeObjectType::IDENTIFIER_TYPE), name_(name),
         type_(type) {}
-};
-struct Alias {
-  std::string syntax_;
-  std::string replacement_;
 };
 class ScopeManager {
   std::stack<std::vector<std::shared_ptr<ScopeObject>>> scope_;

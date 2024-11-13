@@ -1,8 +1,11 @@
+#include "ast.h"
 #include "error.h"
 #include "lexer.h"
 #include "parser.h"
 #include <iostream>
+#include <memory>
 #include <ostream>
+#include <vector>
 
 
 
@@ -21,6 +24,7 @@ int main (int argc, char *argv[]) {
       std::cout << static_cast<std::string>(parser.getScopeManager());
     }
   }
+
 
   /*auto p1 = std::make_shared<morphl::type::PrimitiveType>("int");*/
   /*morphl::type::BlockTypeMembers blockTypeMember = {*/
