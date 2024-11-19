@@ -69,7 +69,7 @@ namespace morphl {
 
   };
   Lexer::Lexer(const std::string& input)
-    : input_(input), currentPosition_(0) {
+    : input_(input), currentPosition_(0), rowNum_(1), currentRowStartPos_(0) {
       tokenize();
     }
 
@@ -108,6 +108,10 @@ namespace morphl {
     }
     // Skip whitespace
     while (currentPosition_ < input_.size() && isspace(input_[currentPosition_])) {
+        if (input_[currentPosition_] == '\n') {
+          rowNum_++;
+          currentRowStartPos_ = currentPosition_;
+        }
         currentPosition_++;
     }
 
@@ -128,9 +132,9 @@ namespace morphl {
         std::string identifier = identifierStream.str();
         TokenType type = checkKeyword(identifier);
         if (type == ERROR_) {
-            tokens_.push_back(Token(IDENTIFIER, identifier));
+            tokens_.push_back(Token(IDENTIFIER, identifier, rowNum_, currentPosition_ - currentRowStartPos_));
         } else {
-            tokens_.push_back(Token(type, identifier));
+            tokens_.push_back(Token(type, identifier, rowNum_, currentPosition_ - currentRowStartPos_));
         }
         return tokenize(); // Recursively call tokenize after processing a token
     }
@@ -149,9 +153,9 @@ namespace morphl {
             literalStream << input_[currentPosition_];
             currentPosition_++;
           }
-          tokens_.push_back(Token(FLOAT_LITERAL,literalStream.str()));
+          tokens_.push_back(Token(FLOAT_LITERAL,literalStream.str(), rowNum_, currentPosition_ - currentRowStartPos_));
         } else {
-          tokens_.push_back(Token(INT_LITERAL, literalStream.str()));
+          tokens_.push_back(Token(INT_LITERAL, literalStream.str(), rowNum_, currentPosition_ - currentRowStartPos_));
         }
         std::string literal = literalStream.str();
         return tokenize(); // Recursively call tokenize after processing a token
@@ -167,7 +171,7 @@ namespace morphl {
       }
       if (currentPosition_ < input_.size()) {
         currentPosition_++; // Skip closing quote
-        tokens_.push_back(Token(STRING_LITERAL, stringStream.str()));
+        tokens_.push_back(Token(STRING_LITERAL, stringStream.str(), rowNum_, currentPosition_ - currentRowStartPos_));
       } else {
         std::cerr << "Error: Unterminated string literal" << std::endl;
       }
@@ -185,13 +189,13 @@ namespace morphl {
           ss << input_[currentPosition_];
           currentPosition_++;
         }
-        tokens_.push_back(Token(OPERAND, ss.str()));
+        tokens_.push_back(Token(OPERAND, ss.str(), rowNum_, currentPosition_ - currentRowStartPos_));
         return tokenize();
       }
     }
     
     //handle symbol
-    tokens_.push_back(Token(SYMBOL, std::string(1,currentChar)));
+    tokens_.push_back(Token(SYMBOL, std::string(1,currentChar), rowNum_, currentPosition_ - currentRowStartPos_));
     currentPosition_++;
     return tokenize();
   }

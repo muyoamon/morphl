@@ -128,8 +128,12 @@ enum TokenType {
 struct Token {
   TokenType type;
   std::string value;
+  size_t row_{};
+  size_t col_{};
   
   Token(TokenType type, const std::string& value) : type(type), value(value) {}
+  Token(TokenType type, const std::string& val, size_t row, size_t col)
+    : type(type), value(val), row_(row), col_(col) {}
 };
 
 bool operator==(const Token lhs, const Token rhs);
@@ -142,6 +146,8 @@ class Lexer {
     std::vector<Token> tokens_;
     std::string input_;
     size_t currentPosition_;
+    size_t rowNum_;
+    size_t currentRowStartPos_;
     
     void tokenize();
     TokenType checkKeyword(const std::string& token);

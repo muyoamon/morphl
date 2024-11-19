@@ -1,18 +1,23 @@
 #ifndef MORPHL_PARSER_H
 #define MORPHL_PARSER_H
 //#include <memory>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 #include "../lexer/lexer.h"
 #include "../ast/ast.h"
+#include "macroManager.h"
 #include "scope.h"
 namespace morphl {
   class Parser {
+    std::string filename_;
     std::vector<Token> tokens_;
     std::unique_ptr<AST::ASTNode> astNode_;
     size_t currentPos_;
     std::shared_ptr<ScopeManager> scopeManager_;
+    std::shared_ptr<macro::MacroManager> macroManager_;
+
     std::vector<std::unique_ptr<AST::ASTNode>> operands_;
     std::vector<std::string> operandNames_;
     

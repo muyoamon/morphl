@@ -69,7 +69,8 @@ TypeObject::operator std::string() const {
   }
   case IDENTIFIER: {
     auto pi = static_cast<const IdentifierType *>(this);
-    return pi->name_ + " AKA " + static_cast<std::string>(*pi->pType_);
+    // return pi->name_ + " AKA " + static_cast<std::string>(*pi->pType_);
+    return static_cast<std::string>(*pi->pType_);
   }
   default:
     return "Unknown Type";

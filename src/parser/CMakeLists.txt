@@ -7,6 +7,7 @@ add_library(morphl_parser SHARED
   macro.cpp
   macroManager.h
   macroManager.cpp
+  error.h
 )
 target_link_libraries(${PROJECT_NAME} INTERFACE morphl_parser)
 

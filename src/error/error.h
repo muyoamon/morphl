@@ -30,16 +30,34 @@ enum class Severity : unsigned { Info = 1, Warning = 2, Critical = 3 };
 class Error {
   std::string message_;
   Severity severity_;
+  std::string fileName_;
+  size_t row_;
+  size_t col_;
 
 public:
   template <typename... Args>
   Error(const std::string &fmt, Severity sev, Args... args)
-      : message_(formatString(fmt, args...)), severity_(sev) {}
+      : message_(formatString(fmt, args...)), severity_(sev), fileName_{},
+        row_{}, col_{} {}
+
+  template <typename... Args>
+  Error(const std::string &file, size_t row, size_t col, Severity sev,
+        const std::string &fmt, Args... args)
+      : message_(formatString(fmt, args...)), severity_(sev), fileName_(file),
+        row_(row), col_(col) {}
 
   std::string getMessage() const { return message_; }
   Severity getSeverity() const { return severity_; }
 
   operator std::string() const {
+    std::string pre;
+    pre += fileName_;
+    if (row_ != 0) {
+      pre += ":" + std::to_string(row_);
+    }
+    if (col_ != 0) {
+      pre += ":" + std::to_string(col_) + " ";
+    }
     std::string sevStr;
     switch (severity_) {
     case Severity::Info:
@@ -52,7 +70,7 @@ public:
       sevStr = "Critical";
       break;
     }
-    return formatString("[\%] \%", sevStr, message_);
+    return formatString("\%[\%] \%", pre, sevStr, message_);
   }
 };
 
@@ -60,6 +78,7 @@ class ErrorManager {
   std::vector<Error> errors_;
   unsigned throwLevel_;
   unsigned showLevel_;
+
 public:
   // default constructor of ErrorManager.
   // By default, will show severity level of warning or greater.
@@ -71,15 +90,15 @@ public:
 
     if (static_cast<unsigned>(err.getSeverity()) >= throwLevel_) {
       exit(1);
-      //throwErrors();
+      // throwErrors();
     }
   }
-  
+
   // set the show severity level
   void setShowLevel(unsigned level) { showLevel_ = level; }
 
   // set the throw severity level
-  void setThrowLevel(unsigned level) {throwLevel_ = level; }
+  void setThrowLevel(unsigned level) { throwLevel_ = level; }
 
   void reportErrors() const {
     bool found = false;

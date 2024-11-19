@@ -154,6 +154,9 @@ std::shared_ptr<type::TypeObject> GroupNode::getType() const {
 }
 
 std::shared_ptr<type::TypeObject> BinaryOpNode::getType() const {
+  if (this->opType_ == EXTEND) {
+    auto type1 = operand1_->getType();
+  }
   if (this->opType_ == CALL) {
     auto func = static_cast<type::FunctionType*>(this->operand1_->getType().get());
     return func->pReturnType_;

@@ -50,6 +50,7 @@ struct ASTNode {
   virtual std::shared_ptr<type::TypeObject> getType() const {
     return std::make_shared<type::TypeObject>(type::NONE);
   };
+  virtual ~ASTNode() = default;
 };
 
 struct ProgramNode : public ASTNode {

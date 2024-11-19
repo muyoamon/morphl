@@ -1,12 +1,15 @@
 #include "parser.h"
 #include "../error/error.h"
-#include "../type/type.h"
 #include "../type/operatorType.h"
+#include "../type/type.h"
+#include "error.h"
 #include "scope.h"
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,7 +21,6 @@ static const Token BLOCK_START = {SYMBOL, "{"};
 static const Token BLOCK_END = {SYMBOL, "}"};
 static const Token PAREN_START = {SYMBOL, "("};
 static const Token PAREN_END = {SYMBOL, ")"};
-
 
 Parser::Parser(std::vector<Token> t, std::shared_ptr<ScopeManager> scopeManager)
     : tokens_(t), astNode_{nullptr}, currentPos_{0},
@@ -32,17 +34,33 @@ Parser::Parser(std::vector<Token> t, std::shared_ptr<ScopeManager> scopeManager)
   }
 }
 
-Parser::Parser(std::string s, std::shared_ptr<ScopeManager> scopeManager)
-    : Parser(Lexer(s).tokens(), scopeManager) {}
+Parser::Parser(std::string file, std::shared_ptr<ScopeManager> scopeManager)
+    : filename_{file}, astNode_{nullptr}, currentPos_{0},
+      scopeManager_(scopeManager) {
+  std::ifstream f(filename_);
+  if (!f) {
+    error::errorManager.addError(
+        {"File \'%\' not found!\n", error::Severity::Critical, filename_});
+  }
+  std::stringstream ss;
+  ss << f.rdbuf();
+  Lexer l(ss.str());
+  for (auto i : tokens_) {
+    if (i.type == OPERAND &&
+        std::find(operandNames_.begin(), operandNames_.end(), i.value) ==
+            operandNames_.end()) {
+      operandNames_.push_back(i.value);
+    }
+  }
+  tokens_ = l.tokens();
+}
 
 bool Parser::expectToken(const Token expect) {
   auto actual = tokens_[currentPos_];
   if (expect == actual) {
     return true;
   }
-  error::errorManager.addError(
-      error::Error("Error: Unexpect Token \%, expected \%\n",
-                   error::Severity::Critical, actual, expect));
+  error::errorManager.addError(UnexpectedTokenError(filename_, actual, expect));
   return false;
 }
 
@@ -75,6 +93,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseProgram() {
 std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
   // expect {
   expectToken(BLOCK_START);
+  auto t = tokens_[currentPos_];
   currentPos_++;
   scopeManager_->pushScope();
   std::vector<std::unique_ptr<AST::ASTNode>> v;
@@ -86,8 +105,9 @@ std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
     }
   }
   if (tokens_[currentPos_].type == EOF_) {
-    error::errorManager.addError(
-        {"Unterminated Block\n", error::Severity::Warning});
+    error::errorManager.addError({filename_, t.row_, t.col_,
+                                  error::Severity::Warning,
+                                  "Unterminated Block\n"});
   }
   expectToken(BLOCK_END);
   currentPos_++;
@@ -112,8 +132,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseStatement() {
     isPrint = true;
   } else {
     return value; // return expression if there is no statement end
-    error::errorManager.addError(
-        {"Unterminated Statement\n", error::Severity::Warning});
+    //error::errorManager.addError({"Unterminated Statement\n", error::Severity::Warning});
   }
   currentPos_++;
   return std::make_unique<AST::StatementNode>(std::move(value), isPrint);
@@ -146,14 +165,14 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
   }
 
   if (expression == nullptr) {
-    error::errorManager.addError(
-        {"Error: Unexpected token \%\n", error::Severity::Critical, currToken});
+    error::errorManager.addError(UnexpectedTokenError(filename_, currToken));
   }
   return expression;
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseIf() {
   expectToken({IF, "IF"});
+  auto t = tokens_[currentPos_];
   currentPos_++;
   auto ifBlock = parseGroup();
   if (ifBlock->type_ == AST::GROUPNODE) {
@@ -162,18 +181,19 @@ std::unique_ptr<AST::ASTNode> Parser::parseIf() {
       if (*ifGroupPtr->members_[1]->getType() !=
           *ifGroupPtr->members_[2]->getType()) {
         error::errorManager.addError(
-            {"Error:Type of if body does not match the type of else body (% != "
+            {filename_, t.row_, t.col_, error::Severity::Critical,
+             "Error:Type of if body does not match the type of else body (% != "
              "%)\n",
-             error::Severity::Critical,
              static_cast<std::string>(*ifGroupPtr->members_[1]->getType()),
              static_cast<std::string>(*ifGroupPtr->members_[2]->getType())});
       }
-    } 
+    }
     if (ifGroupPtr->members_.size() > 3) {
-      error::errorManager.addError({"Provide more expression(s) than needed to "
-                                    "IF, the last \% expression(s) will be ignored\n",
-                                    error::Severity::Warning,
-                                    ifGroupPtr->members_.size() - 3});
+      error::errorManager.addError(
+          {filename_, t.row_, t.col_, error::Severity::Warning,
+           "Provide more expression(s) than needed to "
+           "IF, the last \% expression(s) will be ignored\n",
+           ifGroupPtr->members_.size() - 3});
     }
   }
   return std::make_unique<AST::IfNode>(std::move(ifBlock));
@@ -184,13 +204,12 @@ std::unique_ptr<AST::ASTNode> Parser::parseWhile() {
   currentPos_++;
   auto whileBlock = parseGroup();
   if (whileBlock->type_ == AST::GROUPNODE) {
-    auto whileGroupPtr = static_cast<AST::GroupNode*>(whileBlock.get());
+    auto whileGroupPtr = static_cast<AST::GroupNode *>(whileBlock.get());
     if (whileGroupPtr->members_.size() > 2) {
-      error::errorManager.addError({
-          "Provide more expression(s) than needed to WHILE, the last \% expression(s) will be ignored\n",
-          error::Severity::Warning,
-          whileGroupPtr->members_.size() - 2
-          });
+      error::errorManager.addError(
+          {"Provide more expression(s) than needed to WHILE, the last \% "
+           "expression(s) will be ignored\n",
+           error::Severity::Warning, whileGroupPtr->members_.size() - 2});
     }
   }
   return std::make_unique<AST::WhileNode>(std::move(whileBlock));
@@ -210,9 +229,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
   }
   auto operand1 = parseExpression();
   auto operand2 = parseExpression();
-  
+
   if (*operand1->getType() != *type::operatorTypeMap.at(type).operand1_) {
-    
   }
   return std::make_unique<AST::BinaryOpNode>(type, std::move(operand1),
                                              std::move(operand2));
@@ -235,8 +253,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseLiteral() {
   } else if (t.type == STRING_LITERAL) {
     return std::make_unique<AST::StringLiteralNode>(t.value);
   } else {
-    error::errorManager.addError(error::Error("Error: Unexpected Token \%\n",
-                                              error::Severity::Critical, t));
+    error::errorManager.addError(UnexpectedTokenError(filename_, t));
     return nullptr;
   }
 }
@@ -256,18 +273,20 @@ std::unique_ptr<AST::ASTNode> Parser::parseParen() {
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
+  auto t = tokens_[currentPos_];
   auto identifier = parseIdentifier(true);
   auto type = parseExpression();
   if (identifier->type_ != AST::IDENTIFIERNODE) {
     error::errorManager.addError(
-        {"Error: The first operand must be an identifier\n",
-         error::Severity::Critical});
+        {filename_, t.row_, t.col_, error::Severity::Critical,
+         "Error: The first operand must be an identifier\n"});
     return nullptr;
   }
   auto varName = static_cast<AST::IdentifierNode *>(identifier.get())->name_;
   if (scopeManager_->getType(varName) != nullptr) {
-    error::errorManager.addError({"Error: Identifier \% is already declared\n",
-                                  error::Severity::Critical, varName});
+    error::errorManager.addError(
+        {filename_, t.row_, t.col_, error::Severity::Critical,
+         "Error: Identifier \% is already declared\n", varName});
     return nullptr;
   }
   std::shared_ptr<type::TypeObject> declType;
@@ -276,12 +295,13 @@ std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
     auto name = static_cast<AST::IdentifierNode *>(type.get())->name_;
     auto typeFound = scopeManager_->getType(name);
     if (typeFound == nullptr) {
-      error::errorManager.addError(
-          {"Unknown Type Identifier: %\n", error::Severity::Critical, name});
+      error::errorManager.addError({filename_, t.row_, t.col_,
+                                    error::Severity::Critical,
+                                    "Unknown Type Identifier: %\n", name});
     }
     declType = std::make_shared<type::IdentifierType>(name, typeFound);
   } else {
-    declType = AST::getType(type.get());
+    declType = type->getType();
   }
   if (declType == nullptr) {
     error::errorManager.addError({"Type Error\n", error::Severity::Critical});
@@ -302,9 +322,9 @@ std::unique_ptr<AST::ASTNode> Parser::parseIdentifier(bool isDecl) {
   identifierNode->identifierType_ = scopeManager_->getType(t.value);
   if (!isDecl) {
     if (identifierNode->identifierType_ == nullptr) {
-      error::errorManager.addError({"Use of undeclared variable '\%'\n",
-                                    error::Severity::Critical,
-                                    identifierNode->name_});
+      error::errorManager.addError(
+          {filename_, t.row_, t.col_, error::Severity::Warning,
+           "Use of undeclared variable '\%'\n", identifierNode->name_});
     }
   }
   return identifierNode;
@@ -320,10 +340,16 @@ std::unique_ptr<AST::ASTNode> Parser::parseFunction() {
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseCall() {
+  auto t = tokens_[currentPos_];
   auto func = parseExpression();
   if (func->getType()->type_ != type::FUNC) {
-    error::errorManager.addError({"Error: Used CALL on non-function object\n",
-                                  error::Severity::Critical});
+    error::errorManager.addError({
+        filename_,
+        t.row_,
+        t.col_,
+        error::Severity::Critical,
+        "Error: Used CALL on non-function object\n",
+    });
     return nullptr;
   }
   auto args = parseExpression();
@@ -332,8 +358,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseCall() {
   auto callArgsType = args->getType();
   if (*funcArgsType != *callArgsType) {
     error::errorManager.addError(
-        {"Error: Argument(s) type mismatch, got: %, expected: %\n",
-         error::Severity::Critical, static_cast<std::string>(*args->getType()),
+        { filename_, t.row_, t.col_, error::Severity::Critical, "Error: Argument(s) type mismatch, got: %, expected: %\n",
+         static_cast<std::string>(*args->getType()),
          static_cast<std::string>(*funcNodePtr->pOperandsType_)});
   }
   return std::make_unique<AST::BinaryOpNode>(CALL, std::move(func),
