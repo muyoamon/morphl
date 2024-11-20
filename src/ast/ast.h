@@ -3,6 +3,7 @@
 
 #include "../lexer/lexer.h"
 #include "../type/type.h"
+#include "../parser/macro.h"
 #include <memory>
 #include <string>
 #include <utility>
@@ -248,12 +249,13 @@ struct FunctionNode : public ASTNode {
 
   std::shared_ptr<type::TypeObject> getType() const override;
 };
-
 std::string toString(const ASTNode *, size_t indent);
 
 std::ostream &operator<<(std::ostream &, const ASTNode *);
 
 std::shared_ptr<type::TypeObject> getType(const ASTNode *);
+
+
 
 } // namespace AST
 } // namespace morphl

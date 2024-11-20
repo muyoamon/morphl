@@ -57,6 +57,7 @@ namespace type {
   struct GroupType : public TypeObject {
     GroupTypeMembers members_;
     
+    GroupType() : TypeObject(GROUP) {}
     GroupType(GroupTypeMembers members)
       : TypeObject(GROUP), members_{members} {}
   };

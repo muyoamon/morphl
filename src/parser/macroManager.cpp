@@ -1,5 +1,6 @@
 #include "macroManager.h"
 #include "macro.h"
+#include <string>
 #include <unordered_set>
 namespace morphl {
 namespace macro {
@@ -10,7 +11,7 @@ namespace macro {
     scope_.pop();
   }
   void MacroManager::addMacro(Macro m) {
-    scope_.top().insert(scope_.top().end(),m);
+    scope_.top().push_back(m);
   }
   std::list<Macro> MacroManager::getAllMacro() const {
     MacroStack temp = scope_;
@@ -20,6 +21,14 @@ namespace macro {
         res.insert(res.end(),i);
       }
       temp.pop();
+    }
+    return res;
+  }
+  MacroManager::operator std::string() const {
+    std::string res = "Current Scope Macro:\n";
+    auto macros = getAllMacro();
+    for (auto i:macros) {
+      res += static_cast<std::string>(i) + "\n";
     }
     return res;
   }

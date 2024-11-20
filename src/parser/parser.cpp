@@ -3,14 +3,18 @@
 #include "../type/operatorType.h"
 #include "../type/type.h"
 #include "error.h"
+#include "macro.h"
+#include "macroManager.h"
 #include "scope.h"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <ostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 namespace morphl {
@@ -22,21 +26,17 @@ static const Token BLOCK_END = {SYMBOL, "}"};
 static const Token PAREN_START = {SYMBOL, "("};
 static const Token PAREN_END = {SYMBOL, ")"};
 
-Parser::Parser(std::vector<Token> t, std::shared_ptr<ScopeManager> scopeManager)
-    : tokens_(t), astNode_{nullptr}, currentPos_{0},
-      scopeManager_(scopeManager) {
-  for (auto i : tokens_) {
-    if (i.type == OPERAND &&
-        std::find(operandNames_.begin(), operandNames_.end(), i.value) ==
-            operandNames_.end()) {
-      operandNames_.push_back(i.value);
-    }
-  }
-}
+Token &Parser::currentToken() { return tokens_[currentPos_]; }
 
-Parser::Parser(std::string file, std::shared_ptr<ScopeManager> scopeManager)
+Parser::Parser(std::vector<Token> t, std::shared_ptr<ScopeManager> scopeManager,
+               std::shared_ptr<macro::MacroManager> macroManger)
+    : tokens_(t), astNode_{nullptr}, currentPos_{0},
+      scopeManager_(scopeManager), macroManager_(macroManger) {}
+
+Parser::Parser(std::string file, std::shared_ptr<ScopeManager> scopeManager,
+               std::shared_ptr<macro::MacroManager> macroManager)
     : filename_{file}, astNode_{nullptr}, currentPos_{0},
-      scopeManager_(scopeManager) {
+      scopeManager_(scopeManager), macroManager_(macroManager) {
   std::ifstream f(filename_);
   if (!f) {
     error::errorManager.addError(
@@ -45,13 +45,6 @@ Parser::Parser(std::string file, std::shared_ptr<ScopeManager> scopeManager)
   std::stringstream ss;
   ss << f.rdbuf();
   Lexer l(ss.str());
-  for (auto i : tokens_) {
-    if (i.type == OPERAND &&
-        std::find(operandNames_.begin(), operandNames_.end(), i.value) ==
-            operandNames_.end()) {
-      operandNames_.push_back(i.value);
-    }
-  }
   tokens_ = l.tokens();
 }
 
@@ -64,15 +57,10 @@ bool Parser::expectToken(const Token expect) {
   return false;
 }
 
-Parser &Parser::parse(std::vector<std::unique_ptr<AST::ASTNode>> operands) {
+Parser &Parser::parse(
+    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>> &&operands) {
   for (const auto &i : operands) {
-    operands_.push_back(i->clone());
-  }
-  if (operands_.size() != operandNames_.size()) {
-    error::errorManager.addError({"Insufficient operands expect \%, got \%\n",
-                                  error::Severity::Critical,
-                                  operandNames_.size(), operands_.size()});
-    return *this;
+    operands_[i.first] = (i.second->clone());
   }
   astNode_ = std::move(parseProgram());
   return *this;
@@ -80,12 +68,15 @@ Parser &Parser::parse(std::vector<std::unique_ptr<AST::ASTNode>> operands) {
 
 std::unique_ptr<AST::ASTNode> Parser::parseProgram() {
   std::vector<std::unique_ptr<AST::ASTNode>> v;
-  scopeManager_->pushScope();
+  this->pushScope();
   while (currentPos_ < tokens_.size() && tokens_[currentPos_].type != EOF_) {
     auto statement = parseStatement();
     if (statement != nullptr) {
       v.push_back(std::move(statement));
     }
+  }
+  if (v.size() == 1) {
+    return std::move(v[0]);
   }
   return std::make_unique<AST::ProgramNode>(std::move(v));
 }
@@ -95,7 +86,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
   expectToken(BLOCK_START);
   auto t = tokens_[currentPos_];
   currentPos_++;
-  scopeManager_->pushScope();
+  this->pushScope();
   std::vector<std::unique_ptr<AST::ASTNode>> v;
   while (tokens_[currentPos_] != BLOCK_END &&
          tokens_[currentPos_] != Token({EOF_, ""})) {
@@ -111,7 +102,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
   }
   expectToken(BLOCK_END);
   currentPos_++;
-  scopeManager_->popScope();
+  this->popScope();
   return std::make_unique<AST::BlockNode>(std::move(v));
 }
 
@@ -125,49 +116,279 @@ std::unique_ptr<AST::ASTNode> Parser::parseStatement() {
   }
   value = std::move(parseGroup());
   bool isPrint = false;
-  auto currToken = tokens_[currentPos_];
-  if (currToken == STATEMENT_END) {
+  if (currentToken() == STATEMENT_END) {
     isPrint = false;
-  } else if (currToken == STATEMENT_PRINT) {
+  } else if (currentToken() == STATEMENT_PRINT) {
     isPrint = true;
   } else {
     return value; // return expression if there is no statement end
-    //error::errorManager.addError({"Unterminated Statement\n", error::Severity::Warning});
+    // error::errorManager.addError({"Unterminated Statement\n",
+    // error::Severity::Warning});
   }
   currentPos_++;
   return std::make_unique<AST::StatementNode>(std::move(value), isPrint);
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
-  auto currToken = tokens_[currentPos_];
   std::unique_ptr<AST::ASTNode> expression = nullptr;
-  if (currToken.type == OPERAND) {
-    size_t index =
-        std::find(operandNames_.begin(), operandNames_.end(), currToken.value) -
-        operandNames_.begin();
-    expression = operands_[index]->clone();
-  } else if (currToken.type == IF) {
+  {
+    struct MacroDetail {
+      size_t operandIndex{};
+      size_t currentPos{};
+    };
+    auto lastPos = currentPos_;
+
+    auto macros = macroManager_->getAllMacro();
+
+    std::vector<std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>>
+        args(macros.size());
+    std::vector<MacroDetail> macroDetails(macros.size());
+    size_t syntaxIndex = 0;
+    size_t macroIndex = 0;
+    size_t lastMatchedMacroIndex = -1;
+    macro::Macro lastMatchedMacro;
+    MacroDetail lastMatchedMacroDetail;
+    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>> lastMatchedMacroArgs;
+
+    // first flushed out non-matching macros
+    for (auto it = macros.begin(); it != macros.end();) {
+      currentPos_ = lastPos;
+      if (it->syntax_[syntaxIndex] == currentToken()) {
+        currentPos_++;
+      } else {
+        it = macros.erase(it);
+        args.erase(args.begin() + macroIndex);
+        macroDetails.erase(macroDetails.begin() + macroIndex);
+        continue;
+      }
+      macroDetails[macroIndex].currentPos = currentPos_;
+      macroIndex++;
+      it++;
+    }
+    syntaxIndex++;
+    while (macros.size() > 0) {
+      macroIndex = 0;
+      for (auto it = macros.begin(); it != macros.end();) {
+        currentPos_ = macroDetails[macroIndex].currentPos;
+        if (syntaxIndex == it->syntax_.size()) {
+          lastMatchedMacroIndex = macroIndex;
+          lastMatchedMacroDetail = macroDetails[macroIndex];
+          lastMatchedMacroArgs = std::move(args[macroIndex]);
+          lastMatchedMacro = *it;
+          it = macros.erase(it);
+          args.erase(args.begin() + macroIndex);
+          macroDetails.erase(macroDetails.begin() + macroIndex);
+          continue;
+        }
+        if (it->syntax_[syntaxIndex].type == OPERAND) {
+          auto arg = parseExpression();
+          if (*arg->getType() ==
+              *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
+            args[macroIndex][it->syntax_[syntaxIndex].value] =
+                std::move(arg->clone());
+            macroDetails[macroIndex].operandIndex++;
+          } else {
+            it = macros.erase(it);
+            args.erase(args.begin() + macroIndex);
+            macroDetails.erase(macroDetails.begin() + macroIndex);
+            continue;
+          }
+        } else if (it->syntax_[syntaxIndex] == currentToken()) {
+          currentPos_++;
+        } else {
+          it = macros.erase(it);
+          args.erase(args.begin() + macroIndex);
+          macroDetails.erase(macroDetails.begin() + macroIndex);
+          continue;
+        }
+        macroDetails[macroIndex].currentPos = currentPos_;
+        macroIndex++;
+        it++;
+      }
+      syntaxIndex++;
+    }
+    if (lastMatchedMacroIndex != -1) {
+      currentPos_ = macroDetails[lastMatchedMacroIndex].currentPos;
+      Parser macroParser(lastMatchedMacro.expansion_);
+      expression =  macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
+    } else {
+      currentPos_ = lastPos;
+    }
+
+  }
+
+  if (currentToken().type == OPERAND) {
+    expression = operands_[currentToken().value]->clone();
+    currentPos_++;
+  } else if (currentToken().type == MORPH) {
+    expression = parseMorph();
+  } else if (currentToken().type == IF) {
     expression = parseIf();
-  } else if (currToken.type == WHILE) {
+  } else if (currentToken().type == WHILE) {
     expression = parseWhile();
-  } else if (isBinaryOperator(currToken)) {
+  } else if (isBinaryOperator(currentToken())) {
     expression = parseBinaryOp();
-  } else if (isUnaryOperator(currToken)) {
+  } else if (isUnaryOperator(currentToken())) {
     expression = parseUnaryOp();
-  } else if (currToken == BLOCK_START) {
+  } else if (currentToken() == BLOCK_START) {
     expression = parseBlock();
-  } else if (currToken == PAREN_START) {
+  } else if (currentToken() == PAREN_START) {
     expression = parseParen();
-  } else if (currToken.type == IDENTIFIER) {
+  } else if (currentToken().type == IDENTIFIER) {
     expression = parseIdentifier();
-  } else if (currToken.type > LITERAL_START && currToken.type < LITERAL_END) {
+  } else if (currentToken().type > LITERAL_START &&
+             currentToken().type < LITERAL_END) {
     expression = parseLiteral();
   }
 
+  // macro matching
+  {
+    struct MacroDetail {
+      size_t operandIndex{};
+      size_t currentPos{};
+    };
+    auto lastPos = currentPos_;
+
+    auto macros = macroManager_->getAllMacro();
+
+    std::vector<std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>>
+        args(macros.size());
+    std::vector<MacroDetail> macroDetails(macros.size());
+    size_t syntaxIndex = 0;
+    size_t macroIndex = 0;
+    size_t lastMatchedMacroIndex = -1;
+    macro::Macro lastMatchedMacro;
+    MacroDetail lastMatchedMacroDetail;
+    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>> lastMatchedMacroArgs;
+    // first flushed out non-matching macros
+    for (auto it = macros.begin(); it != macros.end();) {
+      if (it->syntax_[syntaxIndex].type == OPERAND &&
+          *expression->getType() ==
+              *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
+        args[macroIndex][it->syntax_[syntaxIndex].value] =
+            std::move(expression->clone());
+        macroDetails[macroIndex].operandIndex++;
+      } else {
+        it = macros.erase(it);
+        args.erase(args.begin() + macroIndex);
+        macroDetails.erase(macroDetails.begin() + macroIndex);
+        continue;
+      }
+      macroDetails[macroIndex].currentPos = currentPos_;
+      macroIndex++;
+      it++;
+    }
+    syntaxIndex++;
+    while (macros.size() > 0) {
+      macroIndex = 0;
+      for (auto it = macros.begin(); it != macros.end();) {
+        currentPos_ = macroDetails[macroIndex].currentPos;
+        if (syntaxIndex == it->syntax_.size()) {
+          lastMatchedMacroIndex = macroIndex;
+          lastMatchedMacroDetail = macroDetails[macroIndex];
+          lastMatchedMacroArgs = std::move(args[macroIndex]);
+          lastMatchedMacro = *it;
+          it = macros.erase(it);
+          args.erase(args.begin() + macroIndex);
+          macroDetails.erase(macroDetails.begin() + macroIndex);
+          continue;
+        }
+        if (it->syntax_[syntaxIndex].type == OPERAND) {
+          auto arg = parseExpression();
+          if (*arg->getType() ==
+              *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
+            args[macroIndex][it->syntax_[syntaxIndex].value] =
+                std::move(arg->clone());
+            macroDetails[macroIndex].operandIndex++;
+          } else {
+            it = macros.erase(it);
+            args.erase(args.begin() + macroIndex);
+            macroDetails.erase(macroDetails.begin() + macroIndex);
+            continue;
+          }
+        } else if (it->syntax_[syntaxIndex] == currentToken()) {
+          currentPos_++;
+        } else {
+          it = macros.erase(it);
+          args.erase(args.begin() + macroIndex);
+          macroDetails.erase(macroDetails.begin() + macroIndex);
+          continue;
+        }
+        macroDetails[macroIndex].currentPos = currentPos_;
+        macroIndex++;
+        it++;
+      }
+      syntaxIndex++;
+    }
+    if (lastMatchedMacroIndex != -1) {
+      currentPos_ = lastMatchedMacroDetail.currentPos;
+      Parser macroParser(lastMatchedMacro.expansion_);
+      expression =  macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
+    } else {
+      currentPos_ = lastPos;
+    }
+  }
+
   if (expression == nullptr) {
-    error::errorManager.addError(UnexpectedTokenError(filename_, currToken));
+    error::errorManager.addError(
+        UnexpectedTokenError(filename_, currentToken()));
   }
   return expression;
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseMorph() {
+  expectToken({MORPH, "MORPH"});
+  auto t = tokens_[currentPos_];
+  currentPos_++;
+
+  macro::Macro::Syntax syntax;
+  macro::Macro::Syntax expansion;
+  int precedence;
+  std::shared_ptr<type::TypeObject> operandsType;
+
+  expectToken({SYMBOL, "`"});
+  currentPos_++;
+  if (tokens_[currentPos_] == Token{SYMBOL, "`"}) {
+    error::errorManager.addError(
+        {filename_, tokens_[currentPos_].row_, tokens_[currentPos_].col_,
+         error::Severity::Critical, "Error: Syntax body cannot be empty.\n"});
+  }
+  while (tokens_[currentPos_] != Token(SYMBOL, "`")) {
+    syntax.push_back(tokens_[currentPos_]);
+    currentPos_++;
+  }
+  expectToken({SYMBOL, "`"});
+  currentPos_++;
+
+  if (tokens_[currentPos_].type != INT_LITERAL) {
+    error::errorManager.addError(
+        {filename_, tokens_[currentPos_].row_, tokens_[currentPos_].col_,
+         error::Severity::Critical,
+         "Error: Precedence must be integer literal.\n"});
+  }
+  precedence = stoi(tokens_[currentPos_].value);
+  currentPos_++;
+  auto expression = parseExpression();
+  operandsType = expression->getType();
+
+  expectToken({SYMBOL, "`"});
+  currentPos_++;
+  while (tokens_[currentPos_] != Token(SYMBOL, "`")) {
+    expansion.push_back(tokens_[currentPos_]);
+    currentPos_++;
+  }
+  expansion.push_back(Token(EOF_, ""));
+  expectToken({SYMBOL, "`"});
+  currentPos_++;
+
+  std::vector<std::shared_ptr<type::TypeObject>> opTypeVector;
+  if (operandsType->type_ == type::GROUP) {
+    opTypeVector = static_cast<type::GroupType *>(operandsType.get())->members_;
+  } else {
+    opTypeVector.push_back(operandsType);
+  }
+  macroManager_->addMacro({syntax, expansion, opTypeVector, precedence});
+  return nullptr;
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseIf() {
@@ -331,10 +552,10 @@ std::unique_ptr<AST::ASTNode> Parser::parseIdentifier(bool isDecl) {
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseFunction() {
-  scopeManager_->pushScope();
+  this->pushScope();
   auto operandsType = parseExpression();
   auto value = parseExpression();
-  scopeManager_->popScope();
+  this->popScope();
   return std::make_unique<AST::FunctionNode>(std::move(operandsType),
                                              std::move(value));
 }
@@ -358,7 +579,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseCall() {
   auto callArgsType = args->getType();
   if (*funcArgsType != *callArgsType) {
     error::errorManager.addError(
-        { filename_, t.row_, t.col_, error::Severity::Critical, "Error: Argument(s) type mismatch, got: %, expected: %\n",
+        {filename_, t.row_, t.col_, error::Severity::Critical,
+         "Error: Argument(s) type mismatch, got: %, expected: %\n",
          static_cast<std::string>(*args->getType()),
          static_cast<std::string>(*funcNodePtr->pOperandsType_)});
   }
@@ -398,8 +620,21 @@ Parser::operator std::string() const {
   return AST::toString(astNode_.get(), 0);
 }
 
+void Parser::pushScope() {
+  scopeManager_->pushScope();
+  macroManager_->pushScope();
+}
+
+void Parser::popScope() {
+  scopeManager_->popScope();
+  macroManager_->popScope();
+}
+
 void Parser::printNode() const { std::cout << astNode_.get(); }
 
 const ScopeManager &Parser::getScopeManager() const { return *scopeManager_; }
 
+const macro::MacroManager &Parser::getMacroManager() const {
+  return *macroManager_;
+}
 } // namespace morphl

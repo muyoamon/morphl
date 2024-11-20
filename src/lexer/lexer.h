@@ -161,6 +161,15 @@ class Lexer {
 bool isBinaryOperator(Token& token);
 bool isUnaryOperator(Token& token);
 
+template<typename T>
+std::string tokensString(T tokens) {
+  std::string res;
+  for (auto& i:tokens) {
+    res += i.value;
+  }
+  return res;
+}
+
 
 }
 

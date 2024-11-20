@@ -3,6 +3,7 @@
 
 #include <list>
 #include <stack>
+#include <string>
 #include <unordered_set>
 #include "macro.h"
 
@@ -10,12 +11,14 @@ namespace morphl {
 namespace macro {
 
 class MacroManager {
-  using MacroStack = std::stack<std::list<Macro>>;
+  using MacroStack = std::stack<std::vector<Macro>>;
   MacroStack scope_;
-  void pushScope();
-  void popScope();
+public:
   void addMacro(Macro m);
   std::list<Macro> getAllMacro() const;
+  void pushScope();
+  void popScope();
+  operator std::string() const;
 };
 }
 }

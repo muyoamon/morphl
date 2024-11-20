@@ -18,12 +18,14 @@ int main(int argc, char *argv[]) {
       parser.parse();
       parser.printNode();
       std::cout << static_cast<std::string>(parser.getScopeManager());
+      std::cout << static_cast<std::string>(parser.getMacroManager());
     }
   } else if (argc == 2) {
     morphl::Parser parser(std::filesystem::current_path() /= argv[1]);
     parser.parse();
     parser.printNode();
     std::cout << static_cast<std::string>(parser.getScopeManager());
+    std::cout << static_cast<std::string>(parser.getMacroManager());
   } else {
     std::cerr << "Invalid usage!\n";
   }

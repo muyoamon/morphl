@@ -1,8 +1,11 @@
 #include "ast.h"
 #include "../parser/scope.h"
 #include "../type/operatorType.h"
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <string>
+#include <vector>
 namespace morphl {
 namespace AST {
 
@@ -192,6 +195,7 @@ std::shared_ptr<type::TypeObject> FunctionNode::getType() const {
   return std::make_shared<type::FunctionType>(this->argType_->getType(),
                                               this->value_->getType());
 }
+
 
 } // namespace AST
 } // namespace morphl
