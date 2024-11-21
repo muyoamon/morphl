@@ -46,6 +46,13 @@ class Parser {
   std::unique_ptr<AST::ASTNode> parseFunction();
   std::unique_ptr<AST::ASTNode> parseCall();
   std::unique_ptr<AST::ASTNode> parseMorph();
+  std::unique_ptr<AST::ASTNode> parseAlias();
+  std::unique_ptr<AST::ASTNode> parseExtend();
+  std::unique_ptr<AST::ASTNode> parseMember();
+  std::unique_ptr<AST::ASTNode> parseIndex();
+  std::unique_ptr<AST::ASTNode> parseImport();
+  std::unique_ptr<AST::ASTNode> parseArray();
+  std::unique_ptr<AST::ASTNode> parseAssign();
 
   //
   // scope operation

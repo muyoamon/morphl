@@ -33,6 +33,7 @@ enum TokenType {
   BNOT, // flip all bits
   NOT,
   SHADOW,
+  IMPORT,
   UN_OPERATOR_END,
 
   //Operators
@@ -41,6 +42,10 @@ enum TokenType {
   CALL,
   DECL,
   FUNC,
+  ARR,
+  MEMBER,
+  INDEX,
+
   
   // integer operator
   INT_OPERATOR,

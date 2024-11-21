@@ -8,6 +8,12 @@ const OperatorTypeMap operatorTypeMap{
     {FNEG, {PrimitiveType::FLOAT, nullptr, PrimitiveType::FLOAT}},
     {BNOT, {nullptr, nullptr, nullptr}},
     {NOT, {nullptr, nullptr, PrimitiveType::INTEGER}},
+    {EQ, {nullptr, nullptr, PrimitiveType::INTEGER}},
+    {NE, {nullptr, nullptr, PrimitiveType::INTEGER}},
+    {LT, {nullptr, nullptr, PrimitiveType::INTEGER}},
+    {LE, {nullptr, nullptr, PrimitiveType::INTEGER}},
+    {GT, {nullptr, nullptr, PrimitiveType::INTEGER}},
+    {GE, {nullptr, nullptr, PrimitiveType::INTEGER}},
     {ADD, {PrimitiveType::INTEGER, PrimitiveType::INTEGER, PrimitiveType::INTEGER}},
     {SUB, {PrimitiveType::INTEGER, PrimitiveType::INTEGER, PrimitiveType::INTEGER}},
     {MUL, {PrimitiveType::INTEGER, PrimitiveType::INTEGER, PrimitiveType::INTEGER}},
@@ -24,6 +30,9 @@ const OperatorTypeMap operatorTypeMap{
     {SHIFTR, {nullptr, nullptr, nullptr}},
     {SHIFTL, {nullptr, nullptr, nullptr}},
     {DECL, {nullptr, nullptr, nullptr}},
+    {EXTEND, {nullptr, nullptr, nullptr}},
+    {ASSIGN, {nullptr, nullptr, nullptr}},
+    {RETURN, {nullptr, nullptr, nullptr}}
 };
 }
 } // namespace morphl

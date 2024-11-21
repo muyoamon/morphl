@@ -11,8 +11,24 @@ namespace morphl {
     this->scope_.pop();
   }
 
+  bool ScopeManager::empty() const {
+    return this->scope_.empty();
+  }
+
   void ScopeManager::addScopeObject(std::shared_ptr<ScopeObject> p) {
     this->scope_.top().push_back(p);
+  }
+
+  std::shared_ptr<type::TypeObject> ScopeManager::getCurrentScopeType(std::string name) const {
+      for (auto& i:scope_.top()) {
+        if (i->scopeObjectType_ == ScopeObjectType::IDENTIFIER_TYPE) {
+          auto idType = static_cast<IdentifierType*>(i.get());
+          if (idType->name_ == name) {
+            return idType->type_;
+          }
+        }
+      }
+    return nullptr;
   }
 
   std::shared_ptr<type::TypeObject> ScopeManager::getType(std::string name) const {

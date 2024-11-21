@@ -29,10 +29,11 @@ class ScopeManager {
 public:
   void pushScope();
   void popScope();
+  bool empty() const;
 
   void addScopeObject(std::shared_ptr<ScopeObject> p);
   std::shared_ptr<type::TypeObject> getType(std::string name) const;
-
+  std::shared_ptr<type::TypeObject> getCurrentScopeType(std::string name) const;
   operator std::string() const;
 };
 } // namespace morphl

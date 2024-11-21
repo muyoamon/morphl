@@ -7,6 +7,7 @@
 #include "macroManager.h"
 #include "scope.h"
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -68,7 +69,9 @@ Parser &Parser::parse(
 
 std::unique_ptr<AST::ASTNode> Parser::parseProgram() {
   std::vector<std::unique_ptr<AST::ASTNode>> v;
-  this->pushScope();
+  if (scopeManager_->empty()) {
+    this->pushScope();
+  }
   while (currentPos_ < tokens_.size() && tokens_[currentPos_].type != EOF_) {
     auto statement = parseStatement();
     if (statement != nullptr) {
@@ -78,7 +81,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseProgram() {
   if (v.size() == 1) {
     return std::move(v[0]);
   }
-  return std::make_unique<AST::ProgramNode>(std::move(v));
+  return std::make_unique<AST::BlockNode>(std::move(v));
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
@@ -148,7 +151,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
     size_t lastMatchedMacroIndex = -1;
     macro::Macro lastMatchedMacro;
     MacroDetail lastMatchedMacroDetail;
-    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>> lastMatchedMacroArgs;
+    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>
+        lastMatchedMacroArgs;
 
     // first flushed out non-matching macros
     for (auto it = macros.begin(); it != macros.end();) {
@@ -208,13 +212,21 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
       syntaxIndex++;
     }
     if (lastMatchedMacroIndex != -1) {
-      currentPos_ = macroDetails[lastMatchedMacroIndex].currentPos;
-      Parser macroParser(lastMatchedMacro.expansion_);
-      expression =  macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
+      currentPos_ = lastMatchedMacroDetail.currentPos;
+      if (lastMatchedMacroArgs.size() == 0) {
+        auto it = tokens_.erase(tokens_.begin() + lastPos,
+                                tokens_.begin() + currentPos_);
+        tokens_.insert(it, lastMatchedMacro.expansion_.begin(),
+                       lastMatchedMacro.expansion_.end() - 1); // exclude EOF
+        currentPos_ = lastPos;
+        return parseExpression();
+      }
+      Parser macroParser(lastMatchedMacro.expansion_, scopeManager_,
+                         macroManager_);
+      expression = macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
     } else {
       currentPos_ = lastPos;
     }
-
   }
 
   if (currentToken().type == OPERAND) {
@@ -222,6 +234,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
     currentPos_++;
   } else if (currentToken().type == MORPH) {
     expression = parseMorph();
+  } else if (currentToken().type == ALIAS) {
+    expression = parseAlias();
   } else if (currentToken().type == IF) {
     expression = parseIf();
   } else if (currentToken().type == WHILE) {
@@ -239,6 +253,11 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
   } else if (currentToken().type > LITERAL_START &&
              currentToken().type < LITERAL_END) {
     expression = parseLiteral();
+  }
+
+  if (expression == nullptr) {
+    error::errorManager.addError(
+        UnexpectedTokenError(filename_, currentToken()));
   }
 
   // macro matching
@@ -259,7 +278,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
     size_t lastMatchedMacroIndex = -1;
     macro::Macro lastMatchedMacro;
     MacroDetail lastMatchedMacroDetail;
-    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>> lastMatchedMacroArgs;
+    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>
+        lastMatchedMacroArgs;
     // first flushed out non-matching macros
     for (auto it = macros.begin(); it != macros.end();) {
       if (it->syntax_[syntaxIndex].type == OPERAND &&
@@ -322,17 +342,14 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
     }
     if (lastMatchedMacroIndex != -1) {
       currentPos_ = lastMatchedMacroDetail.currentPos;
-      Parser macroParser(lastMatchedMacro.expansion_);
-      expression =  macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
+      Parser macroParser(lastMatchedMacro.expansion_, scopeManager_,
+                         macroManager_);
+      expression = macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
     } else {
       currentPos_ = lastPos;
     }
   }
 
-  if (expression == nullptr) {
-    error::errorManager.addError(
-        UnexpectedTokenError(filename_, currentToken()));
-  }
   return expression;
 }
 
@@ -381,6 +398,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseMorph() {
   expectToken({SYMBOL, "`"});
   currentPos_++;
 
+  // TODO: add a check that syntax cannot be sub array of expansion.
+
   std::vector<std::shared_ptr<type::TypeObject>> opTypeVector;
   if (operandsType->type_ == type::GROUP) {
     opTypeVector = static_cast<type::GroupType *>(operandsType.get())->members_;
@@ -388,7 +407,86 @@ std::unique_ptr<AST::ASTNode> Parser::parseMorph() {
     opTypeVector.push_back(operandsType);
   }
   macroManager_->addMacro({syntax, expansion, opTypeVector, precedence});
-  return nullptr;
+  return std::make_unique<AST::MacroNode>();
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseAlias() {
+  expectToken({ALIAS, "ALIAS"});
+  currentPos_++;
+  std::vector<Token> syntax;
+  std::vector<Token> expansion;
+  if (currentToken() == Token{SYMBOL, "`"}) {
+    currentPos_++;
+    if (tokens_[currentPos_] == Token{SYMBOL, "`"}) {
+      error::errorManager.addError(
+          {filename_, tokens_[currentPos_].row_, tokens_[currentPos_].col_,
+           error::Severity::Critical, "Error: Syntax body cannot be empty.\n"});
+    }
+    while (tokens_[currentPos_] != Token(SYMBOL, "`")) {
+      syntax.push_back(tokens_[currentPos_]);
+      currentPos_++;
+    }
+    expectToken({SYMBOL, "`"});
+    currentPos_++;
+
+  } else {
+    syntax.push_back(currentToken());
+    currentPos_++;
+  }
+
+  if (currentToken() == Token{SYMBOL, "`"}) {
+    currentPos_++;
+    while (tokens_[currentPos_] != Token(SYMBOL, "`")) {
+      expansion.push_back(tokens_[currentPos_]);
+      currentPos_++;
+    }
+    expectToken({SYMBOL, "`"});
+    currentPos_++;
+
+  } else {
+    expansion.push_back(currentToken());
+    currentPos_++;
+  }
+  expansion.push_back({EOF_, ""});
+
+  macroManager_->addMacro({syntax, expansion, {}, 0});
+  return std::make_unique<AST::MacroNode>();
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseAssign() {
+  auto lhsToken = currentToken();
+  auto lhs = parseExpression();
+  auto rhsToken = currentToken();
+  auto rhs = parseExpression();
+  if (lhs->assignable_ == false) {
+    error::errorManager.addError(
+        {filename_, lhsToken.row_, lhsToken.col_, error::Severity::Critical,
+         "Error: ASSIGN expected assignable operand.\n"});
+  }
+  if (*lhs->getTrueType() != *rhs->getTrueType()) {
+    error::errorManager.addError(
+        {filename_, rhsToken.row_, rhsToken.col_, error::Severity::Critical,
+         "Error: Mismatch operand type: (\% != \%).\n",
+         static_cast<std::string>(*lhs->getTrueType()),
+         static_cast<std::string>(*rhs->getTrueType())});
+  }
+  return std::make_unique<AST::BinaryOpNode>(ASSIGN, std::move(lhs),
+                                             std::move(rhs));
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseImport() {
+  auto fileToken = currentToken();
+  if (fileToken.type != STRING_LITERAL) {
+    error::errorManager.addError({
+        filename_, fileToken.row_, fileToken.col_, error::Severity::Critical,
+        "Error: IMPORT expected string literal as operand.\n"
+        });
+  }
+  std::filesystem::path filePath = std::filesystem::path(filename_).parent_path();
+  filePath /= fileToken.value;
+  
+  return Parser(filePath.string(), scopeManager_, macroManager_).parse().astNode();
+
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseIf() {
@@ -439,6 +537,9 @@ std::unique_ptr<AST::ASTNode> Parser::parseWhile() {
 std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
   TokenType type = tokens_[currentPos_].type;
   currentPos_++;
+  if (type == EXTEND) {
+    return parseExtend();
+  }
   if (type == DECL) {
     return parseDeclaration();
   }
@@ -448,11 +549,44 @@ std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
   if (type == CALL) {
     return parseCall();
   }
+  if (type == MEMBER) {
+    return parseMember();
+  }
+  if (type == ARR) {
+    return parseArray();
+  }
+  if (type == INDEX) {
+    return parseIndex();
+  }
+  if (type == ASSIGN) {
+    return parseAssign();
+  }
+  auto op1Token = currentToken();
   auto operand1 = parseExpression();
+  auto op2Token = currentToken();
   auto operand2 = parseExpression();
 
-  if (*operand1->getType() != *type::operatorTypeMap.at(type).operand1_) {
+  auto opTypeDetail = type::operatorTypeMap.at(type);
+  if (opTypeDetail.operand1_ != nullptr) {
+    if (*operand1->getType() != *opTypeDetail.operand1_) {
+      error::errorManager.addError(
+          {filename_, op1Token.row_, op1Token.col_, error::Severity::Critical,
+           "Error: Type mismatch, expected \%, got \%\n",
+           static_cast<std::string>(*opTypeDetail.operand1_),
+           static_cast<std::string>(*operand1->getType())});
+    }
   }
+
+  if (opTypeDetail.operand2_ != nullptr) {
+    if (*operand2->getType() != *opTypeDetail.operand2_) {
+      error::errorManager.addError(
+          {filename_, op2Token.row_, op2Token.col_, error::Severity::Critical,
+           "Error: Type mismatch, expected \%, got \%\n",
+           static_cast<std::string>(*opTypeDetail.operand2_),
+           static_cast<std::string>(*operand2->getType())});
+    }
+  }
+
   return std::make_unique<AST::BinaryOpNode>(type, std::move(operand1),
                                              std::move(operand2));
 }
@@ -460,6 +594,9 @@ std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
 std::unique_ptr<AST::ASTNode> Parser::parseUnaryOp() {
   TokenType type = tokens_[currentPos_].type;
   currentPos_++;
+  if (type == IMPORT) {
+    return parseImport();
+  }
   auto operand = parseExpression();
   return std::make_unique<AST::UnaryOpNode>(type, std::move(operand));
 }
@@ -496,6 +633,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseParen() {
 std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
   auto t = tokens_[currentPos_];
   auto identifier = parseIdentifier(true);
+  this->pushScope(); // pseudo-scope for declaration
   auto type = parseExpression();
   if (identifier->type_ != AST::IDENTIFIERNODE) {
     error::errorManager.addError(
@@ -504,7 +642,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
     return nullptr;
   }
   auto varName = static_cast<AST::IdentifierNode *>(identifier.get())->name_;
-  if (scopeManager_->getType(varName) != nullptr) {
+  if (scopeManager_->getCurrentScopeType(varName) != nullptr) {
     error::errorManager.addError(
         {filename_, t.row_, t.col_, error::Severity::Critical,
          "Error: Identifier \% is already declared\n", varName});
@@ -527,13 +665,67 @@ std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
   if (declType == nullptr) {
     error::errorManager.addError({"Type Error\n", error::Severity::Critical});
   }
+  this->popScope();
   scopeManager_->addScopeObject(
       std::make_shared<IdentifierType>(varName, declType));
   static_cast<AST::IdentifierNode *>(identifier.get())->identifierType_ =
       declType;
 
-  return std::make_unique<AST::BinaryOpNode>(DECL, std::move(identifier),
-                                             std::move(type));
+  return std::make_unique<AST::DeclarationNode>(varName, std::move(type));
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseArray() {
+  auto expression = parseExpression();
+  auto sizeToken = currentToken();
+  if (sizeToken.type != INT_LITERAL) {
+    error::errorManager.addError(
+        {filename_, sizeToken.row_, sizeToken.col_, error::Severity::Critical,
+         "Error: Array size must be an integer literal\n"});
+  }
+  currentPos_++;
+  return std::make_unique<AST::ArrayNode>(expression->getType(),
+                                          stoi(sizeToken.value));
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseIndex() {
+  auto containerToken = currentToken();
+  auto container = parseExpression();
+  auto indexToken = currentToken();
+  auto index = parseExpression();
+  auto containerType = container->getTrueType();
+  if (*index->getTrueType() != *type::PrimitiveType::INTEGER) {
+    error::errorManager.addError(
+        {filename_, indexToken.row_, indexToken.col_, error::Severity::Critical,
+         "Error: INDEX expected the second operand to be integer type.\n"});
+  }
+  if (containerType->type_ == type::LIST) {
+    return std::make_unique<AST::ArrayIndexNode>(std::move(container),
+                                                 std::move(index));
+  } else if (containerType->type_ == type::GROUP) {
+    if (index->type_ != AST::INT_LITERALNODE) {
+      error::errorManager.addError({filename_, indexToken.row_, indexToken.col_,
+                                    error::Severity::Critical,
+                                    "Error: INDEX expected to second operand "
+                                    "for Group type to be integer literal.\n"});
+    }
+    size_t idx = static_cast<AST::IntLiteralNode *>(index.get())->value_;
+    size_t groupSize =
+        static_cast<type::GroupType *>(containerType.get())->members_.size();
+    if (idx >= groupSize) {
+      error::errorManager.addError(
+          {filename_, indexToken.row_, indexToken.col_,
+           error::Severity::Critical,
+           "Error: Received index greater than Group size (\%), got: \%\n",
+           groupSize, idx});
+    }
+    return std::make_unique<AST::GroupIndexNode>(std::move(container), idx);
+  } else {
+    error::errorManager.addError(
+        {filename_, containerToken.row_, containerToken.col_,
+         error::Severity::Critical,
+         "Error: INDEX expect first operand to be either a group or an array"});
+    return nullptr;
+  }
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseIdentifier(bool isDecl) {
@@ -563,7 +755,11 @@ std::unique_ptr<AST::ASTNode> Parser::parseFunction() {
 std::unique_ptr<AST::ASTNode> Parser::parseCall() {
   auto t = tokens_[currentPos_];
   auto func = parseExpression();
-  if (func->getType()->type_ != type::FUNC) {
+  auto funcType = func->getType();
+  while (funcType->type_ == type::IDENTIFIER) {
+    funcType = static_cast<type::IdentifierType *>(funcType.get())->pType_;
+  }
+  if (funcType->type_ != type::FUNC) {
     error::errorManager.addError({
         filename_,
         t.row_,
@@ -586,6 +782,55 @@ std::unique_ptr<AST::ASTNode> Parser::parseCall() {
   }
   return std::make_unique<AST::BinaryOpNode>(CALL, std::move(func),
                                              std::move(args));
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseExtend() {
+  auto op1Token = currentToken();
+  auto op1 = parseExpression();
+  if (op1->getTrueType()->type_ != type::BLOCK) {
+    error::errorManager.addError(
+        {filename_, op1Token.row_, op1Token.col_, error::Severity::Critical,
+         "Error: EXTEND expected first operand to be a block, got \%\n",
+         op1->getTrueType()});
+  }
+  auto op2Token = currentToken();
+  auto op2 = parseExpression();
+  if (op2->getTrueType()->type_ != type::BLOCK) {
+    error::errorManager.addError(
+        {filename_, op2Token.row_, op2Token.col_, error::Severity::Critical,
+         "Error: EXTEND expected second operand to be a block, got \%\n",
+         op2->getTrueType()});
+  }
+  return std::make_unique<AST::BinaryOpNode>(EXTEND, std::move(op1),
+                                             std::move(op2));
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseMember() {
+  auto op1Token = currentToken();
+  auto op1 = parseExpression();
+  if (op1->getTrueType()->type_ != type::BLOCK) {
+    error::errorManager.addError(
+        {filename_, op1Token.row_, op1Token.col_, error::Severity::Critical,
+         "Error: MEMBER expected first operand to be a block, got \%\n",
+         op1->getTrueType()});
+  }
+  auto op2Token = currentToken();
+  if (op2Token.type != IDENTIFIER) {
+    error::errorManager.addError(
+        {filename_, op2Token.row_, op2Token.col_, error::Severity::Critical,
+         "Error: MEMBER expected second operand to be an identifier.\n"});
+  }
+  auto op2 = std::make_unique<AST::IdentifierNode>(op2Token.value);
+  currentPos_++;
+  auto blockType = static_cast<type::BlockType *>(op1->getTrueType().get());
+  auto memberName = op2Token.value;
+  if (blockType->getType(memberName) == nullptr) {
+    error::errorManager.addError(
+        {filename_, op2Token.row_, op2Token.col_, error::Severity::Critical,
+         "Error: Cannot find member '%'\n", memberName});
+  }
+
+  return std::make_unique<AST::MemberAccessNode>(std::move(op1), memberName);
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseGroup() {

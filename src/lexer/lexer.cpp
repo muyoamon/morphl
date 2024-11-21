@@ -66,6 +66,10 @@ namespace morphl {
     {"IDENTIFIER", IDENTIFIER},
     {"SYMBOL", SYMBOL},
     {"OPERAND", OPERAND},
+    {"MEMBER", MEMBER},
+    {"IMPORT", IMPORT},
+    {"ARR", ARR},
+    {"INDEX", INDEX},
 
   };
   Lexer::Lexer(const std::string& input)

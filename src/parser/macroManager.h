@@ -18,6 +18,7 @@ public:
   std::list<Macro> getAllMacro() const;
   void pushScope();
   void popScope();
+  bool empty() const;
   operator std::string() const;
 };
 }

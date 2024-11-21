@@ -2,8 +2,9 @@
 #define MORPHL_AST_H
 
 #include "../lexer/lexer.h"
-#include "../type/type.h"
 #include "../parser/macro.h"
+#include "../type/type.h"
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -20,9 +21,17 @@ enum ASTNodeType {
   WHILENODE,
   BINARYOPNODE,
   UNARYOPNODE,
-  EXPRGROUPNODE,
+  DECLNODE,
+  // EXPRGROUPNODE,
+
+  //
+  //  Assignable
+  //
 
   IDENTIFIERNODE,
+  MEMBERNODE,
+  ARRAYINDEXNODE,
+  GROUPINDEXNODE,
 
   //
   //  Literals
@@ -39,19 +48,22 @@ enum ASTNodeType {
   GROUPNODE,
   ARRAYNODE,
 
-  MORPHNODE,
-  ALIASNODE,
+  MACRONODE,
 };
 
 struct ASTNode {
   ASTNodeType type_;
+  bool assignable_;
 
-  ASTNode(ASTNodeType type) : type_(type) {}
+  ASTNode(ASTNodeType type) : type_(type), assignable_(false) {}
+  ASTNode(ASTNodeType type, bool assignable)
+      : type_(type), assignable_(assignable) {}
   virtual std::unique_ptr<ASTNode> clone() const = 0;
   virtual std::shared_ptr<type::TypeObject> getType() const {
     return std::make_shared<type::TypeObject>(type::NONE);
   };
   virtual ~ASTNode() = default;
+  std::shared_ptr<type::TypeObject> getTrueType() const;
 };
 
 struct ProgramNode : public ASTNode {
@@ -166,12 +178,62 @@ struct IdentifierNode : public ASTNode {
   std::string name_;
   std::shared_ptr<type::TypeObject> identifierType_ = nullptr;
 
-  IdentifierNode(std::string name) : ASTNode(IDENTIFIERNODE), name_{name} {}
+  IdentifierNode(std::string name)
+      : ASTNode(IDENTIFIERNODE, true), name_{name} {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<IdentifierNode>(*this);
   }
   std::shared_ptr<type::TypeObject> getType() const override;
 };
+
+struct MemberAccessNode : public ASTNode {
+  std::unique_ptr<ASTNode> parent_;
+  std::string memberName_;
+
+  MemberAccessNode(std::unique_ptr<ASTNode> &&parent, std::string name)
+      : ASTNode(MEMBERNODE, parent->assignable_), parent_(std::move(parent)),
+        memberName_(name) {}
+  MemberAccessNode(const MemberAccessNode &other)
+      : ASTNode(MEMBERNODE, other.assignable_), parent_(other.parent_->clone()),
+        memberName_(other.memberName_) {}
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<MemberAccessNode>(*this);
+  }
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
+struct GroupIndexNode : public ASTNode {
+  std::unique_ptr<ASTNode> parent_;
+  size_t index_;
+
+  GroupIndexNode(std::unique_ptr<ASTNode> &&parent, size_t index)
+      : ASTNode(GROUPINDEXNODE, parent->assignable_), parent_(std::move(parent)),
+        index_(index) {}
+  GroupIndexNode(const GroupIndexNode &other)
+      : ASTNode(GROUPINDEXNODE, other.assignable_), parent_(other.parent_->clone()),
+        index_(other.index_) {}
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<GroupIndexNode>(*this);
+  }
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
+struct ArrayIndexNode : public ASTNode {
+  std::unique_ptr<ASTNode> parent_;
+  std::unique_ptr<ASTNode> index_;
+
+  ArrayIndexNode(std::unique_ptr<ASTNode> &&parent, std::unique_ptr<ASTNode> index)
+      : ASTNode(ARRAYINDEXNODE, parent->assignable_), parent_(std::move(parent)),
+        index_(std::move(index)) {}
+  ArrayIndexNode(const ArrayIndexNode &other)
+      : ASTNode(ARRAYINDEXNODE, other.assignable_), parent_(other.parent_->clone()),
+        index_(other.index_->clone()) {}
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<ArrayIndexNode>(*this);
+  }
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
 
 struct IntLiteralNode : public ASTNode {
   int value_;
@@ -221,18 +283,15 @@ struct GroupNode : public ASTNode {
 };
 
 struct ArrayNode : public ASTNode {
-  std::vector<std::unique_ptr<ASTNode>> members_;
+  std::shared_ptr<type::TypeObject> type_;
+  size_t size_;
 
-  ArrayNode(std::vector<std::unique_ptr<ASTNode>> &&v)
-      : ASTNode(ARRAYNODE), members_(std::move(v)) {}
-  ArrayNode(const ArrayNode &other) : ASTNode(ARRAYNODE) {
-    for (const auto &i : other.members_) {
-      members_.push_back(i->clone());
-    }
-  }
+  ArrayNode(std::shared_ptr<type::TypeObject> type, size_t size)
+      : ASTNode(ARRAYNODE), type_(type), size_(size) {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<ArrayNode>(*this);
   }
+  std::shared_ptr<type::TypeObject> getType() const override;
 };
 
 struct FunctionNode : public ASTNode {
@@ -241,7 +300,9 @@ struct FunctionNode : public ASTNode {
 
   FunctionNode(std::unique_ptr<ASTNode> &&arg, std::unique_ptr<ASTNode> &&val)
       : ASTNode(FUNCNODE), argType_(std::move(arg)), value_(std::move(val)) {}
-  FunctionNode(const FunctionNode &other) : ASTNode(FUNCNODE), argType_(std::move(other.argType_->clone())), value_(std::move(other.value_->clone())) {}
+  FunctionNode(const FunctionNode &other)
+      : ASTNode(FUNCNODE), argType_(std::move(other.argType_->clone())),
+        value_(std::move(other.value_->clone())) {}
 
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<FunctionNode>(*this);
@@ -249,13 +310,37 @@ struct FunctionNode : public ASTNode {
 
   std::shared_ptr<type::TypeObject> getType() const override;
 };
+
+struct DeclarationNode : public ASTNode {
+  std::string name_;
+  std::unique_ptr<ASTNode> initialValue_;
+
+  DeclarationNode(std::string name, std::unique_ptr<ASTNode> &&init)
+      : ASTNode(DECLNODE, true), name_(name), initialValue_(std::move(init)) {}
+  DeclarationNode(const DeclarationNode &other)
+      : ASTNode(DECLNODE, other.assignable_), name_(other.name_),
+        initialValue_(other.initialValue_->clone()) {}
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<DeclarationNode>(*this);
+  }
+
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
+struct MacroNode : ASTNode {
+
+  MacroNode() : ASTNode(MACRONODE) {}
+  MacroNode(const MacroNode &other) : ASTNode(MACRONODE) {}
+
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<MacroNode>(*this);
+  }
+};
 std::string toString(const ASTNode *, size_t indent);
 
 std::ostream &operator<<(std::ostream &, const ASTNode *);
 
 std::shared_ptr<type::TypeObject> getType(const ASTNode *);
-
-
 
 } // namespace AST
 } // namespace morphl
