@@ -20,6 +20,7 @@ struct Macro {
   operator std::string();
 };
 std::ostream &operator<<(std::ostream &, Macro m);
+bool operator==(const Macro, const Macro);
 } // namespace macro
 } // namespace morphl
 

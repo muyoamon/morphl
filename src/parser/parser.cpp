@@ -3,6 +3,7 @@
 #include "../type/operatorType.h"
 #include "../type/type.h"
 #include "error.h"
+#include "importManager.h"
 #include "macro.h"
 #include "macroManager.h"
 #include "scope.h"
@@ -31,13 +32,14 @@ Token &Parser::currentToken() { return tokens_[currentPos_]; }
 
 Parser::Parser(std::vector<Token> t, std::shared_ptr<ScopeManager> scopeManager,
                std::shared_ptr<macro::MacroManager> macroManger)
-    : tokens_(t), astNode_{nullptr}, currentPos_{0},
+    : tokens_(t), astNode_{nullptr}, currentPos_{0}, currentMacroPrecedence_(0),
       scopeManager_(scopeManager), macroManager_(macroManger) {}
 
 Parser::Parser(std::string file, std::shared_ptr<ScopeManager> scopeManager,
                std::shared_ptr<macro::MacroManager> macroManager)
     : filename_{file}, astNode_{nullptr}, currentPos_{0},
-      scopeManager_(scopeManager), macroManager_(macroManager) {
+      currentMacroPrecedence_(0), scopeManager_(scopeManager),
+      macroManager_(macroManager) {
   std::ifstream f(filename_);
   if (!f) {
     error::errorManager.addError(
@@ -72,16 +74,23 @@ std::unique_ptr<AST::ASTNode> Parser::parseProgram() {
   if (scopeManager_->empty()) {
     this->pushScope();
   }
+  // prevent self import.
+  ImportManager::addTracker(filename_);
   while (currentPos_ < tokens_.size() && tokens_[currentPos_].type != EOF_) {
     auto statement = parseStatement();
-    if (statement != nullptr) {
+    if (AST::ProgramNode *p = dynamic_cast<AST::ProgramNode *>(statement.get());
+        p != nullptr) {
+      for (auto it = p->children_.begin(); it != p->children_.end(); it++) {
+        v.push_back(std::move(it->get()->clone()));
+      }
+    } else if (statement != nullptr) {
       v.push_back(std::move(statement));
     }
   }
   if (v.size() == 1) {
     return std::move(v[0]);
   }
-  return std::make_unique<AST::BlockNode>(std::move(v));
+  return std::make_unique<AST::ProgramNode>(std::move(v));
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
@@ -94,7 +103,12 @@ std::unique_ptr<AST::ASTNode> Parser::parseBlock() {
   while (tokens_[currentPos_] != BLOCK_END &&
          tokens_[currentPos_] != Token({EOF_, ""})) {
     auto statement = parseStatement();
-    if (statement != nullptr) {
+    if (AST::ProgramNode *p = dynamic_cast<AST::ProgramNode *>(statement.get());
+        p != nullptr) {
+      for (auto it = p->children_.begin(); it != p->children_.end(); it++) {
+        v.push_back(std::move(it->get()->clone()));
+      }
+    } else if (statement != nullptr) {
       v.push_back(std::move(statement));
     }
   }
@@ -132,32 +146,74 @@ std::unique_ptr<AST::ASTNode> Parser::parseStatement() {
   return std::make_unique<AST::StatementNode>(std::move(value), isPrint);
 }
 
-std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
+std::unique_ptr<AST::ASTNode> Parser::parseMacroExpansion() {
+  auto lastMacroPrecedence = currentMacroPrecedence_;
   std::unique_ptr<AST::ASTNode> expression = nullptr;
-  {
-    struct MacroDetail {
-      size_t operandIndex{};
-      size_t currentPos{};
-    };
-    auto lastPos = currentPos_;
+  struct MacroDetail {
+    size_t operandIndex{};
+    size_t currentPos{};
+  };
+  auto lastPos = currentPos_;
 
-    auto macros = macroManager_->getAllMacro();
+  auto macros = macroManager_->getAllMacro();
 
-    std::vector<std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>>
-        args(macros.size());
-    std::vector<MacroDetail> macroDetails(macros.size());
-    size_t syntaxIndex = 0;
-    size_t macroIndex = 0;
-    size_t lastMatchedMacroIndex = -1;
-    macro::Macro lastMatchedMacro;
-    MacroDetail lastMatchedMacroDetail;
-    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>
-        lastMatchedMacroArgs;
+  std::vector<std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>>
+      args(macros.size());
+  std::vector<MacroDetail> macroDetails(macros.size());
+  size_t syntaxIndex = 0;
+  size_t macroIndex = 0;
+  size_t lastMatchedMacroIndex = -1;
+  macro::Macro lastMatchedMacro;
+  MacroDetail lastMatchedMacroDetail;
+  std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>
+      lastMatchedMacroArgs;
 
-    // first flushed out non-matching macros
+  // first flushed out non-matching macros and under-precedence macros
+  for (auto it = macros.begin(); it != macros.end();) {
+    currentPos_ = lastPos;
+    if (it->syntax_[syntaxIndex] == currentToken() &&
+        it->precedence_ >= lastMacroPrecedence) {
+      currentPos_++;
+    } else {
+      it = macros.erase(it);
+      args.erase(args.begin() + macroIndex);
+      macroDetails.erase(macroDetails.begin() + macroIndex);
+      continue;
+    }
+    macroDetails[macroIndex].currentPos = currentPos_;
+    macroIndex++;
+    it++;
+  }
+  syntaxIndex++;
+  while (macros.size() > 0) {
+    macroIndex = 0;
     for (auto it = macros.begin(); it != macros.end();) {
-      currentPos_ = lastPos;
-      if (it->syntax_[syntaxIndex] == currentToken()) {
+      currentPos_ = macroDetails[macroIndex].currentPos;
+      if (syntaxIndex == it->syntax_.size()) {
+        lastMatchedMacroIndex = macroIndex;
+        lastMatchedMacroDetail = macroDetails[macroIndex];
+        lastMatchedMacroArgs = std::move(args[macroIndex]);
+        lastMatchedMacro = *it;
+        it = macros.erase(it);
+        args.erase(args.begin() + macroIndex);
+        macroDetails.erase(macroDetails.begin() + macroIndex);
+        continue;
+      }
+      if (it->syntax_[syntaxIndex].type == OPERAND) {
+        currentMacroPrecedence_ = it->precedence_;
+        auto arg = parseExpression();
+        if (*arg->getType() ==
+            *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
+          args[macroIndex][it->syntax_[syntaxIndex].value] =
+              std::move(arg->clone());
+          macroDetails[macroIndex].operandIndex++;
+        } else {
+          it = macros.erase(it);
+          args.erase(args.begin() + macroIndex);
+          macroDetails.erase(macroDetails.begin() + macroIndex);
+          continue;
+        }
+      } else if (it->syntax_[syntaxIndex] == currentToken()) {
         currentPos_++;
       } else {
         it = macros.erase(it);
@@ -170,64 +226,147 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
       it++;
     }
     syntaxIndex++;
-    while (macros.size() > 0) {
-      macroIndex = 0;
-      for (auto it = macros.begin(); it != macros.end();) {
-        currentPos_ = macroDetails[macroIndex].currentPos;
-        if (syntaxIndex == it->syntax_.size()) {
-          lastMatchedMacroIndex = macroIndex;
-          lastMatchedMacroDetail = macroDetails[macroIndex];
-          lastMatchedMacroArgs = std::move(args[macroIndex]);
-          lastMatchedMacro = *it;
-          it = macros.erase(it);
-          args.erase(args.begin() + macroIndex);
-          macroDetails.erase(macroDetails.begin() + macroIndex);
-          continue;
-        }
-        if (it->syntax_[syntaxIndex].type == OPERAND) {
-          auto arg = parseExpression();
-          if (*arg->getType() ==
-              *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
-            args[macroIndex][it->syntax_[syntaxIndex].value] =
-                std::move(arg->clone());
-            macroDetails[macroIndex].operandIndex++;
-          } else {
-            it = macros.erase(it);
-            args.erase(args.begin() + macroIndex);
-            macroDetails.erase(macroDetails.begin() + macroIndex);
-            continue;
-          }
-        } else if (it->syntax_[syntaxIndex] == currentToken()) {
-          currentPos_++;
+  }
+  // found
+  if (lastMatchedMacroIndex != -1) {
+    // already expanded
+    if (!this->macroManager_->expandMacro(lastMatchedMacro)) {
+      error::errorManager.addError(
+          {filename_, currentToken().row_, currentToken().col_,
+           error::Severity::Critical, "Error: Circular Macro Expansion.\n"});
+      currentPos_ = lastPos;
+    }
+    currentPos_ = lastMatchedMacroDetail.currentPos;
+    if (lastMatchedMacroArgs.size() == 0) {
+      auto it = tokens_.erase(tokens_.begin() + lastPos,
+                              tokens_.begin() + currentPos_);
+      tokens_.insert(it, lastMatchedMacro.expansion_.begin(),
+                     lastMatchedMacro.expansion_.end() - 1); // exclude EOF
+      currentPos_ = lastPos;
+      expression = parseExpression();
+
+    } else {
+      Parser macroParser(lastMatchedMacro.expansion_, scopeManager_,
+                         macroManager_);
+      expression = macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
+    }
+    this->macroManager_->removeTrack(lastMatchedMacro);
+  } else {
+    currentPos_ = lastPos;
+  }
+  currentMacroPrecedence_ = lastMacroPrecedence;
+  return expression;
+}
+
+std::unique_ptr<AST::ASTNode>
+Parser::parseMacroExpansion(std::unique_ptr<AST::ASTNode> &&expression) {
+  
+  auto lastMacroPrecedence = currentMacroPrecedence_;
+  struct MacroDetail {
+    size_t operandIndex{};
+    size_t currentPos{};
+  };
+  auto lastPos = currentPos_;
+
+  auto macros = macroManager_->getAllMacro();
+
+  std::vector<std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>>
+      args(macros.size());
+  std::vector<MacroDetail> macroDetails(macros.size());
+  size_t syntaxIndex = 0;
+  size_t macroIndex = 0;
+  size_t lastMatchedMacroIndex = -1;
+  macro::Macro lastMatchedMacro;
+  MacroDetail lastMatchedMacroDetail;
+  std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>
+      lastMatchedMacroArgs;
+  // first flushed out non-matching macros & under-precedence macro
+  for (auto it = macros.begin(); it != macros.end();) {
+    if (it->syntax_[syntaxIndex].type == OPERAND &&
+        *expression->getType() ==
+            *it->operandTypes_[macroDetails[macroIndex].operandIndex] &&
+        lastMacroPrecedence <= it->precedence_) {
+      args[macroIndex][it->syntax_[syntaxIndex].value] =
+          std::move(expression->clone());
+      macroDetails[macroIndex].operandIndex++;
+    } else {
+      it = macros.erase(it);
+      args.erase(args.begin() + macroIndex);
+      macroDetails.erase(macroDetails.begin() + macroIndex);
+      continue;
+    }
+    macroDetails[macroIndex].currentPos = currentPos_;
+    macroIndex++;
+    it++;
+  }
+  syntaxIndex++;
+  while (macros.size() > 0) {
+    macroIndex = 0;
+    for (auto it = macros.begin(); it != macros.end();) {
+      currentPos_ = macroDetails[macroIndex].currentPos;
+      if (syntaxIndex == it->syntax_.size()) {
+        lastMatchedMacroIndex = macroIndex;
+        lastMatchedMacroDetail = macroDetails[macroIndex];
+        lastMatchedMacroArgs = std::move(args[macroIndex]);
+        lastMatchedMacro = *it;
+        it = macros.erase(it);
+        args.erase(args.begin() + macroIndex);
+        macroDetails.erase(macroDetails.begin() + macroIndex);
+        continue;
+      }
+      if (it->syntax_[syntaxIndex].type == OPERAND) {
+        currentMacroPrecedence_ = it->precedence_;
+        auto arg = parseExpression();
+        if (*arg->getType() ==
+            *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
+          args[macroIndex][it->syntax_[syntaxIndex].value] =
+              std::move(arg->clone());
+          macroDetails[macroIndex].operandIndex++;
         } else {
           it = macros.erase(it);
           args.erase(args.begin() + macroIndex);
           macroDetails.erase(macroDetails.begin() + macroIndex);
           continue;
         }
-        macroDetails[macroIndex].currentPos = currentPos_;
-        macroIndex++;
-        it++;
+      } else if (it->syntax_[syntaxIndex] == currentToken()) {
+        currentPos_++;
+      } else {
+        it = macros.erase(it);
+        args.erase(args.begin() + macroIndex);
+        macroDetails.erase(macroDetails.begin() + macroIndex);
+        continue;
       }
-      syntaxIndex++;
+      macroDetails[macroIndex].currentPos = currentPos_;
+      macroIndex++;
+      it++;
     }
-    if (lastMatchedMacroIndex != -1) {
-      currentPos_ = lastMatchedMacroDetail.currentPos;
-      if (lastMatchedMacroArgs.size() == 0) {
-        auto it = tokens_.erase(tokens_.begin() + lastPos,
-                                tokens_.begin() + currentPos_);
-        tokens_.insert(it, lastMatchedMacro.expansion_.begin(),
-                       lastMatchedMacro.expansion_.end() - 1); // exclude EOF
-        currentPos_ = lastPos;
-        return parseExpression();
-      }
-      Parser macroParser(lastMatchedMacro.expansion_, scopeManager_,
-                         macroManager_);
-      expression = macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
-    } else {
+    syntaxIndex++;
+  }
+  if (lastMatchedMacroIndex != -1) {
+    if (!this->macroManager_->expandMacro(lastMatchedMacro)) {
+      error::errorManager.addError(
+          {filename_, currentToken().row_, currentToken().col_,
+           error::Severity::Critical, "Error: Circular Macro Expansion.\n"});
       currentPos_ = lastPos;
     }
+    currentPos_ = lastMatchedMacroDetail.currentPos;
+    Parser macroParser(lastMatchedMacro.expansion_, scopeManager_,
+                       macroManager_);
+    expression = macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
+    this->macroManager_->removeTrack(lastMatchedMacro);
+  } else {
+    currentPos_ = lastPos;
   }
+
+  currentMacroPrecedence_ = lastMacroPrecedence;
+
+  return std::move(expression);
+}
+
+std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
+  std::unique_ptr<AST::ASTNode> expression = std::move(parseMacroExpansion());
+  if (expression != nullptr)
+    return expression;
 
   if (currentToken().type == OPERAND) {
     expression = operands_[currentToken().value]->clone();
@@ -260,97 +399,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseExpression() {
         UnexpectedTokenError(filename_, currentToken()));
   }
 
-  // macro matching
-  {
-    struct MacroDetail {
-      size_t operandIndex{};
-      size_t currentPos{};
-    };
-    auto lastPos = currentPos_;
-
-    auto macros = macroManager_->getAllMacro();
-
-    std::vector<std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>>
-        args(macros.size());
-    std::vector<MacroDetail> macroDetails(macros.size());
-    size_t syntaxIndex = 0;
-    size_t macroIndex = 0;
-    size_t lastMatchedMacroIndex = -1;
-    macro::Macro lastMatchedMacro;
-    MacroDetail lastMatchedMacroDetail;
-    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>
-        lastMatchedMacroArgs;
-    // first flushed out non-matching macros
-    for (auto it = macros.begin(); it != macros.end();) {
-      if (it->syntax_[syntaxIndex].type == OPERAND &&
-          *expression->getType() ==
-              *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
-        args[macroIndex][it->syntax_[syntaxIndex].value] =
-            std::move(expression->clone());
-        macroDetails[macroIndex].operandIndex++;
-      } else {
-        it = macros.erase(it);
-        args.erase(args.begin() + macroIndex);
-        macroDetails.erase(macroDetails.begin() + macroIndex);
-        continue;
-      }
-      macroDetails[macroIndex].currentPos = currentPos_;
-      macroIndex++;
-      it++;
-    }
-    syntaxIndex++;
-    while (macros.size() > 0) {
-      macroIndex = 0;
-      for (auto it = macros.begin(); it != macros.end();) {
-        currentPos_ = macroDetails[macroIndex].currentPos;
-        if (syntaxIndex == it->syntax_.size()) {
-          lastMatchedMacroIndex = macroIndex;
-          lastMatchedMacroDetail = macroDetails[macroIndex];
-          lastMatchedMacroArgs = std::move(args[macroIndex]);
-          lastMatchedMacro = *it;
-          it = macros.erase(it);
-          args.erase(args.begin() + macroIndex);
-          macroDetails.erase(macroDetails.begin() + macroIndex);
-          continue;
-        }
-        if (it->syntax_[syntaxIndex].type == OPERAND) {
-          auto arg = parseExpression();
-          if (*arg->getType() ==
-              *it->operandTypes_[macroDetails[macroIndex].operandIndex]) {
-            args[macroIndex][it->syntax_[syntaxIndex].value] =
-                std::move(arg->clone());
-            macroDetails[macroIndex].operandIndex++;
-          } else {
-            it = macros.erase(it);
-            args.erase(args.begin() + macroIndex);
-            macroDetails.erase(macroDetails.begin() + macroIndex);
-            continue;
-          }
-        } else if (it->syntax_[syntaxIndex] == currentToken()) {
-          currentPos_++;
-        } else {
-          it = macros.erase(it);
-          args.erase(args.begin() + macroIndex);
-          macroDetails.erase(macroDetails.begin() + macroIndex);
-          continue;
-        }
-        macroDetails[macroIndex].currentPos = currentPos_;
-        macroIndex++;
-        it++;
-      }
-      syntaxIndex++;
-    }
-    if (lastMatchedMacroIndex != -1) {
-      currentPos_ = lastMatchedMacroDetail.currentPos;
-      Parser macroParser(lastMatchedMacro.expansion_, scopeManager_,
-                         macroManager_);
-      expression = macroParser.parse(std::move(lastMatchedMacroArgs)).astNode();
-    } else {
-      currentPos_ = lastPos;
-    }
-  }
-
-  return expression;
+  return parseMacroExpansion(std::move(expression));
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseMorph() {
@@ -398,8 +447,21 @@ std::unique_ptr<AST::ASTNode> Parser::parseMorph() {
   expectToken({SYMBOL, "`"});
   currentPos_++;
 
-  // TODO: add a check that syntax cannot be sub array of expansion.
-
+  if (expansion.size() > syntax.size()) {
+    for (auto it = expansion.begin(); it != expansion.end(); it++) {
+      if (syntax.size() + it == expansion.end()) {
+        // since expansion must always include EOF, it cannot be of the same
+        // size as syntax
+        break;
+      }
+      if (macro::Macro::Syntax(it, it + syntax.size()) == syntax) {
+        error::errorManager.addError(
+            {filename_, expansion.begin()->row_, expansion.begin()->col_,
+             error::Severity::Critical,
+             "Error: expansion must not contain the macro syntax of itself\n"});
+      }
+    }
+  }
   std::vector<std::shared_ptr<type::TypeObject>> opTypeVector;
   if (operandsType->type_ == type::GROUP) {
     opTypeVector = static_cast<type::GroupType *>(operandsType.get())->members_;
@@ -448,6 +510,16 @@ std::unique_ptr<AST::ASTNode> Parser::parseAlias() {
     currentPos_++;
   }
   expansion.push_back({EOF_, ""});
+  if (expansion.size() >= syntax.size()) {
+    for (auto it = expansion.begin(); it != expansion.end(); it++) {
+      if (macro::Macro::Syntax(it, it + syntax.size()) == syntax) {
+        error::errorManager.addError(
+            {filename_, expansion.begin()->row_, expansion.begin()->col_,
+             error::Severity::Critical,
+             "Error: expansion must not contain the macro syntax of itself\n"});
+      }
+    }
+  }
 
   macroManager_->addMacro({syntax, expansion, {}, 0});
   return std::make_unique<AST::MacroNode>();
@@ -477,16 +549,30 @@ std::unique_ptr<AST::ASTNode> Parser::parseAssign() {
 std::unique_ptr<AST::ASTNode> Parser::parseImport() {
   auto fileToken = currentToken();
   if (fileToken.type != STRING_LITERAL) {
-    error::errorManager.addError({
-        filename_, fileToken.row_, fileToken.col_, error::Severity::Critical,
-        "Error: IMPORT expected string literal as operand.\n"
-        });
+    error::errorManager.addError(
+        {filename_, fileToken.row_, fileToken.col_, error::Severity::Critical,
+         "Error: IMPORT expected string literal as operand.\n"});
   }
-  std::filesystem::path filePath = std::filesystem::path(filename_).parent_path();
+  std::filesystem::path filePath =
+      std::filesystem::path(filename_).parent_path();
   filePath /= fileToken.value;
-  
-  return Parser(filePath.string(), scopeManager_, macroManager_).parse().astNode();
+  currentPos_++;
 
+  std::unique_ptr<AST::ASTNode> importNode;
+  if (ImportManager::getType(filePath) == nullptr) {
+    if (ImportManager::findTracker(filePath)) {
+      // circular Import
+      error::errorManager.addError({filename_, fileToken.row_, fileToken.col_,
+                                    error::Severity::Critical,
+                                    "Error: Circular Import.\n"});
+    }
+    importNode = Parser(filePath.string(), scopeManager_, macroManager_)
+                     .parse()
+                     .astNode();
+    ImportManager::addImport(filePath, std::move(importNode));
+  }
+
+  return std::make_unique<AST::ImportNode>(filePath);
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseIf() {
@@ -633,7 +719,6 @@ std::unique_ptr<AST::ASTNode> Parser::parseParen() {
 std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
   auto t = tokens_[currentPos_];
   auto identifier = parseIdentifier(true);
-  this->pushScope(); // pseudo-scope for declaration
   auto type = parseExpression();
   if (identifier->type_ != AST::IDENTIFIERNODE) {
     error::errorManager.addError(
@@ -665,7 +750,6 @@ std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
   if (declType == nullptr) {
     error::errorManager.addError({"Type Error\n", error::Severity::Critical});
   }
-  this->popScope();
   scopeManager_->addScopeObject(
       std::make_shared<IdentifierType>(varName, declType));
   static_cast<AST::IdentifierNode *>(identifier.get())->identifierType_ =
@@ -822,9 +906,10 @@ std::unique_ptr<AST::ASTNode> Parser::parseMember() {
   }
   auto op2 = std::make_unique<AST::IdentifierNode>(op2Token.value);
   currentPos_++;
-  auto blockType = static_cast<type::BlockType *>(op1->getTrueType().get());
+  auto blockType = op1->getTrueType();
   auto memberName = op2Token.value;
-  if (blockType->getType(memberName) == nullptr) {
+  if (static_cast<type::BlockType *>(blockType.get())->getType(memberName) ==
+      nullptr) {
     error::errorManager.addError(
         {filename_, op2Token.row_, op2Token.col_, error::Severity::Critical,
          "Error: Cannot find member '%'\n", memberName});
@@ -834,6 +919,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseMember() {
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseGroup() {
+  auto lastMacroPrecedence = currentMacroPrecedence_;
+  currentMacroPrecedence_ = 0;
   auto expression = parseExpression();
   // current token after expression
   if (tokens_[currentPos_] == Token(SYMBOL, ",")) {
@@ -854,6 +941,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseGroup() {
     }
     expression = std::make_unique<AST::GroupNode>(std::move(groupMember));
   }
+  currentMacroPrecedence_ = lastMacroPrecedence;
   return expression;
 }
 

@@ -1,4 +1,5 @@
 #include "ast.h"
+#include "../parser/importManager.h"
 #include "../parser/scope.h"
 #include "../type/operatorType.h"
 #include <algorithm>
@@ -92,9 +93,9 @@ std::string toString(const ASTNode *node, size_t indent) {
     break;
   case FUNCNODE:
     result += "Function:\n";
-    result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') + "Operands:\n" +
+    result += std::string((indent + 1) * INDENT_MUL, ' ') + "Operands:\n" +
               toString(((FunctionNode *)node)->argType_.get(), indent + 2);
-    result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') + "Return (Type:";
+    result += std::string((indent + 1) * INDENT_MUL, ' ') + "Return (Type:";
     result +=
         static_cast<std::string>(*((FunctionNode *)node)->value_->getType());
     result += "):\n";
@@ -105,48 +106,52 @@ std::string toString(const ASTNode *node, size_t indent) {
     break;
   case ARRAYINDEXNODE:
     result += "Index:\n";
-    // result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') + "Parent:\n";
+    // result += std::string((indent + 1) * INDENT_MUL, ' ') + "Parent:\n";
     result += toString(((ArrayIndexNode *)node)->parent_.get(), indent + 1);
-    result += std::string(indent + 1 + 1 * INDENT_MUL, ' ') + "Size:\n";
+    result += std::string((indent + 1) * INDENT_MUL, ' ') + "Size:\n";
     result +=
         toString(((ArrayIndexNode *)node)->index_.get(), indent + 2) + "\n";
     break;
 
   case GROUPINDEXNODE:
     result += "Index:\n";
-    // result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') + "Parent:\n";
+    // result += std::string((indent + 1) * INDENT_MUL, ' ') + "Parent:\n";
     result += toString(((GroupIndexNode *)node)->parent_.get(), indent + 1);
-    result += std::string(indent + 1 + 1 * INDENT_MUL, ' ') +
+    result += std::string((indent + 1) * INDENT_MUL, ' ') +
               "Size: " + std::to_string(((GroupIndexNode *)node)->index_) +
               "\n";
     break;
 
   case MEMBERNODE:
     result += "Member Access:\n";
-    // result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') + "Parent:\n";
+    // result += std::string((indent + 1) * INDENT_MUL, ' ') + "Parent:\n";
     result += toString(((MemberAccessNode *)node)->parent_.get(), indent + 1);
-    result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') +
+    result += std::string((indent + 1) * INDENT_MUL, ' ') +
               "Name: " + ((MemberAccessNode *)node)->memberName_ + "\n";
     break;
   case DECLNODE:
     result += "Declaration:\n";
-    result += std::string(indent + 1 + 1 * INDENT_MUL, ' ') +
+    result += std::string((indent + 1) * INDENT_MUL, ' ') +
               "Name: " + ((DeclarationNode *)node)->name_ + "\n";
-    result +=
-        std::string(indent + 1 + 1 * INDENT_MUL, ' ') + "Initial Value:\n";
+    result += std::string((indent + 1) * INDENT_MUL, ' ') + "Initial Value:\n";
     result +=
         toString(((DeclarationNode *)node)->initialValue_.get(), indent + 2);
     break;
   case ARRAYNODE:
     result += "Array:\n";
-    result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') +
+    result += std::string((indent + 1) * INDENT_MUL, ' ') +
               "Type: " + static_cast<std::string>(*((ArrayNode *)node)->type_) +
               "\n";
-    result += std::string(indent + 1 + 2 * INDENT_MUL, ' ') +
+    result += std::string((indent + 1) * INDENT_MUL, ' ') +
               "Size: " + std::to_string(((ArrayNode *)node)->size_) + "\n";
     break;
+  case IMPORTNODE:
+    result += "Import: ";
+    result += static_cast<std::string>(((ImportNode *)node)->path_);
+    result += "\n";
+    break;
   default:
-    result += "TODO\n";
+    result += "Unknown Node\n";
     break;
   }
   return result;
@@ -179,10 +184,44 @@ std::shared_ptr<type::TypeObject> BlockNode::getType() const {
       if (unaryOpNode->opType_ == RETURN) {
         return unaryOpNode->operand_->getType();
       }
+    } else if (i->type_ == IMPORTNODE) {
+      auto importNode = static_cast<ImportNode *>(i);
+      // TODO: read type from IMPORT
+      blockType->appendMembers(
+          *static_cast<type::BlockType*>(importNode->getType().get()));
     }
   }
   return blockType;
 }
+
+std::shared_ptr<type::TypeObject> ProgramNode::getType() const {
+ std::shared_ptr<type::BlockType> blockType =
+      std::make_shared<type::BlockType>();
+  for (auto &child : children_) {
+    auto i = child.get();
+    if (child->type_ == AST::STATEMENTNODE) {
+      i = static_cast<AST::StatementNode *>(child.get())->child_.get();
+    }
+    if (i->type_ == AST::DECLNODE) {
+      auto node = (AST::DeclarationNode *)i;
+      auto varName = node->name_;
+      blockType->addMember(varName, node->initialValue_->getType());
+    } else if (i->type_ == UNARYOPNODE) {
+      auto unaryOpNode = static_cast<UnaryOpNode *>(i);
+      if (unaryOpNode->opType_ == RETURN) {
+        return unaryOpNode->operand_->getType();
+      }
+    } else if (i->type_ == IMPORTNODE) {
+      auto importNode = static_cast<ImportNode *>(i);
+      // TODO: read type from IMPORT
+      blockType->addMember(std::string{"__module__:"} + importNode->path_.string(),
+                           importNode->getType());
+
+    }
+  }
+  return blockType;
+}
+
 
 std::shared_ptr<type::TypeObject> ArrayNode::getType() const {
   return std::make_shared<type::ListType>(this->type_, this->size_);
@@ -290,6 +329,10 @@ std::shared_ptr<type::TypeObject> IfNode::getType() const {
 std::shared_ptr<type::TypeObject> FunctionNode::getType() const {
   return std::make_shared<type::FunctionType>(this->argType_->getType(),
                                               this->value_->getType());
+}
+
+std::shared_ptr<type::TypeObject> ImportNode::getType() const {
+  return ImportManager::getType(this->path_);
 }
 
 } // namespace AST

@@ -12,47 +12,56 @@
 #include <vector>
 namespace morphl {
 class Parser {
+  using ASTNodePtr = std::unique_ptr<AST::ASTNode>;
+  
   std::string filename_;
   std::vector<Token> tokens_;
-  std::unique_ptr<AST::ASTNode> astNode_;
+  ASTNodePtr astNode_;
   size_t currentPos_;
+  size_t currentMacroPrecedence_;
   std::shared_ptr<ScopeManager> scopeManager_;
   std::shared_ptr<macro::MacroManager> macroManager_;
 
-  std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>> operands_;
+  std::unordered_map<std::string, ASTNodePtr> operands_;
 
   bool expectToken(const Token expect);
   Token& currentToken();
 
-  std::unique_ptr<AST::ASTNode> parseProgram();
-  std::unique_ptr<AST::ASTNode> parseBlock();
-  std::unique_ptr<AST::ASTNode> parseStatement();
-  std::unique_ptr<AST::ASTNode> parseGroup();
-  std::unique_ptr<AST::ASTNode> parseExpression();
-  std::unique_ptr<AST::ASTNode> parseIf();
-  std::unique_ptr<AST::ASTNode> parseWhile();
+  // for alias/morph without starting placeholder
+  ASTNodePtr parseMacroExpansion();
+  // for morph with starting placeholder
+  ASTNodePtr parseMacroExpansion(ASTNodePtr&&);
+
+  
+  ASTNodePtr parseProgram();
+  ASTNodePtr parseBlock();
+  ASTNodePtr parseStatement();
+  ASTNodePtr parseGroup();
+  ASTNodePtr parseExpression();
+  ASTNodePtr parseIf();
+  ASTNodePtr parseWhile();
   // parse generic binary operation
-  std::unique_ptr<AST::ASTNode> parseBinaryOp();
-  std::unique_ptr<AST::ASTNode> parseUnaryOp();
-  std::unique_ptr<AST::ASTNode> parseLiteral();
-  std::unique_ptr<AST::ASTNode> parseParen();
-  std::unique_ptr<AST::ASTNode> parseIdentifier(bool isDecl = false);
+  ASTNodePtr parseBinaryOp();
+  ASTNodePtr parseUnaryOp();
+  ASTNodePtr parseLiteral();
+  ASTNodePtr parseParen();
+  ASTNodePtr parseIdentifier(bool isDecl = false);
 
   //
   // parse specific operation
   //
 
-  std::unique_ptr<AST::ASTNode> parseDeclaration();
-  std::unique_ptr<AST::ASTNode> parseFunction();
-  std::unique_ptr<AST::ASTNode> parseCall();
-  std::unique_ptr<AST::ASTNode> parseMorph();
-  std::unique_ptr<AST::ASTNode> parseAlias();
-  std::unique_ptr<AST::ASTNode> parseExtend();
-  std::unique_ptr<AST::ASTNode> parseMember();
-  std::unique_ptr<AST::ASTNode> parseIndex();
-  std::unique_ptr<AST::ASTNode> parseImport();
-  std::unique_ptr<AST::ASTNode> parseArray();
-  std::unique_ptr<AST::ASTNode> parseAssign();
+  ASTNodePtr parseDeclaration();
+  ASTNodePtr parseFunction();
+  ASTNodePtr parseCall();
+  ASTNodePtr parseMorph();
+  ASTNodePtr parseAlias();
+  ASTNodePtr parseExtend();
+  ASTNodePtr parseMember();
+  ASTNodePtr parseIndex();
+  ASTNodePtr parseImport();
+  ASTNodePtr parseArray();
+  ASTNodePtr parseAssign();
 
   //
   // scope operation
@@ -71,10 +80,10 @@ public:
          std::shared_ptr<macro::MacroManager> =
              std::make_shared<macro::MacroManager>());
 
-  Parser &parse(std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>&& =
-                    std::unordered_map<std::string, std::unique_ptr<AST::ASTNode>>());
+  Parser &parse(std::unordered_map<std::string, ASTNodePtr>&& =
+                    std::unordered_map<std::string, ASTNodePtr>());
 
-  std::unique_ptr<AST::ASTNode> astNode() const;
+  ASTNodePtr astNode() const;
   operator std::string() const;
   void printNode() const;
   const ScopeManager &getScopeManager() const;

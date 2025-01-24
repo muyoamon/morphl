@@ -17,5 +17,10 @@ Macro::operator std::string() {
 std::ostream &operator<<(std::ostream &ostr, Macro m) {
   return ostr << static_cast<std::string>(m);
 }
+
+bool operator==(const Macro lhs, const Macro rhs) {
+  return lhs.syntax_ == rhs.syntax_ && lhs.operandTypes_ == rhs.operandTypes_;
+}
+
 } // namespace macro
 } // namespace morphl

@@ -52,6 +52,9 @@ public:
   operator std::string() const {
     std::string pre;
     pre += fileName_;
+    if (fileName_ == "") {
+      pre += "<anonymous>";
+    }
     if (row_ != 0) {
       pre += ":" + std::to_string(row_);
     }

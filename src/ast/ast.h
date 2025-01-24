@@ -5,6 +5,7 @@
 #include "../parser/macro.h"
 #include "../type/type.h"
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -16,6 +17,7 @@ enum ASTNodeType {
   PROGRAMNODE,
   BLOCKNODE,
   FUNCNODE,
+  C_FUNCNODE,
   STATEMENTNODE,
   IFNODE,
   WHILENODE,
@@ -40,6 +42,8 @@ enum ASTNodeType {
   INT_LITERALNODE,
   FLOAT_LITERALNODE,
   STRING_LITERALNODE,
+  ANY_LITERALNODE,
+  NONE_LITERALNODE,
 
   //
   //  data types
@@ -47,6 +51,21 @@ enum ASTNodeType {
 
   GROUPNODE,
   ARRAYNODE,
+
+
+  CONSTNODE,
+  REFNODE,
+
+  //
+  // externals
+  //
+  
+  IMPORTNODE,
+  LIBNODE,
+
+  //
+  // Macro
+  //
 
   MACRONODE,
 };
@@ -79,6 +98,7 @@ struct ProgramNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<ProgramNode>(*this);
   }
+  std::shared_ptr<type::TypeObject> getType() const override;
 };
 
 struct BlockNode : public ASTNode {
@@ -336,6 +356,19 @@ struct MacroNode : ASTNode {
     return std::make_unique<MacroNode>(*this);
   }
 };
+
+struct ImportNode : ASTNode {
+  std::filesystem::path path_;
+
+  ImportNode() : ASTNode(IMPORTNODE) {}
+  ImportNode(const std::filesystem::path path) : ASTNode(IMPORTNODE), path_(path) {}
+
+  std::unique_ptr<AST::ASTNode> clone() const override {
+    return std::make_unique<ImportNode>(*this);
+  }
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
 std::string toString(const ASTNode *, size_t indent);
 
 std::ostream &operator<<(std::ostream &, const ASTNode *);

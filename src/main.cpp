@@ -1,33 +1,29 @@
 #include "lexer.h"
 #include "parser.h"
+#include "config.h"
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <ostream>
+#include <sstream>
 #include <string>
 
-int main(int argc, char *argv[]) {
-  if (argc == 1) {
-    while (true) {
-      std::string str;
-      std::getline(std::cin, str);
-      morphl::Lexer lexer(str);
-      morphl::Parser parser(lexer.tokens());
-      for (auto &i : lexer.tokens()) {
-        std::cout << i << std::endl;
-      }
-      parser.parse();
-      parser.printNode();
-      std::cout << static_cast<std::string>(parser.getScopeManager());
-      std::cout << static_cast<std::string>(parser.getMacroManager());
-    }
-  } else if (argc == 2) {
-    morphl::Parser parser(std::filesystem::current_path() /= argv[1]);
+using morphl::config::readConfig;
+using morphl::config::gConfig;
+
+int main(int argc, const char *argv[]) {
+  readConfig(morphl::config::gConfig, argc, argv);
+  
+  if (gConfig.help) {
+    //TODO: write help message
+    exit(0);
+  } 
+  
+  if (gConfig.inFile != "") {
+    morphl::Parser parser(gConfig.inFile);
     parser.parse();
+
     parser.printNode();
-    std::cout << static_cast<std::string>(parser.getScopeManager());
-    std::cout << static_cast<std::string>(parser.getMacroManager());
-  } else {
-    std::cerr << "Invalid usage!\n";
   }
 
   return 0;

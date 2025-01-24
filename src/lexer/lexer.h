@@ -27,6 +27,12 @@ enum TokenType {
   TYPE,
   // compile-time operator end
   RETURN,
+
+  // type operator
+  CONST,
+  REF,
+
+
   
   NEG, // flip the sign, undefined for unsign
   FNEG,

@@ -48,21 +48,26 @@ struct PrimitiveType : public TypeObject {
 
 struct BlockType : public TypeObject {
   BlockTypeMembers members_;
-  std::unordered_map<std::string, BlockTypeMembers::iterator> membersMap_;
+  std::unordered_map<std::string, std::shared_ptr<TypeObject>> membersMap_;
   BlockType(BlockTypeMembers members = {})
       : TypeObject(BLOCK), members_{members} {}
 
   void addMember(std::string name, std::shared_ptr<TypeObject> type) {
     std::pair<std::string, std::shared_ptr<TypeObject>> member{name, type};
     members_.push_back(member);
-    membersMap_[name] = members_.end() - 1;
+    membersMap_[name] = type;
+  }
+
+  void appendMembers(BlockType other) {
+    members_.insert(members_.end(), other.members_.begin(), other.members_.end());
+    membersMap_.insert(other.membersMap_.begin(), other.membersMap_.end());
   }
 
   std::shared_ptr<TypeObject> getType(std::string name) {
     if (membersMap_.find(name) == membersMap_.end()) {
       return nullptr;
     }
-    return membersMap_[name]->second;
+    return membersMap_[name];
   }
 };
 

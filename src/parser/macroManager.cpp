@@ -30,5 +30,22 @@ MacroManager::operator std::string() const {
   }
   return res;
 }
+
+bool MacroManager::expandMacro(const Macro& m) {
+  for (const auto& i:this->macroTracker_) {
+    if (m == i) return false;
+  }
+  this->macroTracker_.push_back(m);
+  return true;
+}
+
+void MacroManager::removeTrack(const Macro& m) {
+  for (auto it = macroTracker_.begin();it != macroTracker_.end();it++) {
+    if (*it == m) {
+      macroTracker_.erase(it);
+      return;
+    }
+  }
+}
 } // namespace macro
 } // namespace morphl
