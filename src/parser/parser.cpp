@@ -260,7 +260,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseMacroExpansion() {
 
 std::unique_ptr<AST::ASTNode>
 Parser::parseMacroExpansion(std::unique_ptr<AST::ASTNode> &&expression) {
-  
+
   auto lastMacroPrecedence = currentMacroPrecedence_;
   struct MacroDetail {
     size_t operandIndex{};
@@ -559,6 +559,26 @@ std::unique_ptr<AST::ASTNode> Parser::parseImport() {
   currentPos_++;
 
   std::unique_ptr<AST::ASTNode> importNode;
+  // if path is a directory
+  if (std::filesystem::is_directory(filePath)) {
+    for (const auto &file : std::filesystem::directory_iterator(filePath)) {
+
+      if (ImportManager::getType(file) == nullptr) {
+        if (ImportManager::findTracker(file)) {
+          // circular Import
+          error::errorManager.addError(
+              {filename_, fileToken.row_, fileToken.col_,
+               error::Severity::Critical, "Error: Circular Import.\n"});
+        }
+        importNode = Parser(file.path().string(), scopeManager_, macroManager_)
+                         .parse()
+                         .astNode();
+        ImportManager::addImport(file, std::move(importNode));
+      }
+      return std::make_unique<AST::ImportNode>(filePath);
+    }
+  }
+
   if (ImportManager::getType(filePath) == nullptr) {
     if (ImportManager::findTracker(filePath)) {
       // circular Import

@@ -69,26 +69,58 @@ TypeObject::operator std::string() const {
   }
   case IDENTIFIER: {
     auto pi = static_cast<const IdentifierType *>(this);
-    // return pi->name_ + " AKA " + static_cast<std::string>(*pi->pType_);
-    return static_cast<std::string>(*pi->pType_);
+    return pi->name_ + " AKA " + static_cast<std::string>(*pi->pType_);
+    //return static_cast<std::string>(*pi->pType_);
+  }
+  case CONST: {
+    auto pc = static_cast<const ConstType *>(this);
+    return "const " + static_cast<std::string>(*pc->pType_);
   }
   default:
     return "Unknown Type";
   }
 }
 
+//
+//  Type Comparison
+//
+
+
+PrimitiveType::operator TypeComparable() const {
+  return TypeComparable{this->typeName_};
+}
+
+BlockType::operator TypeComparable() const {
+  return TypeComparable{static_cast<std::string>(*this)};
+}
+
+GroupType::operator TypeComparable() const {
+  return TypeComparable{static_cast<std::string>(*this)};
+}
+
+ListType::operator TypeComparable() const {
+  return TypeComparable{static_cast<std::string>(*this)};
+}
+
+FunctionType::operator TypeComparable() const {
+  return TypeComparable{static_cast<std::string>(*this)};
+}
+
+IdentifierType::operator TypeComparable() const {
+  return TypeComparable{static_cast<std::string>(*this->pType_)};
+}
+
+ConstType::operator TypeComparable() const {
+  return TypeComparable{static_cast<std::string>(*this->pType_)};
+}
+
+
 std::ostream &operator<<(std::ostream &ostr, const TypeObject *t) {
   return ostr << static_cast<std::string>(*t);
 }
 
 bool operator==(const TypeObject &lhs, const TypeObject &rhs) {
-  if (lhs.type_ == IDENTIFIER) {
-    return *static_cast<const IdentifierType *>(&lhs)->pType_ == rhs;
-  }
-  if (rhs.type_ == IDENTIFIER) {
-    return *static_cast<const IdentifierType *>(&rhs)->pType_ == lhs;
-  }
-  return static_cast<std::string>(lhs) == static_cast<std::string>(rhs);
+  return static_cast<TypeComparable>(lhs).compareString == static_cast<TypeComparable>(rhs).compareString;
 }
 
 bool operator!=(const TypeObject &lhs, const TypeObject &rhs) {

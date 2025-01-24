@@ -335,5 +335,13 @@ std::shared_ptr<type::TypeObject> ImportNode::getType() const {
   return ImportManager::getType(this->path_);
 }
 
+std::shared_ptr<type::TypeObject> RefNode::getType() const {
+  return this->val_->getType();
+}
+
+std::shared_ptr<type::TypeObject> ConstNode::getType() const {
+  return std::make_shared<type::ConstType>(this->val_->getType());
+}
+
 } // namespace AST
 } // namespace morphl

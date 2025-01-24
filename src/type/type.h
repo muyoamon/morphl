@@ -18,9 +18,15 @@ enum Type {
   LIST,  // conainter of one type without named members
   FUNC,
 
+  CONST,
+
   PSEUDO_FUNC, // block with either operands or returns.
   IDENTIFIER   // not a type, used to define that type is referenced from
                // identifier.
+};
+
+struct TypeComparable {
+  const std::string compareString;
 };
 
 struct TypeObject {
@@ -30,7 +36,9 @@ struct TypeObject {
   operator std::string() const;
   // virtual bool operator==(TypeObject) const = 0;
   static const std::shared_ptr<TypeObject> none;
+  virtual operator TypeComparable() const {return TypeComparable();}
 };
+
 
 using BlockTypeMembers =
     std::vector<std::pair<std::string, std::shared_ptr<TypeObject>>>;
@@ -41,6 +49,7 @@ struct PrimitiveType : public TypeObject {
 
   PrimitiveType(std::string typeName)
       : TypeObject(PRIMITIVE), typeName_{typeName} {}
+  operator TypeComparable() const override;
   static const std::shared_ptr<TypeObject> INTEGER;
   static const std::shared_ptr<TypeObject> FLOAT;
   static const std::shared_ptr<TypeObject> STRING;
@@ -52,6 +61,7 @@ struct BlockType : public TypeObject {
   BlockType(BlockTypeMembers members = {})
       : TypeObject(BLOCK), members_{members} {}
 
+  operator TypeComparable() const override;
   void addMember(std::string name, std::shared_ptr<TypeObject> type) {
     std::pair<std::string, std::shared_ptr<TypeObject>> member{name, type};
     members_.push_back(member);
@@ -76,6 +86,7 @@ struct GroupType : public TypeObject {
 
   GroupType() : TypeObject(GROUP) {}
   GroupType(GroupTypeMembers members) : TypeObject(GROUP), members_{members} {}
+  operator TypeComparable() const override;
 };
 
 struct ListType : public TypeObject {
@@ -84,12 +95,14 @@ struct ListType : public TypeObject {
 
   ListType(std::shared_ptr<TypeObject> t, size_t size)
       : TypeObject(LIST), pElementsType_(t), size_(size) {}
+  operator TypeComparable() const override;
 };
 
 struct FunctionType : public TypeObject {
   std::shared_ptr<TypeObject> pOperandsType_;
   std::shared_ptr<TypeObject> pReturnType_;
 
+  operator TypeComparable() const override;
   FunctionType(std::shared_ptr<TypeObject> pOperandsType,
                std::shared_ptr<TypeObject> pReturnType)
       : TypeObject(FUNC), pOperandsType_(pOperandsType),
@@ -99,6 +112,7 @@ struct FunctionType : public TypeObject {
 struct PseudoFunctionType : public BlockType {
   std::shared_ptr<TypeObject> pReturnType_;
 
+  operator TypeComparable() const override;
   PseudoFunctionType(BlockTypeMembers members,
                      std::shared_ptr<TypeObject> pReturnType)
       : BlockType(members), pReturnType_{pReturnType} {
@@ -110,8 +124,16 @@ struct IdentifierType : public TypeObject {
   std::string name_;
   std::shared_ptr<TypeObject> pType_;
 
+  operator TypeComparable() const override;
   IdentifierType(std::string name, std::shared_ptr<TypeObject> pType)
       : TypeObject(IDENTIFIER), name_(name), pType_(pType) {}
+};
+
+struct ConstType : public TypeObject {
+  std::shared_ptr<TypeObject> pType_;
+
+  operator TypeComparable() const override;
+  ConstType(std::shared_ptr<TypeObject> pType) : TypeObject(CONST), pType_(pType) {}
 };
 
 std::ostream &operator<<(std::ostream &ostr, const TypeObject *t);

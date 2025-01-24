@@ -369,6 +369,28 @@ struct ImportNode : ASTNode {
   std::shared_ptr<type::TypeObject> getType() const override;
 };
 
+struct RefNode : ASTNode {
+  std::unique_ptr<ASTNode> val_;
+
+  RefNode() : ASTNode(REFNODE) {}
+  RefNode(std::unique_ptr<ASTNode>&& node) : ASTNode(REFNODE, node->assignable_), val_(std::move(node)) {} 
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<RefNode>(std::move(this->val_->clone()));
+  }
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
+struct ConstNode : ASTNode {
+  std::unique_ptr<ASTNode> val_;
+
+  ConstNode() : ASTNode(CONSTNODE, false) {}
+  ConstNode(std::unique_ptr<ASTNode>&& node) : ASTNode(CONSTNODE, false), val_(std::move(node)) {} 
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<ConstNode>(std::move(this->val_->clone()));
+  }
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
 std::string toString(const ASTNode *, size_t indent);
 
 std::ostream &operator<<(std::ostream &, const ASTNode *);

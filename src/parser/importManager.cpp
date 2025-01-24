@@ -21,8 +21,7 @@ ImportManager::getType(const ImportManager::ImportKeyT path) {
 std::shared_ptr<type::TypeObject>
 ImportManager::addImport(const ImportManager::ImportKeyT path,
                          ImportManager::ImportValT &&node) {
-  
-  if (findTracker(path)) {
+   if (findTracker(path)) {
     return nullptr;
   }
   addTracker(path);
