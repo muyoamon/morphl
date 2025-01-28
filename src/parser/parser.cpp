@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -548,6 +549,28 @@ std::unique_ptr<AST::ASTNode> Parser::parseAssign() {
 
 std::unique_ptr<AST::ASTNode> Parser::parseImport() {
   auto fileToken = currentToken();
+  std::function<void(std::filesystem::path)> addImport =
+      [&](std::filesystem::path path) {
+        if (std::filesystem::is_directory(path)) {
+          for (const auto &file : std::filesystem::directory_iterator(path)) {
+            addImport(file.path());
+          }
+        } else {
+          if (ImportManager::getType(path) == nullptr) {
+            if (ImportManager::findTracker(path)) {
+              // circular Import
+              error::errorManager.addError(
+                  {filename_, fileToken.row_, fileToken.col_,
+                   error::Severity::Critical, "Error: Circular Import.\n"});
+            }
+            auto importNode =
+                Parser(path.string(), scopeManager_, macroManager_)
+                    .parse()
+                    .astNode();
+            ImportManager::addImport(path, std::move(importNode));
+          }
+        }
+      };
   if (fileToken.type != STRING_LITERAL) {
     error::errorManager.addError(
         {filename_, fileToken.row_, fileToken.col_, error::Severity::Critical,
@@ -558,40 +581,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseImport() {
   filePath /= fileToken.value;
   currentPos_++;
 
-  std::unique_ptr<AST::ASTNode> importNode;
-  // if path is a directory
-  if (std::filesystem::is_directory(filePath)) {
-    for (const auto &file : std::filesystem::directory_iterator(filePath)) {
-
-      if (ImportManager::getType(file) == nullptr) {
-        if (ImportManager::findTracker(file)) {
-          // circular Import
-          error::errorManager.addError(
-              {filename_, fileToken.row_, fileToken.col_,
-               error::Severity::Critical, "Error: Circular Import.\n"});
-        }
-        importNode = Parser(file.path().string(), scopeManager_, macroManager_)
-                         .parse()
-                         .astNode();
-        ImportManager::addImport(file, std::move(importNode));
-      }
-      return std::make_unique<AST::ImportNode>(filePath);
-    }
-  }
-
-  if (ImportManager::getType(filePath) == nullptr) {
-    if (ImportManager::findTracker(filePath)) {
-      // circular Import
-      error::errorManager.addError({filename_, fileToken.row_, fileToken.col_,
-                                    error::Severity::Critical,
-                                    "Error: Circular Import.\n"});
-    }
-    importNode = Parser(filePath.string(), scopeManager_, macroManager_)
-                     .parse()
-                     .astNode();
-    ImportManager::addImport(filePath, std::move(importNode));
-  }
-
+  addImport(filePath);
   return std::make_unique<AST::ImportNode>(filePath);
 }
 

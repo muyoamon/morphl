@@ -19,6 +19,7 @@ enum Type {
   FUNC,
 
   CONST,
+  ANY,
 
   PSEUDO_FUNC, // block with either operands or returns.
   IDENTIFIER   // not a type, used to define that type is referenced from
@@ -134,6 +135,11 @@ struct ConstType : public TypeObject {
 
   operator TypeComparable() const override;
   ConstType(std::shared_ptr<TypeObject> pType) : TypeObject(CONST), pType_(pType) {}
+};
+
+struct AnyType : public TypeObject {
+  operator TypeComparable() const override = 0;
+  AnyType() : TypeObject(ANY) {}
 };
 
 std::ostream &operator<<(std::ostream &ostr, const TypeObject *t);

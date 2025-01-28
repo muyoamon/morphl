@@ -55,6 +55,7 @@ enum ASTNodeType {
 
   CONSTNODE,
   REFNODE,
+  ANYNODE,
 
   //
   // externals

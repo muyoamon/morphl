@@ -120,6 +120,9 @@ std::ostream &operator<<(std::ostream &ostr, const TypeObject *t) {
 }
 
 bool operator==(const TypeObject &lhs, const TypeObject &rhs) {
+  if (dynamic_cast<const AnyType*>(&lhs) != nullptr || dynamic_cast<const AnyType*>(&rhs) != nullptr) {
+    return true;
+  }
   return static_cast<TypeComparable>(lhs).compareString == static_cast<TypeComparable>(rhs).compareString;
 }
 
