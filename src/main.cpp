@@ -20,7 +20,7 @@ int main(int argc, const char *argv[]) {
   } 
   
   if (gConfig.inFile != "") {
-    morphl::Parser parser(gConfig.inFile);
+    morphl::parser::Parser parser(gConfig.inFile);
     parser.parse();
 
     parser.printNode();

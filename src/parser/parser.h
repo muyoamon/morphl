@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <vector>
 namespace morphl {
+namespace parser {
+  
 class Parser {
   using ASTNodePtr = std::unique_ptr<AST::ASTNode>;
   
@@ -20,18 +22,16 @@ class Parser {
   size_t currentPos_;
   size_t currentMacroPrecedence_;
   std::shared_ptr<ScopeManager> scopeManager_;
-  std::shared_ptr<macro::MacroManager> macroManager_;
+  std::shared_ptr<MacroManager> macroManager_;
 
   std::unordered_map<std::string, ASTNodePtr> operands_;
 
   bool expectToken(const Token expect);
   Token& currentToken();
 
-  // for alias/morph without starting placeholder
-  ASTNodePtr parseMacroExpansion();
-  // for morph with starting placeholder
-  ASTNodePtr parseMacroExpansion(ASTNodePtr&&);
 
+  // newer version of macro expansion
+  ASTNodePtr parseMacroExpansion(ASTNodePtr&&=nullptr);
   
   ASTNodePtr parseProgram();
   ASTNodePtr parseBlock();
@@ -73,12 +73,12 @@ class Parser {
 public:
   Parser(std::vector<Token>,
          std::shared_ptr<ScopeManager> = std::make_shared<ScopeManager>(),
-         std::shared_ptr<macro::MacroManager> =
-             std::make_shared<macro::MacroManager>());
+         std::shared_ptr<MacroManager> =
+             std::make_shared<MacroManager>());
   Parser(std::string,
          std::shared_ptr<ScopeManager> = std::make_shared<ScopeManager>(),
-         std::shared_ptr<macro::MacroManager> =
-             std::make_shared<macro::MacroManager>());
+         std::shared_ptr<MacroManager> =
+             std::make_shared<MacroManager>());
 
   Parser &parse(std::unordered_map<std::string, ASTNodePtr>&& =
                     std::unordered_map<std::string, ASTNodePtr>());
@@ -87,8 +87,9 @@ public:
   operator std::string() const;
   void printNode() const;
   const ScopeManager &getScopeManager() const;
-  const macro::MacroManager &getMacroManager() const;
+  const MacroManager &getMacroManager() const;
 };
+} // namspace parser
 } // namespace morphl
 
 #endif // !MORPHL_PARSER_PARSER_H

@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 namespace morphl {
+namespace parser {
   void ScopeManager::pushScope() {
     this->scope_.emplace();
   }
@@ -59,4 +60,5 @@ namespace morphl {
     return str;
 
   }
+}
 }

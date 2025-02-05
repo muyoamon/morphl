@@ -332,7 +332,7 @@ std::shared_ptr<type::TypeObject> FunctionNode::getType() const {
 }
 
 std::shared_ptr<type::TypeObject> ImportNode::getType() const {
-  return ImportManager::getType(this->path_);
+  return parser::ImportManager::getType(this->path_);
 }
 
 std::shared_ptr<type::TypeObject> RefNode::getType() const {

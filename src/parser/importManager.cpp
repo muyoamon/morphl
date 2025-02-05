@@ -5,6 +5,7 @@
 #include <unordered_set>
 
 namespace morphl {
+namespace parser {
 ImportManager::ImportContainer ImportManager::imports_{};
 std::unordered_set<ImportManager::ImportKeyT> ImportManager::importsTracker_{};
 ImportManager::ImportValT
@@ -43,5 +44,7 @@ bool ImportManager::findTracker(const ImportManager::ImportKeyT path) {
 
 void ImportManager::removeTracker(const ImportManager::ImportKeyT path) {
   importsTracker_.erase(path);
+}
+
 }
 } // namespace morphl

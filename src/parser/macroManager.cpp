@@ -3,7 +3,7 @@
 #include <string>
 #include <unordered_set>
 namespace morphl {
-namespace macro {
+namespace parser {
 void MacroManager::pushScope() { scope_.emplace(); }
 void MacroManager::popScope() { scope_.pop(); }
 

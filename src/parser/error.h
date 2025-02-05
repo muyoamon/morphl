@@ -5,7 +5,7 @@
 #include "../lexer/lexer.h"
 #include <string>
 namespace morphl {
-
+namespace parser {
 class UnexpectedTokenError : public error::Error {
 public:
   UnexpectedTokenError(const std::string &filename, Token actual,
@@ -22,6 +22,7 @@ class TokenGeneralError : public error::Error {
 public:
 };
 
+}
 } // namespace morphl
 
 #endif // MORPHL_PARSER_ERROR_H

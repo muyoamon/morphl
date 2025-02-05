@@ -8,7 +8,7 @@
 #include "macro.h"
 
 namespace morphl {
-namespace macro {
+namespace parser {
 
 class MacroManager {
   using MacroStack = std::stack<std::vector<Macro>>;

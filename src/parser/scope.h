@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 namespace morphl {
+namespace parser {
 enum class ScopeObjectType { NONE, IDENTIFIER_TYPE, ALIAS, MORPH };
 struct ScopeObject {
   ScopeObjectType scopeObjectType_;
@@ -36,6 +37,7 @@ public:
   std::shared_ptr<type::TypeObject> getCurrentScopeType(std::string name) const;
   operator std::string() const;
 };
+} // namespace parser
 } // namespace morphl
 
 #endif // !MORPHL_PARSER_SCOPE_H

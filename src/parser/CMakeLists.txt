@@ -1,4 +1,5 @@
 add_library(morphl_parser SHARED 
+  syntax.h 
   parser.cpp 
   parser.h 
   scope.h 

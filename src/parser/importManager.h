@@ -11,6 +11,7 @@
 #include "../ast/ast.h"
 #include "../type/type.h"
 namespace morphl {
+namespace parser {
 class ImportManager {
   using ImportKeyT = std::filesystem::path;
   using ImportValT = std::unique_ptr<AST::ASTNode>;
@@ -28,6 +29,7 @@ class ImportManager {
   static bool findTracker(const ImportKeyT);
   static void removeTracker(const ImportKeyT);
 };
+} // namespace parser
 } // namespace morphl
 
 #endif // MORPHL_IMPORTMANAGER_H

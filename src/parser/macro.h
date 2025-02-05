@@ -3,25 +3,28 @@
 
 #include "../lexer/lexer.h"
 #include "../type/type.h"
+#include "syntax.h"
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 namespace morphl {
-namespace macro {
+namespace parser {
 struct Macro {
-  using Syntax = std::vector<Token>;
+  using OperandsType = std::unordered_map<std::string,Syntax>;
   Syntax syntax_;
   Syntax expansion_;
-  std::vector<std::shared_ptr<type::TypeObject>> operandTypes_;
+  OperandsType operandTypes_;
   int precedence_;
-  Macro() = default;
-  Macro(Syntax s, Syntax e, std::vector<std::shared_ptr<type::TypeObject>> o, int pred)
+  Macro() = default; 
+  Macro(Syntax s, Syntax e, OperandsType o, int pred)
     :syntax_(s), expansion_(e), operandTypes_(o), precedence_(pred) {}
 
   operator std::string();
 };
 std::ostream &operator<<(std::ostream &, Macro m);
 bool operator==(const Macro, const Macro);
-} // namespace macro
+} // namespace parser
 } // namespace morphl
 
 #endif // !MORPHL_PARSER_MACRO_H

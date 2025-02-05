@@ -4,13 +4,24 @@
 #include <string>
 #include <vector>
 namespace morphl {
-namespace macro {
+namespace parser {
 
 Macro::operator std::string() {
+  std::string opTypeString = "";
+  if (!operandTypes_.empty()) {
+    opTypeString = "(";
+    for (auto& i:this->operandTypes_) {
+      opTypeString += i.first;
+      opTypeString += ":";
+      opTypeString += tokensString(i.second);
+      opTypeString += ", ";
+    }
+    *(++opTypeString.rbegin()) = ')';
+  } 
   // return "";
   return error::formatString("`\%` \% \% `\%`", tokensString(syntax_),
                              precedence_,
-                             std::make_shared<type::GroupType>(operandTypes_),
+                             opTypeString,
                              tokensString(expansion_));
 }
 
@@ -22,5 +33,5 @@ bool operator==(const Macro lhs, const Macro rhs) {
   return lhs.syntax_ == rhs.syntax_ && lhs.operandTypes_ == rhs.operandTypes_;
 }
 
-} // namespace macro
+} // namespace parser
 } // namespace morphl
