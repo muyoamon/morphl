@@ -22,64 +22,53 @@ static std::string delimiterInsert(InputIt begin, InputIt end,
 }
 
 TypeObject::operator std::string() const {
-  if (this == nullptr) {
-    return "NONE";
-  }
-  switch (this->type_) {
-  case PRIMITIVE: {
-    auto pp = static_cast<const PrimitiveType *>(this);
-    return pp->typeName_;
-  }
-  case BLOCK: {
-    auto pb = static_cast<const BlockType *>(this);
+  return "None Type";
+}
+
+PrimitiveType::operator std::string() const {
+  return this->typeName_;
+}
+
+GroupType::operator std::string() const {
+  std::string res = "(";
+  res += delimiterInsert(this->members_.begin(), this->members_.end(), [](std::shared_ptr<TypeObject> p) -> std::string{
+      return static_cast<std::string>(*p);
+      });
+  return res + ")";
+}
+
+ListType::operator std::string() const {
+  return static_cast<std::string>(*this->pElementsType_) + "[" + std::to_string(this->size_) + "]";
+}
+
+FunctionType::operator std::string() const {
+  return static_cast<std::string>(*this->pOperandsType_) + " -> " + static_cast<std::string>(*this->pReturnType_);
+}
+
+IdentifierType::operator std::string() const {
+  return this->name_ + " AKA " + static_cast<std::string>(*this->pType_);
+}
+
+ConstType::operator std::string() const {
+  return "const " + static_cast<std::string>(*this->pType_);
+}
+
+BlockType::operator std::string() const {
     std::string res = "{";
     res += delimiterInsert(
-        pb->members_.begin(), pb->members_.end(),
+        this->members_.begin(), this->members_.end(),
         [](std::pair<const std::string, std::shared_ptr<TypeObject>> p)
             -> std::string {
           return p.first + ":" + static_cast<std::string>(*p.second);
         });
     return res + "}";
-  }
-  case GROUP: {
-    auto pg = static_cast<const GroupType *>(this);
-    std::string res = "(";
-    res += delimiterInsert(pg->members_.begin(), pg->members_.end(),
-                           [](std::shared_ptr<TypeObject> p) -> std::string {
-                             return static_cast<std::string>(*p);
-                           });
-    return res + ")";
-  }
-  case LIST: {
-    auto pl = static_cast<const ListType *>(this);
-    return static_cast<std::string>(*pl->pElementsType_) + "[" +
-           std::to_string(pl->size_) + "]";
-  }
-  case FUNC: {
-    auto pf = static_cast<const FunctionType *>(this);
-    return static_cast<std::string>(*pf->pOperandsType_) + " -> " +
-           static_cast<std::string>(*pf->pReturnType_);
-  }
-  case PSEUDO_FUNC: {
-    auto pb = static_cast<const BlockType *>(this);
-    BlockType b(pb->members_);
-    auto ppf = static_cast<const PseudoFunctionType *>(this);
-    return static_cast<std::string>(b) + " -> " +
-           static_cast<std::string>(*ppf->pReturnType_);
-  }
-  case IDENTIFIER: {
-    auto pi = static_cast<const IdentifierType *>(this);
-    return pi->name_ + " AKA " + static_cast<std::string>(*pi->pType_);
-    //return static_cast<std::string>(*pi->pType_);
-  }
-  case CONST: {
-    auto pc = static_cast<const ConstType *>(this);
-    return "const " + static_cast<std::string>(*pc->pType_);
-  }
-  default:
-    return "Unknown Type";
-  }
+
 }
+
+AnyType::operator std::string() const {
+  return "Any Type";
+}
+
 
 //
 //  Type Comparison

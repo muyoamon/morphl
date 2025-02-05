@@ -1,5 +1,5 @@
-#ifndef MORPHL_PARSER_H
-#define MORPHL_PARSER_H
+#ifndef MORPHL_PARSER_PARSER_H
+#define MORPHL_PARSER_PARSER_H
 // #include <memory>
 #include "../ast/ast.h"
 #include "../lexer/lexer.h"
@@ -91,4 +91,4 @@ public:
 };
 } // namespace morphl
 
-#endif // !MORPHL_PARSER_H
+#endif // !MORPHL_PARSER_PARSER_H

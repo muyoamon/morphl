@@ -32,7 +32,9 @@ const OperatorTypeMap operatorTypeMap{
     {DECL, {nullptr, nullptr, nullptr}},
     {EXTEND, {nullptr, nullptr, nullptr}},
     {ASSIGN, {nullptr, nullptr, nullptr}},
-    {RETURN, {nullptr, nullptr, nullptr}}
+    {RETURN, {nullptr, nullptr, nullptr}},
+    {morphl::CONST, {nullptr, nullptr, nullptr}},
+    {morphl::REF, {nullptr, nullptr, nullptr}}
 };
 }
 } // namespace morphl

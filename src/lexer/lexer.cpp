@@ -14,6 +14,8 @@ namespace morphl {
     {"WHILE", WHILE},
     {"RETURN", RETURN},
     {"ASSIGN", ASSIGN},
+    {"CONST", CONST},
+    {"REF", REF},
     {"CALL", CALL},
     {"DECL", DECL},
     {"FUNC", FUNC},
