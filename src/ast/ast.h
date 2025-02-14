@@ -27,7 +27,7 @@ enum ASTNodeType {
   // EXPRGROUPNODE,
 
   //
-  //  Assignable
+  //  mutable
   //
 
   IDENTIFIERNODE,
@@ -55,7 +55,7 @@ enum ASTNodeType {
 
   CONSTNODE,
   REFNODE,
-  ANYNODE,
+  MUTNODE,
 
   //
   // externals
@@ -73,11 +73,11 @@ enum ASTNodeType {
 
 struct ASTNode {
   ASTNodeType type_;
-  bool assignable_;
+  bool mutable_;
 
-  ASTNode(ASTNodeType type) : type_(type), assignable_(false) {}
-  ASTNode(ASTNodeType type, bool assignable)
-      : type_(type), assignable_(assignable) {}
+  ASTNode(ASTNodeType type) : type_(type), mutable_(false) {}
+  ASTNode(ASTNodeType type, bool isMutable)
+      : type_(type), mutable_(isMutable) {}
   virtual std::unique_ptr<ASTNode> clone() const = 0;
   virtual std::shared_ptr<type::TypeObject> getType() const {
     return std::make_shared<type::TypeObject>(type::NONE);
@@ -212,10 +212,10 @@ struct MemberAccessNode : public ASTNode {
   std::string memberName_;
 
   MemberAccessNode(std::unique_ptr<ASTNode> &&parent, std::string name)
-      : ASTNode(MEMBERNODE, parent->assignable_), parent_(std::move(parent)),
+      : ASTNode(MEMBERNODE, parent->mutable_), parent_(std::move(parent)),
         memberName_(name) {}
   MemberAccessNode(const MemberAccessNode &other)
-      : ASTNode(MEMBERNODE, other.assignable_), parent_(other.parent_->clone()),
+      : ASTNode(MEMBERNODE, other.mutable_), parent_(other.parent_->clone()),
         memberName_(other.memberName_) {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<MemberAccessNode>(*this);
@@ -228,10 +228,10 @@ struct GroupIndexNode : public ASTNode {
   size_t index_;
 
   GroupIndexNode(std::unique_ptr<ASTNode> &&parent, size_t index)
-      : ASTNode(GROUPINDEXNODE, parent->assignable_), parent_(std::move(parent)),
+      : ASTNode(GROUPINDEXNODE, parent->mutable_), parent_(std::move(parent)),
         index_(index) {}
   GroupIndexNode(const GroupIndexNode &other)
-      : ASTNode(GROUPINDEXNODE, other.assignable_), parent_(other.parent_->clone()),
+      : ASTNode(GROUPINDEXNODE, other.mutable_), parent_(other.parent_->clone()),
         index_(other.index_) {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<GroupIndexNode>(*this);
@@ -244,10 +244,10 @@ struct ArrayIndexNode : public ASTNode {
   std::unique_ptr<ASTNode> index_;
 
   ArrayIndexNode(std::unique_ptr<ASTNode> &&parent, std::unique_ptr<ASTNode> index)
-      : ASTNode(ARRAYINDEXNODE, parent->assignable_), parent_(std::move(parent)),
+      : ASTNode(ARRAYINDEXNODE, parent->mutable_), parent_(std::move(parent)),
         index_(std::move(index)) {}
   ArrayIndexNode(const ArrayIndexNode &other)
-      : ASTNode(ARRAYINDEXNODE, other.assignable_), parent_(other.parent_->clone()),
+      : ASTNode(ARRAYINDEXNODE, other.mutable_), parent_(other.parent_->clone()),
         index_(other.index_->clone()) {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<ArrayIndexNode>(*this);
@@ -337,9 +337,9 @@ struct DeclarationNode : public ASTNode {
   std::unique_ptr<ASTNode> initialValue_;
 
   DeclarationNode(std::string name, std::unique_ptr<ASTNode> &&init)
-      : ASTNode(DECLNODE, true), name_(name), initialValue_(std::move(init)) {}
+      : ASTNode(DECLNODE, init->mutable_), name_(name), initialValue_(std::move(init)) {}
   DeclarationNode(const DeclarationNode &other)
-      : ASTNode(DECLNODE, other.assignable_), name_(other.name_),
+      : ASTNode(DECLNODE, other.mutable_), name_(other.name_),
         initialValue_(other.initialValue_->clone()) {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<DeclarationNode>(*this);
@@ -374,7 +374,7 @@ struct RefNode : ASTNode {
   std::unique_ptr<ASTNode> val_;
 
   RefNode() : ASTNode(REFNODE) {}
-  RefNode(std::unique_ptr<ASTNode>&& node) : ASTNode(REFNODE, node->assignable_), val_(std::move(node)) {} 
+  RefNode(std::unique_ptr<ASTNode>&& node) : ASTNode(REFNODE, node->mutable_), val_(std::move(node)) {} 
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<RefNode>(std::move(this->val_->clone()));
   }
@@ -391,6 +391,23 @@ struct ConstNode : ASTNode {
   }
   std::shared_ptr<type::TypeObject> getType() const override;
 };
+
+struct MutNode : ASTNode {
+  std::unique_ptr<ASTNode> val_;
+
+  MutNode() : ASTNode(MUTNODE, false) {}
+  MutNode(std::unique_ptr<ASTNode>&& node) : ASTNode(CONSTNODE, false), val_(std::move(node)) {} 
+  std::unique_ptr<ASTNode> clone() const override {
+    return std::make_unique<MutNode>(std::move(this->val_->clone()));
+  }
+  std::shared_ptr<type::TypeObject> getType() const override;
+};
+
+
+
+
+
+
 
 std::string toString(const ASTNode *, size_t indent);
 

@@ -4,6 +4,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace morphl {
@@ -87,6 +88,18 @@ public:
   // By default, will show severity level of warning or greater.
   // And will throw severity level of critical.
   ErrorManager() : throwLevel_(3), showLevel_(2) {}
+  
+
+  void suppressError(bool isSuppress) {
+    static bool suppressFlag = false;
+    static unsigned baseThrowLevel = -1;
+    static unsigned baseShowLevel = -1;
+    if (!isSuppress && suppressFlag || !suppressFlag && isSuppress) {
+      std::swap(baseThrowLevel, this->throwLevel_);
+      std::swap(baseShowLevel, this->showLevel_);
+      suppressFlag = !suppressFlag;
+    }
+  }
 
   void addError(const Error err) {
     errors_.push_back(err);

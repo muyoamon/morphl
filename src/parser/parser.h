@@ -62,6 +62,8 @@ class Parser {
   ASTNodePtr parseImport();
   ASTNodePtr parseArray();
   ASTNodePtr parseAssign();
+  ASTNodePtr parseConst();
+  ASTNodePtr parseMut();
 
   //
   // scope operation

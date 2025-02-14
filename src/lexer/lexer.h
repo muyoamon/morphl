@@ -31,6 +31,7 @@ enum TokenType {
   // type operator
   CONST,
   REF,
+  MUT,
 
 
   
