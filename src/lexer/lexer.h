@@ -22,7 +22,7 @@ enum TokenType {
   WHILE,
   OPERATOR_START,
   UN_OPERATOR_START = OPERATOR_START,
-  // resolved at compile-time operator
+  // resolve at compile-time operator
   SIZE,
   TYPE,
   // compile-time operator end
@@ -32,6 +32,8 @@ enum TokenType {
   CONST,
   REF,
   MUT,
+  UNIQUE,
+  TRAIT,
 
 
   

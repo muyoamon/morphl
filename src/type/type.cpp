@@ -49,10 +49,6 @@ IdentifierType::operator std::string() const {
   return this->name_ + " AKA " + static_cast<std::string>(*this->pType_);
 }
 
-ConstType::operator std::string() const {
-  return "const " + static_cast<std::string>(*this->pType_);
-}
-
 BlockType::operator std::string() const {
     std::string res = "{";
     res += delimiterInsert(
@@ -65,9 +61,6 @@ BlockType::operator std::string() const {
 
 }
 
-AnyType::operator std::string() const {
-  return "Any Type";
-}
 
 
 //
@@ -99,19 +92,11 @@ IdentifierType::operator TypeComparable() const {
   return TypeComparable{static_cast<std::string>(*this->pType_)};
 }
 
-ConstType::operator TypeComparable() const {
-  return TypeComparable{static_cast<std::string>(*this->pType_)};
-}
-
-
 std::ostream &operator<<(std::ostream &ostr, const TypeObject *t) {
   return ostr << static_cast<std::string>(*t);
 }
 
 bool operator==(const TypeObject &lhs, const TypeObject &rhs) {
-  if (dynamic_cast<const AnyType*>(&lhs) != nullptr || dynamic_cast<const AnyType*>(&rhs) != nullptr) {
-    return true;
-  }
   return static_cast<TypeComparable>(lhs).compareString == static_cast<TypeComparable>(rhs).compareString;
 }
 

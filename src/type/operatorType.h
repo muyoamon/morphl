@@ -3,14 +3,16 @@
 
 #include "../lexer/lexer.h"
 #include "type.h"
-#include <memory>
+#include <functional>
 #include <unordered_map>
+
 namespace morphl {
 namespace type {
+using ReturnTypeFn = std::function<const TypePtr(TypePtr, TypePtr)>;
 struct OperatorType {
-  const std::shared_ptr<TypeObject> operand1_{};
-  const std::shared_ptr<TypeObject> operand2_{};
-  const std::shared_ptr<TypeObject> returnType_{};
+  const TypePtr operand1_{};
+  const TypePtr operand2_{};
+  const ReturnTypeFn returnType_;
 };
 
 using OperatorTypeMap = std::unordered_map<TokenType, OperatorType>;

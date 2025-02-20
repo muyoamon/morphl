@@ -200,7 +200,7 @@ struct IdentifierNode : public ASTNode {
   std::shared_ptr<type::TypeObject> identifierType_ = nullptr;
 
   IdentifierNode(std::string name)
-      : ASTNode(IDENTIFIERNODE, true), name_{name} {}
+      : ASTNode(IDENTIFIERNODE, false), name_{name} {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<IdentifierNode>(*this);
   }
@@ -380,29 +380,29 @@ struct RefNode : ASTNode {
   }
   std::shared_ptr<type::TypeObject> getType() const override;
 };
-
-struct ConstNode : ASTNode {
-  std::unique_ptr<ASTNode> val_;
-
-  ConstNode() : ASTNode(CONSTNODE, false) {}
-  ConstNode(std::unique_ptr<ASTNode>&& node) : ASTNode(CONSTNODE, false), val_(std::move(node)) {} 
-  std::unique_ptr<ASTNode> clone() const override {
-    return std::make_unique<ConstNode>(std::move(this->val_->clone()));
-  }
-  std::shared_ptr<type::TypeObject> getType() const override;
-};
-
-struct MutNode : ASTNode {
-  std::unique_ptr<ASTNode> val_;
-
-  MutNode() : ASTNode(MUTNODE, false) {}
-  MutNode(std::unique_ptr<ASTNode>&& node) : ASTNode(CONSTNODE, false), val_(std::move(node)) {} 
-  std::unique_ptr<ASTNode> clone() const override {
-    return std::make_unique<MutNode>(std::move(this->val_->clone()));
-  }
-  std::shared_ptr<type::TypeObject> getType() const override;
-};
-
+/**/
+/*struct ConstNode : ASTNode {*/
+/*  std::unique_ptr<ASTNode> val_;*/
+/**/
+/*  ConstNode() : ASTNode(CONSTNODE, false) {}*/
+/*  ConstNode(std::unique_ptr<ASTNode>&& node) : ASTNode(CONSTNODE, false), val_(std::move(node)) {} */
+/*  std::unique_ptr<ASTNode> clone() const override {*/
+/*    return std::make_unique<ConstNode>(std::move(this->val_->clone()));*/
+/*  }*/
+/*  std::shared_ptr<type::TypeObject> getType() const override;*/
+/*};*/
+/**/
+/*struct MutNode : ASTNode {*/
+/*  std::unique_ptr<ASTNode> val_;*/
+/**/
+/*  MutNode() : ASTNode(MUTNODE, false) {}*/
+/*  MutNode(std::unique_ptr<ASTNode>&& node) : ASTNode(CONSTNODE, false), val_(std::move(node)) {} */
+/*  std::unique_ptr<ASTNode> clone() const override {*/
+/*    return std::make_unique<MutNode>(std::move(this->val_->clone()));*/
+/*  }*/
+/*  std::shared_ptr<type::TypeObject> getType() const override;*/
+/*};*/
+/**/
 
 
 

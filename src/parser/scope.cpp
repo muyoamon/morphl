@@ -32,13 +32,14 @@ namespace parser {
     return nullptr;
   }
 
-  std::shared_ptr<type::TypeObject> ScopeManager::getType(std::string name) const {
+  std::shared_ptr<type::TypeObject> ScopeManager::getType(std::string name, bool& isMutable) const {
     auto tempStack = this->scope_;
     while (!tempStack.empty()) {
       for (auto& i:tempStack.top()) {
         if (i->scopeObjectType_ == ScopeObjectType::IDENTIFIER_TYPE) {
           auto idType = static_cast<IdentifierType*>(i.get());
           if (idType->name_ == name) {
+            isMutable = idType->isMutable_;
             return idType->type_;
           }
         }

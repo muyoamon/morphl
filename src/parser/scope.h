@@ -8,7 +8,7 @@
 #include <vector>
 namespace morphl {
 namespace parser {
-enum class ScopeObjectType { NONE, IDENTIFIER_TYPE, ALIAS, MORPH };
+enum class ScopeObjectType { IDENTIFIER_TYPE};
 struct ScopeObject {
   ScopeObjectType scopeObjectType_;
 
@@ -19,10 +19,12 @@ struct ScopeObject {
 struct IdentifierType : public ScopeObject {
   std::string name_;
   std::shared_ptr<type::TypeObject> type_;
+  bool isMutable_;
 
-  IdentifierType(std::string name, std::shared_ptr<type::TypeObject> type)
+  IdentifierType(std::string name, std::shared_ptr<type::TypeObject> type,
+      bool isMut)
       : ScopeObject(ScopeObjectType::IDENTIFIER_TYPE), name_(name),
-        type_(type) {}
+        type_(type), isMutable_(isMut) {}
 };
 class ScopeManager {
   std::stack<std::vector<std::shared_ptr<ScopeObject>>> scope_;
@@ -33,7 +35,7 @@ public:
   bool empty() const;
 
   void addScopeObject(std::shared_ptr<ScopeObject> p);
-  std::shared_ptr<type::TypeObject> getType(std::string name) const;
+  std::shared_ptr<type::TypeObject> getType(std::string name, bool&) const;
   std::shared_ptr<type::TypeObject> getCurrentScopeType(std::string name) const;
   operator std::string() const;
 };

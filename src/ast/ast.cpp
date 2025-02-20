@@ -68,7 +68,9 @@ std::string toString(const ASTNode *node, size_t indent) {
     result +=
         " (Type: " +
         static_cast<std::string>(*((IdentifierNode *)node)->identifierType_) +
-        ")\n";
+        ")";
+    result += node->mutable_ ? " mutable" : "";
+    result += "\n";
     break;
   case INT_LITERALNODE:
     result += "Integer Literal: ";
@@ -302,18 +304,12 @@ std::shared_ptr<type::TypeObject> BinaryOpNode::getType() const {
   }
 
   type::OperatorType opType = type::operatorTypeMap.at(this->opType_);
-  if (opType.returnType_ == nullptr) {
-    return this->operand1_->getType();
-  }
-  return opType.returnType_;
+  return opType.returnType_(this->operand1_->getTrueType(),this->operand2_->getTrueType());
 }
 
 std::shared_ptr<type::TypeObject> UnaryOpNode::getType() const {
   type::OperatorType opType = type::operatorTypeMap.at(this->opType_);
-  if (opType.returnType_ == nullptr) {
-    return this->operand_->getType();
-  }
-  return opType.returnType_;
+  return opType.returnType_(this->operand_->getTrueType(), nullptr);
 }
 
 std::shared_ptr<type::TypeObject> IfNode::getType() const {
@@ -338,10 +334,11 @@ std::shared_ptr<type::TypeObject> ImportNode::getType() const {
 std::shared_ptr<type::TypeObject> RefNode::getType() const {
   return this->val_->getType();
 }
-
-std::shared_ptr<type::TypeObject> ConstNode::getType() const {
-  return std::make_shared<type::ConstType>(this->val_->getType());
-}
+/**/
+/*std::shared_ptr<type::TypeObject> ConstNode::getType() const {*/
+/*  return std::make_shared<type::ConstType>(this->val_->getType());*/
+/*}*/
+/**/
 
 } // namespace AST
 } // namespace morphl

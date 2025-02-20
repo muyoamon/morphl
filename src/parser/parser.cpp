@@ -637,29 +637,19 @@ std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
 std::unique_ptr<AST::ASTNode> Parser::parseUnaryOp() {
   TokenType type = tokens_[currentPos_].type;
   currentPos_++;
+  bool isMutable;
   if (type == IMPORT) {
     return parseImport();
   }
   if (type == CONST) {
-    return parseConst();
-  }
-  if (type == MUT) {
-    return parseMut();
+    isMutable = false;
+  } else if (type == MUT) {
+    isMutable = true;
   }
   auto operand = parseExpression();
-  return std::make_unique<AST::UnaryOpNode>(type, std::move(operand));
-}
-
-std::unique_ptr<AST::ASTNode> Parser::parseMut() {
-  auto expression = parseExpression();
-  expression->mutable_ = true;
-  return std::make_unique<AST::MutNode>(std::move(expression));
-}
-
-std::unique_ptr<AST::ASTNode> Parser::parseConst() {
-  auto expression = parseExpression();
-  expression->mutable_ = false;
-  return std::make_unique<AST::ConstNode>(std::move(expression));
+  auto expression = std::make_unique<AST::UnaryOpNode>(type, std::move(operand));
+  expression->mutable_ = isMutable;
+  return std::move(expression);
 }
 
 std::unique_ptr<AST::ASTNode> Parser::parseLiteral() {
@@ -710,24 +700,12 @@ std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
     return nullptr;
   }
   std::shared_ptr<type::TypeObject> declType;
-  // if second operand is identifier
-  if (type->type_ == AST::IDENTIFIERNODE) {
-    auto name = static_cast<AST::IdentifierNode *>(type.get())->name_;
-    auto typeFound = scopeManager_->getType(name);
-    if (typeFound == nullptr) {
-      error::errorManager.addError({filename_, t.row_, t.col_,
-                                    error::Severity::Critical,
-                                    "Unknown Type Identifier: %\n", name});
-    }
-    declType = std::make_shared<type::IdentifierType>(name, typeFound);
-  } else {
-    declType = type->getType();
-  }
+  declType = type->getType();
   if (declType == nullptr) {
     error::errorManager.addError({"Type Error\n", error::Severity::Critical});
   }
   scopeManager_->addScopeObject(
-      std::make_shared<IdentifierType>(varName, declType));
+      std::make_shared<IdentifierType>(varName, declType, type->mutable_));
   static_cast<AST::IdentifierNode *>(identifier.get())->identifierType_ =
       declType;
 
@@ -793,7 +771,8 @@ std::unique_ptr<AST::ASTNode> Parser::parseIdentifier(bool isDecl) {
   Token t = tokens_[currentPos_];
   currentPos_++;
   auto identifierNode = std::make_unique<AST::IdentifierNode>(t.value);
-  identifierNode->identifierType_ = scopeManager_->getType(t.value);
+  identifierNode->identifierType_ = scopeManager_->getType(t.value, identifierNode->mutable_);
+  
   if (!isDecl) {
     if (identifierNode->identifierType_ == nullptr) {
       error::errorManager.addError(

@@ -1,7 +1,6 @@
 #ifndef MORPHL_TYPE_TYPE_H
 #define MORPHL_TYPE_TYPE_H
 
-#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -17,9 +16,6 @@ enum Type {
   GROUP, // container of any type without named members
   LIST,  // conainter of one type without named members
   FUNC,
-
-  CONST,
-  ANY,
 
   IDENTIFIER   // not a type, used to define that type is referenced from
                // identifier.
@@ -125,19 +121,7 @@ struct IdentifierType : public TypeObject {
   operator std::string() const override;
 };
 
-struct ConstType : public TypeObject {
-  std::shared_ptr<TypeObject> pType_;
-
-  operator TypeComparable() const override;
-  operator std::string() const override;
-  ConstType(std::shared_ptr<TypeObject> pType) : TypeObject(CONST), pType_(pType) {}
-};
-
-struct AnyType : public TypeObject {
-  operator TypeComparable() const override = 0;
-  operator std::string() const override;
-  AnyType() : TypeObject(ANY) {}
-};
+using TypePtr = std::shared_ptr<TypeObject>;
 
 std::ostream &operator<<(std::ostream &ostr, const TypeObject *t);
 
