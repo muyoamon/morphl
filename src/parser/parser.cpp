@@ -706,7 +706,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseDeclaration() {
   }
   scopeManager_->addScopeObject(
       std::make_shared<IdentifierType>(varName, declType, type->mutable_));
-  static_cast<AST::IdentifierNode *>(identifier.get())->identifierType_ =
+  static_cast<AST::IdentifierNode *>(identifier.get())->objectType_ =
       declType;
 
   auto expression = std::make_unique<AST::DeclarationNode>(varName, std::move(type));
@@ -771,10 +771,10 @@ std::unique_ptr<AST::ASTNode> Parser::parseIdentifier(bool isDecl) {
   Token t = tokens_[currentPos_];
   currentPos_++;
   auto identifierNode = std::make_unique<AST::IdentifierNode>(t.value);
-  identifierNode->identifierType_ = scopeManager_->getType(t.value, identifierNode->mutable_);
+  identifierNode->objectType_ = scopeManager_->getType(t.value, identifierNode->mutable_);
   
   if (!isDecl) {
-    if (identifierNode->identifierType_ == nullptr) {
+    if (identifierNode->objectType_ == nullptr) {
       error::errorManager.addError(
           {filename_, t.row_, t.col_, error::Severity::Warning,
            "Use of undeclared variable '\%'\n", identifierNode->name_});

@@ -42,7 +42,6 @@ enum ASTNodeType {
   INT_LITERALNODE,
   FLOAT_LITERALNODE,
   STRING_LITERALNODE,
-  ANY_LITERALNODE,
   NONE_LITERALNODE,
 
   //
@@ -74,16 +73,18 @@ enum ASTNodeType {
 struct ASTNode {
   ASTNodeType type_;
   bool mutable_;
+  std::shared_ptr<type::TypeObject> objectType_ = nullptr;
 
   ASTNode(ASTNodeType type) : type_(type), mutable_(false) {}
   ASTNode(ASTNodeType type, bool isMutable)
       : type_(type), mutable_(isMutable) {}
   virtual std::unique_ptr<ASTNode> clone() const = 0;
-  virtual std::shared_ptr<type::TypeObject> getType() const {
+  virtual std::shared_ptr<type::TypeObject> getType(){
     return std::make_shared<type::TypeObject>(type::NONE);
   };
   virtual ~ASTNode() = default;
-  std::shared_ptr<type::TypeObject> getTrueType() const;
+  std::shared_ptr<type::TypeObject> getTrueType();
+  
 };
 
 struct ProgramNode : public ASTNode {
@@ -99,7 +100,7 @@ struct ProgramNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<ProgramNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct BlockNode : public ASTNode {
@@ -116,7 +117,7 @@ struct BlockNode : public ASTNode {
     return std::make_unique<BlockNode>(*this);
   }
 
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct StatementNode : public ASTNode {
@@ -144,7 +145,7 @@ struct IfNode : public ASTNode {
     return std::make_unique<IfNode>(*this);
   }
 
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct WhileNode : public ASTNode {
@@ -176,7 +177,7 @@ struct BinaryOpNode : public ASTNode {
     return std::make_unique<BinaryOpNode>(*this);
   }
 
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct UnaryOpNode : public ASTNode {
@@ -192,19 +193,18 @@ struct UnaryOpNode : public ASTNode {
     return std::make_unique<UnaryOpNode>(*this);
   }
 
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct IdentifierNode : public ASTNode {
   std::string name_;
-  std::shared_ptr<type::TypeObject> identifierType_ = nullptr;
 
   IdentifierNode(std::string name)
       : ASTNode(IDENTIFIERNODE, false), name_{name} {}
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<IdentifierNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct MemberAccessNode : public ASTNode {
@@ -220,7 +220,7 @@ struct MemberAccessNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<MemberAccessNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct GroupIndexNode : public ASTNode {
@@ -236,7 +236,7 @@ struct GroupIndexNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<GroupIndexNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct ArrayIndexNode : public ASTNode {
@@ -252,7 +252,7 @@ struct ArrayIndexNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<ArrayIndexNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 
@@ -263,7 +263,7 @@ struct IntLiteralNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<IntLiteralNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct FloatLiteralNode : public ASTNode {
@@ -273,7 +273,7 @@ struct FloatLiteralNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<FloatLiteralNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct StringLiteralNode : public ASTNode {
@@ -284,7 +284,7 @@ struct StringLiteralNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<StringLiteralNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct GroupNode : public ASTNode {
@@ -300,7 +300,7 @@ struct GroupNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<GroupNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct ArrayNode : public ASTNode {
@@ -312,7 +312,7 @@ struct ArrayNode : public ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<ArrayNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct FunctionNode : public ASTNode {
@@ -329,7 +329,7 @@ struct FunctionNode : public ASTNode {
     return std::make_unique<FunctionNode>(*this);
   }
 
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct DeclarationNode : public ASTNode {
@@ -345,7 +345,7 @@ struct DeclarationNode : public ASTNode {
     return std::make_unique<DeclarationNode>(*this);
   }
 
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct MacroNode : ASTNode {
@@ -367,7 +367,7 @@ struct ImportNode : ASTNode {
   std::unique_ptr<AST::ASTNode> clone() const override {
     return std::make_unique<ImportNode>(*this);
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 
 struct RefNode : ASTNode {
@@ -378,7 +378,7 @@ struct RefNode : ASTNode {
   std::unique_ptr<ASTNode> clone() const override {
     return std::make_unique<RefNode>(std::move(this->val_->clone()));
   }
-  std::shared_ptr<type::TypeObject> getType() const override;
+  std::shared_ptr<type::TypeObject> getType() override;
 };
 /**/
 /*struct ConstNode : ASTNode {*/

@@ -10,7 +10,7 @@
 namespace morphl {
 namespace AST {
 
-std::shared_ptr<type::TypeObject> ASTNode::getTrueType() const {
+std::shared_ptr<type::TypeObject> ASTNode::getTrueType() {
   auto type = this->getType();
   while (type->type_ == type::IDENTIFIER) {
     type = static_cast<type::IdentifierType *>(type.get())->pType_;
@@ -67,7 +67,7 @@ std::string toString(const ASTNode *node, size_t indent) {
     result += "Identifier: " + ((IdentifierNode *)node)->name_;
     result +=
         " (Type: " +
-        static_cast<std::string>(*((IdentifierNode *)node)->identifierType_) +
+        static_cast<std::string>(*((IdentifierNode *)node)->objectType_) +
         ")";
     result += node->mutable_ ? " mutable" : "";
     result += "\n";
@@ -162,16 +162,10 @@ std::ostream &operator<<(std::ostream &ostr, const ASTNode *node) {
   return ostr << toString(node, 0);
 }
 
-std::shared_ptr<type::TypeObject> getType(const ASTNode *node) {
-  if (!node) {
-    return nullptr;
-  }
-  return node->getType();
-}
+std::shared_ptr<type::TypeObject> BlockNode::getType() {
+  if (this->objectType_) return this->objectType_;
 
-std::shared_ptr<type::TypeObject> BlockNode::getType() const {
-  std::shared_ptr<type::BlockType> blockType =
-      std::make_shared<type::BlockType>();
+  std::shared_ptr<type::BlockType> blockType = std::make_shared<type::BlockType>(); 
   for (auto &child : children_) {
     auto i = child.get();
     if (child->type_ == AST::STATEMENTNODE) {
@@ -193,11 +187,14 @@ std::shared_ptr<type::TypeObject> BlockNode::getType() const {
           *static_cast<type::BlockType*>(importNode->getType().get()));
     }
   }
-  return blockType;
+  this->objectType_ = blockType;
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> ProgramNode::getType() const {
- std::shared_ptr<type::BlockType> blockType =
+std::shared_ptr<type::TypeObject> ProgramNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  std::shared_ptr<type::BlockType> blockType =
       std::make_shared<type::BlockType>();
   for (auto &child : children_) {
     auto i = child.get();
@@ -221,58 +218,93 @@ std::shared_ptr<type::TypeObject> ProgramNode::getType() const {
 
     }
   }
-  return blockType;
+  this->objectType_ = blockType;
+  return objectType_;
 }
 
 
-std::shared_ptr<type::TypeObject> ArrayNode::getType() const {
-  return std::make_shared<type::ListType>(this->type_, this->size_);
+std::shared_ptr<type::TypeObject> ArrayNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = std::make_shared<type::ListType>(this->type_, this->size_);
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> IdentifierNode::getType() const {
-  return identifierType_;
+std::shared_ptr<type::TypeObject> IdentifierNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  return objectType_;
 }
 
-std::shared_ptr<type::TypeObject> DeclarationNode::getType() const {
-  return initialValue_->getType();
+std::shared_ptr<type::TypeObject> DeclarationNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = initialValue_->getType();
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> GroupIndexNode::getType() const {
-  return static_cast<type::GroupType *>(parent_->getTrueType().get())
+std::shared_ptr<type::TypeObject> GroupIndexNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  
+  this->objectType_ =  static_cast<type::GroupType *>(parent_->getTrueType().get())
       ->members_[this->index_];
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> ArrayIndexNode::getType() const {
-  return static_cast<type::ListType *>(parent_->getTrueType().get())
+std::shared_ptr<type::TypeObject> ArrayIndexNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = static_cast<type::ListType *>(parent_->getTrueType().get())
       ->pElementsType_;
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> MemberAccessNode::getType() const {
-  return static_cast<type::BlockType *>(this->parent_->getTrueType().get())
+std::shared_ptr<type::TypeObject> MemberAccessNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = static_cast<type::BlockType *>(this->parent_->getTrueType().get())
       ->getType(this->memberName_);
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> IntLiteralNode::getType() const {
-  return std::make_shared<type::PrimitiveType>("int");
+std::shared_ptr<type::TypeObject> IntLiteralNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = type::PrimitiveType::INTEGER;
+  return  objectType_;
+
 }
 
-std::shared_ptr<type::TypeObject> FloatLiteralNode::getType() const {
-  return std::make_shared<type::PrimitiveType>("float");
+std::shared_ptr<type::TypeObject> FloatLiteralNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = type::PrimitiveType::FLOAT;
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> StringLiteralNode::getType() const {
-  return std::make_shared<type::PrimitiveType>("string");
+std::shared_ptr<type::TypeObject> StringLiteralNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_  = type::PrimitiveType::STRING;
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> GroupNode::getType() const {
+std::shared_ptr<type::TypeObject> GroupNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
   type::GroupTypeMembers typeArr;
   for (auto &member : members_) {
     typeArr.push_back(member->getType());
   }
-  return std::make_shared<type::GroupType>(typeArr);
+  
+  this->objectType_ = std::make_shared<type::GroupType>(typeArr);
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> BinaryOpNode::getType() const {
+std::shared_ptr<type::TypeObject> BinaryOpNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
   if (this->opType_ == EXTEND) {
     auto newType = std::make_shared<type::BlockType>();
     auto type1 = operand1_->getType();
@@ -295,44 +327,67 @@ std::shared_ptr<type::TypeObject> BinaryOpNode::getType() const {
         newType->addMember(i.first, i.second);
       }
     }
-    return newType;
+
+    this->objectType_ = newType;
+    return this->objectType_;
   }
   if (this->opType_ == CALL) {
     auto func =
         static_cast<type::FunctionType *>(this->operand1_->getType().get());
-    return func->pReturnType_;
+    this->objectType_ = func->pReturnType_;
+    return this->objectType_;
   }
 
   type::OperatorType opType = type::operatorTypeMap.at(this->opType_);
-  return opType.returnType_(this->operand1_->getTrueType(),this->operand2_->getTrueType());
+  this->objectType_ = opType.returnType_(this->operand1_->getTrueType(),this->operand2_->getTrueType());
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> UnaryOpNode::getType() const {
+std::shared_ptr<type::TypeObject> UnaryOpNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
   type::OperatorType opType = type::operatorTypeMap.at(this->opType_);
-  return opType.returnType_(this->operand_->getTrueType(), nullptr);
+
+  
+  this->objectType_ = opType.returnType_(this->operand_->getTrueType(), nullptr);
+  return objectType_;
 }
 
-std::shared_ptr<type::TypeObject> IfNode::getType() const {
+std::shared_ptr<type::TypeObject> IfNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
   if (ifBlock_->type_ == GROUPNODE) {
     auto ifGroupPtr = static_cast<GroupNode *>(ifBlock_.get());
     if (ifGroupPtr->members_.size() > 1) {
-      return ifGroupPtr->members_[1]->getType();
+      this->objectType_ = ifGroupPtr->members_[1]->getType();
+      return this->objectType_;
     }
   }
-  return std::make_shared<type::TypeObject>(type::NONE);
+  this->objectType_ = std::make_shared<type::TypeObject>(type::NONE);
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> FunctionNode::getType() const {
-  return std::make_shared<type::FunctionType>(this->argType_->getType(),
+std::shared_ptr<type::TypeObject> FunctionNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+
+  this->objectType_ = std::make_shared<type::FunctionType>(this->argType_->getType(),
                                               this->value_->getType());
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> ImportNode::getType() const {
-  return parser::ImportManager::getType(this->path_);
+std::shared_ptr<type::TypeObject> ImportNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = parser::ImportManager::getType(this->path_);
+  return this->objectType_;
 }
 
-std::shared_ptr<type::TypeObject> RefNode::getType() const {
-  return this->val_->getType();
+std::shared_ptr<type::TypeObject> RefNode::getType() {
+  if (this->objectType_) return this->objectType_;
+  
+  this->objectType_ = this->val_->getType();
+  return this->objectType_;
 }
 /**/
 /*std::shared_ptr<type::TypeObject> ConstNode::getType() const {*/
