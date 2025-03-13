@@ -17,22 +17,20 @@ enum Type {
   LIST,  // conainter of one type without named members
   FUNC,
 
-  IDENTIFIER   // not a type, used to define that type is referenced from
+  IDENTIFIER,  // not a type, used to define that type is referenced from
                // identifier.
+  UNIQUE,       // not a type, use to enforce strict inferrence.
 };
 
-struct TypeComparable {
-  const std::string compareString;
-};
 
 struct TypeObject {
   Type type_;
   TypeObject() : type_{NONE} {}
   TypeObject(Type t) : type_{t} {}
   virtual operator std::string() const;
-  // virtual bool operator==(TypeObject) const = 0;
+  virtual bool operator==(const TypeObject&) const;
   static const std::shared_ptr<TypeObject> none;
-  virtual operator TypeComparable() const {return TypeComparable();}
+  virtual bool accept(const TypeObject&) const { return false;};
 };
 
 
@@ -45,8 +43,8 @@ struct PrimitiveType : public TypeObject {
 
   PrimitiveType(std::string typeName)
       : TypeObject(PRIMITIVE), typeName_{typeName} {}
-  operator TypeComparable() const override;
   operator std::string() const override;
+  bool accept(const TypeObject&) const override;
   static const std::shared_ptr<TypeObject> INTEGER;
   static const std::shared_ptr<TypeObject> FLOAT;
   static const std::shared_ptr<TypeObject> STRING;
@@ -58,15 +56,15 @@ struct BlockType : public TypeObject {
   BlockType(BlockTypeMembers members = {})
       : TypeObject(BLOCK), members_{members} {}
 
-  operator TypeComparable() const override;
   operator std::string() const override;
+  bool accept(const TypeObject&) const override;
   void addMember(std::string name, std::shared_ptr<TypeObject> type) {
     std::pair<std::string, std::shared_ptr<TypeObject>> member{name, type};
     members_.push_back(member);
     membersMap_[name] = type;
   }
 
-  void appendMembers(BlockType other) {
+  void appendMembers(BlockType& other) {
     members_.insert(members_.end(), other.members_.begin(), other.members_.end());
     membersMap_.insert(other.membersMap_.begin(), other.membersMap_.end());
   }
@@ -84,8 +82,8 @@ struct GroupType : public TypeObject {
 
   GroupType() : TypeObject(GROUP) {}
   GroupType(GroupTypeMembers members) : TypeObject(GROUP), members_{members} {}
-  operator TypeComparable() const override;
   operator std::string() const override;
+  bool accept(const TypeObject&) const override;
 };
 
 struct ListType : public TypeObject {
@@ -94,16 +92,16 @@ struct ListType : public TypeObject {
 
   ListType(std::shared_ptr<TypeObject> t, size_t size)
       : TypeObject(LIST), pElementsType_(t), size_(size) {}
-  operator TypeComparable() const override;
   operator std::string() const override;
+  bool accept(const TypeObject&) const override;
 };
 
 struct FunctionType : public TypeObject {
   std::shared_ptr<TypeObject> pOperandsType_;
   std::shared_ptr<TypeObject> pReturnType_;
 
-  operator TypeComparable() const override;
   operator std::string() const override;
+  bool accept(const TypeObject&) const override;
   FunctionType(std::shared_ptr<TypeObject> pOperandsType,
                std::shared_ptr<TypeObject> pReturnType)
       : TypeObject(FUNC), pOperandsType_(pOperandsType),
@@ -115,9 +113,17 @@ struct IdentifierType : public TypeObject {
   std::string name_;
   std::shared_ptr<TypeObject> pType_;
 
-  operator TypeComparable() const override;
   IdentifierType(std::string name, std::shared_ptr<TypeObject> pType)
       : TypeObject(IDENTIFIER), name_(name), pType_(pType) {}
+  operator std::string() const override;
+  bool accept(const TypeObject&) const override;
+};
+
+struct UniqueType : public TypeObject {
+  std::shared_ptr<TypeObject> pType_;
+  UniqueType(std::shared_ptr<TypeObject> pType) : TypeObject(UNIQUE), pType_(pType) {}
+  bool accept(const TypeObject&) const override;
+  bool operator==(const TypeObject&) const override;
   operator std::string() const override;
 };
 
@@ -125,7 +131,6 @@ using TypePtr = std::shared_ptr<TypeObject>;
 
 std::ostream &operator<<(std::ostream &ostr, const TypeObject *t);
 
-bool operator==(const TypeObject &, const TypeObject &);
 
 bool operator!=(const TypeObject &, const TypeObject &);
 } // namespace type

@@ -1,4 +1,5 @@
 #include "type.h"
+#include <cstdint>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -49,6 +50,12 @@ IdentifierType::operator std::string() const {
   return this->name_ + " AKA " + static_cast<std::string>(*this->pType_);
 }
 
+UniqueType::operator std::string() const {
+  return std::to_string
+    (reinterpret_cast<const uintptr_t>(this))
+    + " -> " + static_cast<std::string>(*this->pType_);
+}
+
 BlockType::operator std::string() const {
     std::string res = "{";
     res += delimiterInsert(
@@ -67,37 +74,91 @@ BlockType::operator std::string() const {
 //  Type Comparison
 //
 
-
-PrimitiveType::operator TypeComparable() const {
-  return TypeComparable{this->typeName_};
+bool PrimitiveType::accept(const TypeObject& t) const {
+  const auto other = dynamic_cast<const PrimitiveType*>(&t);
+  if (!other) {
+    return false;
+  }
+  return this->typeName_ == other->typeName_;
 }
 
-BlockType::operator TypeComparable() const {
-  return TypeComparable{static_cast<std::string>(*this)};
+
+bool BlockType::accept(const TypeObject& t) const {
+  const auto other = dynamic_cast<const BlockType*>(&t);
+  if (!other) {
+    return false;
+  }
+  for (auto i: this->members_) {
+    try {
+      if (*other->membersMap_.at(i.first) != *i.second) {
+        return false;
+      }
+    } catch (...) {
+      return false;
+    }
+  }
+  return true;
 }
 
-GroupType::operator TypeComparable() const {
-  return TypeComparable{static_cast<std::string>(*this)};
+bool GroupType::accept(const TypeObject& t) const {
+  const auto other = dynamic_cast<const GroupType*>(&t);
+  if (!other) {
+    return false;
+  }
+  for (auto i = 0; i != this->members_.size(); i++) {
+    if (*this->members_[i] != *other->members_[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
-ListType::operator TypeComparable() const {
-  return TypeComparable{static_cast<std::string>(*this)};
+bool ListType::accept(const TypeObject& t) const {
+  const auto other = dynamic_cast<const ListType*>(&t);
+  if (!other) {
+    return false;
+  }
+  return *this->pElementsType_ == *other->pElementsType_ && this->size_ <= other->size_;
 }
 
-FunctionType::operator TypeComparable() const {
-  return TypeComparable{static_cast<std::string>(*this)};
+bool FunctionType::accept(const TypeObject& t) const {
+  const auto other = dynamic_cast<const FunctionType*>(&t);
+  if (!other) {
+    return false;
+  }
+  return *this->pOperandsType_ == *other->pOperandsType_ &&
+    *this->pReturnType_ == *this->pReturnType_;
 }
 
-IdentifierType::operator TypeComparable() const {
-  return TypeComparable{static_cast<std::string>(*this->pType_)};
+bool IdentifierType::accept(const TypeObject& t) const {
+  const auto other = dynamic_cast<const IdentifierType*>(&t);
+  if (!other) {
+    return false;
+  }
+
+  return this->pType_->accept(*other);
 }
 
-std::ostream &operator<<(std::ostream &ostr, const TypeObject *t) {
+
+bool UniqueType::accept(const TypeObject& t) const {
+  const auto other = dynamic_cast<const UniqueType*>(&t);
+  if (!other) {
+    return false;
+  }
+
+  return this->pType_->accept(*other);
+}
+
+bool UniqueType::operator==(const TypeObject& t) const {
+  return this == &t;
+}
+
+std::ostream &operator<<(std::  ostream &ostr, const TypeObject *t) {
   return ostr << static_cast<std::string>(*t);
 }
 
-bool operator==(const TypeObject &lhs, const TypeObject &rhs) {
-  return static_cast<TypeComparable>(lhs).compareString == static_cast<TypeComparable>(rhs).compareString;
+bool TypeObject::operator==(const TypeObject& other) const {
+  return this->accept(other) && other.accept(*this);
 }
 
 bool operator!=(const TypeObject &lhs, const TypeObject &rhs) {
