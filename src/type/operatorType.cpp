@@ -13,6 +13,8 @@ static const ReturnTypeFn returnFirstOperandType = [](TypePtr a, TypePtr b) { re
 
 static const ReturnTypeFn returnUnique = [](TypePtr a, TypePtr b) {return std::make_shared<UniqueType>(a);};
 
+static const ReturnTypeFn returnTrait = [](TypePtr a, TypePtr b) {return std::make_shared<TraitType>(a);};
+
 const OperatorTypeMap operatorTypeMap{
     {NEG, {PrimitiveType::INTEGER, nullptr, returnType<PrimitiveType::INTEGER>}},
     {FNEG, {PrimitiveType::FLOAT, nullptr, returnType<PrimitiveType::FLOAT>}},
@@ -47,6 +49,7 @@ const OperatorTypeMap operatorTypeMap{
     {morphl::REF, {nullptr, nullptr, returnFirstOperandType}},
     {MUT, {nullptr, nullptr, returnFirstOperandType}},
     {morphl::UNIQUE, {nullptr, nullptr, returnUnique}},
+    {morphl::TRAIT, {nullptr, nullptr, returnTrait}},
 };
 }
 } // namespace morphl

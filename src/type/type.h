@@ -20,6 +20,7 @@ enum Type {
   IDENTIFIER,  // not a type, used to define that type is referenced from
                // identifier.
   UNIQUE,       // not a type, use to enforce strict inferrence.
+  TRAIT,        // not a type, use to guarantee type is compatible.
 };
 
 
@@ -126,6 +127,14 @@ struct UniqueType : public TypeObject {
   bool operator==(const TypeObject&) const override;
   operator std::string() const override;
 };
+
+struct TraitType : public TypeObject {
+  std::shared_ptr<TypeObject> pType_;
+  TraitType(std::shared_ptr<TypeObject> pType) : TypeObject(TRAIT), pType_(pType) {}
+  bool accept(const TypeObject&) const override;
+  operator std::string() const override;
+};
+
 
 using TypePtr = std::shared_ptr<TypeObject>;
 

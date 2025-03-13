@@ -51,9 +51,13 @@ IdentifierType::operator std::string() const {
 }
 
 UniqueType::operator std::string() const {
-  return std::to_string
+  return "unique id:" + std::to_string
     (reinterpret_cast<const uintptr_t>(this))
-    + " -> " + static_cast<std::string>(*this->pType_);
+    + " (" + static_cast<std::string>(*this->pType_) + ")";
+}
+
+TraitType::operator std::string() const {
+  return "trait of " + static_cast<std::string>(*this->pType_);
 }
 
 BlockType::operator std::string() const {
@@ -143,10 +147,31 @@ bool IdentifierType::accept(const TypeObject& t) const {
 bool UniqueType::accept(const TypeObject& t) const {
   const auto other = dynamic_cast<const UniqueType*>(&t);
   if (!other) {
-    return false;
+    return this->pType_->accept(t);
   }
 
-  return this->pType_->accept(*other);
+  return this->operator==(*other);
+}
+
+bool TraitType::accept(const TypeObject& t) const {
+  const auto uniqueOther = dynamic_cast<const UniqueType*>(&t);
+  if (uniqueOther) {
+    return this->accept(*uniqueOther->pType_);
+  }
+
+  const auto groupType = dynamic_cast<const GroupType*>(this->pType_.get());
+  if (groupType) {
+    return groupType->members_.empty();    // empty group accept everything
+  }
+
+  const auto other = dynamic_cast<const TraitType*>(&t);
+  if (!other) {
+    return this->pType_->accept(t);
+  }
+
+
+
+  return this->pType_->accept(*other->pType_);
 }
 
 bool UniqueType::operator==(const TypeObject& t) const {

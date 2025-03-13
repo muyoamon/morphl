@@ -611,7 +611,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
 
   auto opTypeDetail = type::operatorTypeMap.at(type);
   if (opTypeDetail.operand1_ != nullptr) {
-    if (*operand1->getType() != *opTypeDetail.operand1_) {
+    if (!opTypeDetail.operand1_->accept(*operand1->getType())) {
       error::errorManager.addError(
           {filename_, op1Token.row_, op1Token.col_, error::Severity::Critical,
            "Error: Type mismatch, expected \%, got \%\n",
@@ -621,7 +621,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseBinaryOp() {
   }
 
   if (opTypeDetail.operand2_ != nullptr) {
-    if (*operand2->getType() != *opTypeDetail.operand2_) {
+    if (!opTypeDetail.operand2_->accept(*operand2->getType())) {
       error::errorManager.addError(
           {filename_, op2Token.row_, op2Token.col_, error::Severity::Critical,
            "Error: Type mismatch, expected \%, got \%\n",
@@ -813,7 +813,7 @@ std::unique_ptr<AST::ASTNode> Parser::parseCall() {
   auto funcNodePtr = static_cast<type::FunctionType *>(func->getType().get());
   auto funcArgsType = funcNodePtr->pOperandsType_;
   auto callArgsType = args->getType();
-  if (*funcArgsType != *callArgsType) {
+  if (!funcArgsType->accept(*callArgsType)) {
     error::errorManager.addError(
         {filename_, t.row_, t.col_, error::Severity::Critical,
          "Error: Argument(s) type mismatch, got: %, expected: %\n",
