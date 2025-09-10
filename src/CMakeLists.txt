@@ -1,4 +1,4 @@
-add_executable(morphlc main.cpp)
+add_executable(morphlc main.c)
 add_library(${PROJECT_NAME} INTERFACE)
 
 

@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(morphl CXX)
-set(CMAKE_CXX_STANDARD 17)
+project(morphl C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug)
 
