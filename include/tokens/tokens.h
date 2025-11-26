@@ -6,20 +6,13 @@
 #include <stdbool.h>
 #include "util/util.h"
 
-enum TokenKind {
-  TK_NONE = 0,
-
-  // delimiter
-  TK_LBRACE, TK_RBRACE,         // []
-  TK_LPAREN, TK_RPAREN,         // ()
-  TK_LBRACK, TK_RBRACK,         // {}
-  TK_COMMA, TK_SEMI, TK_DOT,
-  TK_COLON, 
-};
+// A token kind is identified by an interned symbol, allowing the lexer to
+// accept syntax rules that are loaded at runtime.
+typedef Sym TokenKind;
 
 struct token {
-  enum TokenKind kind;
-  const char* str;
+  TokenKind kind;
+  Str lexeme;
   const char* filename;
   size_t row;
   size_t col;

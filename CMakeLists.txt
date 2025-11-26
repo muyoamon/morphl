@@ -7,7 +7,7 @@ set(CMAKE_BUILD_TYPE Debug)
 
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
 
-find_package(Catch2 CONFIG REQUIRED)
+find_package(Catch2 CONFIG QUIET)
 
 add_compile_options(
   -Wall -Wextra -Werror
@@ -16,7 +16,7 @@ add_compile_options(
 
 add_subdirectory(src/)
 
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+if (Catch2_FOUND AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   include(Catch)
   include(CTest)
   add_subdirectory(test/)
