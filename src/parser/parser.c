@@ -9,6 +9,11 @@
 
 #define PARSER_MAX_DEPTH 128
 
+typedef struct ParsedRuleContext {
+  const GrammarRule* rule;
+  const Grammar* grammar;
+} ParsedRuleContext;
+
 static bool ensure_rule_capacity(Grammar* grammar) {
   if (grammar->rule_count < grammar->rule_cap) return true;
   size_t new_cap = grammar->rule_cap ? grammar->rule_cap * 2 : 8;
@@ -115,106 +120,88 @@ static GrammarRule* find_or_add_rule(Grammar* grammar, Sym name) {
   return slot;
 }
 
-static bool parse_atom(const char** line,
-                       size_t* len,
-                       InternTable* interns,
-                       Arena* arena,
-                       GrammarAtom* out_atom) {
-  trim_whitespace(line, len);
-  if (*len == 0) return false;
-  bool literal_allocated = false;
-  Str raw;
-  if (!parse_literal(line, len, &raw, &literal_allocated)) return false;
-  GrammarAtom atom = {0};
-  if (raw.len > 0 && raw.ptr[0] == '$') {
-    Str name = str_from(raw.ptr + 1, raw.len - 1);
-    atom.kind = GRAMMAR_ATOM_RULE;
-    atom.symbol = interns_intern(interns, name);
-    if (literal_allocated) free((void*)raw.ptr);
-    if (!atom.symbol) return false;
-  } else if (raw.len > 0 && raw.ptr[0] == '%') {
-    Str kind = str_from(raw.ptr + 1, raw.len - 1);
-    atom.kind = GRAMMAR_ATOM_TOKEN_KIND;
-    atom.symbol = interns_intern(interns, kind);
-    if (literal_allocated) free((void*)raw.ptr);
-    if (!atom.symbol) return false;
-  } else {
-    const char* literal_buf = raw.ptr;
-    char* stored = arena_push(arena, raw.ptr, raw.len + 1);
-    if (!stored) {
-      if (literal_allocated) free((void*)raw.ptr);
+static bool parse_pattern(const char* line,
+                          size_t len,
+                          InternTable* interns,
+                          Arena* arena,
+                          Production* prod,
+                          Str template_text) {
+  memset(prod, 0, sizeof(*prod));
+  prod->template_text = template_text;
+  while (true) {
+    trim_whitespace(&line, &len);
+    if (len == 0) break;
+
+    bool literal_allocated = false;
+    Str raw;
+    if (!parse_literal(&line, &len, &raw, &literal_allocated)) {
       return false;
     }
-    stored[raw.len] = '\0';
-    atom.kind = GRAMMAR_ATOM_LITERAL;
-    atom.literal = str_from(stored, raw.len);
-    if (literal_allocated) {
-      free((void*)literal_buf);
-    }
-  }
-  *out_atom = atom;
-  return true;
-}
 
-static bool parse_production(const char* line,
-                             size_t len,
-                             InternTable* interns,
-                             Arena* arena,
-                             Production* prod) {
-  memset(prod, 0, sizeof(*prod));
-  while (true) {
-    const char* before = line;
-    size_t before_len = len;
-    GrammarAtom atom;
-    if (!parse_atom(&line, &len, interns, arena, &atom)) {
-      // No more atoms.
-      break;
+    GrammarAtom atom = {0};
+    bool ident_like = (raw.len > 0 && (isalpha((unsigned char)raw.ptr[0]) || raw.ptr[0] == '_'));
+    for (size_t i = 1; ident_like && i < raw.len; ++i) {
+      if (!isalnum((unsigned char)raw.ptr[i]) && raw.ptr[i] != '_') {
+        ident_like = false;
+      }
     }
+    if (ident_like && raw.ptr[0] != '%' && raw.ptr[0] != '$') {
+      if (literal_allocated) free((void*)raw.ptr);
+      continue; // Capture name; not a matchable atom.
+    }
+    if (raw.len > 6 && raw.ptr[0] == '$' && raw.ptr[1] == 'e' &&
+        raw.ptr[2] == 'x' && raw.ptr[3] == 'p' && raw.ptr[4] == 'r' &&
+        raw.ptr[5] == '[' && raw.ptr[raw.len - 1] == ']') {
+      const char* number_start = raw.ptr + 6;
+      size_t digits_len = raw.len - 7;
+      char* buffer = malloc(digits_len + 1);
+      if (!buffer) {
+        if (literal_allocated) free((void*)raw.ptr);
+        return false;
+      }
+      memcpy(buffer, number_start, digits_len);
+      buffer[digits_len] = '\0';
+      char* endptr = NULL;
+      unsigned long bp = strtoul(buffer, &endptr, 10);
+      if (!endptr || *endptr != '\0') {
+        if (literal_allocated) free((void*)raw.ptr);
+        free(buffer);
+        return false;
+      }
+      free(buffer);
+      atom.kind = GRAMMAR_ATOM_EXPR;
+      atom.min_bp = (size_t)bp;
+      if (literal_allocated) free((void*)raw.ptr);
+    } else if (raw.len > 0 && raw.ptr[0] == '%') {
+      Str kind = str_from(raw.ptr + 1, raw.len - 1);
+      atom.kind = GRAMMAR_ATOM_TOKEN_KIND;
+      atom.symbol = interns_intern(interns, kind);
+      if (literal_allocated) free((void*)raw.ptr);
+      if (!atom.symbol) {
+        return false;
+      }
+    } else {
+      const char* literal_buf = raw.ptr;
+      char* stored = arena_push(arena, raw.ptr, raw.len + 1);
+      if (!stored) {
+        if (literal_allocated) free((void*)raw.ptr);
+        return false;
+      }
+      stored[raw.len] = '\0';
+      atom.kind = GRAMMAR_ATOM_LITERAL;
+      atom.literal = str_from(stored, raw.len);
+      if (literal_allocated) {
+        free((void*)literal_buf);
+      }
+    }
+
     if (!ensure_atom_capacity(prod)) {
       free(prod->atoms);
       return false;
     }
     prod->atoms[prod->atom_count++] = atom;
-    if (line == before && len == before_len) break;
   }
-  return true;
-}
-
-static bool parse_rule_line(const char* line,
-                            size_t len,
-                            Grammar* grammar,
-                            InternTable* interns,
-                            Arena* arena) {
-  trim_whitespace(&line, &len);
-  if (len == 0 || line[0] == '#') return true;
-
-  size_t name_len = 0;
-  while (name_len < len && !isspace((unsigned char)line[name_len])) {
-    name_len++;
-  }
-  if (name_len == 0) return false;
-  Str name = str_from(line, name_len);
-  line += name_len;
-  len -= name_len;
-  trim_whitespace(&line, &len);
-
-  if (len < 2 || !(line[0] == ':' || line[0] == '+') || line[1] != '=') {
-    return false;
-  }
-  char op = line[0];
-  line += 2;
-  len -= 2;
-
-  GrammarRule* rule = find_or_add_rule(grammar, interns_intern(interns, name));
-  if (!rule) return false;
-  if (op == ':') {
-    reset_rule(rule);
-    rule->name = interns_intern(interns, name);
-  }
-
-  if (!ensure_production_capacity(rule)) return false;
-  Production* prod = &rule->productions[rule->production_count++];
-  if (!parse_production(line, len, interns, arena, prod)) return false;
+  prod->starts_with_expr = (prod->atom_count > 0 && prod->atoms[0].kind == GRAMMAR_ATOM_EXPR);
   return true;
 }
 
@@ -232,6 +219,7 @@ bool grammar_load_file(Grammar* grammar,
     return false;
   }
 
+  GrammarRule* current_rule = NULL;
   const char* cursor = contents;
   while (len > 0) {
     const char* line = cursor;
@@ -242,7 +230,78 @@ bool grammar_load_file(Grammar* grammar,
     cursor += line_len + (line_len < len);
     len -= line_len + (line_len < len);
 
-    if (!parse_rule_line(line, line_len, grammar, interns, arena)) {
+    trim_whitespace(&line, &line_len);
+    if (line_len == 0 || line[0] == '#') continue;
+
+    if (line_len >= 3 && strncmp(line, "end", 3) == 0) {
+      current_rule = NULL;
+      continue;
+    }
+
+    if (line_len >= 5 && strncmp(line, "rule", 4) == 0) {
+      const char* name_start = line + 4;
+      size_t name_len = line_len - 4;
+      trim_whitespace(&name_start, &name_len);
+      if (name_len == 0 || name_start[name_len - 1] != ':') {
+        free(contents);
+        grammar_free(grammar);
+        return false;
+      }
+      name_len -= 1; // Remove trailing ':'
+      while (name_len > 0 && isspace((unsigned char)name_start[name_len - 1])) {
+        name_len--;
+      }
+      Str name = str_from(name_start, name_len);
+      Sym interned = interns_intern(interns, name);
+      if (!interned) {
+        free(contents);
+        grammar_free(grammar);
+        return false;
+      }
+      current_rule = find_or_add_rule(grammar, interned);
+      if (!current_rule) {
+        free(contents);
+        grammar_free(grammar);
+        return false;
+      }
+      reset_rule(current_rule);
+      current_rule->name = interned;
+      continue;
+    }
+
+    if (!current_rule) {
+      free(contents);
+      grammar_free(grammar);
+      return false;
+    }
+
+    const char* arrow = strstr(line, "=>");
+    if (!arrow) {
+      free(contents);
+      grammar_free(grammar);
+      return false;
+    }
+    size_t pattern_len = (size_t)(arrow - line);
+    size_t template_len = line_len - pattern_len - 2;
+    const char* template_start = arrow + 2;
+    trim_whitespace(&template_start, &template_len);
+    const char* pattern_start = line;
+    trim_whitespace(&pattern_start, &pattern_len);
+    char* stored_template = arena_push(arena, template_start, template_len + 1);
+    if (!stored_template) {
+      free(contents);
+      grammar_free(grammar);
+      return false;
+    }
+    stored_template[template_len] = '\0';
+    if (!ensure_production_capacity(current_rule)) {
+      free(contents);
+      grammar_free(grammar);
+      return false;
+    }
+    Production* prod = &current_rule->productions[current_rule->production_count++];
+    if (!parse_pattern(pattern_start, pattern_len, interns, arena, prod,
+                       str_from(stored_template, template_len))) {
       free(contents);
       grammar_free(grammar);
       return false;
@@ -272,68 +331,98 @@ static GrammarRule* find_rule(const Grammar* grammar, Sym name) {
   return NULL;
 }
 
-static bool match_atom(const Grammar* grammar,
+static bool parse_expr_internal(const ParsedRuleContext* ctx,
+                                const struct token* tokens,
+                                size_t token_count,
+                                size_t min_bp,
+                                size_t* cursor,
+                                size_t depth);
+
+static bool match_atom(const ParsedRuleContext* ctx,
                        const GrammarAtom* atom,
                        const struct token* tokens,
                        size_t token_count,
                        size_t* cursor,
-                       size_t depth);
-
-static bool match_production(const Grammar* grammar,
-                             const Production* prod,
-                             const struct token* tokens,
-                             size_t token_count,
-                             size_t* cursor,
-                             size_t depth) {
-  size_t local_cursor = *cursor;
-  for (size_t i = 0; i < prod->atom_count; ++i) {
-    if (!match_atom(grammar, &prod->atoms[i], tokens, token_count, &local_cursor, depth)) {
-      return false;
-    }
-  }
-  *cursor = local_cursor;
-  return true;
-}
-
-static bool match_rule(const Grammar* grammar,
-                       const GrammarRule* rule,
-                       const struct token* tokens,
-                       size_t token_count,
-                       size_t* cursor,
                        size_t depth) {
-  if (depth > PARSER_MAX_DEPTH) return false;
-  for (size_t i = 0; i < rule->production_count; ++i) {
-    size_t local_cursor = *cursor;
-    if (match_production(grammar, &rule->productions[i], tokens, token_count, &local_cursor, depth + 1)) {
-      *cursor = local_cursor;
+  switch (atom->kind) {
+    case GRAMMAR_ATOM_LITERAL:
+      if (*cursor >= token_count) return false;
+      if (!str_eq(tokens[*cursor].lexeme, atom->literal)) return false;
+      (*cursor)++;
       return true;
-    }
+    case GRAMMAR_ATOM_TOKEN_KIND:
+      if (*cursor >= token_count) return false;
+      if (tokens[*cursor].kind != atom->symbol) return false;
+      (*cursor)++;
+      return true;
+    case GRAMMAR_ATOM_EXPR:
+      return parse_expr_internal(ctx, tokens, token_count, atom->min_bp, cursor, depth + 1);
   }
   return false;
 }
 
-static bool match_atom(const Grammar* grammar,
-                       const GrammarAtom* atom,
-                       const struct token* tokens,
-                       size_t token_count,
-                       size_t* cursor,
-                       size_t depth) {
-  if (atom->kind == GRAMMAR_ATOM_LITERAL) {
-    if (*cursor >= token_count) return false;
-    Str lexeme = tokens[*cursor].lexeme;
-    if (!str_eq(lexeme, atom->literal)) return false;
-    (*cursor)++;
-    return true;
+static bool match_pattern(const ParsedRuleContext* ctx,
+                          const Production* prod,
+                          const struct token* tokens,
+                          size_t token_count,
+                          size_t min_bp,
+                          bool consume_leading_expr,
+                          size_t* cursor,
+                          size_t depth) {
+  size_t local = *cursor;
+  if (depth > PARSER_MAX_DEPTH) return false;
+  for (size_t i = 0; i < prod->atom_count; ++i) {
+    if (i == 0 && prod->starts_with_expr && consume_leading_expr) {
+      if (prod->atoms[i].min_bp < min_bp) return false;
+      continue;
+    }
+    if (!match_atom(ctx, &prod->atoms[i], tokens, token_count, &local, depth)) {
+      return false;
+    }
   }
-  if (atom->kind == GRAMMAR_ATOM_TOKEN_KIND) {
-    if (*cursor >= token_count) return false;
-    if (tokens[*cursor].kind != atom->symbol) return false;
-    (*cursor)++;
-    return true;
+  if (consume_leading_expr && prod->atom_count <= 1) {
+    return false;
   }
-  GrammarRule* rule = find_rule(grammar, atom->symbol);
-  if (!rule) return false;
-  return match_rule(grammar, rule, tokens, token_count, cursor, depth + 1);
+  if (local == *cursor) return false;
+  *cursor = local;
+  return true;
+}
+
+static bool parse_expr_internal(const ParsedRuleContext* ctx,
+                                const struct token* tokens,
+                                size_t token_count,
+                                size_t min_bp,
+                                size_t* cursor,
+                                size_t depth) {
+  if (depth > PARSER_MAX_DEPTH) return false;
+  bool prefix_matched = false;
+  for (size_t i = 0; i < ctx->rule->production_count; ++i) {
+    const Production* prod = &ctx->rule->productions[i];
+    if (prod->starts_with_expr) continue;
+    size_t local = *cursor;
+    if (match_pattern(ctx, prod, tokens, token_count, min_bp, false, &local, depth + 1)) {
+      *cursor = local;
+      prefix_matched = true;
+      break;
+    }
+  }
+  if (!prefix_matched) return false;
+
+  while (true) {
+    bool extended = false;
+    for (size_t i = 0; i < ctx->rule->production_count; ++i) {
+      const Production* prod = &ctx->rule->productions[i];
+      if (!prod->starts_with_expr) continue;
+      size_t local = *cursor;
+      if (match_pattern(ctx, prod, tokens, token_count, min_bp, true, &local, depth + 1)) {
+        *cursor = local;
+        extended = true;
+        break;
+      }
+    }
+    if (!extended) break;
+  }
+  return true;
 }
 
 bool grammar_parse(const Grammar* grammar,
@@ -350,7 +439,8 @@ bool grammar_parse(const Grammar* grammar,
   Sym start = start_rule ? start_rule : grammar->start_rule;
   GrammarRule* rule = find_rule(grammar, start);
   if (!rule) return false;
+  ParsedRuleContext ctx = {.rule = rule, .grammar = grammar};
   size_t cursor = 0;
-  if (!match_rule(grammar, rule, tokens, parse_count, &cursor, 0)) return false;
+  if (!parse_expr_internal(&ctx, tokens, parse_count, 0, &cursor, 0)) return false;
   return cursor == parse_count;
 }

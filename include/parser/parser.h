@@ -11,8 +11,8 @@
  */
 typedef enum GrammarAtomKind {
   GRAMMAR_ATOM_LITERAL,   /**< A literal token lexeme to match. */
-  GRAMMAR_ATOM_RULE,      /**< A reference to another grammar rule (e.g. `$name`). */
-  GRAMMAR_ATOM_TOKEN_KIND /**< A token-kind match (e.g. `%IDENT`). */
+  GRAMMAR_ATOM_TOKEN_KIND,/**< A token-kind match (e.g. `%IDENT`). */
+  GRAMMAR_ATOM_EXPR       /**< A recursive expression parse with minimum binding. */
 } GrammarAtomKind;
 
 /**
@@ -21,8 +21,9 @@ typedef enum GrammarAtomKind {
  */
 typedef struct GrammarAtom {
   GrammarAtomKind kind; /**< The atom type. */
-  Sym symbol;           /**< Rule name or token kind, depending on @ref kind. */
-  Str literal;          /**< Literal token text for GRAMMAR_ATOM_LITERAL. */
+  Sym symbol;           /**< Token kind for @ref GRAMMAR_ATOM_TOKEN_KIND. */
+  Str literal;          /**< Literal token text for @ref GRAMMAR_ATOM_LITERAL. */
+  size_t min_bp;        /**< Minimum binding power for @ref GRAMMAR_ATOM_EXPR. */
 } GrammarAtom;
 
 /**
@@ -32,6 +33,8 @@ typedef struct Production {
   GrammarAtom* atoms;      /**< Ordered atoms in this production. */
   size_t atom_count;       /**< Number of atoms. */
   size_t atom_capacity;    /**< Allocated atom slots. */
+  Str template_text;       /**< Expansion template following `=>`. */
+  bool starts_with_expr;   /**< True when the first atom is `$expr[...]`. */
 } Production;
 
 /**
@@ -47,13 +50,22 @@ typedef struct GrammarRule {
 /**
  * @brief Dynamic grammar loaded from a text description.
  *
- * Grammar files support the following syntax:
- * - `name := ...` declares a rule and replaces any previous productions.
- * - `name += ...` appends an additional production to an existing rule.
- * - `$other` inserts a reference to another rule named `other`.
- * - `%KIND` matches a token kind by name (for example `%IDENT`).
- * - Bare words or quoted strings match literal token lexemes.
- * - Empty productions are allowed by omitting atoms after the operator.
+ * Grammar files support a rule-oriented syntax:
+ *
+ * ```
+ * rule <name>:
+ *   <pattern1> => <template1>
+ *   <pattern2> => <template2>
+ * end
+ * ```
+ *
+ * Patterns are whitespace-separated tokens consisting of literal matches (bare
+ * words or quoted strings), token-kind matches (`%IDENT`), and recursive
+ * expressions. An expression placeholder is written `$expr[n]` where *n* is the
+ * minimum binding power to parse for that operand. Associativity is expressed
+ * by using different binding powers for left and right operands of an operator.
+ * The text after `=>` is captured as a template string for downstream
+ * expansion; the parser does not interpret template contents directly.
  */
 typedef struct Grammar {
   GrammarRule* rules;      /**< Rule list. */

@@ -21,21 +21,16 @@ token-kind matches with `%KIND`.
 Example grammar excerpt:
 
 ```
-start := $function
-function := %IDENT "(" $params ")" "->" $expr ";"
-params := %IDENT $params_tail
-params +=
-params_tail := "," %IDENT $params_tail
-params_tail +=
-expr := $term $expr_tail
-expr_tail := "+" $term $expr_tail
-expr_tail +=
-term := $factor $term_tail
-term_tail := "*" $factor $term_tail
-term_tail +=
-factor := "(" $expr ")"
-factor += %IDENT
-factor += %NUMBER
+rule expr:
+    %NUMBER => $number
+    %IDENT => $ident
+    "(" $expr[0] ")" => $group
+    "-" $expr[30] rhs => $neg rhs
+    $expr[0] lhs "+" $expr[1] rhs => $add lhs rhs
+    $expr[0] lhs "-" $expr[1] rhs => $sub lhs rhs
+    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs
+    $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs
+end
 ```
 
 Build and run using a grammar file and source program:

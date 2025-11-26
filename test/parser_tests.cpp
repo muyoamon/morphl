@@ -23,9 +23,11 @@ static std::string write_temp_file(const char* contents) {
 }
 
 static void test_grammar_loading() {
-  const char* grammar_src = R"GRAM(expr := %NUMBER
-expr += '+' %NUMBER
-expr +=
+  const char* grammar_src = R"GRAM(rule expr:
+    %NUMBER => $num
+    %IDENT => $id
+    $expr[0] lhs "+" $expr[1] rhs => $add lhs rhs
+end
 )GRAM";
 
   std::string grammar_path = write_temp_file(grammar_src);
@@ -43,8 +45,9 @@ expr +=
   const GrammarRule& rule = grammar.rules[0];
   assert(rule.production_count == 3);
   assert(rule.productions[0].atom_count == 1);
-  assert(rule.productions[1].atom_count == 2);
-  assert(rule.productions[2].atom_count == 0);
+  assert(!rule.productions[0].starts_with_expr);
+  assert(!rule.productions[1].starts_with_expr);
+  assert(rule.productions[2].starts_with_expr);
   assert(grammar.start_rule == rule.name);
 
   grammar_free(&grammar);
@@ -54,23 +57,18 @@ expr +=
 }
 
 static void test_parser_accept_reject() {
-  const char* grammar_src = R"GRAM(start := $function
-function := %IDENT "(" $params ")" "->" $expr ";"
-params := %IDENT $params_tail
-params +=
-params_tail := "," %IDENT $params_tail
-params_tail +=
-expr := $term $expr_tail
-expr_tail := "+" $term $expr_tail
-expr_tail += "-" $term $expr_tail
-expr_tail +=
-term := $factor $term_tail
-term_tail := "*" $factor $term_tail
-term_tail += "/" $factor $term_tail
-term_tail +=
-factor := "(" $expr ")"
-factor += %IDENT
-factor += %NUMBER
+  const char* grammar_src = R"GRAM(rule expr:
+    %IDENT => $id
+    %NUMBER => $num
+    "(" $expr[0] ")" => $group
+    "-" $expr[30] rhs => $neg rhs
+    $expr[0] lhs "+" $expr[1] rhs => $add lhs rhs
+    $expr[0] lhs "-" $expr[1] rhs => $sub lhs rhs
+    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs
+    $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs
+    $expr[1] lhs "^" $expr[0] rhs => $pow lhs rhs
+    $expr[40] base "!" => $fact base
+end
 )GRAM";
 
   std::string grammar_path = write_temp_file(grammar_src);
@@ -84,14 +82,14 @@ factor += %NUMBER
   Grammar grammar;
   assert(grammar_load_file(&grammar, grammar_path.c_str(), interns, &arena));
 
-  const char* source = "foo(x, y) -> x + y;";
+  const char* source = "-foo + 2 ^ 3 ^ 4 * 5!";
   struct token* tokens = NULL;
   size_t token_count = 0;
   assert(lexer_tokenize("<test>", str_from(source, strlen(source)), interns, &tokens, &token_count));
   assert(tokens != NULL);
   assert(grammar_parse(&grammar, 0, tokens, token_count));
 
-  const char* bad_source = "foo(x y) -> x;";
+  const char* bad_source = "foo +";
   struct token* bad_tokens = NULL;
   size_t bad_count = 0;
   assert(lexer_tokenize("<test>", str_from(bad_source, strlen(bad_source)), interns, &bad_tokens, &bad_count));
