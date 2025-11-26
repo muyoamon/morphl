@@ -11,26 +11,36 @@ programming language
 - add static storage
 - add multithread support (maybe)
 
-## Dynamic tokenizer
+## Dynamic parser and static tokenizer
 
-The lexer loads token rules from a text file. Each non-empty line describes a
-token as `<NAME> <literal>`, for example:
+The lexer now uses static rules (identifiers, numbers, punctuation) while the
+parser consumes a grammar loaded from a text file. Grammar files support
+`:=` (define) and `+=` (append) operators, rule references with `$name`, and
+token-kind matches with `%KIND`.
+
+Example grammar excerpt:
 
 ```
-LBRACE {
-RBRACE }
-ARROW "->"
-PLUS +
+start := $function
+function := %IDENT "(" $params ")" "->" $expr ";"
+params := %IDENT $params_tail
+params +=
+params_tail := "," %IDENT $params_tail
+params_tail +=
+expr := $term $expr_tail
+expr_tail := "+" $term $expr_tail
+expr_tail +=
+term := $factor $term_tail
+term_tail := "*" $factor $term_tail
+term_tail +=
+factor := "(" $expr ")"
+factor += %IDENT
+factor += %NUMBER
 ```
 
-Quoted literals support the escapes `\n`, `\t`, `\\`, and `\"`. After loading
-the syntax file, the compiler tokenizes a source file that you provide on the
-command line:
+Build and run using a grammar file and source program:
 
 ```
 cmake -S . -B build && cmake --build build
-./build/src/morphlc examples/syntax.txt examples/program.src
+./build/src/morphlc examples/grammar.txt examples/program.src
 ```
-
-Identifiers and numbers are recognized automatically, and an EOF token is
-appended to every token stream.

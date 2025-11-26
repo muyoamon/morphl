@@ -1,0 +1,22 @@
+start := $function
+
+function := %IDENT "(" $params ")" "->" $expr ";"
+
+params := %IDENT $params_tail
+params +=
+params_tail := "," %IDENT $params_tail
+params_tail +=
+
+expr := $term $expr_tail
+expr_tail := "+" $term $expr_tail
+expr_tail += "-" $term $expr_tail
+expr_tail +=
+
+term := $factor $term_tail
+term_tail := "*" $factor $term_tail
+term_tail += "/" $factor $term_tail
+term_tail +=
+
+factor := "(" $expr ")"
+factor += %IDENT
+factor += %NUMBER

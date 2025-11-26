@@ -6,16 +6,18 @@
 #include <stdbool.h>
 #include "util/util.h"
 
-// A token kind is identified by an interned symbol, allowing the lexer to
-// accept syntax rules that are loaded at runtime.
+/** A token kind is identified by an interned symbol. */
 typedef Sym TokenKind;
 
+/**
+ * @brief Represents a lexical token with source location metadata.
+ */
 struct token {
-  TokenKind kind;
-  Str lexeme;
-  const char* filename;
-  size_t row;
-  size_t col;
+  TokenKind kind;      /**< Interned token kind. */
+  Str lexeme;          /**< Token text. */
+  const char* filename;/**< Originating filename. */
+  size_t row;          /**< 1-based line number. */
+  size_t col;          /**< 1-based column number. */
 };
 
 
