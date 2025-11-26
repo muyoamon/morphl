@@ -12,7 +12,7 @@ typedef struct {
 } Str;
 static inline Str str_from(const char* p, size_t n) {return (Str){p,n};}
 static inline bool str_eq(Str a, Str b) {
-  return a.len==b.len && (a.len==0 || memcmp(a.ptr, b.ptr, a.len));
+  return a.len==b.len && (a.len==0 || memcmp(a.ptr, b.ptr, a.len)==0);
 }
 
 // Very small arena
@@ -33,5 +33,6 @@ InternTable* interns_new(void);
 void interns_free(InternTable*);
 Sym interns_intern(InternTable*, Str s);
 Str interns_lookup(InternTable*, Sym sym);
+
 
 #endif // MORPHL_UTIL_UTIL_H_
