@@ -5,42 +5,36 @@
 #include <stdbool.h>
 #include "tokens/tokens.h"
 
-typedef struct SyntaxRule {
-  TokenKind kind;
-  Str literal;
-} SyntaxRule;
-
-typedef struct Syntax {
-  SyntaxRule* rules;
-  size_t rule_count;
-  size_t rule_capacity;
-  InternTable* kinds;
-} Syntax;
-
-// Load syntax rules from a file. Each non-empty, non-comment line should be in
-// the form:
-//   TOKEN_NAME literal
-// The literal may be unquoted (single word) or wrapped in double quotes when it
-// contains whitespace. Backslash escapes (\n, \t, \\ and \") are honored in
-// quoted literals. TOKEN_NAME is interned and used as the token kind.
-bool syntax_load_file(Syntax* syntax, const char* path, InternTable* interns, Arena* arena);
-void syntax_free(Syntax* syntax);
-
-// Tokenize a source string using the supplied syntax. Identifiers (/[A-Za-z_][A-Za-z0-9_]*/) are
-// emitted as the IDENT kind, numbers (/[0-9]+/) as NUMBER, and any unknown
-// character as UNKNOWN. An EOF token is appended to the end of the stream.
-bool lexer_tokenize(const Syntax* syntax,
-                    const char* filename,
+/**
+ * @brief Tokenize a source buffer using a static rule set.
+ *
+ * The lexer recognizes identifiers (`[A-Za-z_][A-Za-z0-9_]*`), decimal
+ * numbers (`[0-9]+`), and punctuation sequences (any run of non-whitespace
+ * characters that are not alphanumeric or an underscore). Whitespace is
+ * ignored while tracking row/column positions. An explicit EOF token is
+ * appended to every stream. All token kinds are interned using the provided
+ * table, allowing the parser to reference kinds symbolically.
+ *
+ * @param filename The name of the file being tokenized (used for diagnostics).
+ * @param source   The source buffer to scan.
+ * @param interns  The intern table used to store token kind strings.
+ * @param out_tokens Pointer that receives a heap-allocated array of tokens.
+ * @param out_count  Pointer that receives the number of tokens produced.
+ * @return true on success, false on allocation or interning failure.
+ */
+bool lexer_tokenize(const char* filename,
                     Str source,
                     InternTable* interns,
                     struct token** out_tokens,
                     size_t* out_count);
 
-// Common token kind strings that are always interned by the lexer.
-extern const char* const LEXER_KIND_IDENT;
-extern const char* const LEXER_KIND_NUMBER;
-extern const char* const LEXER_KIND_UNKNOWN;
-extern const char* const LEXER_KIND_EOF;
+/** @name Built-in token kinds */
+///@{
+extern const char* const LEXER_KIND_IDENT;   /**< Identifier token kind name. */
+extern const char* const LEXER_KIND_NUMBER;  /**< Number token kind name. */
+extern const char* const LEXER_KIND_SYMBOL;  /**< Punctuation token kind name. */
+extern const char* const LEXER_KIND_EOF;     /**< End-of-file token kind name. */
+///@}
 
 
 #endif // MORPHL_LEXER_LEXER_H_

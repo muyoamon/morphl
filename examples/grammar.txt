@@ -1,0 +1,11 @@
+rule expr:
+    %NUMBER => $number
+    %IDENT => $ident
+    "(" $expr[0] ")" => $group
+    "-" $expr[30] rhs => $neg rhs
+    $expr[0] lhs "+" $expr[1] rhs => $add lhs rhs
+    $expr[0] lhs "-" $expr[1] rhs => $sub lhs rhs
+    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs
+    $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs
+    $expr[40] base "!" => $fact base
+end
