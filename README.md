@@ -14,14 +14,9 @@ programming language
 ## Dynamic parser and static tokenizer
 
 The lexer now uses static rules (identifiers, numbers, punctuation) while the
-parser consumes a Pratt-style grammar loaded from a text file. Grammar files
-declare blocks with `rule <name>:` followed by one or more pattern/template
-pairs and terminated by `end`.
-
-Patterns may contain literals, token kinds (e.g. `%IDENT`), and expression
-placeholders of the form `$expr[n]` where *n* is the minimum binding power for
-that operand. Associativity is encoded solely by the binding power choices on
-each side of an operator.
+parser consumes a grammar loaded from a text file. Grammar files support
+`:=` (define) and `+=` (append) operators, rule references with `$name`, and
+token-kind matches with `%KIND`.
 
 Example grammar excerpt:
 
