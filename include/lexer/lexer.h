@@ -1,0 +1,6 @@
+#ifndef MORPHL_LEXER_LEXER_H_
+#define MORPHL_LEXER_LEXER_H_
+
+
+
+#endif // MORPHL_LEXER_LEXER_H_

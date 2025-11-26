@@ -1,6 +1,9 @@
 #define EXIT_SUCCESS 0
 
-int main(int argc, char *argv[])
+#include "tokens/tokens.h"
+
+
+int main()
 {
   return EXIT_SUCCESS;
 }

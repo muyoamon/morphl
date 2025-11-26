@@ -1,5 +1,9 @@
+# --- Define executable ---
 add_executable(morphlc main.c)
-add_library(${PROJECT_NAME} INTERFACE)
+
+target_include_directories(morphlc PUBLIC
+  ${CMAKE_SOURCE_DIR}/include
+)
 
 
 file(GLOB sources
@@ -9,9 +13,10 @@ file(GLOB sources
 foreach(i IN ITEMS ${sources})
   IF(IS_DIRECTORY ${i})
     add_subdirectory(${i})
-    target_include_directories(${PROJECT_NAME} INTERFACE ${i}) 
     message(STATUS ${i})
   endif()
 endforeach()
 
-target_link_libraries(morphlc PRIVATE ${PROJECT_NAME})
+
+
+
