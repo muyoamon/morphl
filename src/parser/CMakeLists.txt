@@ -1,16 +1,6 @@
-add_library(morphl_parser SHARED 
-  syntax.h 
-  parser.cpp 
-  parser.h 
-  scope.h 
-  scope.cpp 
-  macro.h 
-  macro.cpp
-  macroManager.h
-  macroManager.cpp
-  error.h
-  importManager.h 
-  importManager.cpp
+add_library(morphl_parser
+  parser.c
 )
-target_link_libraries(${PROJECT_NAME} INTERFACE morphl_parser)
 
+target_link_libraries(morphl_parser PUBLIC morphl_util)
+target_link_libraries(morphlc PRIVATE morphl_parser)

@@ -1,3 +1,5 @@
-add_library(morphl_lexer SHARED lexer.cpp lexer.h)
-target_link_libraries(${PROJECT_NAME} INTERFACE morphl_lexer)
-
+add_library(morphl_lexer
+  lexer.c
+)
+target_link_libraries(morphl_lexer PUBLIC morphl_util)
+target_link_libraries(morphlc PRIVATE morphl_lexer)
