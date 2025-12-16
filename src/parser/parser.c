@@ -124,6 +124,7 @@ static bool parse_pattern(const char* line,
                           size_t len,
                           InternTable* interns,
                           Arena* arena,
+                          Sym rule_name,
                           Production* prod,
                           Str template_text) {
   memset(prod, 0, sizeof(*prod));
@@ -149,28 +150,49 @@ static bool parse_pattern(const char* line,
       if (literal_allocated) free((void*)raw.ptr);
       continue; // Capture name; not a matchable atom.
     }
-    if (raw.len > 6 && raw.ptr[0] == '$' && raw.ptr[1] == 'e' &&
-        raw.ptr[2] == 'x' && raw.ptr[3] == 'p' && raw.ptr[4] == 'r' &&
-        raw.ptr[5] == '[' && raw.ptr[raw.len - 1] == ']') {
-      const char* number_start = raw.ptr + 6;
-      size_t digits_len = raw.len - 7;
-      char* buffer = malloc(digits_len + 1);
-      if (!buffer) {
+    if (raw.len > 1 && raw.ptr[0] == '$') {
+      size_t name_len = 0;
+      while (1 + name_len < raw.len && raw.ptr[1 + name_len] != '[') {
+        name_len++;
+      }
+      if (name_len == 0) {
         if (literal_allocated) free((void*)raw.ptr);
         return false;
       }
-      memcpy(buffer, number_start, digits_len);
-      buffer[digits_len] = '\0';
-      char* endptr = NULL;
-      unsigned long bp = strtoul(buffer, &endptr, 10);
-      if (!endptr || *endptr != '\0') {
-        if (literal_allocated) free((void*)raw.ptr);
+
+      size_t bp = 0;
+      if (1 + name_len < raw.len) {
+        if (raw.ptr[1 + name_len] != '[' || raw.ptr[raw.len - 1] != ']') {
+          if (literal_allocated) free((void*)raw.ptr);
+          return false;
+        }
+        size_t digits_len = raw.len - name_len - 3; // exclude '$', name, '[' and ']'
+        char* buffer = malloc(digits_len + 1);
+        if (!buffer) {
+          if (literal_allocated) free((void*)raw.ptr);
+          return false;
+        }
+        memcpy(buffer, raw.ptr + name_len + 2, digits_len);
+        buffer[digits_len] = '\0';
+        char* endptr = NULL;
+        unsigned long parsed = strtoul(buffer, &endptr, 10);
+        bool parsed_ok = (endptr && *endptr == '\0');
         free(buffer);
+        if (!parsed_ok) {
+          if (literal_allocated) free((void*)raw.ptr);
+          return false;
+        }
+        bp = (size_t)parsed;
+      }
+
+      Str name = str_from(raw.ptr + 1, name_len);
+      atom.kind = GRAMMAR_ATOM_RULE;
+      atom.symbol = interns_intern(interns, name);
+      atom.min_bp = bp;
+      if (!atom.symbol) {
+        if (literal_allocated) free((void*)raw.ptr);
         return false;
       }
-      free(buffer);
-      atom.kind = GRAMMAR_ATOM_EXPR;
-      atom.min_bp = (size_t)bp;
       if (literal_allocated) free((void*)raw.ptr);
     } else if (raw.len > 0 && raw.ptr[0] == '%') {
       Str kind = str_from(raw.ptr + 1, raw.len - 1);
@@ -201,7 +223,9 @@ static bool parse_pattern(const char* line,
     }
     prod->atoms[prod->atom_count++] = atom;
   }
-  prod->starts_with_expr = (prod->atom_count > 0 && prod->atoms[0].kind == GRAMMAR_ATOM_EXPR);
+  prod->starts_with_expr =
+      (prod->atom_count > 0 && prod->atoms[0].kind == GRAMMAR_ATOM_RULE &&
+       prod->atoms[0].symbol == rule_name);
   return true;
 }
 
@@ -300,7 +324,7 @@ bool grammar_load_file(Grammar* grammar,
       return false;
     }
     Production* prod = &current_rule->productions[current_rule->production_count++];
-    if (!parse_pattern(pattern_start, pattern_len, interns, arena, prod,
+    if (!parse_pattern(pattern_start, pattern_len, interns, arena, current_rule->name, prod,
                        str_from(stored_template, template_len))) {
       free(contents);
       grammar_free(grammar);
@@ -331,7 +355,7 @@ static GrammarRule* find_rule(const Grammar* grammar, Sym name) {
   return NULL;
 }
 
-static bool parse_expr_internal(const ParsedRuleContext* ctx,
+static bool parse_rule_internal(const ParsedRuleContext* ctx,
                                 const struct token* tokens,
                                 size_t token_count,
                                 size_t min_bp,
@@ -355,8 +379,12 @@ static bool match_atom(const ParsedRuleContext* ctx,
       if (tokens[*cursor].kind != atom->symbol) return false;
       (*cursor)++;
       return true;
-    case GRAMMAR_ATOM_EXPR:
-      return parse_expr_internal(ctx, tokens, token_count, atom->min_bp, cursor, depth + 1);
+    case GRAMMAR_ATOM_RULE: {
+      GrammarRule* target = find_rule(ctx->grammar, atom->symbol);
+      if (!target) return false;
+      ParsedRuleContext nested = {.rule = target, .grammar = ctx->grammar};
+      return parse_rule_internal(&nested, tokens, token_count, atom->min_bp, cursor, depth + 1);
+    }
   }
   return false;
 }
@@ -388,7 +416,7 @@ static bool match_pattern(const ParsedRuleContext* ctx,
   return true;
 }
 
-static bool parse_expr_internal(const ParsedRuleContext* ctx,
+static bool parse_rule_internal(const ParsedRuleContext* ctx,
                                 const struct token* tokens,
                                 size_t token_count,
                                 size_t min_bp,
@@ -441,6 +469,6 @@ bool grammar_parse(const Grammar* grammar,
   if (!rule) return false;
   ParsedRuleContext ctx = {.rule = rule, .grammar = grammar};
   size_t cursor = 0;
-  if (!parse_expr_internal(&ctx, tokens, parse_count, 0, &cursor, 0)) return false;
+  if (!parse_rule_internal(&ctx, tokens, parse_count, 0, &cursor, 0)) return false;
   return cursor == parse_count;
 }

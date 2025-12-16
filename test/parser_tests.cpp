@@ -24,9 +24,12 @@ static std::string write_temp_file(const char* contents) {
 
 static void test_grammar_loading() {
   const char* grammar_src = R"GRAM(rule expr:
+    $expr lhs "+" %IDENT rhs => $extend lhs rhs
+    $term => $lift
+end
+
+rule term:
     %NUMBER => $num
-    %IDENT => $id
-    $expr[0] lhs "+" $expr[1] rhs => $add lhs rhs
 end
 )GRAM";
 
@@ -41,14 +44,14 @@ end
   Grammar grammar;
   assert(grammar_load_file(&grammar, grammar_path.c_str(), interns, &arena));
 
-  assert(grammar.rule_count == 1);
-  const GrammarRule& rule = grammar.rules[0];
-  assert(rule.production_count == 3);
-  assert(rule.productions[0].atom_count == 1);
-  assert(!rule.productions[0].starts_with_expr);
-  assert(!rule.productions[1].starts_with_expr);
-  assert(rule.productions[2].starts_with_expr);
-  assert(grammar.start_rule == rule.name);
+  assert(grammar.rule_count == 2);
+  const GrammarRule& expr_rule = grammar.rules[0];
+  assert(expr_rule.production_count == 2);
+  assert(expr_rule.productions[0].starts_with_expr);
+  assert(expr_rule.productions[0].atoms[0].min_bp == 0);
+  assert(expr_rule.productions[1].atom_count == 1);
+  assert(!expr_rule.productions[1].starts_with_expr);
+  assert(grammar.start_rule == expr_rule.name);
 
   grammar_free(&grammar);
   arena_free(&arena);
@@ -60,13 +63,13 @@ static void test_parser_accept_reject() {
   const char* grammar_src = R"GRAM(rule expr:
     %IDENT => $id
     %NUMBER => $num
-    "(" $expr[0] ")" => $group
+    "(" $expr ")" => $group
     "-" $expr[30] rhs => $neg rhs
-    $expr[0] lhs "+" $expr[1] rhs => $add lhs rhs
-    $expr[0] lhs "-" $expr[1] rhs => $sub lhs rhs
+    $expr lhs "+" $expr[1] rhs => $add lhs rhs
+    $expr lhs "-" $expr[1] rhs => $sub lhs rhs
     $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs
     $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs
-    $expr[1] lhs "^" $expr[0] rhs => $pow lhs rhs
+    $expr[1] lhs "^" $expr rhs => $pow lhs rhs
     $expr[40] base "!" => $fact base
 end
 )GRAM";

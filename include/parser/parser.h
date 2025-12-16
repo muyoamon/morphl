@@ -10,9 +10,9 @@
  * @brief Specifies the kind of atom a grammar production can contain.
  */
 typedef enum GrammarAtomKind {
-  GRAMMAR_ATOM_LITERAL,   /**< A literal token lexeme to match. */
-  GRAMMAR_ATOM_TOKEN_KIND,/**< A token-kind match (e.g. `%IDENT`). */
-  GRAMMAR_ATOM_EXPR       /**< A recursive expression parse with minimum binding. */
+  GRAMMAR_ATOM_LITERAL,    /**< A literal token lexeme to match. */
+  GRAMMAR_ATOM_TOKEN_KIND, /**< A token-kind match (e.g. `%IDENT`). */
+  GRAMMAR_ATOM_RULE        /**< A recursive rule reference with optional binding power. */
 } GrammarAtomKind;
 
 /**
@@ -21,9 +21,9 @@ typedef enum GrammarAtomKind {
  */
 typedef struct GrammarAtom {
   GrammarAtomKind kind; /**< The atom type. */
-  Sym symbol;           /**< Token kind for @ref GRAMMAR_ATOM_TOKEN_KIND. */
+  Sym symbol;           /**< Token/rule symbol for @ref GRAMMAR_ATOM_TOKEN_KIND and @ref GRAMMAR_ATOM_RULE. */
   Str literal;          /**< Literal token text for @ref GRAMMAR_ATOM_LITERAL. */
-  size_t min_bp;        /**< Minimum binding power for @ref GRAMMAR_ATOM_EXPR. */
+  size_t min_bp;        /**< Minimum binding power for @ref GRAMMAR_ATOM_RULE. */
 } GrammarAtom;
 
 /**
@@ -34,7 +34,7 @@ typedef struct Production {
   size_t atom_count;       /**< Number of atoms. */
   size_t atom_capacity;    /**< Allocated atom slots. */
   Str template_text;       /**< Expansion template following `=>`. */
-  bool starts_with_expr;   /**< True when the first atom is `$expr[...]`. */
+  bool starts_with_expr;   /**< True when the first atom recurses into the same rule. */
 } Production;
 
 /**
@@ -60,10 +60,12 @@ typedef struct GrammarRule {
  * ```
  *
  * Patterns are whitespace-separated tokens consisting of literal matches (bare
- * words or quoted strings), token-kind matches (`%IDENT`), and recursive
- * expressions. An expression placeholder is written `$expr[n]` where *n* is the
- * minimum binding power to parse for that operand. Associativity is expressed
- * by using different binding powers for left and right operands of an operator.
+ * words or quoted strings), token-kind matches (`%IDENT`), and recursive rule
+ * references. A rule placeholder is written `$name[n]` where *name* is a rule
+ * identifier and *n* is the minimum binding power to parse for that operand.
+ * Omitting the square-bracket suffix defaults the binding power to zero.
+ * Associativity is expressed by using different binding powers for left and
+ * right operands of an operator.
  * The text after `=>` is captured as a template string for downstream
  * expansion; the parser does not interpret template contents directly.
  */

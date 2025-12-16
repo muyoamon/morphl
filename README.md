@@ -14,9 +14,15 @@ programming language
 ## Dynamic parser and static tokenizer
 
 The lexer now uses static rules (identifiers, numbers, punctuation) while the
-parser consumes a grammar loaded from a text file. Grammar files support
-`:=` (define) and `+=` (append) operators, rule references with `$name`, and
-token-kind matches with `%KIND`.
+parser consumes a Pratt-style grammar loaded from a text file. Grammar files
+declare blocks with `rule <name>:` followed by one or more pattern/template
+pairs and terminated by `end`.
+
+Patterns may contain literals, token kinds (e.g. `%IDENT`), and rule
+placeholders of the form `$name[n]` where *name* is any rule identifier and *n*
+is the minimum binding power for that operand. Omitting the square brackets
+defaults the binding power to zero. Associativity is encoded solely by the
+binding power choices on each side of an operator.
 
 Example grammar excerpt:
 
@@ -24,10 +30,10 @@ Example grammar excerpt:
 rule expr:
     %NUMBER => $number
     %IDENT => $ident
-    "(" $expr[0] ")" => $group
+    "(" $expr ")" => $group
     "-" $expr[30] rhs => $neg rhs
-    $expr[0] lhs "+" $expr[1] rhs => $add lhs rhs
-    $expr[0] lhs "-" $expr[1] rhs => $sub lhs rhs
+    $expr lhs "+" $expr[1] rhs => $add lhs rhs
+    $expr lhs "-" $expr[1] rhs => $sub lhs rhs
     $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs
     $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs
 end
