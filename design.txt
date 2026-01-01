@@ -1,0 +1,212 @@
+
+// IMPORTANT: everything user-level should be binded using $decl whether expression, function, import, etc.
+// otherwise, user want resolve at compile-time then use $alias
+
+// Core design invariants (locked for implementation)
+// - All built-in operators have arity <= 2.
+// - Calls are expressed via $call; surface syntax must lower to $call.
+// - No implicit coercion for built-ins; mismatched types are errors. User ops may coerce.
+// - Missing call arguments take parameter defaults (subtyping-by-shorter argument list).
+// - Default values are the parameter initializers in $func param decls.
+// - $if shape: $if <cond> <branch-group> where branch-group is $group <then> <else>.
+// - Return: $func <params> <body-expr> returns the value of body-expr; $ret is early return from blocks.
+// - Blocks are structural records; groups are ordered tuples. Field order matters for record equality.
+// - Subtyping: shorter arglists are accepted if missing args have defaults; records may have width subtyping when a value with more fields can be viewed as a value with fewer, provided overlapping fields match in name/order/type.
+// - Recursion strategy: TODO choose between forward decls vs. $mut placeholder; current code uses $mut placeholder.
+
+
+// ===== Forward declarations (proposed and accepted) =====
+// Goal: enable recursion and mutual recursion without $mut tricks.
+// Syntax (prefix core):
+//   $decl fact $forward $func ($decl n 0) 0
+//   $decl fact $func ($decl n 0) {
+//     $if $eq n 0 ($group 1 ($mul n ($call fact $sub n 1)))
+//   }
+// Rules:
+// - `$forward` marks an unresolved function binding. The stub must specify parameters (names/order/defaults) and a return-shape placeholder.
+// - A later `$decl` of the same name in the same scope must provide the body; params must match exactly; return shape must be equal (or more precise if relaxed later).
+// - Exactly one `$forward` per name per scope; body must appear in the same scope. Shadowing in inner scopes is allowed but refers to that scope only.
+// - Calls are allowed after the stub (type comes from the stub). If stub is missing and body appears later, it is a normal definition (unless disallowed by policy).
+// - Errors: missing body for `$forward`; multiple bodies for the same stub; param/default mismatch; return-shape mismatch; `$forward` used on non-function; arity mismatch at call (even with defaults).
+// Mutual recursion example:
+//   $decl even $forward $func ($decl n 0) 0
+//   $decl odd  $forward $func ($decl n 0) 0
+//   $decl even $func ($decl n 0) {
+//     $if $eq n 0 ($group 1 ($call odd $sub n 1))
+//   }
+//   $decl odd $func ($decl n 0) {
+//     $if $eq n 0 ($group 0 ($call even $sub n 1))
+//   }
+
+
+// ===== PARSER & OVERLOAD RESOLUTION =====
+
+// The parser is type-agnostic: it does not reason about types.
+// Grammar rules may specify multiple template alternatives separated by `|`;
+// the parser collects all alternatives into an overload set.
+// Type-checking later resolves the overload by matching argument types to each candidate.
+//
+// Example grammar (prefix core with overloads):
+// rule expr:
+//     %NUMBER => $intlit
+//     %IDENT => $ident
+//     $expr lhs "+" $expr[1] rhs => $add lhs rhs | $fadd lhs rhs
+// end
+//
+// Semantics:
+// - Parser sees `lhs + rhs` and produces an AST node with candidates [$add, $fadd].
+// - Type-checker infers types of lhs, rhs; tries each candidate in order.
+// - First candidate whose builtin signature matches the operand types is chosen.
+// - If no candidate matches or all are exhausted, type error.
+
+// ===== Grammar syntax extensions: inline grouping + repetition =====
+// Goal: express vararg constructs (e.g., $group, $block) without type logic and without greedy capture.
+// New pattern forms (parser-only, type-agnostic):
+//   $( pattern )       : inline grouping of a subpattern
+//   postfix +          : one or more repetitions of the preceding atom/subpattern
+//   postfix *          : zero or more repetitions
+//   postfix ?          : optional (zero or one)
+// Examples:
+//   // comma-separated expressions -> $group
+//   rule expr:
+//       $expr first $("," $expr)+ rest => $group first rest
+//   end
+// Semantics:
+// - The parser matches the base pattern ($expr first), then matches the repeated grouped subpattern
+//   one-or-more times, collecting captures into `rest`.
+// - Template arguments are ordered: named captures (like `first`, `rest`) receive the collected nodes;
+//   repeated captures become lists in the AST node (resolved later by the type checker / AST builder).
+// - Overload behavior stays unchanged; alternatives can still be separated with `|` after `=>`.
+
+// ===== LITERALS =====
+42              // int
+3.14            // float
+"text"          // string
+
+
+// ===== MORPHL compound types =====
+
+// group (array-like)
+$group expr1 expr2 ...
+
+// minimal alias: expr [, expr] ...
+
+
+
+// block (kind of like C's struct, essential, double as scope)
+$block stmnt1 stmnt2 ...
+
+// minimal alias: {stmnt ...}
+
+// block should allow inside logic. e.g.
+
+$decl x {
+	$decl a 1
+	$decl b "foo"
+	$set a $add a 1
+}
+// x will have type signature of {a: int, b: str}
+// will have value of {2, "foo"}
+
+
+
+
+
+// ===== BUILT-IN OPERATORS ($ prefix) =====
+
+// Declaration (immutable by default)
+$decl name value
+
+// Function definition
+$func param_group body
+
+// e.g.
+$decl f1 $func ($decl x 0, $decl y 0) $add x y
+
+// Conditional (expression, returns value)
+$if condition then-expr else-expr
+
+// storage operator
+
+// create mutable reference to expression
+$mut expr
+// e.g.
+$decl x $mut 0 // $mut 0 return mutable reference then $decl binds x to that expression
+
+// create const reference to expression
+$const expr
+// used the same way as $mut
+
+// inline the expression ($functionally the same as alias but through $decl)
+$inline expr
+// used the same way as $mut and $const e.g. $decl x $inline 0
+
+// Basic operators e.g.
+
+// arithmetic
+$add, $sub, $mul, $div
+
+// float arithmetic
+$fadd, $fsub, $fmul, $fdiv
+
+// binary
+$band, $bor, $bnot, $lshift, $rshift
+
+// logic
+$and, $or, $not
+
+// comp
+$eq, $neq, $gt, $lt, $gte, $lte
+
+
+// namespace keywords
+
+$this // this scope e.g.
+$decl x {
+	$decl a 0
+	$member $this a // equivalent to x.a
+}
+
+$file (file-level), $global (global-level)
+
+// import
+$import "name"  // e.g.
+
+$decl mod1 $import "module1"
+
+// essentially, mod1 would contain module1 as block (i.e. module1's $file scope)
+
+
+// meta stuffs
+
+// convert identifier to string literal
+$idtstr %identifier%
+
+// convert literal to identifier
+$strtid "literal"
+
+
+
+
+
+// ===== TYPE INFERENCE =====
+$decl x 10              // x : int
+$decl y 3.14            // y : float
+$decl s "hi"            // s : string
+$decl p ($group 1 2)    // p : (int, int)
+$decl b ($block $decl x 0 $decl y 0) b : {x:int, y:int}
+$decl b2 ($block $decl x 10 $decl y 10) b2 : {x:int, y:int}
+$decl b3 ($block $decl y 10 $decl x 10) b3 : {y:int, x:int}
+
+// type-wise: b == b2 != b3
+
+// ===== EXAMPLES =====
+
+// recursive function require creative maneuver
+// e.g. factorial
+$decl fact $mut $func 0 0 // declare fact as (int) => int
+$set fact $func $decl n 0 {
+	$if $eq n 0
+		$ret 1,
+		$ret $mul $call fact $sub n 1
+}

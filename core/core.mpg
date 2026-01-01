@@ -1,6 +1,0 @@
-literal int "${NUMBER}", "${DIGIT}";
-literal float 
-  ".${NUMBER}", 
-  "${NUMBER}.${NUMBER}";
-literal char "'${ALPHA}'", "'${DIGIT}'", "'${OTHER}'";
-literal string "\"${IDENTIFIER}\"";

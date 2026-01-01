@@ -3,7 +3,9 @@
 #include <cstring>
 #include <fstream>
 #include <string>
-#include <unistd.h>
+#include <cstdlib>
+#include <ctime>
+#include <sstream>
 
 extern "C" {
 #include "parser/parser.h"
@@ -12,14 +14,37 @@ extern "C" {
 }
 
 static std::string write_temp_file(const char* contents) {
-  char path[] = "/tmp/morphl_test_XXXXXX";
-  int fd = mkstemp(path);
-  assert(fd != -1 && "mkstemp failed");
-  close(fd);
-  std::ofstream out(path, std::ios::trunc);
-  out << contents;
-  out.close();
-  return std::string(path);
+  const char* tmpdir = std::getenv("TMP");
+  if (!tmpdir) tmpdir = std::getenv("TEMP");
+#ifdef _WIN32
+  const char* fallback = "C:/Windows/Temp";
+#else
+  const char* fallback = "/tmp";
+#endif
+  if (!tmpdir) tmpdir = fallback;
+
+  std::srand((unsigned)std::time(nullptr) ^ (unsigned)(uintptr_t)&tmpdir);
+
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    std::ostringstream name;
+    name << tmpdir;
+#ifdef _WIN32
+    name << "/";
+#else
+    name << "/";
+#endif
+    name << "morphl_test_" << std::rand() << ".tmp";
+    std::string path = name.str();
+
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open()) continue;
+    out << contents;
+    out.close();
+    return path;
+  }
+
+  assert(false && "failed to open temp file");
+  return std::string();
 }
 
 static void test_grammar_loading() {

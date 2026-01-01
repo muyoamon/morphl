@@ -12,7 +12,8 @@
 typedef enum GrammarAtomKind {
   GRAMMAR_ATOM_LITERAL,    /**< A literal token lexeme to match. */
   GRAMMAR_ATOM_TOKEN_KIND, /**< A token-kind match (e.g. `%IDENT`). */
-  GRAMMAR_ATOM_RULE        /**< A recursive rule reference with optional binding power. */
+  GRAMMAR_ATOM_RULE,       /**< A recursive rule reference with optional binding power. */
+  GRAMMAR_ATOM_REPEAT      /**< A grouped subpattern with repetition (e.g. $( "," $expr )+ ). */
 } GrammarAtomKind;
 
 /**
@@ -24,17 +25,27 @@ typedef struct GrammarAtom {
   Sym symbol;           /**< Token/rule symbol for @ref GRAMMAR_ATOM_TOKEN_KIND and @ref GRAMMAR_ATOM_RULE. */
   Str literal;          /**< Literal token text for @ref GRAMMAR_ATOM_LITERAL. */
   size_t min_bp;        /**< Minimum binding power for @ref GRAMMAR_ATOM_RULE. */
+
+  /* Repeat-specific fields (used when kind == GRAMMAR_ATOM_REPEAT) */
+  struct GrammarAtom* subatoms;    /**< Inline grouped subpattern atoms. */
+  size_t subatom_count;     /**< Number of subpattern atoms. */
+  size_t subatom_capacity;  /**< Allocated subpattern atom slots. */
+  size_t min_occurs;        /**< Minimum repetitions (0,1, etc.). */
+  size_t max_occurs;        /**< Maximum repetitions (SIZE_MAX for unbounded). */
 } GrammarAtom;
 
 /**
  * @brief A production rule represented as a sequence of atoms.
+ * Supports overloading via multiple template alternatives (separated by `|` in grammar).
  */
 typedef struct Production {
-  GrammarAtom* atoms;      /**< Ordered atoms in this production. */
-  size_t atom_count;       /**< Number of atoms. */
-  size_t atom_capacity;    /**< Allocated atom slots. */
-  Str template_text;       /**< Expansion template following `=>`. */
-  bool starts_with_expr;   /**< True when the first atom recurses into the same rule. */
+  GrammarAtom* atoms;          /**< Ordered atoms in this production. */
+  size_t atom_count;           /**< Number of atoms. */
+  size_t atom_capacity;        /**< Allocated atom slots. */
+  Str* templates;              /**< Array of template alternatives (candidates). */
+  size_t template_count;       /**< Number of template alternatives. */
+  size_t template_capacity;    /**< Allocated template slots. */
+  bool starts_with_expr;       /**< True when the first atom recurses into the same rule. */
 } Production;
 
 /**

@@ -1,0 +1,9 @@
+rule expr:
+    %NUMBER => $intlit | $floatlit
+    %IDENT => $ident
+    "(" $expr ")" => $group
+    $expr lhs "+" $expr[1] rhs => $add lhs rhs | $fadd lhs rhs
+    $expr lhs "-" $expr[1] rhs => $sub lhs rhs | $fsub lhs rhs
+    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | $fmul lhs rhs
+    $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs | $fdiv lhs rhs
+end

@@ -1,6 +1,7 @@
 #include "parser/parser.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,7 +47,13 @@ static bool ensure_atom_capacity(Production* prod) {
 
 static void reset_rule(GrammarRule* rule) {
   for (size_t i = 0; i < rule->production_count; ++i) {
+    for (size_t j = 0; j < rule->productions[i].atom_count; ++j) {
+      if (rule->productions[i].atoms[j].kind == GRAMMAR_ATOM_REPEAT) {
+        free(rule->productions[i].atoms[j].subatoms);
+      }
+    }
     free(rule->productions[i].atoms);
+    free(rule->productions[i].templates);
   }
   free(rule->productions);
   memset(rule, 0, sizeof(*rule));
@@ -120,18 +127,154 @@ static GrammarRule* find_or_add_rule(Grammar* grammar, Sym name) {
   return slot;
 }
 
+// Forward declaration: parse a subpattern (no templates) into atom array.
+static bool parse_subpattern_atoms(const char* line,
+                                   size_t len,
+                                   InternTable* interns,
+                                   Arena* arena,
+                                   Sym rule_name,
+                                   GrammarAtom** out_atoms,
+                                   size_t* out_count);
+
+// Split template string on '|' to extract overload alternatives.
+// Caller owns the returned array and must free it.
+static Str* split_templates(Arena* arena, const char* template_text, size_t template_len, size_t* out_count) {
+  if (!template_text || template_len == 0) {
+    *out_count = 0;
+    return NULL;
+  }
+
+  // Count pipes
+  size_t pipe_count = 0;
+  for (size_t i = 0; i < template_len; ++i) {
+    if (template_text[i] == '|') pipe_count++;
+  }
+  
+  size_t count = pipe_count + 1;
+  Str* result = (Str*)malloc(count * sizeof(Str));
+  if (!result) return NULL;
+
+  const char* cursor = template_text;
+  size_t remaining = template_len;
+  
+  for (size_t i = 0; i < count; ++i) {
+    // Find the next pipe or end
+    size_t segment_len = 0;
+    while (segment_len < remaining && cursor[segment_len] != '|') {
+      segment_len++;
+    }
+
+    // Trim whitespace
+    const char* segment_start = cursor;
+    size_t trimmed_len = segment_len;
+    while (trimmed_len > 0 && isspace((unsigned char)segment_start[0])) {
+      segment_start++; trimmed_len--;
+    }
+    while (trimmed_len > 0 && isspace((unsigned char)segment_start[trimmed_len - 1])) {
+      trimmed_len--;
+    }
+
+    // Store in arena
+    char* stored = arena_push(arena, segment_start, trimmed_len + 1);
+    if (!stored) {
+      free(result);
+      return NULL;
+    }
+    stored[trimmed_len] = '\0';
+    result[i] = str_from(stored, trimmed_len);
+
+    // Move past the pipe
+    cursor += segment_len + (segment_len < remaining ? 1 : 0);
+    remaining -= segment_len + (segment_len < remaining ? 1 : 0);
+  }
+
+  *out_count = count;
+  return result;
+}
+
 static bool parse_pattern(const char* line,
                           size_t len,
                           InternTable* interns,
                           Arena* arena,
                           Sym rule_name,
                           Production* prod,
-                          Str template_text) {
+                          const Str* templates,
+                          size_t template_count) {
   memset(prod, 0, sizeof(*prod));
-  prod->template_text = template_text;
+  
+  // Store templates
+  if (template_count > 0) {
+    prod->templates = (Str*)malloc(template_count * sizeof(Str));
+    if (!prod->templates) return false;
+    memcpy(prod->templates, templates, template_count * sizeof(Str));
+    prod->template_count = template_count;
+    prod->template_capacity = template_count;
+  }
+  
   while (true) {
     trim_whitespace(&line, &len);
     if (len == 0) break;
+
+    // Inline grouping with repetition: $( ... )+ | * | ?
+    if (len >= 2 && line[0] == '$' && line[1] == '(') {
+      const char* sub = line + 2;
+      size_t remaining = len - 2;
+      size_t depth = 1;
+      size_t idx = 0;
+      while (idx < remaining && depth > 0) {
+        char c = sub[idx];
+        if (c == '(') depth++;
+        else if (c == ')') depth--;
+        idx++;
+      }
+      if (depth != 0) {
+        return false; // unmatched parenthesis
+      }
+      size_t inner_len = idx - 1; // exclude the closing ')'
+      const char* after_paren = sub + inner_len + 1;
+      size_t after_len = remaining - inner_len - 1;
+
+      GrammarAtom repeat_atom;
+      memset(&repeat_atom, 0, sizeof(repeat_atom));
+      repeat_atom.kind = GRAMMAR_ATOM_REPEAT;
+      repeat_atom.min_occurs = 1;
+      repeat_atom.max_occurs = 1;
+
+      if (!parse_subpattern_atoms(sub, inner_len, interns, arena, rule_name,
+                                   &repeat_atom.subatoms, &repeat_atom.subatom_count)) {
+        return false;
+      }
+      repeat_atom.subatom_capacity = repeat_atom.subatom_count;
+
+      trim_whitespace(&after_paren, &after_len);
+      if (after_len > 0) {
+        char q = after_paren[0];
+        if (q == '+') {
+          repeat_atom.min_occurs = 1;
+          repeat_atom.max_occurs = SIZE_MAX;
+          after_paren++; after_len--;
+        } else if (q == '*') {
+          repeat_atom.min_occurs = 0;
+          repeat_atom.max_occurs = SIZE_MAX;
+          after_paren++; after_len--;
+        } else if (q == '?') {
+          repeat_atom.min_occurs = 0;
+          repeat_atom.max_occurs = 1;
+          after_paren++; after_len--;
+        }
+      }
+
+      if (!ensure_atom_capacity(prod)) {
+        free(repeat_atom.subatoms);
+        return false;
+      }
+      prod->atoms[prod->atom_count++] = repeat_atom;
+
+      // Advance line/len past the group (and optional quantifier) for next atom
+      line = after_paren;
+      len = after_len;
+      continue;
+    }
 
     bool literal_allocated = false;
     Str raw;
@@ -229,6 +372,25 @@ static bool parse_pattern(const char* line,
   return true;
 }
 
+// Parse a subpattern (no templates) into an atom array. Ownership of atoms is returned to caller.
+static bool parse_subpattern_atoms(const char* line,
+                                   size_t len,
+                                   InternTable* interns,
+                                   Arena* arena,
+                                   Sym rule_name,
+                                   GrammarAtom** out_atoms,
+                                   size_t* out_count) {
+  if (!out_atoms || !out_count) return false;
+  Production temp;
+  memset(&temp, 0, sizeof(temp));
+  if (!parse_pattern(line, len, interns, arena, rule_name, &temp, NULL, 0)) {
+    return false;
+  }
+  *out_atoms = temp.atoms;
+  *out_count = temp.atom_count;
+  return true;
+}
+
 bool grammar_load_file(Grammar* grammar,
                        const char* path,
                        InternTable* interns,
@@ -311,25 +473,32 @@ bool grammar_load_file(Grammar* grammar,
     trim_whitespace(&template_start, &template_len);
     const char* pattern_start = line;
     trim_whitespace(&pattern_start, &pattern_len);
-    char* stored_template = arena_push(arena, template_start, template_len + 1);
-    if (!stored_template) {
+    
+    // Split templates on '|' to extract overload alternatives
+    size_t template_count = 0;
+    Str* templates = split_templates(arena, template_start, template_len, &template_count);
+    if (template_count == 0) {
       free(contents);
       grammar_free(grammar);
+      free(templates);
       return false;
     }
-    stored_template[template_len] = '\0';
+    
     if (!ensure_production_capacity(current_rule)) {
       free(contents);
       grammar_free(grammar);
+      free(templates);
       return false;
     }
     Production* prod = &current_rule->productions[current_rule->production_count++];
     if (!parse_pattern(pattern_start, pattern_len, interns, arena, current_rule->name, prod,
-                       str_from(stored_template, template_len))) {
+                       templates, template_count)) {
       free(contents);
       grammar_free(grammar);
+      free(templates);
       return false;
     }
+    free(templates);
   }
 
   free(contents);
@@ -384,6 +553,27 @@ static bool match_atom(const ParsedRuleContext* ctx,
       if (!target) return false;
       ParsedRuleContext nested = {.rule = target, .grammar = ctx->grammar};
       return parse_rule_internal(&nested, tokens, token_count, atom->min_bp, cursor, depth + 1);
+    }
+    case GRAMMAR_ATOM_REPEAT: {
+      size_t count = 0;
+      size_t local = *cursor;
+      while (count < atom->max_occurs) {
+        size_t iter_cursor = local;
+        bool ok = true;
+        for (size_t i = 0; i < atom->subatom_count; ++i) {
+          if (!match_atom(ctx, &atom->subatoms[i], tokens, token_count, &iter_cursor, depth + 1)) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) break;
+        local = iter_cursor;
+        count++;
+        if (count == atom->max_occurs) break;
+      }
+      if (count < atom->min_occurs) return false;
+      *cursor = local;
+      return true;
     }
   }
   return false;
