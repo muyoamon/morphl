@@ -1,0 +1,11 @@
+rule expr:
+    %NUMBER => number
+    %IDENT => ident
+    $expr[1] first $("," $expr[2] rest)+ => $group first $spread rest
+    "(" $expr inner ")" => inner
+    $expr[1] lhs "+" $expr[2] rhs => $add lhs rhs | fadd lhs rhs
+    $expr[1] lhs "-" $expr[2] rhs => $sub lhs rhs | fsub lhs rhs
+    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | fmul lhs rhs
+    $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs | fdiv lhs rhs
+    %IDENT id "=" $expr exp => $decl id exp
+end

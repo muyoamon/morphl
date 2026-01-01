@@ -8,6 +8,7 @@ target_include_directories(morphlc PUBLIC
 add_subdirectory(util)
 add_subdirectory(lexer)
 add_subdirectory(parser)
+add_subdirectory(ast)
 
 
 

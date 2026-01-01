@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include "tokens/tokens.h"
+#include "ast/ast.h"
 
 /**
  * @brief Specifies the kind of atom a grammar production can contain.
@@ -25,6 +26,7 @@ typedef struct GrammarAtom {
   Sym symbol;           /**< Token/rule symbol for @ref GRAMMAR_ATOM_TOKEN_KIND and @ref GRAMMAR_ATOM_RULE. */
   Str literal;          /**< Literal token text for @ref GRAMMAR_ATOM_LITERAL. */
   size_t min_bp;        /**< Minimum binding power for @ref GRAMMAR_ATOM_RULE. */
+  Sym capture;          /**< Optional capture name (interned). */
 
   /* Repeat-specific fields (used when kind == GRAMMAR_ATOM_REPEAT) */
   struct GrammarAtom* subatoms;    /**< Inline grouped subpattern atoms. */
@@ -130,5 +132,19 @@ bool grammar_parse(const Grammar* grammar,
                    Sym start_rule,
                    const struct token* tokens,
                    size_t token_count);
+
+/**
+ * @brief Parse a token stream and produce an AST (experimental).
+ *
+ * Currently returns a boolean success indicator and, on success, sets
+ * *out_root to the parsed tree. The AST shape is subject to change as
+ * the language evolves. Caller owns the returned AST and must free it
+ * with ast_free().
+ */
+bool grammar_parse_ast(const Grammar* grammar,
+                       Sym start_rule,
+                       const struct token* tokens,
+                       size_t token_count,
+                       AstNode** out_root);
 
 #endif // MORPHL_PARSER_PARSER_H_

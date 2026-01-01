@@ -7,6 +7,7 @@
 
 #include "lexer/lexer.h"
 #include "util/file.h"
+#include "ast/ast.h"
 
 #define PARSER_MAX_DEPTH 128
 
@@ -14,6 +15,21 @@ typedef struct ParsedRuleContext {
   const GrammarRule* rule;
   const Grammar* grammar;
 } ParsedRuleContext;
+
+static bool parse_rule_internal_ast(const ParsedRuleContext* ctx,
+                                    const struct token* tokens,
+                                    size_t token_count,
+                                    size_t min_bp,
+                                    size_t* cursor,
+                                    size_t depth,
+                                    AstNode** out_node);
+
+typedef struct Capture {
+  Sym name;
+  AstNode** nodes;
+  size_t count;
+  size_t capacity;
+} Capture;
 
 static bool ensure_rule_capacity(Grammar* grammar) {
   if (grammar->rule_count < grammar->rule_cap) return true;
@@ -42,6 +58,42 @@ static bool ensure_atom_capacity(Production* prod) {
   if (!resized) return false;
   prod->atoms = resized;
   prod->atom_capacity = new_cap;
+  return true;
+}
+
+static Capture* ensure_capture(Capture** captures, size_t* capture_count, Sym name);
+
+static Capture* find_capture(Capture* captures, size_t capture_count, Sym name) {
+  for (size_t i = 0; i < capture_count; ++i) {
+    if (captures[i].name == name) return &captures[i];
+  }
+  return NULL;
+}
+
+static Capture* ensure_capture(Capture** captures, size_t* capture_count, Sym name) {
+  Capture* existing = find_capture(*captures, *capture_count, name);
+  if (existing) return existing;
+  size_t new_count = *capture_count + 1;
+  Capture* resized = realloc(*captures, new_count * sizeof(Capture));
+  if (!resized) return NULL;
+  *captures = resized;
+  Capture* slot = &(*captures)[*capture_count];
+  memset(slot, 0, sizeof(*slot));
+  slot->name = name;
+  *capture_count = new_count;
+  return slot;
+}
+
+static bool capture_append(Capture* cap, AstNode* node) {
+  if (!cap || !node) return false;
+  if (cap->count == cap->capacity) {
+    size_t new_cap = cap->capacity ? cap->capacity * 2 : 4;
+    AstNode** resized = realloc(cap->nodes, new_cap * sizeof(AstNode*));
+    if (!resized) return false;
+    cap->nodes = resized;
+    cap->capacity = new_cap;
+  }
+  cap->nodes[cap->count++] = node;
   return true;
 }
 
@@ -211,6 +263,8 @@ static bool parse_pattern(const char* line,
     prod->template_capacity = template_count;
   }
   
+  Sym pending_capture = 0;
+
   while (true) {
     trim_whitespace(&line, &len);
     if (len == 0) break;
@@ -268,6 +322,9 @@ static bool parse_pattern(const char* line,
         free(repeat_atom.subatoms);
         return false;
       }
+      // If a capture was seen immediately before, attach to this repeat atom.
+      repeat_atom.capture = pending_capture;
+      pending_capture = 0;
       prod->atoms[prod->atom_count++] = repeat_atom;
 
       // Advance line/len past the group (and optional quantifier) for next atom
@@ -290,8 +347,21 @@ static bool parse_pattern(const char* line,
       }
     }
     if (ident_like && raw.ptr[0] != '%' && raw.ptr[0] != '$') {
+      Sym cap = interns_intern(interns, raw);
       if (literal_allocated) free((void*)raw.ptr);
-      continue; // Capture name; not a matchable atom.
+      if (!cap) return false;
+
+      // Prefer attaching to the most recent atom; otherwise defer to the next one.
+      bool attached = false;
+      if (prod->atom_count > 0) {
+        GrammarAtom* prev = &prod->atoms[prod->atom_count - 1];
+        if (prev->capture == 0) {
+          prev->capture = cap;
+          attached = true;
+        }
+      }
+      if (!attached) pending_capture = cap;
+      continue; // Capture label applied; move to next token.
     }
     if (raw.len > 1 && raw.ptr[0] == '$') {
       size_t name_len = 0;
@@ -364,6 +434,8 @@ static bool parse_pattern(const char* line,
       free(prod->atoms);
       return false;
     }
+    atom.capture = pending_capture;
+    pending_capture = 0;
     prod->atoms[prod->atom_count++] = atom;
   }
   prod->starts_with_expr =
@@ -661,4 +733,405 @@ bool grammar_parse(const Grammar* grammar,
   size_t cursor = 0;
   if (!parse_rule_internal(&ctx, tokens, parse_count, 0, &cursor, 0)) return false;
   return cursor == parse_count;
+}
+
+// ---------- AST construction path (experimental) ----------
+
+static AstNode* ast_group_from_list(AstNode** nodes, size_t count) {
+  AstNode* g = ast_new(AST_GROUP);
+  if (!g) return NULL;
+  for (size_t i = 0; i < count; ++i) {
+    if (!ast_append_child(g, nodes[i])) return g; // best effort
+  }
+  if (count > 0) {
+    g->filename = nodes[0]->filename;
+    g->row = nodes[0]->row;
+    g->col = nodes[0]->col;
+  }
+  return g;
+}
+
+static void flatten_and_append(AstNode* parent, AstNode* node) {
+  if (!parent || !node) return;
+  if (node->kind == AST_GROUP) {
+    // Always recursively flatten group nodes (expand their children)
+    for (size_t i = 0; i < node->child_count; ++i) {
+      flatten_and_append(parent, node->children[i]);
+    }
+  } else {
+    // Non-group node: add directly
+    ast_append_child(parent, node);
+  }
+}
+
+static AstNode* build_template_ast(const Production* prod,
+                                   size_t template_index,
+                                   Capture* captures,
+                                   size_t capture_count,
+                                   InternTable* interns) {
+  if (template_index >= prod->template_count) return NULL;
+  Str tmpl = prod->templates[template_index];
+  const char* cur = tmpl.ptr;
+  size_t rem = tmpl.len;
+  // Parse tokens by whitespace
+  #define NEXT_TOKEN(tok, tok_len)                             \
+    const char* tok = cur;                                     \
+    size_t tok_len = 0;                                        \
+    while (tok_len < rem && !isspace((unsigned char)tok[tok_len])) tok_len++; \
+    cur += tok_len; rem -= tok_len;                            \
+    while (rem > 0 && isspace((unsigned char)*cur)) { cur++; rem--; }
+
+  NEXT_TOKEN(op_tok, op_len);
+  if (op_len == 0) return NULL;
+  Sym op_sym = interns_intern(interns, str_from(op_tok, op_len));
+  if (!op_sym) return NULL;
+  AstNode* root = ast_new(AST_BUILTIN);
+  if (!root) return NULL;
+  root->op = op_sym;
+
+  while (rem > 0) {
+    NEXT_TOKEN(arg_tok, arg_len);
+    if (arg_len == 0) break;
+
+    // Check for $spread operator (exactly "$spread" followed by a capture name)
+    if (arg_len == 7 && strncmp(arg_tok, "$spread", 7) == 0) {
+      // Next token is the capture name to spread
+      NEXT_TOKEN(name_tok, name_len);
+      if (name_len == 0) { ast_free(root); return NULL; }
+      Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
+      if (!cap_sym) { ast_free(root); return NULL; }
+      Capture* cap = find_capture(captures, capture_count, cap_sym);
+      if (!cap || cap->count == 0) { ast_free(root); return NULL; }
+
+      // Spread: recursively flatten all nodes
+      for (size_t i = 0; i < cap->count; ++i) {
+        flatten_and_append(root, cap->nodes[i]);
+      }
+      continue;
+    }
+
+    // Regular capture reference
+    Sym cap_sym = interns_intern(interns, str_from(arg_tok, arg_len));
+    if (!cap_sym) { ast_free(root); return NULL; }
+    Capture* cap = find_capture(captures, capture_count, cap_sym);
+    if (!cap || cap->count == 0) { ast_free(root); return NULL; }
+    AstNode* child = NULL;
+    if (cap->count == 1) {
+      child = cap->nodes[0];
+    } else {
+      child = ast_group_from_list(cap->nodes, cap->count);
+    }
+    if (!child || !ast_append_child(root, child)) { ast_free(root); return NULL; }
+  }
+
+  if (root->child_count > 0) {
+    root->filename = root->children[0]->filename;
+    root->row = root->children[0]->row;
+    root->col = root->children[0]->col;
+  }
+  return root;
+
+#undef NEXT_TOKEN
+}
+
+static void free_captures(Capture* caps, size_t count) {
+  if (!caps) return;
+  for (size_t i = 0; i < count; ++i) {
+    free(caps[i].nodes); // nodes owned by AST; do not free nodes themselves
+  }
+  free(caps);
+}
+
+static bool template_is_leaf(const Production* prod, size_t template_index) {
+  if (template_index >= prod->template_count) return false;
+  Str tmpl = prod->templates[template_index];
+  const char* cur = tmpl.ptr;
+  size_t rem = tmpl.len;
+  while (rem > 0 && isspace((unsigned char)*cur)) { cur++; rem--; }
+  size_t tok_len = 0;
+  while (tok_len < rem && !isspace((unsigned char)cur[tok_len])) tok_len++;
+  cur += tok_len; rem -= tok_len;
+  while (rem > 0 && isspace((unsigned char)*cur)) { cur++; rem--; }
+  return tok_len > 0 && rem == 0;
+}
+
+static AstNode* build_prod_result(const Production* prod,
+                                  Capture* caps,
+                                  size_t cap_count,
+                                  InternTable* interns,
+                                  AstNode* first_node) {
+  if (prod->template_count == 1) {
+    if (template_is_leaf(prod, 0) && first_node) return first_node;
+    return build_template_ast(prod, 0, caps, cap_count, interns);
+  }
+  if (prod->template_count > 1) {
+    AstNode* overload = ast_new(AST_OVERLOAD);
+    if (!overload) return NULL;
+    for (size_t t = 0; t < prod->template_count; ++t) {
+      AstNode* cand = build_template_ast(prod, t, caps, cap_count, interns);
+      if (cand) ast_append_child(overload, cand);
+    }
+    return overload;
+  }
+  return NULL;
+}
+
+static bool match_atom_ast(const ParsedRuleContext* ctx,
+                           const GrammarAtom* atom,
+                           const struct token* tokens,
+                           size_t token_count,
+                           size_t* cursor,
+                           size_t depth,
+                           Capture** captures,
+                           size_t* capture_count,
+                           AstNode** out_node) {
+  if (out_node) *out_node = NULL;
+  switch (atom->kind) {
+    case GRAMMAR_ATOM_LITERAL:
+      if (*cursor >= token_count) return false;
+      if (!str_eq(tokens[*cursor].lexeme, atom->literal)) return false;
+      if (out_node && atom->capture) {
+        AstNode* leaf = ast_make_leaf(AST_LITERAL, tokens[*cursor].lexeme,
+                                      tokens[*cursor].filename, tokens[*cursor].row, tokens[*cursor].col);
+        *out_node = leaf;
+        Capture* c = ensure_capture(captures, capture_count, atom->capture);
+        if (!c || !capture_append(c, leaf)) return false;
+      }
+      (*cursor)++;
+      return true;
+    case GRAMMAR_ATOM_TOKEN_KIND:
+      if (*cursor >= token_count) return false;
+      if (tokens[*cursor].kind != atom->symbol) return false;
+      if (out_node) {
+        AstKind kind = AST_LITERAL;
+        // Heuristic: IDENT token kind -> AST_IDENT
+        Sym ident_sym = interns_intern(ctx->grammar->names,
+                                       str_from(LEXER_KIND_IDENT, strlen(LEXER_KIND_IDENT)));
+        if (ident_sym && tokens[*cursor].kind == ident_sym) {
+          kind = AST_IDENT;
+        }
+        AstNode* leaf = ast_make_leaf(kind, tokens[*cursor].lexeme,
+                                      tokens[*cursor].filename, tokens[*cursor].row, tokens[*cursor].col);
+        *out_node = leaf;
+        if (atom->capture) {
+          Capture* c = ensure_capture(captures, capture_count, atom->capture);
+          if (!c || !capture_append(c, leaf)) return false;
+        }
+      }
+      (*cursor)++;
+      return true;
+    case GRAMMAR_ATOM_RULE: {
+      GrammarRule* target = find_rule(ctx->grammar, atom->symbol);
+      if (!target) return false;
+      ParsedRuleContext nested = {.rule = target, .grammar = ctx->grammar};
+      AstNode* sub = NULL;
+      if (!parse_rule_internal_ast(&nested, tokens, token_count, atom->min_bp, cursor, depth + 1, &sub)) {
+        return false;
+      }
+      if (out_node) {
+        *out_node = sub;
+        if (atom->capture) {
+          Capture* c = ensure_capture(captures, capture_count, atom->capture);
+          if (!c || !capture_append(c, sub)) return false;
+        }
+      } else {
+        ast_free(sub);
+      }
+      return true;
+    }
+    case GRAMMAR_ATOM_REPEAT: {
+      size_t count = 0;
+      size_t local = *cursor;
+      AstNode** rep_nodes = NULL;
+      size_t rep_count = 0, rep_cap = 0;
+      while (count < atom->max_occurs) {
+        size_t iter_cursor = local;
+        bool ok = true;
+        AstNode** sub_nodes = NULL;
+        size_t sub_count = 0, sub_cap = 0;
+        for (size_t i = 0; i < atom->subatom_count; ++i) {
+          AstNode* subnode = NULL;
+          if (!match_atom_ast(ctx, &atom->subatoms[i], tokens, token_count, &iter_cursor, depth + 1,
+                              captures, capture_count, &subnode)) {
+            ok = false;
+            break;
+          }
+          if (subnode) {
+            if (sub_count == sub_cap) {
+              size_t new_cap = sub_cap ? sub_cap * 2 : 4;
+              AstNode** tmp = realloc(sub_nodes, new_cap * sizeof(AstNode*));
+              if (!tmp) { ok = false; break; }
+              sub_nodes = tmp; sub_cap = new_cap;
+            }
+            sub_nodes[sub_count++] = subnode;
+          }
+        }
+        if (!ok) { free(sub_nodes); break; }
+        local = iter_cursor;
+        count++;
+        AstNode* group = ast_group_from_list(sub_nodes, sub_count);
+        free(sub_nodes);
+        if (group) {
+          if (rep_count == rep_cap) {
+            size_t new_cap = rep_cap ? rep_cap * 2 : 4;
+            AstNode** tmp = realloc(rep_nodes, new_cap * sizeof(AstNode*));
+            if (!tmp) { ast_free(group); break; }
+            rep_nodes = tmp; rep_cap = new_cap;
+          }
+          rep_nodes[rep_count++] = group;
+        }
+        if (count == atom->max_occurs) break;
+      }
+      if (count < atom->min_occurs) { free(rep_nodes); return false; }
+      *cursor = local;
+      AstNode* produced = ast_group_from_list(rep_nodes, rep_count);
+      free(rep_nodes);
+      if (out_node) *out_node = produced;
+      if (atom->capture && produced) {
+        Capture* c = ensure_capture(captures, capture_count, atom->capture);
+        if (!c || !capture_append(c, produced)) return false;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool match_pattern_ast(const ParsedRuleContext* ctx,
+                              const Production* prod,
+                              const struct token* tokens,
+                              size_t token_count,
+                              size_t min_bp,
+                              bool consume_leading_expr,
+                              size_t* cursor,
+                              size_t depth,
+                              Capture** captures,
+                              size_t* capture_count,
+                              AstNode** first_node,
+                              bool collect_all_nodes) {
+  size_t local = *cursor;
+  if (depth > PARSER_MAX_DEPTH) return false;
+  for (size_t i = 0; i < prod->atom_count; ++i) {
+    if (i == 0 && prod->starts_with_expr && consume_leading_expr) {
+      if (prod->atoms[i].min_bp < min_bp) return false;
+      continue;
+    }
+    AstNode* produced = NULL;
+    AstNode** out_slot = (collect_all_nodes || prod->atoms[i].capture) ? &produced : NULL;
+    if (!match_atom_ast(ctx, &prod->atoms[i], tokens, token_count, &local, depth, captures, capture_count, out_slot)) {
+      return false;
+    }
+    if (first_node && produced && *first_node == NULL) {
+      *first_node = produced;
+    }
+  }
+  if (consume_leading_expr && prod->atom_count <= 1) {
+    return false;
+  }
+  if (local == *cursor) return false;
+  *cursor = local;
+  return true;
+}
+
+
+static bool parse_rule_internal_ast(const ParsedRuleContext* ctx,
+                                    const struct token* tokens,
+                                    size_t token_count,
+                                    size_t min_bp,
+                                    size_t* cursor,
+                                    size_t depth,
+                                    AstNode** out_node) {
+  if (depth > PARSER_MAX_DEPTH) return false;
+  AstNode* lhs = NULL;
+
+  // Prefix: productions that do not consume a leading expression
+  for (size_t i = 0; i < ctx->rule->production_count; ++i) {
+    const Production* prod = &ctx->rule->productions[i];
+    if (prod->starts_with_expr) continue;
+    size_t local = *cursor;
+    Capture* caps = NULL; size_t cap_count = 0;
+    AstNode* first = NULL;
+    bool want_first = template_is_leaf(prod, 0);
+    if (!match_pattern_ast(ctx, prod, tokens, token_count, min_bp, false, &local, depth + 1, &caps, &cap_count,
+                           want_first ? &first : NULL, want_first)) {
+      free_captures(caps, cap_count);
+      continue;
+    }
+    AstNode* result = build_prod_result(prod, caps, cap_count, ctx->grammar->names, first);
+    free_captures(caps, cap_count);
+    if (result) {
+      lhs = result;
+      *cursor = local;
+      break;
+    }
+  }
+
+  if (!lhs) return false;
+
+  // Infix/postfix: productions that extend a leading expression
+  while (true) {
+    bool extended = false;
+    for (size_t i = 0; i < ctx->rule->production_count; ++i) {
+      const Production* prod = &ctx->rule->productions[i];
+      if (!prod->starts_with_expr) continue;
+      if (prod->atom_count == 0) continue;
+      size_t local = *cursor;
+      Capture* caps = NULL; size_t cap_count = 0;
+
+      // Seed captures with the already-parsed lhs if the first atom requests it
+      const GrammarAtom* first = &prod->atoms[0];
+      if (first->capture) {
+        Capture* c = ensure_capture(&caps, &cap_count, first->capture);
+        if (!c || !capture_append(c, lhs)) { free_captures(caps, cap_count); continue; }
+      }
+
+      if (!match_pattern_ast(ctx, prod, tokens, token_count, min_bp, true, &local, depth + 1, &caps, &cap_count, NULL, false)) {
+        free_captures(caps, cap_count);
+        continue;
+      }
+
+      AstNode* result = build_prod_result(prod, caps, cap_count, ctx->grammar->names, NULL);
+      free_captures(caps, cap_count);
+      if (!result) continue;
+
+      lhs = result;
+      *cursor = local;
+      extended = true;
+      break;
+    }
+    if (!extended) break;
+  }
+
+  if (out_node) {
+    *out_node = lhs;
+  } else {
+    ast_free(lhs);
+  }
+  return true;
+}
+
+
+bool grammar_parse_ast(const Grammar* grammar,
+                       Sym start_rule,
+                       const struct token* tokens,
+                       size_t token_count,
+                       AstNode** out_root) {
+  if (!grammar || grammar->rule_count == 0 || !out_root) return false;
+  *out_root = NULL;
+  size_t parse_count = token_count;
+  Sym eof_sym = interns_intern(grammar->names,
+                               str_from(LEXER_KIND_EOF, strlen(LEXER_KIND_EOF)));
+  if (parse_count > 0 && tokens[parse_count - 1].kind == eof_sym) {
+    parse_count--;
+  }
+  Sym start = start_rule ? start_rule : grammar->start_rule;
+  GrammarRule* rule = find_rule(grammar, start);
+  if (!rule) return false;
+  ParsedRuleContext ctx = {.rule = rule, .grammar = grammar};
+  size_t cursor = 0;
+  AstNode* root = NULL;
+  if (!parse_rule_internal_ast(&ctx, tokens, parse_count, 0, &cursor, 0, &root)) return false;
+  if (cursor != parse_count) { ast_free(root); return false; }
+  *out_root = root;
+  return true;
 }

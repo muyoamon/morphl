@@ -1,7 +1,8 @@
 rule expr:
-    %NUMBER => $intlit | $floatlit
+    %NUMBER => $intlit
     %IDENT => $ident
-    "(" $expr ")" => $group
+    $expr first $("," $expr)+ rest => $group first rest 
+    "(" $expr expr ")" => expr
     $expr lhs "+" $expr[1] rhs => $add lhs rhs | $fadd lhs rhs
     $expr lhs "-" $expr[1] rhs => $sub lhs rhs | $fsub lhs rhs
     $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | $fmul lhs rhs

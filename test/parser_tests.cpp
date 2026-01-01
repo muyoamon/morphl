@@ -11,6 +11,7 @@ extern "C" {
 #include "parser/parser.h"
 #include "lexer/lexer.h"
 #include "util/util.h"
+#include "ast/ast.h"
 }
 
 static std::string write_temp_file(const char* contents) {
@@ -131,9 +132,52 @@ end
   std::remove(grammar_path.c_str());
 }
 
+static void test_parser_ast_build() {
+  const char* grammar_src = R"GRAM(rule expr:
+    %IDENT => ident
+    %NUMBER => number
+    $expr lhs "+" $expr[1] rhs => add lhs rhs
+end
+)GRAM";
+
+  std::string grammar_path = write_temp_file(grammar_src);
+
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  Grammar grammar;
+  assert(grammar_load_file(&grammar, grammar_path.c_str(), interns, &arena));
+
+  const char* source = "foo + 2";
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  assert(lexer_tokenize("<test>", str_from(source, strlen(source)), interns, &tokens, &token_count));
+
+  AstNode* root = NULL;
+  assert(grammar_parse_ast(&grammar, 0, tokens, token_count, &root));
+  assert(root != NULL);
+  Sym add_sym = interns_intern(interns, str_from("add", 3));
+  assert(root->kind == AST_BUILTIN);
+  assert(root->op == add_sym);
+  assert(root->child_count == 2);
+  assert(root->children[0]->kind == AST_IDENT);
+  assert(root->children[1]->kind == AST_LITERAL);
+
+  ast_free(root);
+  free(tokens);
+  grammar_free(&grammar);
+  arena_free(&arena);
+  interns_free(interns);
+  std::remove(grammar_path.c_str());
+}
+
 int main() {
   test_grammar_loading();
   test_parser_accept_reject();
+  test_parser_ast_build();
   std::puts("All parser tests passed.");
   return 0;
 }

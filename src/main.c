@@ -55,6 +55,16 @@ int main(int argc, char** argv) {
 
   bool accepted = grammar_parse(&grammar, 0, tokens, token_count);
   printf("parse %s\n", accepted ? "succeeded" : "failed");
+  if (accepted) {
+    AstNode* root = NULL;
+    if (grammar_parse_ast(&grammar, 0, tokens, token_count, &root)) {
+      printf("AST:\n");
+      ast_print(root, interns);
+      ast_free(root);
+    } else {
+      printf("failed to build AST\n");
+    }
+  }
 
   free(tokens);
   free(source_buffer);

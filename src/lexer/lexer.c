@@ -93,18 +93,10 @@ bool lexer_tokenize(const char* filename,
       continue;
     }
 
+    // Symbol characters: tokenize one at a time
     size_t start = offset;
-    while (offset < source.len) {
-      char cc = source.ptr[offset];
-      if (isalnum((unsigned char)cc) || cc == '_' || isspace((unsigned char)cc)) break;
-      offset++; col++;
-    }
-    size_t len = offset - start;
-    if (len == 0) {
-      // Should not happen, but avoid infinite loop.
-      offset++; col++;
-      continue;
-    }
+    offset++; col++;
+    size_t len = 1;
 
     if (!ensure_token_capacity(out_tokens, &cap, *out_count + 1)) return false;
     (*out_tokens)[(*out_count)++] = (struct token){
