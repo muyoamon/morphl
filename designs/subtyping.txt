@@ -1,0 +1,69 @@
+// ==== property ====
+// property is the preprocessing member of any object. property inside block will not exist in type checking e.g.
+$decl x {
+    $decl a 10;
+    $prop b 100;
+}; // type signature: x: {a: int}
+
+// both decl and prop member will be able to access using $member operator however property must be namespaced by $ e.g.
+$member x a; // 10
+$member x $b // 100
+
+
+// ==== traits ====
+// traits are shared behavior e.g.
+// syntax: $traits <block>
+$decl loggable $traits {
+    $prop log $func ($this) $void;
+};
+
+$decl x {$decl a 0};
+
+// syntax: $impl <traits> <for,implementation group> if implementation is not given, will be implement using default implementation i.e. the one given when define the traits.
+$impl loggable x, {
+    $prop log $func ($this) {...};
+}
+
+$call $member x $log ();
+
+// traits could also be used on non-compound object
+$decl y 10;
+
+$impl loggable y, {
+    $prop log $func ($this) {...};
+};
+
+// this could be useful for stuff like, hypothetically:
+$decl unsafe $import "unsafe";
+
+// where inside unsafe we could have generic traits such as:
+    $decl has_addr $traits {
+        $prop addr $func ($this) $call $member $runtime addr_of $this; 
+    };
+    $impl has_addr $any;
+
+// then in the program we could
+$decl x 10;
+$call $member x $addr; // addr of x
+
+
+// ==== subtyping ====
+// as explained before, subtype is any type that are considered smaller but consistent to another type.
+// an empty group is considered a subtype of any type.
+// an individual expression is considered a subtype of a group if the type match with the first element.
+// a block type is considered a subtype if its entire member match with the bigger type i.e. when the bigger type is an extension of the smaller type.
+
+// by default, identifier are type binded loosely, that is, they could be set to its super-type. e.g.
+
+$decl x {
+    $decl a 10;
+}; // type signature: x: {a:int}
+
+$decl y $extend x {
+    $decl b 10;
+}; // type signature: y: {a:int, b:int}
+
+$decl v1 $mut x;
+$set v1 y; // works
+$member v1 b; // fails because v1 hold type of x and therefore has no member named 'b'
+$member v1 a; // works

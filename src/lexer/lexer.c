@@ -57,6 +57,30 @@ bool lexer_tokenize(const char* filename,
     if (c == '\n') { row++; col = 1; offset++; continue; }
     if (c == ' ' || c == '\t' || c == '\r') { col++; offset++; continue; }
 
+    // Handle $identifier as a single token (builtin operators)
+    if (c == '$' && offset + 1 < source.len) {
+      char next = source.ptr[offset + 1];
+      if (isalpha((unsigned char)next) || next == '_') {
+        size_t start = offset;
+        offset++; col++; // Skip $
+        while (offset < source.len) {
+          char cc = source.ptr[offset];
+          if (!(isalnum((unsigned char)cc) || cc == '_')) break;
+          offset++; col++;
+        }
+        size_t len = offset - start;
+        if (!ensure_token_capacity(out_tokens, &cap, *out_count + 1)) return false;
+        (*out_tokens)[(*out_count)++] = (struct token){
+          .kind = ident_kind,
+          .lexeme = str_from(source.ptr + start, len),
+          .filename = filename,
+          .row = row,
+          .col = col - len,
+        };
+        continue;
+      }
+    }
+
     if (isalpha((unsigned char)c) || c == '_') {
       size_t start = offset;
       while (offset < source.len) {

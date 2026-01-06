@@ -1,5 +1,6 @@
 add_library(morphl_parser
   parser.c
+  builtin_parser.c
 )
 
 target_link_libraries(morphl_parser PUBLIC morphl_util morphl_ast)

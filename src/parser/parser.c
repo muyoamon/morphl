@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -510,6 +511,13 @@ bool grammar_load_file(Grammar* grammar,
         name_len--;
       }
       Str name = str_from(name_start, name_len);
+      
+      // Warn if rule name starts with $ (builtin namespace)
+      if (name_len > 0 && name_start[0] == '$') {
+        fprintf(stderr, "warning: custom rule '%.*s' redefines builtin operator namespace\n",
+                (int)name_len, name_start);
+      }
+      
       Sym interned = interns_intern(interns, name);
       if (!interned) {
         free(contents);
