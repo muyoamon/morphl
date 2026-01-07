@@ -9,6 +9,7 @@
 #include "lexer/lexer.h"
 #include "util/file.h"
 #include "ast/ast.h"
+#include "parser/operators.h"
 
 #define PARSER_MAX_DEPTH 128
 
@@ -856,7 +857,15 @@ static AstNode* build_template_ast(const Production* prod,
   if (op_len == 0) return NULL;
   Sym op_sym = interns_intern(interns, str_from(op_tok, op_len));
   if (!op_sym) return NULL;
-  AstNode* root = ast_new(AST_BUILTIN);
+  
+  // Determine AST kind from operator registry
+  AstKind op_kind = AST_BUILTIN;
+  const OperatorInfo* info = operator_info_lookup(op_sym);
+  if (info && info->ast_kind != AST_UNKNOWN) {
+    op_kind = info->ast_kind;
+  }
+  
+  AstNode* root = ast_new(op_kind);
   if (!root) return NULL;
   root->op = op_sym;
 
