@@ -772,6 +772,68 @@ static void flatten_and_append(AstNode* parent, AstNode* node) {
   }
 }
 
+static AstNode* ast_clone_tree(const AstNode* node) {
+  if (!node) return NULL;
+  AstNode* copy = ast_new(node->kind);
+  if (!copy) return NULL;
+  copy->op = node->op;
+  copy->value = node->value;
+  copy->filename = node->filename;
+  copy->row = node->row;
+  copy->col = node->col;
+
+  for (size_t i = 0; i < node->child_count; ++i) {
+    AstNode* child = ast_clone_tree(node->children[i]);
+    if (!child || !ast_append_child(copy, child)) {
+      ast_free(child);
+      ast_free(copy);
+      return NULL;
+    }
+  }
+  return copy;
+}
+
+static void release_captures(Capture* caps, size_t count, bool free_nodes) {
+  if (!caps) return;
+  for (size_t i = 0; i < count; ++i) {
+    if (free_nodes) {
+      for (size_t j = 0; j < caps[i].count; ++j) {
+        ast_free(caps[i].nodes[j]);
+      }
+    }
+    free(caps[i].nodes);
+  }
+  free(caps);
+}
+
+static Capture* clone_captures(const Capture* caps, size_t count) {
+  if (!caps || count == 0) return NULL;
+  Capture* cloned = (Capture*)calloc(count, sizeof(Capture));
+  if (!cloned) return NULL;
+
+  for (size_t i = 0; i < count; ++i) {
+    cloned[i].name = caps[i].name;
+    cloned[i].count = caps[i].count;
+    if (caps[i].count == 0) continue;
+
+    cloned[i].nodes = (AstNode**)malloc(caps[i].count * sizeof(AstNode*));
+    if (!cloned[i].nodes) {
+      release_captures(cloned, count, true);
+      return NULL;
+    }
+
+    for (size_t j = 0; j < caps[i].count; ++j) {
+      cloned[i].nodes[j] = ast_clone_tree(caps[i].nodes[j]);
+      if (!cloned[i].nodes[j]) {
+        release_captures(cloned, count, true);
+        return NULL;
+      }
+    }
+  }
+
+  return cloned;
+}
+
 static AstNode* build_template_ast(const Production* prod,
                                    size_t template_index,
                                    Capture* captures,
@@ -876,8 +938,17 @@ static AstNode* build_prod_result(const Production* prod,
     AstNode* overload = ast_new(AST_OVERLOAD);
     if (!overload) return NULL;
     for (size_t t = 0; t < prod->template_count; ++t) {
-      AstNode* cand = build_template_ast(prod, t, caps, cap_count, interns);
-      if (cand) ast_append_child(overload, cand);
+      Capture* cloned_caps = cap_count ? clone_captures(caps, cap_count) : NULL;
+      if (cap_count && !cloned_caps) { ast_free(overload); return NULL; }
+      AstNode* cand = build_template_ast(prod, t,
+                                         cloned_caps ? cloned_caps : caps,
+                                         cap_count, interns);
+      release_captures(cloned_caps, cap_count, cand == NULL);
+      if (!cand || !ast_append_child(overload, cand)) {
+        if (cand) ast_free(cand);
+        ast_free(overload);
+        return NULL;
+      }
     }
     return overload;
   }
@@ -1139,7 +1210,14 @@ bool grammar_parse_ast(const Grammar* grammar,
   size_t cursor = 0;
   AstNode* root = NULL;
   if (!parse_rule_internal_ast(&ctx, tokens, parse_count, 0, &cursor, 0, &root)) return false;
-  if (cursor != parse_count) { ast_free(root); return false; }
+  if (cursor != parse_count) {
+    fprintf(stderr, "grammar parse stopped at token %zu of %zu: '%.*s'\n",
+            cursor, parse_count,
+            (int)tokens[cursor].lexeme.len,
+            tokens[cursor].lexeme.ptr ? tokens[cursor].lexeme.ptr : "");
+    ast_free(root);
+    return false;
+  }
   *out_root = root;
   return true;
 }

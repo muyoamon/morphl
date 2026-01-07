@@ -9,6 +9,7 @@
 
 const char* const LEXER_KIND_IDENT = "IDENT";
 const char* const LEXER_KIND_NUMBER = "NUMBER";
+const char* const LEXER_KIND_STRING = "STRING";
 const char* const LEXER_KIND_SYMBOL = "SYMBOL";
 const char* const LEXER_KIND_EOF = "EOF";
 
@@ -26,13 +27,15 @@ static bool ensure_token_capacity(struct token** tokens, size_t* cap, size_t nee
 static bool intern_kinds(InternTable* interns,
                          TokenKind* ident,
                          TokenKind* number,
+                         TokenKind* string,
                          TokenKind* symbol,
                          TokenKind* eof) {
   *ident = interns_intern(interns, str_from(LEXER_KIND_IDENT, strlen(LEXER_KIND_IDENT)));
   *number = interns_intern(interns, str_from(LEXER_KIND_NUMBER, strlen(LEXER_KIND_NUMBER)));
+  *string = interns_intern(interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
   *symbol = interns_intern(interns, str_from(LEXER_KIND_SYMBOL, strlen(LEXER_KIND_SYMBOL)));
   *eof = interns_intern(interns, str_from(LEXER_KIND_EOF, strlen(LEXER_KIND_EOF)));
-  return *ident && *number && *symbol && *eof;
+  return *ident && *number && *string && *symbol && *eof;
 }
 
 bool lexer_tokenize(const char* filename,
@@ -45,8 +48,8 @@ bool lexer_tokenize(const char* filename,
   *out_count = 0;
   size_t cap = 0;
 
-  TokenKind ident_kind, number_kind, symbol_kind, eof_kind;
-  if (!intern_kinds(interns, &ident_kind, &number_kind, &symbol_kind, &eof_kind)) {
+  TokenKind ident_kind, number_kind, string_kind, symbol_kind, eof_kind;
+  if (!intern_kinds(interns, &ident_kind, &number_kind, &string_kind, &symbol_kind, &eof_kind)) {
     return false;
   }
 
@@ -109,6 +112,35 @@ bool lexer_tokenize(const char* filename,
       if (!ensure_token_capacity(out_tokens, &cap, *out_count + 1)) return false;
       (*out_tokens)[(*out_count)++] = (struct token){
         .kind = number_kind,
+        .lexeme = str_from(source.ptr + start, len),
+        .filename = filename,
+        .row = row,
+        .col = col - len,
+      };
+      continue;
+    }
+
+    // String literals: "..."
+    if (c == '"') {
+      size_t start = offset;
+      offset++; col++; // Skip opening quote
+      while (offset < source.len && source.ptr[offset] != '"') {
+        if (source.ptr[offset] == '\n') {
+          row++; col = 1;
+        } else {
+          col++;
+        }
+        offset++;
+      }
+      if (offset >= source.len) {
+        // Unterminated string
+        return false;
+      }
+      offset++; col++; // Skip closing quote
+      size_t len = offset - start;
+      if (!ensure_token_capacity(out_tokens, &cap, *out_count + 1)) return false;
+      (*out_tokens)[(*out_count)++] = (struct token){
+        .kind = string_kind,
         .lexeme = str_from(source.ptr + start, len),
         .filename = filename,
         .row = row,

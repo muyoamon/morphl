@@ -1,3 +1,4 @@
+$syntax "examples/grammar_sample.txt";
 foo := 2;
 foo := (foo + 2);
 foo, bar, baz := (1,2,3);

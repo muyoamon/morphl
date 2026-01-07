@@ -1,4 +1,5 @@
 #include "parser/builtin_parser.h"
+#include "parser/operators.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 // Token kind constants (must match lexer)
 extern const char* const LEXER_KIND_IDENT;
 extern const char* const LEXER_KIND_NUMBER;
+extern const char* const LEXER_KIND_STRING;
 extern const char* const LEXER_KIND_SYMBOL;
 extern const char* const LEXER_KIND_EOF;
 
@@ -22,6 +24,7 @@ static bool parse_builtin_expr(const struct token* tokens,
                                InternTable* interns,
                                TokenKind ident_kind,
                                TokenKind number_kind,
+                               TokenKind string_kind,
                                TokenKind symbol_kind,
                                TokenKind eof_kind,
                                size_t depth,
@@ -35,41 +38,10 @@ static bool is_builtin_op(const struct token* tok, TokenKind ident_kind) {
 }
 
 /**
- * @brief Check if a token is an opening delimiter.
- */
-static bool is_open_delim(const struct token* tok, TokenKind symbol_kind) {
-  return tok->kind == symbol_kind &&
-         tok->lexeme.len == 1 &&
-         (tok->lexeme.ptr[0] == '(' || tok->lexeme.ptr[0] == '{' || tok->lexeme.ptr[0] == '[');
-}
-
-/**
- * @brief Check if a token is a closing delimiter matching the expected type.
- */
-static bool is_close_delim(const struct token* tok, TokenKind symbol_kind, char expected) {
-  return tok->kind == symbol_kind &&
-         tok->lexeme.len == 1 &&
-         tok->lexeme.ptr[0] == expected;
-}
-
-/**
- * @brief Get the matching closing delimiter for an opening delimiter.
- */
-static char get_matching_close(char open) {
-  switch (open) {
-    case '(': return ')';
-    case '{': return '}';
-    case '[': return ']';
-    default: return 0;
-  }
-}
-
-/**
  * @brief Parse a single expression (atom or builtin operation).
  *
  * Handles:
  * - Literals: numbers, strings, identifiers
- * - Delimited groups: ( ), { }, [ ]
  * - Builtin operations: $op arg1 arg2 ...
  */
 static bool parse_builtin_expr(const struct token* tokens,
@@ -78,6 +50,7 @@ static bool parse_builtin_expr(const struct token* tokens,
                                InternTable* interns,
                                TokenKind ident_kind,
                                TokenKind number_kind,
+                               TokenKind string_kind,
                                TokenKind symbol_kind,
                                TokenKind eof_kind,
                                size_t depth,
@@ -95,81 +68,6 @@ static bool parse_builtin_expr(const struct token* tokens,
   // Check for EOF
   if (tok->kind == eof_kind) {
     return false;
-  }
-
-  // Handle delimited groups: ( ... ), { ... }, [ ... ]
-  if (is_open_delim(tok, symbol_kind)) {
-    char open = tok->lexeme.ptr[0];
-    char close = get_matching_close(open);
-    (*cursor)++; // Consume opening delimiter
-
-    // Determine group kind based on delimiter
-    AstKind group_kind;
-    if (open == '(') {
-      group_kind = AST_GROUP; // Parentheses -> tuple/group
-    } else if (open == '{') {
-      group_kind = AST_BLOCK; // Braces -> block
-    } else {
-      group_kind = AST_GROUP; // Brackets -> also treated as group for now
-    }
-
-    // Parse children until closing delimiter
-    AstNode** children = NULL;
-    size_t child_count = 0;
-    size_t child_capacity = 0;
-
-    while (*cursor < token_count && !is_close_delim(&tokens[*cursor], symbol_kind, close)) {
-      // Grow children array
-      if (child_count >= child_capacity) {
-        size_t new_cap = child_capacity ? child_capacity * 2 : 4;
-        AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
-        if (!resized) {
-          for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
-          free(children);
-          return false;
-        }
-        children = resized;
-        child_capacity = new_cap;
-      }
-
-      // Parse child expression
-      AstNode* child = NULL;
-      if (!parse_builtin_expr(tokens, token_count, cursor, interns, ident_kind, number_kind, symbol_kind, eof_kind, depth + 1, &child)) {
-        for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
-        free(children);
-        return false;
-      }
-      children[child_count++] = child;
-
-      // Optional: skip semicolons or commas as separators
-      if (*cursor < token_count) {
-        const struct token* sep = &tokens[*cursor];
-        if (sep->kind == symbol_kind && sep->lexeme.len == 1 &&
-            (sep->lexeme.ptr[0] == ';' || sep->lexeme.ptr[0] == ',')) {
-          (*cursor)++;
-        }
-      }
-    }
-
-    // Expect closing delimiter
-    if (*cursor >= token_count || !is_close_delim(&tokens[*cursor], symbol_kind, close)) {
-      for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
-      free(children);
-      return false;
-    }
-    (*cursor)++; // Consume closing delimiter
-
-    // Create group/block node
-    AstNode* node = ast_new(group_kind);
-    if (!node) {
-      for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
-      free(children);
-      return false;
-    }
-    node->children = children;
-    node->child_count = child_count;
-    *out_node = node;
-    return true;
   }
 
   // Handle builtin operations: $op arg1 arg2 ...
@@ -217,7 +115,7 @@ static bool parse_builtin_expr(const struct token* tokens,
 
       // Parse argument
       AstNode* child = NULL;
-      if (!parse_builtin_expr(tokens, token_count, cursor, interns, ident_kind, number_kind, symbol_kind, eof_kind, depth + 1, &child)) {
+      if (!parse_builtin_expr(tokens, token_count, cursor, interns, ident_kind, number_kind, string_kind, symbol_kind, eof_kind, depth + 1, &child)) {
         for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
         free(children);
         return false;
@@ -225,8 +123,14 @@ static bool parse_builtin_expr(const struct token* tokens,
       children[child_count++] = child;
     }
 
-    // Create builtin node
-    AstNode* node = ast_new(AST_BUILTIN);
+    // Choose AST kind based on operator registry (defaults to builtin)
+    AstKind op_kind = AST_BUILTIN;
+    const OperatorInfo* info = operator_info_lookup(op_sym);
+    if (info && info->ast_kind != AST_UNKNOWN) {
+      op_kind = info->ast_kind;
+    }
+
+    AstNode* node = ast_new(op_kind);
     if (!node) {
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children);
@@ -241,10 +145,7 @@ static bool parse_builtin_expr(const struct token* tokens,
 
   // Handle literals and identifiers
   AstKind kind;
-  if (tok->kind == number_kind) {
-    kind = AST_LITERAL;
-  } else if (tok->lexeme.len >= 2 && tok->lexeme.ptr[0] == '"' && tok->lexeme.ptr[tok->lexeme.len - 1] == '"') {
-    // String literal
+  if (tok->kind == number_kind || tok->kind == string_kind) {
     kind = AST_LITERAL;
   } else if (tok->kind == ident_kind) {
     kind = AST_IDENT;
@@ -266,6 +167,24 @@ static bool parse_builtin_expr(const struct token* tokens,
   return true;
 }
 
+bool builtin_parse_expr(const struct token* tokens,
+                        size_t token_count,
+                        size_t* cursor,
+                        InternTable* interns,
+                        AstNode** out_node) {
+  if (!tokens || !cursor || !interns || !out_node) return false;
+
+  // Intern token kinds
+  TokenKind ident_kind = interns_intern(interns, str_from(LEXER_KIND_IDENT, strlen(LEXER_KIND_IDENT)));
+  TokenKind number_kind = interns_intern(interns, str_from(LEXER_KIND_NUMBER, strlen(LEXER_KIND_NUMBER)));
+  TokenKind string_kind = interns_intern(interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
+  TokenKind symbol_kind = interns_intern(interns, str_from(LEXER_KIND_SYMBOL, strlen(LEXER_KIND_SYMBOL)));
+  TokenKind eof_kind = interns_intern(interns, str_from(LEXER_KIND_EOF, strlen(LEXER_KIND_EOF)));
+  if (!ident_kind || !number_kind || !string_kind || !symbol_kind || !eof_kind) return false;
+
+  return parse_builtin_expr(tokens, token_count, cursor, interns, ident_kind, number_kind, string_kind, symbol_kind, eof_kind, 0, out_node);
+}
+
 bool builtin_parse_ast(const struct token* tokens,
                        size_t token_count,
                        InternTable* interns,
@@ -275,9 +194,10 @@ bool builtin_parse_ast(const struct token* tokens,
   // Intern token kinds
   TokenKind ident_kind = interns_intern(interns, str_from(LEXER_KIND_IDENT, strlen(LEXER_KIND_IDENT)));
   TokenKind number_kind = interns_intern(interns, str_from(LEXER_KIND_NUMBER, strlen(LEXER_KIND_NUMBER)));
+  TokenKind string_kind = interns_intern(interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
   TokenKind symbol_kind = interns_intern(interns, str_from(LEXER_KIND_SYMBOL, strlen(LEXER_KIND_SYMBOL)));
   TokenKind eof_kind = interns_intern(interns, str_from(LEXER_KIND_EOF, strlen(LEXER_KIND_EOF)));
-  if (!ident_kind || !number_kind || !symbol_kind || !eof_kind) return false;
+  if (!ident_kind || !number_kind || !string_kind || !symbol_kind || !eof_kind) return false;
 
   size_t cursor = 0;
   
@@ -303,7 +223,7 @@ bool builtin_parse_ast(const struct token* tokens,
 
     // Parse top-level statement
     AstNode* child = NULL;
-    if (!parse_builtin_expr(tokens, token_count, &cursor, interns, ident_kind, number_kind, symbol_kind, eof_kind, 0, &child)) {
+    if (!parse_builtin_expr(tokens, token_count, &cursor, interns, ident_kind, number_kind, string_kind, symbol_kind, eof_kind, 0, &child)) {
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children);
       return false;

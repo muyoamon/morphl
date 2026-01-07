@@ -1,0 +1,3 @@
+$decl x 42;
+$syntax "examples/grammar_sample.txt";
+foo(1, 2, 3);
