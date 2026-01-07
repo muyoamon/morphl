@@ -1,6 +1,7 @@
 #include "parser/scoped_parser.h"
 #include "parser/builtin_parser.h"
 #include "lexer/lexer.h"
+#include "parser/operators.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,48 +128,13 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
                               size_t depth,
                               AstNode** out_node);
 
-/**
- * @brief Check if an AST node is a $syntax directive.
- */
-static bool is_syntax_directive(const AstNode* node, InternTable* interns) {
-  if (!node || node->kind != AST_BUILTIN) return false;
-  
-  // Check if operator is $syntax
-  Str op_name = interns_lookup(interns, node->op);
-  if (op_name.len != 7 || strncmp(op_name.ptr, "$syntax", 7) != 0) return false;
-  
-  // Check if it has exactly one child (the filename string literal)
-  if (node->child_count != 1) return false;
-  
-  AstNode* arg = node->children[0];
-  if (arg->kind != AST_LITERAL) return false;
-  
-  // Check if it's a string literal (starts and ends with ")
-  if (arg->value.len < 2 || arg->value.ptr[0] != '"' || arg->value.ptr[arg->value.len - 1] != '"') {
-    return false;
-  }
-  
-  return true;
-}
-
-/**
- * @brief Extract filename from a $syntax directive node.
- */
-static const char* extract_syntax_filename(const AstNode* node, char* buffer, size_t buffer_size) {
-  if (!node || node->child_count == 0) return NULL;
-  
-  AstNode* arg = node->children[0];
-  Str value = arg->value;
-  
-  // Remove quotes
-  if (value.len < 2) return NULL;
-  size_t len = value.len - 2;
-  if (len >= buffer_size) return NULL;
-  
-  memcpy(buffer, value.ptr + 1, len);
-  buffer[len] = '\0';
-  
-  return buffer;
+// Preprocessor hook executor: returns true if node should be kept, false if dropped
+static bool apply_preprocessor_if_any(ScopedParserContext* ctx, AstNode* node) {
+  if (!node || node->kind != AST_BUILTIN || !node->op) return true;
+  const OperatorInfo* info = operator_info_lookup(node->op);
+  if (!info || !info->is_preprocessor || !info->func) return true;
+  info->func(info, ctx, NULL, node->children, node->child_count);
+  return info->pp_policy != OP_PP_DROP_NODE;
 }
 
 /**
@@ -211,6 +177,18 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
       size_t remaining = token_count - *cursor;
       AstNode* grammar_root = NULL;
       if (!grammar_parse_ast(grammar, 0, tokens + *cursor, remaining, &grammar_root)) {
+        const struct token* t = (remaining > 0) ? &tokens[*cursor] : NULL;
+        fprintf(stderr, "scoped parse: grammar parse failed at offset %zu (remaining %zu) tok='%.*s'\n",
+                *cursor, remaining,
+                t ? (int)t->lexeme.len : 0,
+                t && t->lexeme.ptr ? t->lexeme.ptr : "");
+        size_t preview = remaining < 12 ? remaining : 12;
+        fprintf(stderr, "preview tokens:");
+        for (size_t pi = 0; pi < preview; ++pi) {
+          const struct token* pt = &tokens[*cursor + pi];
+          fprintf(stderr, " [%.*s]", (int)pt->lexeme.len, pt->lexeme.ptr);
+        }
+        fprintf(stderr, "\n");
         for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
         free(children);
         return false;
@@ -279,15 +257,9 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
       return false;
     }
     
-    // Check if this is a $syntax directive
-    if (is_syntax_directive(stmt, ctx->interns)) {
-      char filename[256];
-      const char* path = extract_syntax_filename(stmt, filename, sizeof(filename));
-      if (path) {
-        scoped_parser_replace_grammar(ctx, path);
-      }
-      ast_free(stmt); // Don't include $syntax directives in AST
-    } else {
+    // Apply preprocessor action if needed
+    bool keep = apply_preprocessor_if_any(ctx, stmt);
+    if (keep) {
       // Add statement to children
       if (child_count >= child_capacity) {
         size_t new_cap = child_capacity ? child_capacity * 2 : 4;
@@ -302,6 +274,8 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
         child_capacity = new_cap;
       }
       children[child_count++] = stmt;
+    } else {
+      ast_free(stmt);
     }
     
     // Skip optional semicolons

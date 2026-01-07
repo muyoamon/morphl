@@ -13,6 +13,17 @@ typedef struct MorphlType MorphlType;
 
 typedef struct OperatorInfo OperatorInfo;
 
+/**
+ * @brief Policy for how a preprocessor op contributes to the AST.
+ */
+typedef enum OperatorPPResultPolicy {
+  OP_PP_KEEP_NODE = 0,  // Keep the node in the AST
+  OP_PP_DROP_NODE = 1   // Drop the node after executing side effects
+} OperatorPPResultPolicy;
+
+/**
+ * @brief Function signature for operator preprocessor actions.
+ */
 typedef MorphlType* (*OperatorPPActionFunc)(const OperatorInfo* info,
                                             void* global_state,
                                             void* block_state,
@@ -26,6 +37,7 @@ struct OperatorInfo {
   size_t min_args;           // minimum expected operands (hint only)
   size_t max_args;           // maximum expected operands (SIZE_MAX for variadic)
   bool is_preprocessor;      // true for ops like $syntax/$prop/$import
+  OperatorPPResultPolicy pp_policy; // policy for AST retention
 };
 
 /**

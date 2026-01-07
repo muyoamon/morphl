@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
   }
 
   Arena arena;
-  arena_init(&arena, 4096);
+  arena_init(&arena, 65536);
 
   // Initialize scoped parser context
   ScopedParserContext parser_ctx;

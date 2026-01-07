@@ -176,6 +176,8 @@ static GrammarRule* find_or_add_rule(Grammar* grammar, Sym name) {
   slot->name = name;
   if (grammar->start_rule == 0) {
     grammar->start_rule = name;
+    Str sr = interns_lookup(grammar->names, name);
+    fprintf(stderr, "start_rule set to %.*s\n", (int)sr.len, sr.ptr ? sr.ptr : "");
   }
   return slot;
 }
@@ -524,6 +526,7 @@ bool grammar_load_file(Grammar* grammar,
         grammar_free(grammar);
         return false;
       }
+      fprintf(stderr, "load rule '%.*s'\n", (int)name.len, name.ptr);
       current_rule = find_or_add_rule(grammar, interned);
       if (!current_rule) {
         free(contents);
@@ -571,6 +574,7 @@ bool grammar_load_file(Grammar* grammar,
       return false;
     }
     Production* prod = &current_rule->productions[current_rule->production_count++];
+    memset(prod, 0, sizeof(*prod));
     if (!parse_pattern(pattern_start, pattern_len, interns, arena, current_rule->name, prod,
                        templates, template_count)) {
       free(contents);
@@ -579,9 +583,21 @@ bool grammar_load_file(Grammar* grammar,
       return false;
     }
     free(templates);
+
+        // Debug: track start_rule after each production load
+        Str sr_dbg = interns_lookup(interns, grammar->start_rule);
+        Str rn_dbg = interns_lookup(interns, current_rule->name);
+        fprintf(stderr, "after prod load rule=%.*s start_rule=%.*s prod_idx=%zu\n",
+          (int)rn_dbg.len, rn_dbg.ptr ? rn_dbg.ptr : "",
+          (int)sr_dbg.len, sr_dbg.ptr ? sr_dbg.ptr : "",
+          current_rule->production_count - 1);
   }
 
   free(contents);
+  if (grammar->rule_count > 0) {
+    Str sr = interns_lookup(interns, grammar->start_rule);
+    fprintf(stderr, "grammar_load_file: start=%.*s rules=%zu\n", (int)sr.len, sr.ptr ? sr.ptr : "", grammar->rule_count);
+  }
   return grammar->rule_count > 0;
 }
 
@@ -1209,7 +1225,10 @@ bool grammar_parse_ast(const Grammar* grammar,
   ParsedRuleContext ctx = {.rule = rule, .grammar = grammar};
   size_t cursor = 0;
   AstNode* root = NULL;
-  if (!parse_rule_internal_ast(&ctx, tokens, parse_count, 0, &cursor, 0, &root)) return false;
+  if (!parse_rule_internal_ast(&ctx, tokens, parse_count, 0, &cursor, 0, &root)) {
+    fprintf(stderr, "grammar parse failed at start rule\n");
+    return false;
+  }
   if (cursor != parse_count) {
     fprintf(stderr, "grammar parse stopped at token %zu of %zu: '%.*s'\n",
             cursor, parse_count,
