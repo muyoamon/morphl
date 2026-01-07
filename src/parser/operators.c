@@ -40,20 +40,7 @@ static MorphlType* pp_action_syntax(const OperatorInfo* info,
   char path[512];
   const char* filename = unquote_literal(args[0], path, sizeof(path));
   if (!filename) return NULL;
-  if (!scoped_parser_replace_grammar(ctx, filename)) {
-    fprintf(stderr, "pp $syntax: failed to load grammar '%s'\n", filename);
-  } else {
-    Grammar* g = scoped_parser_current_grammar(ctx);
-    Str name = g && g->start_rule ? interns_lookup(ctx->interns, g->start_rule) : str_from(NULL, 0);
-    fprintf(stderr, "pp $syntax: loaded grammar '%s' (start=%.*s, rules=%zu)\n", filename,
-            (int)name.len, name.ptr ? name.ptr : "", g ? g->rule_count : 0);
-    if (g) {
-      for (size_t i = 0; i < g->rule_count; ++i) {
-        Str rn = interns_lookup(ctx->interns, g->rules[i].name);
-        fprintf(stderr, "  rule[%zu]=%.*s\n", i, (int)rn.len, rn.ptr ? rn.ptr : "");
-      }
-    }
-  }
+  (void)scoped_parser_replace_grammar(ctx, filename);
   return NULL;
 }
 
@@ -83,15 +70,62 @@ static MorphlType* pp_action_prop(const OperatorInfo* info,
   return NULL;
 }
 
+// $call: validate function + arguments
+static MorphlType* pp_action_call(const OperatorInfo* info,
+                                   void* global_state,
+                                   void* block_state,
+                                   AstNode** args,
+                                   size_t arg_count) {
+  (void)info; (void)global_state; (void)block_state;
+  if (arg_count < 1) return NULL;
+  // First arg should be the function (identifier or another expr)
+  // Remaining args are parameters
+  // Future: type checking, overload resolution
+  (void)args;
+  return NULL;
+}
+
+// $func: validate parameters block + body block
+static MorphlType* pp_action_func(const OperatorInfo* info,
+                                   void* global_state,
+                                   void* block_state,
+                                   AstNode** args,
+                                   size_t arg_count) {
+  (void)info; (void)global_state; (void)block_state;
+  if (arg_count < 2) return NULL;
+  // First arg: parameter list (typically a $block or $group)
+  // Second arg: function body (typically a $block)
+  // Optional third+ args: return type annotations, etc.
+  // Future: validate parameter structure, infer return type
+  (void)args;
+  return NULL;
+}
+
+// $if: validate condition, then-block, else-block structure
+static MorphlType* pp_action_if(const OperatorInfo* info,
+                                 void* global_state,
+                                 void* block_state,
+                                 AstNode** args,
+                                 size_t arg_count) {
+  (void)info; (void)global_state; (void)block_state;
+  if (arg_count != 3) return NULL;
+  // args[0]: condition expression
+  // args[1]: then-branch (typically a $block)
+  // args[2]: else-branch (typically a $block or empty)
+  // Future: check condition type is boolean-compatible
+  (void)args;
+  return NULL;
+}
+
 static OperatorRow kBuiltinOps[] = {
   // Structural
   {"$group",  AST_GROUP,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
   {"$block",  AST_BLOCK,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
 
   // Core constructs
-  {"$call",   AST_CALL,   false, 1, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
-  {"$func",   AST_FUNC,   false, 2, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
-  {"$if",     AST_IF,     false, 3, 3,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$call",   AST_CALL,   false, 1, (size_t)-1, pp_action_call,    0, OP_PP_KEEP_NODE},
+  {"$func",   AST_FUNC,   false, 2, (size_t)-1, pp_action_func,    0, OP_PP_KEEP_NODE},
+  {"$if",     AST_IF,     false, 3, 3,           pp_action_if,      0, OP_PP_KEEP_NODE},
   {"$set",    AST_SET,    false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$decl",   AST_DECL,   true,  2, 2,           NULL,              0, OP_PP_KEEP_NODE},
 
@@ -104,6 +138,27 @@ static OperatorRow kBuiltinOps[] = {
   {"$fsub",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$fmul",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$fdiv",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+
+  // Comparison
+  {"$eq",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$neq",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$lt",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$gt",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$lte",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$gte",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+
+  // Logic
+  {"$and",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$or",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$not",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE},
+
+  // Bitwise
+  {"$band",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$bor",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$bxor",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$bnot",   AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$lshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$rshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
 
   // Preprocessor
   {"$syntax", AST_BUILTIN,true,  1, 1,           pp_action_syntax,  0, OP_PP_DROP_NODE},

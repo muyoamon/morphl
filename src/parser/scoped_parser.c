@@ -177,18 +177,6 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
       size_t remaining = token_count - *cursor;
       AstNode* grammar_root = NULL;
       if (!grammar_parse_ast(grammar, 0, tokens + *cursor, remaining, &grammar_root)) {
-        const struct token* t = (remaining > 0) ? &tokens[*cursor] : NULL;
-        fprintf(stderr, "scoped parse: grammar parse failed at offset %zu (remaining %zu) tok='%.*s'\n",
-                *cursor, remaining,
-                t ? (int)t->lexeme.len : 0,
-                t && t->lexeme.ptr ? t->lexeme.ptr : "");
-        size_t preview = remaining < 12 ? remaining : 12;
-        fprintf(stderr, "preview tokens:");
-        for (size_t pi = 0; pi < preview; ++pi) {
-          const struct token* pt = &tokens[*cursor + pi];
-          fprintf(stderr, " [%.*s]", (int)pt->lexeme.len, pt->lexeme.ptr);
-        }
-        fprintf(stderr, "\n");
         for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
         free(children);
         return false;
