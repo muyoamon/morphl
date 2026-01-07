@@ -66,6 +66,8 @@ static MorphlType* pp_action_prop(const OperatorInfo* info,
                                   size_t arg_count) {
   (void)info; (void)global_state; (void)block_state; (void)args;
   if (arg_count != 2) return NULL;
+  // Arg[0]: property name (identifier)
+  // Arg[1]: property value (expression)
   // Future: attach properties to current declaration context
   return NULL;
 }
@@ -78,8 +80,8 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
                                    size_t arg_count) {
   (void)info; (void)global_state; (void)block_state;
   if (arg_count < 1) return NULL;
-  // First arg should be the function (identifier or another expr)
-  // Remaining args are parameters
+  // Arg[0]: the function (identifier or another expr)
+  // Arg[1]: Parameters as group or single expr
   // Future: type checking, overload resolution
   (void)args;
   return NULL;
@@ -93,9 +95,8 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
                                    size_t arg_count) {
   (void)info; (void)global_state; (void)block_state;
   if (arg_count < 2) return NULL;
-  // First arg: parameter list (typically a $block or $group)
-  // Second arg: function body (typically a $block)
-  // Optional third+ args: return type annotations, etc.
+  // Arg[0]: parameter list 
+  // Arg[1]: function expression/block 
   // Future: validate parameter structure, infer return type
   (void)args;
   return NULL;
@@ -108,12 +109,23 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
                                  AstNode** args,
                                  size_t arg_count) {
   (void)info; (void)global_state; (void)block_state;
-  if (arg_count != 3) return NULL;
+  if (arg_count != 2) return NULL;
   // args[0]: condition expression
-  // args[1]: then-branch (typically a $block)
-  // args[2]: else-branch (typically a $block or empty)
+  // args[1]: then-else group (allow single-element group for then-only)
   // Future: check condition type is boolean-compatible
   (void)args;
+  return NULL;
+}
+
+static MorphlType* pp_action_decl(const OperatorInfo* info,
+                                 void* global_state,
+                                 void* block_state,
+                                 AstNode** args,
+                                 size_t arg_count) {
+  (void)info; (void)global_state; (void)block_state; (void)args; (void)arg_count;
+  // Arg[0]: identifier
+  // Arg[1]: initial expression
+  // Future: handle variable declaration semantics
   return NULL;
 }
 
@@ -124,10 +136,10 @@ static OperatorRow kBuiltinOps[] = {
 
   // Core constructs
   {"$call",   AST_CALL,   false, 1, (size_t)-1, pp_action_call,    0, OP_PP_KEEP_NODE},
-  {"$func",   AST_FUNC,   false, 2, (size_t)-1, pp_action_func,    0, OP_PP_KEEP_NODE},
-  {"$if",     AST_IF,     false, 3, 3,           pp_action_if,      0, OP_PP_KEEP_NODE},
-  {"$set",    AST_SET,    false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$decl",   AST_DECL,   true,  2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$func",   AST_FUNC,   false, 2, 2,          pp_action_func,    0, OP_PP_KEEP_NODE},
+  {"$if",     AST_IF,     false, 2, 2,          pp_action_if,      0, OP_PP_KEEP_NODE},
+  {"$set",    AST_SET,    false, 2, 2,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE},
 
   // Arithmetic (no pp actions yet; type checker will use registry later)
   {"$add",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
