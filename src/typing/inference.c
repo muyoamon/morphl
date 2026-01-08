@@ -190,6 +190,34 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$block", 6))) {
     return morphl_type_void(ctx->arena);
   }
+
+  // Function definition: $func produces a function type
+  if (op_sym == interns_intern(ctx->interns, str_from("$func", 5))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func expects 2 args, got %llu", (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    
+    // First arg: parameter type(s)
+    MorphlType* param_type = arg_types[0];
+    if (!param_type) {
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer parameter type");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    
+    // Second arg: return type
+    MorphlType* return_type = arg_types[1];
+    if (!return_type) {
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer return type");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    
+    // For simplicity, assume single parameter
+    return morphl_type_func(ctx->arena, param_type, return_type);
+  }
   
   // Unknown or untyped operator
   MorphlError err = MORPHL_WARN(MORPHL_E_TYPE, "type inference not implemented for %s", op_name);

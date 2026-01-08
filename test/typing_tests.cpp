@@ -175,13 +175,12 @@ static void test_type_context_functions() {
   TypeContext* ctx = type_context_new(&arena, interns);
   assert(ctx != NULL);
   
-  // Create a function type: (int, int) -> int
+  // Create a function type: (int) -> int
   MorphlType* t_int = morphl_type_int(&arena);
-  MorphlType* param_types[] = {t_int, t_int};
-  MorphlType* func_type = morphl_type_func(&arena, param_types, 2, t_int);
+  MorphlType* func_type = morphl_type_func(&arena, t_int, t_int);
   assert(func_type != NULL);
   assert(func_type->kind == MORPHL_TYPE_FUNC);
-  assert(func_type->data.func.param_count == 2);
+  assert(func_type->data.func.param_count == 1);
   
   // Register function
   Sym add_sym = interns_intern(interns, str_from("add", 3));
@@ -192,7 +191,7 @@ static void test_type_context_functions() {
   MorphlType* found_func = type_context_lookup_func(ctx, add_sym);
   assert(found_func != NULL);
   assert(found_func->kind == MORPHL_TYPE_FUNC);
-  assert(found_func->data.func.param_count == 2);
+  assert(found_func->data.func.param_count == 1);
   
   // Look up non-existent function
   Sym sub_sym = interns_intern(interns, str_from("sub", 3));
@@ -219,13 +218,11 @@ static void test_type_clone() {
   assert(morphl_type_equals(t_int, t_int_clone) == true);
   
   // Clone function type
-  MorphlType* t_bool = morphl_type_bool(&arena);
-  MorphlType* param_types[] = {t_int, t_bool};
-  MorphlType* func_type = morphl_type_func(&arena, param_types, 2, t_int);
+  MorphlType* func_type = morphl_type_func(&arena, t_int, t_int);
   MorphlType* func_clone = morphl_type_clone(&arena, func_type);
   assert(func_clone != NULL);
   assert(func_clone->kind == MORPHL_TYPE_FUNC);
-  assert(func_clone->data.func.param_count == 2);
+  assert(func_clone->data.func.param_count == 1);
   
   arena_free(&arena);
   printf("✓ test_type_clone passed\n");

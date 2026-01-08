@@ -3,6 +3,7 @@
 #include "lexer/lexer.h"
 #include "parser/operators.h"
 #include "typing/type_context.h"
+#include "typing/inference.h"
 #include "util/error.h"
 
 #include <stdio.h>
@@ -321,6 +322,28 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
   }
 }
 
+/**
+ * @brief Recursively infer types for all nodes in an AST.
+ *
+ * Traverses the tree and calls morphl_infer_type_of_ast on each node to ensure
+ * type information is computed. This populates the type context with variable
+ * and function definitions discovered during parsing.
+ *
+ * @param ctx TypeContext for storing inferred types
+ * @param node AST node to process
+ */
+static void typing_pass_ast(TypeContext* ctx, const AstNode* node) {
+  if (!ctx || !node) return;
+  
+  // Infer type for this node (this may trigger preprocessor actions)
+  morphl_infer_type_of_ast(ctx, node);
+  
+  // Recursively infer types for children
+  for (size_t i = 0; i < node->child_count; ++i) {
+    typing_pass_ast(ctx, node->children[i]);
+  }
+}
+
 bool scoped_parse_ast(ScopedParserContext* ctx,
                      const struct token* tokens,
                      size_t token_count,
@@ -363,6 +386,9 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
     root->child_count = child_count;
     *out_root = root;
   }
+  
+  // Perform typing pass on the entire AST
+  typing_pass_ast(ctx->type_context, *out_root);
   
   return true;
 }

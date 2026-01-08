@@ -57,8 +57,7 @@ MorphlType* morphl_type_bool(Arena* arena) {
 
 // Function type constructor
 MorphlType* morphl_type_func(Arena* arena,
-                             MorphlType** param_types,
-                             size_t param_count,
+                             MorphlType* param_type,
                              MorphlType* return_type) {
   if (!arena || !return_type) return NULL;
   
@@ -70,13 +69,13 @@ MorphlType* morphl_type_func(Arena* arena,
   t->size = 8;  // Function pointer size
   t->align = 8;
   
-  // Copy parameter types
-  if (param_count > 0 && param_types) {
-    MorphlType** params = arena_alloc(arena, param_count * sizeof(MorphlType*));
+  // Copy single parameter type (functions take one parameter expression)
+  if (param_type) {
+    MorphlType** params = arena_alloc(arena, sizeof(MorphlType*));
     if (!params) return NULL;
-    memcpy(params, param_types, param_count * sizeof(MorphlType*));
+    params[0] = param_type;
     t->data.func.param_types = params;
-    t->data.func.param_count = param_count;
+    t->data.func.param_count = 1;
   } else {
     t->data.func.param_types = NULL;
     t->data.func.param_count = 0;
@@ -132,6 +131,13 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
     
     // Check return types match
     return morphl_type_equals(a->data.func.return_type, b->data.func.return_type);
+  }
+
+  if (a->kind == MORPHL_TYPE_GROUP || 
+      a->kind == MORPHL_TYPE_BLOCK) {
+    // compare each member type
+    // (not implemented yet)
+    return false;
   }
   
   return true;

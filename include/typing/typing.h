@@ -47,8 +47,7 @@ MorphlType* morphl_type_int(Arena* arena);
 MorphlType* morphl_type_float(Arena* arena);
 MorphlType* morphl_type_bool(Arena* arena);
 MorphlType* morphl_type_func(Arena* arena,
-                             MorphlType** param_types,
-                             size_t param_count,
+                             MorphlType* param_type,
                              MorphlType* return_type);
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type);
 

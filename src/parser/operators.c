@@ -210,12 +210,7 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
   
   // Create function type with 1 parameter (the parameter expression)
   // The parameter type represents what the function accepts
-  size_t param_size = sizeof(MorphlType*);
-  MorphlType** param_types = (MorphlType**)arena_push(ctx->arena, NULL, param_size);
-  if (!param_types) return NULL;
-  param_types[0] = param_type;
-  
-  return morphl_type_func(ctx->arena, param_types, 1, return_type);
+  return morphl_type_func(ctx->arena, param_type, return_type);
 }
 
 // $if: validate condition, then-block, else-block structure
