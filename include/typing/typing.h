@@ -29,14 +29,29 @@ typedef struct {
   MorphlType* return_type;
 } MorphlFuncType;
 
+// Group type metadata: ordered tuple of element types
+typedef struct {
+  MorphlType** elem_types;
+  size_t elem_count;
+} MorphlGroupType;
+
+// Block type metadata: fields declared in the block scope
+typedef struct {
+  Sym* field_names;
+  MorphlType** field_types;
+  size_t field_count;
+} MorphlBlockType;
+
 // Main type structure
 typedef struct MorphlType {
   MorphlTypeKind kind;
   size_t size;        // size in bytes
   size_t align;       // alignment requirement
   union {
-    MorphlFuncType func;  // Used when kind == MORPHL_TYPE_FUNC
-    Sym sym;              // Used for named types (traits, structs, etc.)
+    MorphlFuncType func;    // kind == MORPHL_TYPE_FUNC
+    MorphlGroupType group;  // kind == MORPHL_TYPE_GROUP
+    MorphlBlockType block;  // kind == MORPHL_TYPE_BLOCK
+    Sym sym;                // Used for named types (traits, structs, etc.)
   } data;
   void* details;      // For future extensibility
 } MorphlType;
@@ -49,6 +64,13 @@ MorphlType* morphl_type_bool(Arena* arena);
 MorphlType* morphl_type_func(Arena* arena,
                              MorphlType* param_type,
                              MorphlType* return_type);
+MorphlType* morphl_type_group(Arena* arena,
+                              MorphlType** elem_types,
+                              size_t elem_count);
+MorphlType* morphl_type_block(Arena* arena,
+                              Sym* field_names,
+                              MorphlType** field_types,
+                              size_t field_count);
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type);
 
 // Type utilities

@@ -229,14 +229,94 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, const AstNode* node) {
   if (!ctx || !node) return NULL;
   
   switch (node->kind) {
+    case AST_DECL: {
+      if (node->child_count < 2) return NULL;
+      AstNode* name_node = node->children[0];
+      AstNode* init_node = node->children[1];
+      if (!name_node || name_node->kind != AST_IDENT || !name_node->op) return NULL;
+      Sym var_sym = name_node->op;
+      if (!init_node) return NULL;
+      MorphlType* init_type = morphl_infer_type_of_ast(ctx, init_node);
+      if (!init_type) {
+        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: cannot infer variable type");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+
+      bool dup = type_context_check_duplicate_var(ctx, var_sym);
+      if (dup) {
+        MorphlType* existing = type_context_lookup_var(ctx, var_sym);
+        if (!existing || !morphl_type_equals(existing, init_type)) {
+          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: variable already declared");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+        return existing;
+      }
+
+      type_context_define_var(ctx, var_sym, init_type);
+      return init_type;
+    }
+
+    case AST_GROUP: {
+      size_t count = node->child_count;
+      MorphlType** elems = NULL;
+      if (count > 0) {
+        elems = (MorphlType**)malloc(count * sizeof(MorphlType*));
+        if (!elems) return NULL;
+        for (size_t i = 0; i < count; ++i) {
+          elems[i] = morphl_infer_type_of_ast(ctx, node->children[i]);
+          if (!elems[i]) { free(elems); return NULL; }
+        }
+      }
+      MorphlType* group_type = morphl_type_group(ctx->arena, elems, count);
+      free(elems);
+      return group_type;
+    }
+
+    case AST_BLOCK: {
+      if (!type_context_push_scope(ctx)) return NULL;
+      Sym* field_names = NULL;
+      MorphlType** field_types = NULL;
+      size_t field_count = 0;
+      size_t field_cap = 0;
+      bool ok = true;
+      for (size_t i = 0; i < node->child_count; ++i) {
+        AstNode* stmt = node->children[i];
+        MorphlType* stmt_type = morphl_infer_type_of_ast(ctx, stmt);
+        if (!stmt_type) { ok = false; break; }
+        if (stmt && stmt->kind == AST_DECL && stmt->child_count >= 1) {
+          AstNode* name_node = stmt->children[0];
+          if (!name_node || !name_node->op) { ok = false; break; }
+          if (field_count >= field_cap) {
+            size_t new_cap = field_cap ? field_cap * 2 : 4;
+            Sym* new_names = (Sym*)realloc(field_names, new_cap * sizeof(Sym));
+            MorphlType** new_types = (MorphlType**)realloc(field_types, new_cap * sizeof(MorphlType*));
+            if (!new_names || !new_types) { ok = false; break; }
+            field_names = new_names;
+            field_types = new_types;
+            field_cap = new_cap;
+          }
+          field_names[field_count] = name_node->op;
+          field_types[field_count] = stmt_type;
+          field_count++;
+        }
+      }
+      type_context_pop_scope(ctx);
+      MorphlType* block_type = NULL;
+      if (ok) {
+        block_type = morphl_type_block(ctx->arena, field_names, field_types, field_count);
+      }
+      free(field_names);
+      free(field_types);
+      return block_type;
+    }
+
     case AST_BUILTIN:
     case AST_CALL:
     case AST_FUNC:
     case AST_IF:
-    case AST_SET:
-    case AST_DECL:
-    case AST_GROUP:
-    case AST_BLOCK: {
+    case AST_SET: {
       // Infer argument types recursively
       MorphlType** arg_types = NULL;
       size_t arg_count = node->child_count;

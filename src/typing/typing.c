@@ -85,6 +85,63 @@ MorphlType* morphl_type_func(Arena* arena,
   return t;
 }
 
+// Group type constructor
+MorphlType* morphl_type_group(Arena* arena,
+                              MorphlType** elem_types,
+                              size_t elem_count) {
+  if (!arena) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_GROUP;
+  t->size = 0;
+  t->align = 1;
+  if (elem_count > 0 && elem_types) {
+    MorphlType** elems = arena_alloc(arena, elem_count * sizeof(MorphlType*));
+    if (!elems) return NULL;
+    for (size_t i = 0; i < elem_count; ++i) {
+      elems[i] = elem_types[i];
+    }
+    t->data.group.elem_types = elems;
+    t->data.group.elem_count = elem_count;
+  } else {
+    t->data.group.elem_types = NULL;
+    t->data.group.elem_count = 0;
+  }
+  return t;
+}
+
+// Block type constructor
+MorphlType* morphl_type_block(Arena* arena,
+                              Sym* field_names,
+                              MorphlType** field_types,
+                              size_t field_count) {
+  if (!arena) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_BLOCK;
+  t->size = 0;
+  t->align = 1;
+  if (field_count > 0 && field_names && field_types) {
+    Sym* names = arena_alloc(arena, field_count * sizeof(Sym));
+    MorphlType** types = arena_alloc(arena, field_count * sizeof(MorphlType*));
+    if (!names || !types) return NULL;
+    for (size_t i = 0; i < field_count; ++i) {
+      names[i] = field_names[i];
+      types[i] = field_types[i];
+    }
+    t->data.block.field_names = names;
+    t->data.block.field_types = types;
+    t->data.block.field_count = field_count;
+  } else {
+    t->data.block.field_names = NULL;
+    t->data.block.field_types = NULL;
+    t->data.block.field_count = 0;
+  }
+  return t;
+}
+
 // Clone a type (allocate new copy in arena)
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
   if (!arena || !type) return NULL;
@@ -107,6 +164,29 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
     if (t->data.func.return_type) {
       t->data.func.return_type = morphl_type_clone(arena, t->data.func.return_type);
       if (!t->data.func.return_type) return NULL;
+    }
+  } else if (t->kind == MORPHL_TYPE_GROUP) {
+    if (t->data.group.elem_count > 0 && t->data.group.elem_types) {
+      MorphlType** elems = arena_alloc(arena, t->data.group.elem_count * sizeof(MorphlType*));
+      if (!elems) return NULL;
+      for (size_t i = 0; i < t->data.group.elem_count; ++i) {
+        elems[i] = morphl_type_clone(arena, t->data.group.elem_types[i]);
+        if (!elems[i]) return NULL;
+      }
+      t->data.group.elem_types = elems;
+    }
+  } else if (t->kind == MORPHL_TYPE_BLOCK) {
+    if (t->data.block.field_count > 0 && t->data.block.field_types && t->data.block.field_names) {
+      Sym* names = arena_alloc(arena, t->data.block.field_count * sizeof(Sym));
+      MorphlType** types = arena_alloc(arena, t->data.block.field_count * sizeof(MorphlType*));
+      if (!names || !types) return NULL;
+      for (size_t i = 0; i < t->data.block.field_count; ++i) {
+        names[i] = t->data.block.field_names[i];
+        types[i] = morphl_type_clone(arena, t->data.block.field_types[i]);
+        if (!types[i]) return NULL;
+      }
+      t->data.block.field_names = names;
+      t->data.block.field_types = types;
     }
   }
   
@@ -133,11 +213,25 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
     return morphl_type_equals(a->data.func.return_type, b->data.func.return_type);
   }
 
-  if (a->kind == MORPHL_TYPE_GROUP || 
-      a->kind == MORPHL_TYPE_BLOCK) {
-    // compare each member type
-    // (not implemented yet)
-    return false;
+  if (a->kind == MORPHL_TYPE_GROUP) {
+    if (a->data.group.elem_count != b->data.group.elem_count) return false;
+    for (size_t i = 0; i < a->data.group.elem_count; ++i) {
+      if (!morphl_type_equals(a->data.group.elem_types[i], b->data.group.elem_types[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (a->kind == MORPHL_TYPE_BLOCK) {
+    if (a->data.block.field_count != b->data.block.field_count) return false;
+    for (size_t i = 0; i < a->data.block.field_count; ++i) {
+      if (a->data.block.field_names[i] != b->data.block.field_names[i]) return false;
+      if (!morphl_type_equals(a->data.block.field_types[i], b->data.block.field_types[i])) {
+        return false;
+      }
+    }
+    return true;
   }
   
   return true;
@@ -170,14 +264,18 @@ Str morphl_type_to_string(const MorphlType* type) {
         result = buf;
         break;
       }
+      case MORPHL_TYPE_GROUP: {
+        snprintf(buf, sizeof(buf), "group[%llu]", (unsigned long long)type->data.group.elem_count);
+        result = buf;
+        break;
+      }
+      case MORPHL_TYPE_BLOCK: {
+        snprintf(buf, sizeof(buf), "block{%llu}", (unsigned long long)type->data.block.field_count);
+        result = buf;
+        break;
+      }
       case MORPHL_TYPE_PRIMITIVE:
         result = "primitive";
-        break;
-      case MORPHL_TYPE_BLOCK:
-        result = "block";
-        break;
-      case MORPHL_TYPE_GROUP:
-        result = "group";
         break;
       case MORPHL_TYPE_TRAIT:
         result = "trait";
