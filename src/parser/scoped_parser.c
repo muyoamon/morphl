@@ -3,6 +3,7 @@
 #include "lexer/lexer.h"
 #include "parser/operators.h"
 #include "typing/type_context.h"
+#include "util/error.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,7 +100,9 @@ bool scoped_parser_replace_grammar(ScopedParserContext* ctx, const char* grammar
   
   if (!grammar_load_file(new_grammar, grammar_path, ctx->interns, ctx->arena)) {
     free(new_grammar);
-    fprintf(stderr, "warning: failed to load grammar from '%s', keeping current grammar\n", grammar_path);
+    MorphlError err = MORPHL_WARN(MORPHL_E_PARSE,
+        "failed to load grammar from '%s', keeping current grammar", grammar_path);
+    morphl_error_emit(NULL, &err);
     return false;
   }
   
@@ -299,7 +302,11 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
                               size_t* cursor,
                               size_t depth,
                               AstNode** out_node) {
-  if (depth > 128) return false; // Max depth check
+  if (depth > 128) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "parsing depth exceeded (recursion limit: 128)");
+    morphl_error_emit(NULL, &err);
+    return false;
+  }
   
   Grammar* current = scoped_parser_current_grammar(ctx);
   
@@ -331,6 +338,8 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
   
   if (!scoped_parse_block_contents(ctx, tokens, token_count, &cursor, 0, &children, &child_count)) {
     scoped_parser_pop_grammar(ctx);
+    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "failed to parse program content");
+    morphl_error_emit(NULL, &err);
     return false;
   }
   
@@ -346,6 +355,8 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
     if (!root) {
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children);
+      MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "failed to allocate root AST node");
+      morphl_error_emit(NULL, &err);
       return false;
     }
     root->children = children;

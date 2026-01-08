@@ -108,7 +108,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
     
     if (!func_type) {
       MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: function not defined");
-      morphl_error_emit(&morphl_error_get_global_sink(), &err);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
   } else {
@@ -117,7 +117,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
     
     if (!func_type) {
       MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: cannot infer function type");
-      morphl_error_emit(&morphl_error_get_global_sink(), &err);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
   }
@@ -125,15 +125,15 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
   // Validate it's a function type
   if (func_type->kind != MORPHL_TYPE_FUNC) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: target is not a function");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Functions should have exactly 1 parameter
   if (func_type->data.func.param_count != 1) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: expected 1 parameter, function has %zu",
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: expected 1 parameter, function has %llu",
            func_type->data.func.param_count);
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
@@ -141,7 +141,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
   MorphlType* provided_param_type = morphl_infer_type_of_ast(ctx, param_expr);
   if (!provided_param_type) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: cannot infer type of parameter");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
@@ -150,7 +150,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
   MorphlType* expected_param_type = func_type->data.func.param_types[0];
   if (!morphl_type_equals(provided_param_type, expected_param_type)) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: parameter type mismatch");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
@@ -159,7 +159,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
 }
 
 // $func: create pseudo-scope where parameter declarations are exposed to body
-// $func takes exactly 2 args: (1) parameter expression (may be $group or $decl),
+// $func takes exactly 2 args: (1) parameter expression (may be $group),
 //                              (2) function body expression
 // The parameter expression may contain $decl nodes that declare parameters.
 // These declarations are exposed to the function body (pseudo-scope).
@@ -191,7 +191,7 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
     // If we can't infer the parameter type, still pop the scope but return error
     type_context_pop_scope(ctx);
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer parameter type");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
@@ -201,7 +201,7 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
   if (!return_type) {
     type_context_pop_scope(ctx);
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer return type");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
@@ -239,14 +239,14 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
   MorphlType* cond_type = morphl_infer_type_of_ast(ctx, condition);
   if (!cond_type) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$if: cannot infer condition type");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Check that condition is boolean
   if (cond_type->kind != MORPHL_TYPE_BOOL) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$if: condition must be bool");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
@@ -281,14 +281,14 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
   MorphlType* var_type = morphl_infer_type_of_ast(ctx, init_expr);
   if (!var_type) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: cannot infer variable type");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Check for duplicate declaration
   if (type_context_check_duplicate_var(ctx, var_sym)) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: variable already declared");
-    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   

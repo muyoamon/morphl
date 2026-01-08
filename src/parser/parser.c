@@ -8,6 +8,7 @@
 
 #include "lexer/lexer.h"
 #include "util/file.h"
+#include "util/error.h"
 #include "ast/ast.h"
 #include "parser/operators.h"
 
@@ -515,8 +516,10 @@ bool grammar_load_file(Grammar* grammar,
       
       // Warn if rule name starts with $ (builtin namespace)
       if (name_len > 0 && name_start[0] == '$') {
-        fprintf(stderr, "warning: custom rule '%.*s' redefines builtin operator namespace\n",
-                (int)name_len, name_start);
+        MorphlError err = MORPHL_WARN(MORPHL_E_PARSE,
+            "custom rule '%.*s' redefines builtin operator namespace",
+            (int)name_len, name_start);
+        morphl_error_emit(NULL, &err);
       }
       
       Sym interned = interns_intern(interns, name);
@@ -1215,7 +1218,11 @@ bool grammar_parse_ast(const Grammar* grammar,
   }
   Sym start = start_rule ? start_rule : grammar->start_rule;
   GrammarRule* rule = find_rule(grammar, start);
-  if (!rule) return false;
+  if (!rule) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "start rule not found in grammar");
+    morphl_error_emit(NULL, &err);
+    return false;
+  }
   ParsedRuleContext ctx = {.rule = rule, .grammar = grammar};
   size_t cursor = 0;
   AstNode* root = NULL;
@@ -1223,10 +1230,12 @@ bool grammar_parse_ast(const Grammar* grammar,
     return false;
   }
   if (cursor != parse_count) {
-    fprintf(stderr, "grammar parse stopped at token %zu of %zu: '%.*s'\n",
-            cursor, parse_count,
-            (int)tokens[cursor].lexeme.len,
-            tokens[cursor].lexeme.ptr ? tokens[cursor].lexeme.ptr : "");
+    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE,
+        "parse stopped at token %llu of %llu: '%.*s'",
+        (unsigned long long)cursor, (unsigned long long)parse_count,
+        (int)tokens[cursor].lexeme.len,
+        tokens[cursor].lexeme.ptr ? tokens[cursor].lexeme.ptr : "");
+    morphl_error_emit(NULL, &err);
     ast_free(root);
     return false;
   }

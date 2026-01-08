@@ -1,6 +1,7 @@
 #include "typing/inference.h"
 #include "parser/operators.h"
 #include "ast/ast.h"
+#include "util/error.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,8 +34,9 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   
   // Check arity
   if (arg_count < info->min_args || arg_count > info->max_args) {
-    fprintf(stderr, "error: operator %s expects %zu-%zu args, got %zu\n",
-            op_name, info->min_args, info->max_args, arg_count);
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "operator %s expects %llu-%llu args, got %llu",
+            op_name, (unsigned long long)info->min_args, (unsigned long long)info->max_args, (unsigned long long)arg_count);
+    morphl_error_emit(NULL, &err);
     return NULL;
   }
   
@@ -48,12 +50,14 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$gte", 4))) {
     
     if (arg_count != 2) {
-      fprintf(stderr, "error: comparison %s expects 2 args, got %zu\n", op_name, arg_count);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "comparison %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
     if (!types_comparable(arg_types[0], arg_types[1])) {
-      fprintf(stderr, "error: %s: types not compatible\n", op_name);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: types not compatible", op_name);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
@@ -65,13 +69,15 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$or", 3))) {
     
     if (arg_count != 2) {
-      fprintf(stderr, "error: logic %s expects 2 args, got %zu\n", op_name, arg_count);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "logic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
     for (size_t i = 0; i < 2; ++i) {
       if (!arg_types[i] || arg_types[i]->kind != MORPHL_TYPE_BOOL) {
-        fprintf(stderr, "error: %s: arg %zu must be bool\n", op_name, i + 1);
+        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: arg %llu must be bool", op_name, (unsigned long long)(i + 1));
+        morphl_error_emit(NULL, &err);
         return NULL;
       }
     }
@@ -81,12 +87,14 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   
   if (op_sym == interns_intern(ctx->interns, str_from("$not", 4))) {
     if (arg_count != 1) {
-      fprintf(stderr, "error: $not expects 1 arg, got %zu\n", arg_count);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$not expects 1 arg, got %llu", arg_count);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
     if (!arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_BOOL) {
-      fprintf(stderr, "error: $not: argument must be bool\n");
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$not: argument must be bool");
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
@@ -101,13 +109,15 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$div", 4))) {
     
     if (arg_count != 2) {
-      fprintf(stderr, "error: arithmetic %s expects 2 args, got %zu\n", op_name, arg_count);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "arithmetic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
     if (!arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_INT ||
         !arg_types[1] || arg_types[1]->kind != MORPHL_TYPE_INT) {
-      fprintf(stderr, "error: %s: both arguments must be int\n", op_name);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
@@ -121,13 +131,15 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$fdiv", 5))) {
     
     if (arg_count != 2) {
-      fprintf(stderr, "error: float arithmetic %s expects 2 args, got %zu\n", op_name, arg_count);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "float arithmetic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
     if (!arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_FLOAT ||
         !arg_types[1] || arg_types[1]->kind != MORPHL_TYPE_FLOAT) {
-      fprintf(stderr, "error: %s: both arguments must be float\n", op_name);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: both arguments must be float", op_name);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
@@ -142,13 +154,15 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$rshift", 7))) {
     
     if (arg_count != 2) {
-      fprintf(stderr, "error: bitwise %s expects 2 args, got %zu\n", op_name, arg_count);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "bitwise %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
     if (!arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_INT ||
         !arg_types[1] || arg_types[1]->kind != MORPHL_TYPE_INT) {
-      fprintf(stderr, "error: %s: both arguments must be int\n", op_name);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
@@ -157,12 +171,14 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   
   if (op_sym == interns_intern(ctx->interns, str_from("$bnot", 5))) {
     if (arg_count != 1) {
-      fprintf(stderr, "error: $bnot expects 1 arg, got %zu\n", arg_count);
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$bnot expects 1 arg, got %llu", arg_count);
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
     if (!arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_INT) {
-      fprintf(stderr, "error: $bnot: argument must be int\n");
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$bnot: argument must be int");
+      morphl_error_emit(NULL, &err);
       return NULL;
     }
     
@@ -176,7 +192,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
   
   // Unknown or untyped operator
-  fprintf(stderr, "warning: type inference not implemented for %s\n", op_name);
+  MorphlError err = MORPHL_WARN(MORPHL_E_TYPE, "type inference not implemented for %s", op_name);
+  morphl_error_emit(NULL, &err);
   return morphl_type_void(ctx->arena);
 }
 
@@ -224,7 +241,8 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, const AstNode* node) {
       MorphlType* var_type = type_context_lookup_var(ctx, node->op);
       if (!var_type) {
         Str name = interns_lookup(ctx->interns, node->op);
-        fprintf(stderr, "error: undefined variable '%.*s'\n", (int)name.len, name.ptr);
+        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "undefined variable '%.*s'", (int)name.len, name.ptr);
+        morphl_error_emit(NULL, &err);
         return NULL;
       }
       return var_type;
