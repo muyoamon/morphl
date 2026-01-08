@@ -24,6 +24,36 @@ static InternTable* create_test_interns() {
   return interns_new();
 }
 
+// Helper: create identifier AST node with interned symbol
+static AstNode* make_ident(InternTable* interns, const char* name) {
+  size_t len = strlen(name);
+  AstNode* n = ast_new(AST_IDENT);
+  assert(n != NULL);
+  n->value = str_from(name, len);
+  n->op = interns_intern(interns, n->value);
+  return n;
+}
+
+// Helper: create literal AST node
+static AstNode* make_literal(const char* text) {
+  size_t len = strlen(text);
+  return ast_make_leaf(AST_LITERAL, str_from(text, len), "<test>", 1, 1);
+}
+
+// Helper: create builtin AST node with children
+static AstNode* make_builtin(InternTable* interns,
+                            const char* name,
+                            std::initializer_list<AstNode*> children) {
+  size_t len = strlen(name);
+  AstNode* n = ast_new(AST_BUILTIN);
+  assert(n != NULL);
+  n->op = interns_intern(interns, str_from(name, len));
+  for (AstNode* child : children) {
+    ast_append_child(n, child);
+  }
+  return n;
+}
+
 // ============================================================================
 // Test: Type Constructors
 // ============================================================================
@@ -383,6 +413,160 @@ static void test_infer_bitwise_ops() {
 }
 
 // ============================================================================
+// Test: Preprocessor actions for $set
+// ============================================================================
+static void test_pp_set() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  MorphlType* t_int = morphl_type_int(&arena);
+  Sym x_sym = interns_intern(interns, str_from("x", 1));
+  type_context_define_var(ctx, x_sym, t_int);
+
+  AstNode* target = make_ident(interns, "x");
+  AstNode* value = make_literal("5");
+  AstNode* args_ok[] = {target, value};
+  const OperatorInfo* info = operator_info_lookup(interns_intern(interns, str_from("$set", 4)));
+  assert(info != NULL && info->func != NULL);
+  MorphlType* result = info->func(info, NULL, ctx, args_ok, 2);
+  assert(result != NULL && result->kind == MORPHL_TYPE_INT);
+
+  // Mismatched assignment should fail (float into int)
+  AstNode* bad_value = make_literal("3.14");
+  AstNode* args_bad[] = {target, bad_value};
+  MorphlType* bad_result = info->func(info, NULL, ctx, args_bad, 2);
+  assert(bad_result == NULL);
+
+  ast_free(target);
+  ast_free(value);
+  ast_free(bad_value);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_pp_set passed\n");
+}
+
+// ============================================================================
+// Test: Preprocessor action for $ret
+// ============================================================================
+static void test_pp_ret() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  MorphlType* t_int = morphl_type_int(&arena);
+  type_context_set_return_type(ctx, t_int);
+
+  AstNode* ret_expr = make_literal("7");
+  AstNode* args_ok[] = {ret_expr};
+  const OperatorInfo* info = operator_info_lookup(interns_intern(interns, str_from("$ret", 4)));
+  assert(info != NULL && info->func != NULL);
+  MorphlType* result = info->func(info, NULL, ctx, args_ok, 1);
+  assert(result != NULL && result->kind == MORPHL_TYPE_INT);
+
+  // Mismatched return (float vs expected int) should fail
+  AstNode* ret_bad_expr = make_literal("1.5");
+  AstNode* args_bad[] = {ret_bad_expr};
+  MorphlType* bad = info->func(info, NULL, ctx, args_bad, 1);
+  assert(bad == NULL);
+
+  ast_free(ret_expr);
+  ast_free(ret_bad_expr);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_pp_ret passed\n");
+}
+
+// ============================================================================
+// Test: Preprocessor action for $member
+// ============================================================================
+static void test_pp_member() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  // Build a block type: { x: int, y: int }
+  MorphlType* t_int = morphl_type_int(&arena);
+  Sym field_names_arr[2];
+  field_names_arr[0] = interns_intern(interns, str_from("x", 1));
+  field_names_arr[1] = interns_intern(interns, str_from("y", 1));
+  MorphlType* field_types_arr[2];
+  field_types_arr[0] = t_int;
+  field_types_arr[1] = t_int;
+  MorphlType* block_type = morphl_type_block(&arena, field_names_arr, field_types_arr, 2);
+
+  Sym p_sym = interns_intern(interns, str_from("p", 1));
+  type_context_define_var(ctx, p_sym, block_type);
+
+  AstNode* target = make_ident(interns, "p");
+  AstNode* field = make_ident(interns, "x");
+  AstNode* args_ok[] = {target, field};
+  const OperatorInfo* info = operator_info_lookup(interns_intern(interns, str_from("$member", 7)));
+  assert(info != NULL && info->func != NULL);
+  MorphlType* result = info->func(info, NULL, ctx, args_ok, 2);
+  assert(result != NULL && result->kind == MORPHL_TYPE_INT);
+
+  // Unknown field should fail
+  AstNode* bad_field = make_ident(interns, "z");
+  AstNode* args_bad[] = {target, bad_field};
+  MorphlType* bad = info->func(info, NULL, ctx, args_bad, 2);
+  assert(bad == NULL);
+
+  ast_free(target);
+  ast_free(field);
+  ast_free(bad_field);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_pp_member passed\n");
+}
+
+// ============================================================================
+// Test: Preprocessor action for $while
+// ============================================================================
+static void test_pp_while() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  // Condition: $lt 1 2 -> bool
+  AstNode* one = make_literal("1");
+  AstNode* two = make_literal("2");
+  AstNode* cond = make_builtin(interns, "$lt", {one, two});
+  AstNode* body = make_literal("0");
+  AstNode* args_ok[] = {cond, body};
+  const OperatorInfo* while_info = operator_info_lookup(interns_intern(interns, str_from("$while", 6)));
+  assert(while_info != NULL && while_info->func != NULL);
+  MorphlType* ok = while_info->func(while_info, NULL, ctx, args_ok, 2);
+  assert(ok != NULL && ok->kind == MORPHL_TYPE_VOID);
+
+  // Non-bool condition should fail (fresh lookup because operator_info_lookup uses a static buffer)
+  const OperatorInfo* while_info_bad = operator_info_lookup(interns_intern(interns, str_from("$while", 6)));
+  AstNode* cond_bad = make_literal("10");
+  AstNode* args_bad[] = {cond_bad, body};
+  MorphlType* bad = while_info_bad->func(while_info_bad, NULL, ctx, args_bad, 2);
+  assert(bad == NULL);
+
+  ast_free(cond);
+  ast_free(cond_bad);
+  ast_free(body);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_pp_while passed\n");
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -398,7 +582,13 @@ int main() {
   test_infer_comparison_ops();
   test_infer_logic_ops();
   test_infer_bitwise_ops();
-  
-  printf("\n✓ All typing tests passed!\n");
+  test_pp_set();
+  test_pp_ret();
+  test_pp_member();
+  test_pp_while();
+  // Note: Recursion is tested via examples/test_recursion.mpl
+  // Unit testing recursion requires full parser integration
+
+  printf("\n\u2713 All typing tests passed!\n");
   return 0;
 }

@@ -195,18 +195,44 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
     return NULL;
   }
   
+  // Set expected return type to UNKNOWN initially
+  // This allows $ret to establish the return type on first encounter
+  // and enables recursion (recursive call sees UNKNOWN matching UNKNOWN)
+  type_context_set_return_type(ctx, morphl_type_unknown(ctx->arena));
+  
   // Infer return type from function body in the pseudo-scope
   // The body has access to variables declared in the parameter expression
-  MorphlType* return_type = morphl_infer_type_of_ast(ctx, func_body);
+  // If $ret is used, it will establish/validate the return type
+  MorphlType* body_type = morphl_infer_type_of_ast(ctx, func_body);
+  if (!body_type) {
+    type_context_pop_scope(ctx);
+    type_context_set_return_type(ctx, NULL);
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer body type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Get the return type that was established during body inference
+  MorphlType* return_type = type_context_get_return_type(ctx);
+  
+  // If return type is still UNKNOWN (no $ret was used), use body type
+  if (return_type && return_type->kind == MORPHL_TYPE_UNKNOWN) {
+    return_type = body_type;
+  }
+  
   if (!return_type) {
     type_context_pop_scope(ctx);
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer return type");
+    type_context_set_return_type(ctx, NULL);
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot determine return type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Pop the pseudo-scope
   type_context_pop_scope(ctx);
+  
+  // Clear return type after function
+  type_context_set_return_type(ctx, NULL);
   
   // Create function type with 1 parameter (the parameter expression)
   // The parameter type represents what the function accepts
@@ -272,6 +298,27 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
   if (!name_node->op) return NULL;
   Sym var_sym = name_node->op;
   
+  // Check for duplicate declaration
+  if (type_context_check_duplicate_var(ctx, var_sym)) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: variable already declared");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // For function declarations, register early with UNKNOWN type to enable recursion
+  // This allows the function to call itself before its body is fully type-checked
+  if (init_expr->kind == AST_FUNC || 
+      (init_expr->kind == AST_BUILTIN && init_expr->op && 
+       ctx->interns && interns_lookup(ctx->interns, init_expr->op).ptr &&
+       strcmp(interns_lookup(ctx->interns, init_expr->op).ptr, "$func") == 0)) {
+    // Create placeholder function type with UNKNOWN return type
+    MorphlType* placeholder = morphl_type_func(ctx->arena, 
+                                              morphl_type_unknown(ctx->arena),
+                                              morphl_type_unknown(ctx->arena));
+    type_context_define_func(ctx, var_sym, placeholder);
+    type_context_define_var(ctx, var_sym, placeholder);
+  }
+  
   // Infer type of the initial expression
   MorphlType* var_type = morphl_infer_type_of_ast(ctx, init_expr);
   if (!var_type) {
@@ -280,17 +327,138 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
     return NULL;
   }
   
-  // Check for duplicate declaration
-  if (type_context_check_duplicate_var(ctx, var_sym)) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: variable already declared");
+  // Register final type in type context (overwrites placeholder if function)
+  type_context_define_var(ctx, var_sym, var_type);
+  if (var_type->kind == MORPHL_TYPE_FUNC) {
+    type_context_define_func(ctx, var_sym, var_type);
+  }
+  
+  return var_type;
+}
+
+static MorphlType* pp_action_set(const OperatorInfo* info,
+                                void* global_state,
+                                void* block_state,
+                                AstNode** args,
+                                size_t arg_count) {
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 2) return NULL;
+  
+  AstNode* target = args[0];
+  AstNode* value = args[1];
+  
+  if (!target || !value) return NULL;
+  
+  // Get target type
+  MorphlType* target_type = NULL;
+  if (target->kind == AST_IDENT && target->op) {
+    target_type = type_context_lookup_var(ctx, target->op);
+    if (!target_type) {
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: variable not declared");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+  } else {
+    target_type = morphl_infer_type_of_ast(ctx, target);
+    if (!target_type) {
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: cannot infer target type");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+  }
+  
+  // Infer value type
+  MorphlType* value_type = morphl_infer_type_of_ast(ctx, value);
+  if (!value_type) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: cannot infer value type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
-  // Register in type context
-  type_context_define_var(ctx, var_sym, var_type);
+  // Check type compatibility
+  if (!morphl_type_equals(target_type, value_type)) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: type mismatch in assignment");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
   
-  return var_type;
+  return value_type;
+}
+
+static MorphlType* pp_action_ret(const OperatorInfo* info,
+                                void* global_state,
+                                void* block_state,
+                                AstNode** args,
+                                size_t arg_count) {
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 1) return NULL;
+  
+  AstNode* ret_expr = args[0];
+  if (!ret_expr) return NULL;
+  
+  // Get expected return type
+  MorphlType* expected = type_context_get_return_type(ctx);
+  if (!expected) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$ret: not inside a function");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Infer return expression type
+  MorphlType* ret_type = morphl_infer_type_of_ast(ctx, ret_expr);
+  if (!ret_type) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$ret: cannot infer return value type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Check return type matches expected
+  if (!morphl_type_equals(ret_type, expected)) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$ret: return type mismatch");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  return ret_type;
+}
+
+static MorphlType* pp_action_while(const OperatorInfo* info,
+                                  void* global_state,
+                                  void* block_state,
+                                  AstNode** args,
+                                  size_t arg_count) {
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 2) return NULL;
+  
+  AstNode* condition = args[0];
+  AstNode* body = args[1];
+  
+  if (!condition || !body) return NULL;
+  
+  // Validate condition type
+  MorphlType* cond_type = morphl_infer_type_of_ast(ctx, condition);
+  if (!cond_type) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$while: cannot infer condition type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  if (cond_type->kind != MORPHL_TYPE_BOOL) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$while: condition must be bool");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Type-check body (for side effects, doesn't produce value)
+  morphl_infer_type_of_ast(ctx, body);
+  
+  return morphl_type_void(ctx->arena);
 }
 
 static MorphlType* pp_action_member(const OperatorInfo* info,
@@ -298,10 +466,41 @@ static MorphlType* pp_action_member(const OperatorInfo* info,
                                   void* block_state,
                                   AstNode** args,
                                   size_t arg_count) {
-  (void)info; (void)global_state; (void)block_state; (void)args; (void)arg_count;
-  // ARG[0]: target object
-  // ARG[1]: member name (identifier)
-  // Future: implement member access handling
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 2) return NULL;
+  
+  AstNode* target = args[0];
+  AstNode* field_node = args[1];
+  
+  if (!target || !field_node || field_node->kind != AST_IDENT || !field_node->op) return NULL;
+  
+  // Infer type of target expression
+  MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
+  if (!target_type) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: cannot infer target type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Only block types have fields
+  if (target_type->kind != MORPHL_TYPE_BLOCK) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: target must be a block type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Look up field by name
+  Sym field_name = field_node->op;
+  for (size_t i = 0; i < target_type->data.block.field_count; ++i) {
+    if (target_type->data.block.field_names[i] == field_name) {
+      return target_type->data.block.field_types[i];
+    }
+  }
+  
+  MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: field not found in block");
+  morphl_error_emit(NULL, &err);
   return NULL;
 }
 
@@ -314,15 +513,23 @@ static OperatorRow kBuiltinOps[] = {
   {"$call",   AST_CALL,   false, 2, 2,          pp_action_call,    0, OP_PP_KEEP_NODE},
   {"$func",   AST_FUNC,   false, 2, 2,          pp_action_func,    0, OP_PP_KEEP_NODE},
   {"$if",     AST_IF,     false, 2, 2,          pp_action_if,      0, OP_PP_KEEP_NODE},
-  {"$set",    AST_SET,    false, 2, 2,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$while",  AST_BUILTIN,false, 2, 2,          pp_action_while,   0, OP_PP_KEEP_NODE},
+  {"$set",    AST_SET,    false, 2, 2,          pp_action_set,     0, OP_PP_KEEP_NODE},
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE},
+  {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE},
   {"$member", AST_BUILTIN, false, 2, 2,         pp_action_member,  0, OP_PP_KEEP_NODE},
+  {"$ret",    AST_BUILTIN, false, 1, 1,         NULL,              0, OP_PP_KEEP_NODE},
+  {"$while",  AST_BUILTIN, false, 2, 2,         NULL,              0, OP_PP_KEEP_NODE},
+  {"$break",  AST_BUILTIN, false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE},
+  {"$continue",AST_BUILTIN,false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE},
 
   // Arithmetic (no pp actions yet; type checker will use registry later)
   {"$add",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$sub",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$mul",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$div",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$mod",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$rem",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$fadd",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$fsub",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
   {"$fmul",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},

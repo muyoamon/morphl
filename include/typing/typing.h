@@ -11,6 +11,7 @@ typedef enum {
   MORPHL_TYPE_VOID,
   MORPHL_TYPE_INT,
   MORPHL_TYPE_FLOAT,
+  MORPHL_TYPE_STRING,
   MORPHL_TYPE_BOOL,
   MORPHL_TYPE_FUNC,      // Function type with parameters and return type
   MORPHL_TYPE_PRIMITIVE, // Legacy: generic primitive
@@ -57,9 +58,11 @@ typedef struct MorphlType {
 } MorphlType;
 
 // Type constructors - allocate from arena
+MorphlType* morphl_type_unknown(Arena* arena);
 MorphlType* morphl_type_void(Arena* arena);
 MorphlType* morphl_type_int(Arena* arena);
 MorphlType* morphl_type_float(Arena* arena);
+MorphlType* morphl_type_string(Arena* arena);
 MorphlType* morphl_type_bool(Arena* arena);
 MorphlType* morphl_type_func(Arena* arena,
                              MorphlType* param_type,

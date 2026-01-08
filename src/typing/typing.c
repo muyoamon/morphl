@@ -11,6 +11,17 @@ static void* arena_alloc(Arena* a, size_t size) {
 }
 
 // Primitive type constructors
+MorphlType* morphl_type_unknown(Arena* arena) {
+  if (!arena) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_UNKNOWN;
+  t->size = 0;
+  t->align = 1;
+  return t;
+}
+
 MorphlType* morphl_type_void(Arena* arena) {
   if (!arena) return NULL;
   MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
@@ -40,6 +51,17 @@ MorphlType* morphl_type_float(Arena* arena) {
   memset(t, 0, sizeof(MorphlType));
   t->kind = MORPHL_TYPE_FLOAT;
   t->size = 8;  // Assume 64-bit (double)
+  t->align = 8;
+  return t;
+}
+
+MorphlType* morphl_type_string(Arena* arena) {
+  if (!arena) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_STRING;
+  t->size = 16; // Assume pointer + length (2 x 8 bytes)
   t->align = 8;
   return t;
 }
@@ -254,6 +276,9 @@ Str morphl_type_to_string(const MorphlType* type) {
         break;
       case MORPHL_TYPE_FLOAT:
         result = "float";
+        break;
+        case MORPHL_TYPE_STRING:
+        result = "string";
         break;
       case MORPHL_TYPE_BOOL:
         result = "bool";

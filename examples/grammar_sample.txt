@@ -19,4 +19,6 @@ rule expr:
     $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | $fmul lhs rhs
     $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs | $fdiv lhs rhs
     $expr id ":" "=" $expr exp => $decl id exp
+    "return" $expr exp => $ret exp
+    "while" $expr cond $expr body => $while cond body
 end
