@@ -3,6 +3,7 @@
 #include "typing/typing.h"
 #include "typing/type_context.h"
 #include "typing/inference.h"
+#include "util/error.h"
 #include <stdio.h>
 
 #include <string.h>
@@ -75,7 +76,11 @@ static MorphlType* pp_action_prop(const OperatorInfo* info,
   return NULL;
 }
 
-// $call: validate function + arguments
+// $call: call a function with parameters
+// $call takes exactly 2 args: (1) function, (2) parameter expression
+// The parameter expression is matched against the function's parameter type.
+// Since functions have 1 parameter (the parameter expression), $call validates
+// that the provided parameter matches the function's parameter type.
 static MorphlType* pp_action_call(const OperatorInfo* info,
                                    void* global_state,
                                    void* block_state,
@@ -83,18 +88,18 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
                                    size_t arg_count) {
   (void)info; (void)global_state;
   
-  if (arg_count < 1) return NULL;
+  // $call must have exactly 2 arguments
+  if (arg_count != 2) return NULL;
   
   TypeContext* ctx = (TypeContext*)block_state;
   if (!ctx) return NULL;
   
-  // Arg[0]: the function (identifier or another expr)
-  // Arg[1+]: Arguments
+  AstNode* func_expr = args[0];     // The function expression
+  AstNode* param_expr = args[1];    // The parameter expression to pass
   
-  AstNode* func_expr = args[0];
-  if (!func_expr) return NULL;
+  if (!func_expr || !param_expr) return NULL;
   
-  // If func_expr is an identifier, look it up
+  // Resolve function type
   MorphlType* func_type = NULL;
   if (func_expr->kind == AST_IDENT) {
     // For identifiers, the op field contains the symbol
@@ -102,7 +107,8 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
     func_type = type_context_lookup_func(ctx, func_expr->op);
     
     if (!func_type) {
-      printf("error: $call: function not defined\n");
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: function not defined");
+      morphl_error_emit(&morphl_error_get_global_sink(), &err);
       return NULL;
     }
   } else {
@@ -110,67 +116,106 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
     func_type = morphl_infer_type_of_ast(ctx, func_expr);
     
     if (!func_type) {
-      printf("error: $call: cannot infer function type\n");
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: cannot infer function type");
+      morphl_error_emit(&morphl_error_get_global_sink(), &err);
       return NULL;
     }
   }
   
   // Validate it's a function type
   if (func_type->kind != MORPHL_TYPE_FUNC) {
-    printf("error: $call: target is not a function\n");
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: target is not a function");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
     return NULL;
   }
   
-  // Check argument count
-  size_t func_arg_count = func_type->data.func.param_count;
-  size_t call_arg_count = (arg_count > 1) ? (arg_count - 1) : 0;
-  
-  if (call_arg_count != func_arg_count) {
-    printf("error: $call: expected %zu arguments, got %zu\n", 
-           func_arg_count, call_arg_count);
+  // Functions should have exactly 1 parameter
+  if (func_type->data.func.param_count != 1) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: expected 1 parameter, function has %zu",
+           func_type->data.func.param_count);
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
     return NULL;
   }
   
-  // Check argument types
-  for (size_t i = 0; i < call_arg_count; ++i) {
-    AstNode* arg = args[i + 1];
-    MorphlType* arg_type = morphl_infer_type_of_ast(ctx, arg);
-    
-    if (!arg_type) {
-      printf("error: $call: cannot infer type of argument %zu\n", i);
-      return NULL;
-    }
-    
-    MorphlType* expected = func_type->data.func.param_types[i];
-    if (!morphl_type_equals(arg_type, expected)) {
-      printf("error: $call: argument %zu type mismatch\n", i);
-      return NULL;
-    }
+  // Infer the type of the provided parameter
+  MorphlType* provided_param_type = morphl_infer_type_of_ast(ctx, param_expr);
+  if (!provided_param_type) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: cannot infer type of parameter");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    return NULL;
+  }
+  
+  // Check that provided parameter matches the function's parameter type
+  // (later can implement subtyping here)
+  MorphlType* expected_param_type = func_type->data.func.param_types[0];
+  if (!morphl_type_equals(provided_param_type, expected_param_type)) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: parameter type mismatch");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    return NULL;
   }
   
   // Return the function's return type
   return func_type->data.func.return_type;
 }
 
-// $func: validate parameters block + body block
+// $func: create pseudo-scope where parameter declarations are exposed to body
+// $func takes exactly 2 args: (1) parameter expression (may be $group or $decl),
+//                              (2) function body expression
+// The parameter expression may contain $decl nodes that declare parameters.
+// These declarations are exposed to the function body (pseudo-scope).
+// Function type has 1 parameter: the parameter expression itself (which may be composite).
+// Return type is inferred from the body.
 static MorphlType* pp_action_func(const OperatorInfo* info,
                                    void* global_state,
                                    void* block_state,
                                    AstNode** args,
                                    size_t arg_count) {
-  (void)info; (void)global_state; (void)args;
+  (void)info; (void)global_state;
   
   TypeContext* ctx = (TypeContext*)block_state;
-  if (!ctx || arg_count < 2) return NULL;
+  if (!ctx || arg_count != 2) return NULL;
   
-  // Arg[0]: parameter list (group of $decl nodes or similar)
-  // Arg[1]: function expression/block 
-  // The function name should come from context (parent scope knows the name)
-  // For now, we'll just ensure the structure is valid
+  AstNode* param_expr = args[0];   // Parameter expression (can be $group, $decl, etc.)
+  AstNode* func_body = args[1];    // Function body expression
   
-  // Future: extract return type by inferring type of body[1]
-  // For now, return NULL to indicate not fully implemented
-  return NULL;
+  if (!param_expr || !func_body) return NULL;
+  
+  // Create a new scope for the function body
+  type_context_push_scope(ctx);
+  
+  // Process parameter expression to register declarations in the new scope
+  // This evaluates the parameter expression, which will trigger $decl preprocessor actions
+  // that register variables in the current scope
+  MorphlType* param_type = morphl_infer_type_of_ast(ctx, param_expr);
+  if (!param_type) {
+    // If we can't infer the parameter type, still pop the scope but return error
+    type_context_pop_scope(ctx);
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer parameter type");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    return NULL;
+  }
+  
+  // Infer return type from function body in the pseudo-scope
+  // The body has access to variables declared in the parameter expression
+  MorphlType* return_type = morphl_infer_type_of_ast(ctx, func_body);
+  if (!return_type) {
+    type_context_pop_scope(ctx);
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer return type");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
+    return NULL;
+  }
+  
+  // Pop the pseudo-scope
+  type_context_pop_scope(ctx);
+  
+  // Create function type with 1 parameter (the parameter expression)
+  // The parameter type represents what the function accepts
+  size_t param_size = sizeof(MorphlType*);
+  MorphlType** param_types = (MorphlType**)arena_push(ctx->arena, NULL, param_size);
+  if (!param_types) return NULL;
+  param_types[0] = param_type;
+  
+  return morphl_type_func(ctx->arena, param_types, 1, return_type);
 }
 
 // $if: validate condition, then-block, else-block structure
@@ -193,13 +238,15 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
   // Infer condition type
   MorphlType* cond_type = morphl_infer_type_of_ast(ctx, condition);
   if (!cond_type) {
-    printf("error: $if: cannot infer condition type\n");
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$if: cannot infer condition type");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
     return NULL;
   }
   
   // Check that condition is boolean
   if (cond_type->kind != MORPHL_TYPE_BOOL) {
-    printf("error: $if: condition must be bool\n");
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$if: condition must be bool");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
     return NULL;
   }
   
@@ -233,13 +280,15 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
   // Infer type of the initial expression
   MorphlType* var_type = morphl_infer_type_of_ast(ctx, init_expr);
   if (!var_type) {
-    printf("error: $decl: cannot infer variable type\n");
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: cannot infer variable type");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
     return NULL;
   }
   
   // Check for duplicate declaration
   if (type_context_check_duplicate_var(ctx, var_sym)) {
-    printf("error: $decl: variable already declared\n");
+    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: variable already declared");
+    morphl_error_emit(&morphl_error_get_global_sink(), &err);
     return NULL;
   }
   
@@ -249,17 +298,30 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
   return var_type;
 }
 
+static MorphlType* pp_action_member(const OperatorInfo* info,
+                                  void* global_state,
+                                  void* block_state,
+                                  AstNode** args,
+                                  size_t arg_count) {
+  (void)info; (void)global_state; (void)block_state; (void)args; (void)arg_count;
+  // ARG[0]: target object
+  // ARG[1]: member name (identifier)
+  // Future: implement member access handling
+  return NULL;
+}
+
 static OperatorRow kBuiltinOps[] = {
   // Structural
   {"$group",  AST_GROUP,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
   {"$block",  AST_BLOCK,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
 
   // Core constructs
-  {"$call",   AST_CALL,   false, 1, (size_t)-1, pp_action_call,    0, OP_PP_KEEP_NODE},
+  {"$call",   AST_CALL,   false, 2, 2,          pp_action_call,    0, OP_PP_KEEP_NODE},
   {"$func",   AST_FUNC,   false, 2, 2,          pp_action_func,    0, OP_PP_KEEP_NODE},
   {"$if",     AST_IF,     false, 2, 2,          pp_action_if,      0, OP_PP_KEEP_NODE},
   {"$set",    AST_SET,    false, 2, 2,          NULL,              0, OP_PP_KEEP_NODE},
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE},
+  {"$member", AST_BUILTIN, false, 2, 2,         pp_action_member,  0, OP_PP_KEEP_NODE},
 
   // Arithmetic (no pp actions yet; type checker will use registry later)
   {"$add",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},

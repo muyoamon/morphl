@@ -12,6 +12,7 @@ rule expr:
     $expr[1] first $("," $expr[2] rest)+ => $group first $spread rest
     "{" $($stmnt s)* "}" => $block $spread s
     "(" $expr inner ")" => inner
+    $expr params "=" ">" $expr body => $func params body
     $expr[20] func "(" $expr params ")" => $call func params
     $expr[1] lhs "+" $expr[2] rhs => $add lhs rhs | $fadd lhs rhs
     $expr[1] lhs "-" $expr[2] rhs => $sub lhs rhs | $fsub lhs rhs
