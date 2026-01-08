@@ -27,3 +27,19 @@ target_link_libraries(error_tests PRIVATE
 )
 
 add_test(NAME error_tests COMMAND error_tests)
+add_executable(typing_tests
+  typing_tests.cpp
+)
+
+target_include_directories(typing_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(typing_tests PRIVATE
+  morphl_typing
+  morphl_parser
+  morphl_lexer
+  morphl_util
+)
+
+add_test(NAME typing_tests COMMAND typing_tests)

@@ -2,6 +2,7 @@
 #include "parser/builtin_parser.h"
 #include "lexer/lexer.h"
 #include "parser/operators.h"
+#include "typing/type_context.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,10 @@ bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* a
   ctx->arena = arena;
   ctx->use_builtins = true; // Start with builtin-only
   
+  // Initialize TypeContext for type checking
+  ctx->type_context = type_context_new(arena, interns);
+  if (!ctx->type_context) return false;
+  
   return true;
 }
 
@@ -41,6 +46,10 @@ void scoped_parser_free(ScopedParserContext* ctx) {
   ctx->grammar_stack = NULL;
   ctx->grammar_stack_size = 0;
   ctx->grammar_stack_cap = 0;
+  
+  // Free TypeContext (it's allocated from arena, so just reset)
+  type_context_free(ctx->type_context);
+  ctx->type_context = NULL;
 }
 
 bool scoped_parser_push_grammar(ScopedParserContext* ctx, Grammar* grammar) {
@@ -133,7 +142,8 @@ static bool apply_preprocessor_if_any(ScopedParserContext* ctx, AstNode* node) {
   if (!node || node->kind != AST_BUILTIN || !node->op) return true;
   const OperatorInfo* info = operator_info_lookup(node->op);
   if (!info || !info->is_preprocessor || !info->func) return true;
-  info->func(info, ctx, NULL, node->children, node->child_count);
+  // Pass ctx as global_state and type_context as block_state
+  info->func(info, ctx, ctx->type_context, node->children, node->child_count);
   return info->pp_policy != OP_PP_DROP_NODE;
 }
 

@@ -1,5 +1,8 @@
 #include "parser/operators.h"
 #include "parser/scoped_parser.h"
+#include "typing/typing.h"
+#include "typing/type_context.h"
+#include "typing/inference.h"
 #include <stdio.h>
 
 #include <string.h>
@@ -78,13 +81,75 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
                                    void* block_state,
                                    AstNode** args,
                                    size_t arg_count) {
-  (void)info; (void)global_state; (void)block_state;
+  (void)info; (void)global_state;
+  
   if (arg_count < 1) return NULL;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx) return NULL;
+  
   // Arg[0]: the function (identifier or another expr)
-  // Arg[1]: Parameters as group or single expr
-  // Future: type checking, overload resolution
-  (void)args;
-  return NULL;
+  // Arg[1+]: Arguments
+  
+  AstNode* func_expr = args[0];
+  if (!func_expr) return NULL;
+  
+  // If func_expr is an identifier, look it up
+  MorphlType* func_type = NULL;
+  if (func_expr->kind == AST_IDENT) {
+    // For identifiers, the op field contains the symbol
+    if (!func_expr->op) return NULL;
+    func_type = type_context_lookup_func(ctx, func_expr->op);
+    
+    if (!func_type) {
+      printf("error: $call: function not defined\n");
+      return NULL;
+    }
+  } else {
+    // Infer the type of the function expression
+    func_type = morphl_infer_type_of_ast(ctx, func_expr);
+    
+    if (!func_type) {
+      printf("error: $call: cannot infer function type\n");
+      return NULL;
+    }
+  }
+  
+  // Validate it's a function type
+  if (func_type->kind != MORPHL_TYPE_FUNC) {
+    printf("error: $call: target is not a function\n");
+    return NULL;
+  }
+  
+  // Check argument count
+  size_t func_arg_count = func_type->data.func.param_count;
+  size_t call_arg_count = (arg_count > 1) ? (arg_count - 1) : 0;
+  
+  if (call_arg_count != func_arg_count) {
+    printf("error: $call: expected %zu arguments, got %zu\n", 
+           func_arg_count, call_arg_count);
+    return NULL;
+  }
+  
+  // Check argument types
+  for (size_t i = 0; i < call_arg_count; ++i) {
+    AstNode* arg = args[i + 1];
+    MorphlType* arg_type = morphl_infer_type_of_ast(ctx, arg);
+    
+    if (!arg_type) {
+      printf("error: $call: cannot infer type of argument %zu\n", i);
+      return NULL;
+    }
+    
+    MorphlType* expected = func_type->data.func.param_types[i];
+    if (!morphl_type_equals(arg_type, expected)) {
+      printf("error: $call: argument %zu type mismatch\n", i);
+      return NULL;
+    }
+  }
+  
+  // Return the function's return type
+  return func_type->data.func.return_type;
 }
 
 // $func: validate parameters block + body block
@@ -93,12 +158,18 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
                                    void* block_state,
                                    AstNode** args,
                                    size_t arg_count) {
-  (void)info; (void)global_state; (void)block_state;
-  if (arg_count < 2) return NULL;
-  // Arg[0]: parameter list 
+  (void)info; (void)global_state; (void)args;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count < 2) return NULL;
+  
+  // Arg[0]: parameter list (group of $decl nodes or similar)
   // Arg[1]: function expression/block 
-  // Future: validate parameter structure, infer return type
-  (void)args;
+  // The function name should come from context (parent scope knows the name)
+  // For now, we'll just ensure the structure is valid
+  
+  // Future: extract return type by inferring type of body[1]
+  // For now, return NULL to indicate not fully implemented
   return NULL;
 }
 
@@ -108,12 +179,31 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
                                  void* block_state,
                                  AstNode** args,
                                  size_t arg_count) {
-  (void)info; (void)global_state; (void)block_state;
-  if (arg_count != 2) return NULL;
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 2) return NULL;
+  
   // args[0]: condition expression
-  // args[1]: then-else group (allow single-element group for then-only)
-  // Future: check condition type is boolean-compatible
-  (void)args;
+  // args[1]: then-else group
+  
+  AstNode* condition = args[0];
+  if (!condition) return NULL;
+  
+  // Infer condition type
+  MorphlType* cond_type = morphl_infer_type_of_ast(ctx, condition);
+  if (!cond_type) {
+    printf("error: $if: cannot infer condition type\n");
+    return NULL;
+  }
+  
+  // Check that condition is boolean
+  if (cond_type->kind != MORPHL_TYPE_BOOL) {
+    printf("error: $if: condition must be bool\n");
+    return NULL;
+  }
+  
+  // The then-else block should be validated structurally but we don't type-check it here
   return NULL;
 }
 
@@ -122,11 +212,41 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
                                  void* block_state,
                                  AstNode** args,
                                  size_t arg_count) {
-  (void)info; (void)global_state; (void)block_state; (void)args; (void)arg_count;
-  // Arg[0]: identifier
-  // Arg[1]: initial expression
-  // Future: handle variable declaration semantics
-  return NULL;
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count < 2) return NULL;
+  
+  // Arg[0]: identifier (variable name)
+  // Arg[1]: initial expression (type is inferred from this)
+  
+  AstNode* name_node = args[0];
+  AstNode* init_expr = args[1];
+  
+  if (!name_node || name_node->kind != AST_IDENT) return NULL;
+  if (!init_expr) return NULL;
+  
+  // Extract the symbol from the identifier (op field contains the symbol)
+  if (!name_node->op) return NULL;
+  Sym var_sym = name_node->op;
+  
+  // Infer type of the initial expression
+  MorphlType* var_type = morphl_infer_type_of_ast(ctx, init_expr);
+  if (!var_type) {
+    printf("error: $decl: cannot infer variable type\n");
+    return NULL;
+  }
+  
+  // Check for duplicate declaration
+  if (type_context_check_duplicate_var(ctx, var_sym)) {
+    printf("error: $decl: variable already declared\n");
+    return NULL;
+  }
+  
+  // Register in type context
+  type_context_define_var(ctx, var_sym, var_type);
+  
+  return var_type;
 }
 
 static OperatorRow kBuiltinOps[] = {

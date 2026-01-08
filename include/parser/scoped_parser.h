@@ -8,6 +8,7 @@
 #include "ast/ast.h"
 #include "parser/parser.h"
 #include "util/util.h"
+#include "typing/type_context.h"
 
 /**
  * @brief Parse context that maintains a grammar stack for scoped $syntax.
@@ -25,6 +26,7 @@ typedef struct ScopedParserContext {
   InternTable* interns;        /**< Shared intern table. */
   Arena* arena;                /**< Arena for grammar string allocations. */
   bool use_builtins;           /**< Whether current scope uses builtin fallback. */
+  TypeContext* type_context;   /**< Type checking context. */
 } ScopedParserContext;
 
 /**
