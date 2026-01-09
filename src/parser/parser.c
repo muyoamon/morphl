@@ -877,7 +877,51 @@ static AstNode* build_template_ast(const Production* prod,
     NEXT_TOKEN(arg_tok, arg_len);
     if (arg_len == 0) break;
 
-    // Check for $spread operator (exactly "$spread" followed by a capture name)
+    // Check for $$spread directive (for flattening captures)
+    if (arg_len == 8 && strncmp(arg_tok, "$$spread", 8) == 0) {
+      // Next token is the capture name to spread
+      NEXT_TOKEN(name_tok, name_len);
+      if (name_len == 0) { ast_free(root); return NULL; }
+      Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
+      if (!cap_sym) { ast_free(root); return NULL; }
+      Capture* cap = find_capture(captures, capture_count, cap_sym);
+      if (!cap || cap->count == 0) { ast_free(root); return NULL; }
+
+      // Spread: recursively flatten all nodes
+      for (size_t i = 0; i < cap->count; ++i) {
+        flatten_and_append(root, cap->nodes[i]);
+      }
+      continue;
+    }
+
+    // Check for $$maybe directive (conditionally include capture if present)
+    if (arg_len == 8 && strncmp(arg_tok, "$$maybe", 7) == 0) {
+      // Next token is the capture name to conditionally include
+      NEXT_TOKEN(name_tok, name_len);
+      if (name_len == 0) { ast_free(root); return NULL; }
+      Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
+      if (!cap_sym) { ast_free(root); return NULL; }
+      Capture* cap = find_capture(captures, capture_count, cap_sym);
+      // If capture exists and has nodes, add them; otherwise skip
+      if (cap && cap->count > 0) {
+        if (cap->count == 1) {
+          if (!ast_append_child(root, cap->nodes[0])) { ast_free(root); return NULL; }
+        } else {
+          AstNode* child = ast_group_from_list(cap->nodes, cap->count);
+          if (!child || !ast_append_child(root, child)) { ast_free(root); return NULL; }
+        }
+      }
+      continue;
+    }
+
+    // Check for $$delim directive (reserved stop marker for greedy operators)
+    if (arg_len == 7 && strncmp(arg_tok, "$$delim", 7) == 0) {
+      // Delim marks stop point but has no effect during AST construction
+      // It's processed by builtin parser to control greedy matching
+      continue;
+    }
+
+    // Check for $spread operator (legacy, kept for backward compatibility)
     if (arg_len == 7 && strncmp(arg_tok, "$spread", 7) == 0) {
       // Next token is the capture name to spread
       NEXT_TOKEN(name_tok, name_len);

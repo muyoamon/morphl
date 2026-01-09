@@ -98,6 +98,9 @@ bool scoped_parser_replace_grammar(ScopedParserContext* ctx, const char* grammar
   // Load new grammar
   Grammar* new_grammar = malloc(sizeof(Grammar));
   if (!new_grammar) return false;
+
+  // TODO: if a relative path is given, it should be relative to the source file
+
   
   if (!grammar_load_file(new_grammar, grammar_path, ctx->interns, ctx->arena)) {
     free(new_grammar);
@@ -199,7 +202,8 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
       bool is_spread = false;
       if (grammar_root && grammar_root->kind == AST_BUILTIN && grammar_root->op) {
         Str op_name = interns_lookup(ctx->interns, grammar_root->op);
-        if (op_name.len == 7 && strncmp(op_name.ptr, "$spread", 7) == 0) {
+        if ((op_name.len == 7 && strncmp(op_name.ptr, "$spread", 7) == 0) ||
+            (op_name.len == 8 && strncmp(op_name.ptr, "$$spread", 8) == 0)) {
           is_spread = true;
         }
       }

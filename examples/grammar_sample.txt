@@ -1,5 +1,5 @@
 rule program:
-    $($stmnt s)*  => $spread s
+    $($stmnt s)*  => $$spread s
 end
 
 rule stmnt:
@@ -10,10 +10,11 @@ rule expr:
     %NUMBER => number
     "return" $expr val => $ret val
     "while" $expr cond $expr body => $while cond body
+    "if" $expr cond $expr thn "else" $expr el => $if cond $group thn el
     "if" $expr cond $expr thn => $if cond thn
     %IDENT => ident
-    $expr[1] first $("," $expr[2] rest)+ => $group first $spread rest
-    "{" $($stmnt s)* "}" => $block $spread s
+    $expr[1] first $("," $expr[2] rest)+ => $group first $$spread rest
+    "{" $($stmnt s)* "}" => $block $$spread s
     "(" $expr inner ")" => inner
     $expr params "=" ">" $expr body => $func params body
     $expr[20] func "(" $expr params ")" => $call func params
