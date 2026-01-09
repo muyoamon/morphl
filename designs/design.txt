@@ -59,6 +59,11 @@
 // - First candidate whose builtin signature matches the operand types is chosen.
 // - If no candidate matches or all are exhausted, type error.
 
+// ===== Preprocessor directives =====
+// $$spread: 	flatten the group to individual atoms
+// $$maybe:		allow may-or-maynot-exist atom e.g. `"if" $expr cond $expr thn $("else" $expr el)? => $if cond $group thn $$maybe el`
+// $$delim:		act as delimiter for greedy ops such as $block and $group. e.g. $group 0 1 2 $$delim 
+
 // ===== Grammar syntax extensions: inline grouping + repetition =====
 // Goal: express vararg constructs (e.g., $group, $block) without type logic and without greedy capture.
 // New pattern forms (parser-only, type-agnostic):
@@ -69,7 +74,7 @@
 // Examples:
 //   // comma-separated expressions -> $group
 //   rule expr:
-//       $expr first $("," $expr)+ rest => $group first rest
+//       $expr first $("," $expr)+ rest => $group first $$spread rest
 //   end
 // Semantics:
 // - The parser matches the base pattern ($expr first), then matches the repeated grouped subpattern
@@ -89,7 +94,7 @@
 // group (array-like)
 $group expr1 expr2 ...
 
-// minimal alias: expr [, expr] ...
+// minimal alias: expr [, expr]* ...
 
 
 
@@ -202,10 +207,8 @@ $decl b3 ($block $decl y 10 $decl x 10) b3 : {y:int, x:int}
 
 // ===== EXAMPLES =====
 
-// recursive function require creative maneuver
 // e.g. factorial
-$decl fact $mut $func 0 0 // declare fact as (int) => int
-$set fact $func $decl n 0 {
+$decl fact $func $decl n 0 {
 	$if $eq n 0
 		$ret 1,
 		$ret $mul $call fact $sub n 1
