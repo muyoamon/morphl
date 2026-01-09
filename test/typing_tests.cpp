@@ -530,6 +530,56 @@ static void test_pp_member() {
 }
 
 // ============================================================================
+// Test: Preprocessor action for $call with group parameter
+// ============================================================================
+static void test_pp_call_group_param() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  // Build function type: (group[int, int]) -> int
+  MorphlType* t_int = morphl_type_int(&arena);
+  MorphlType* group_elems[2] = {t_int, t_int};
+  MorphlType* group_type = morphl_type_group(&arena, group_elems, 2);
+  MorphlType* func_type = morphl_type_func(&arena, group_type, t_int);
+
+  Sym f_sym = interns_intern(interns, str_from("f", 1));
+  type_context_define_func(ctx, f_sym, func_type);
+
+  // Build call: $call f ($group 1 2)
+  AstNode* func_ident = make_ident(interns, "f");
+  AstNode* arg_group = ast_new(AST_GROUP);
+  assert(arg_group != NULL);
+  ast_append_child(arg_group, make_literal("1"));
+  ast_append_child(arg_group, make_literal("2"));
+
+  AstNode* args_ok[] = {func_ident, arg_group};
+  const OperatorInfo* call_info = operator_info_lookup(interns_intern(interns, str_from("$call", 5)));
+  assert(call_info != NULL && call_info->func != NULL);
+  MorphlType* ok = call_info->func(call_info, NULL, ctx, args_ok, 2);
+  assert(ok != NULL && ok->kind == MORPHL_TYPE_INT);
+
+  // Mismatched group size should fail
+  AstNode* arg_group_bad = ast_new(AST_GROUP);
+  assert(arg_group_bad != NULL);
+  ast_append_child(arg_group_bad, make_literal("1"));
+
+  AstNode* args_bad[] = {func_ident, arg_group_bad};
+  MorphlType* bad = call_info->func(call_info, NULL, ctx, args_bad, 2);
+  assert(bad == NULL);
+
+  ast_free(func_ident);
+  ast_free(arg_group);
+  ast_free(arg_group_bad);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("test_pp_call_group_param passed\n");
+}
+
+// ============================================================================
 // Test: Preprocessor action for $while
 // ============================================================================
 static void test_pp_while() {
@@ -585,6 +635,7 @@ int main() {
   test_pp_set();
   test_pp_ret();
   test_pp_member();
+  test_pp_call_group_param();
   test_pp_while();
   // Note: Recursion is tested via examples/test_recursion.mpl
   // Unit testing recursion requires full parser integration

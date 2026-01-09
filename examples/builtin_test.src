@@ -1,4 +1,4 @@
 
 $decl x 42;
 $decl y $add x 10;
-$decl f $func $decl n 0 $mul n 2;
+$decl f $func $decl n 0 $$delim $mul n 2;

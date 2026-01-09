@@ -895,7 +895,7 @@ static AstNode* build_template_ast(const Production* prod,
     }
 
     // Check for $$maybe directive (conditionally include capture if present)
-    if (arg_len == 8 && strncmp(arg_tok, "$$maybe", 7) == 0) {
+    if (arg_len == 7 && strncmp(arg_tok, "$$maybe", 7) == 0) {
       // Next token is the capture name to conditionally include
       NEXT_TOKEN(name_tok, name_len);
       if (name_len == 0) { ast_free(root); return NULL; }
