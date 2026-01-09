@@ -12,8 +12,10 @@ typedef enum {
   MORPHL_TYPE_INT,
   MORPHL_TYPE_FLOAT,
   MORPHL_TYPE_STRING,
+  MORPHL_TYPE_IDENT,
   MORPHL_TYPE_BOOL,
   MORPHL_TYPE_FUNC,      // Function type with parameters and return type
+  MORPHL_TYPE_REF,       // Reference type with mutability/inline flags
   MORPHL_TYPE_PRIMITIVE, // Legacy: generic primitive
   MORPHL_TYPE_BLOCK,     // Legacy: generic block
   MORPHL_TYPE_GROUP,     // Legacy: generic group
@@ -43,6 +45,13 @@ typedef struct {
   size_t field_count;
 } MorphlBlockType;
 
+// Reference type metadata
+typedef struct {
+  MorphlType* target;
+  bool is_mutable;
+  bool is_inline;
+} MorphlRefType;
+
 // Main type structure
 typedef struct MorphlType {
   MorphlTypeKind kind;
@@ -52,6 +61,7 @@ typedef struct MorphlType {
     MorphlFuncType func;    // kind == MORPHL_TYPE_FUNC
     MorphlGroupType group;  // kind == MORPHL_TYPE_GROUP
     MorphlBlockType block;  // kind == MORPHL_TYPE_BLOCK
+    MorphlRefType ref;       // kind == MORPHL_TYPE_REF
     Sym sym;                // Used for named types (traits, structs, etc.)
   } data;
   void* details;      // For future extensibility
@@ -63,10 +73,15 @@ MorphlType* morphl_type_void(Arena* arena);
 MorphlType* morphl_type_int(Arena* arena);
 MorphlType* morphl_type_float(Arena* arena);
 MorphlType* morphl_type_string(Arena* arena);
+MorphlType* morphl_type_ident(Arena* arena);
 MorphlType* morphl_type_bool(Arena* arena);
 MorphlType* morphl_type_func(Arena* arena,
                              MorphlType* param_type,
                              MorphlType* return_type);
+MorphlType* morphl_type_ref(Arena* arena,
+                            MorphlType* target,
+                            bool is_mutable,
+                            bool is_inline);
 MorphlType* morphl_type_group(Arena* arena,
                               MorphlType** elem_types,
                               size_t elem_count);

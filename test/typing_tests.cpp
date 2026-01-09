@@ -413,6 +413,102 @@ static void test_infer_bitwise_ops() {
 }
 
 // ============================================================================
+// Test: References, meta conversions, and forward stubs
+// ============================================================================
+static void test_ref_meta_forward_ops() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  AstNode* mut_node = make_builtin(interns, "$mut", {make_literal("1")});
+  MorphlType* mut_type = morphl_infer_type_of_ast(ctx, mut_node);
+  assert(mut_type != NULL && mut_type->kind == MORPHL_TYPE_REF);
+  assert(mut_type->data.ref.is_mutable == true);
+  assert(mut_type->data.ref.is_inline == false);
+  assert(mut_type->data.ref.target != NULL && mut_type->data.ref.target->kind == MORPHL_TYPE_INT);
+
+  AstNode* const_node = make_builtin(interns, "$const", {make_literal("2")});
+  MorphlType* const_type = morphl_infer_type_of_ast(ctx, const_node);
+  assert(const_type != NULL && const_type->kind == MORPHL_TYPE_REF);
+  assert(const_type->data.ref.is_mutable == false);
+  assert(const_type->data.ref.is_inline == false);
+
+  AstNode* inline_node = make_builtin(interns, "$inline", {make_literal("3")});
+  MorphlType* inline_type = morphl_infer_type_of_ast(ctx, inline_node);
+  assert(inline_type != NULL && inline_type->kind == MORPHL_TYPE_REF);
+  assert(inline_type->data.ref.is_inline == true);
+
+  AstNode* idtstr_node = make_builtin(interns, "$idtstr", {make_ident(interns, "name")});
+  MorphlType* idtstr_type = morphl_infer_type_of_ast(ctx, idtstr_node);
+  assert(idtstr_type != NULL && idtstr_type->kind == MORPHL_TYPE_STRING);
+
+  AstNode* strtid_node = make_builtin(interns, "$strtid", {make_literal("\"name\"")});
+  MorphlType* strtid_type = morphl_infer_type_of_ast(ctx, strtid_node);
+  assert(strtid_type != NULL && strtid_type->kind == MORPHL_TYPE_IDENT);
+
+  AstNode* stub_func = make_builtin(interns, "$func", {make_literal("0"), make_literal("1")});
+  AstNode* forward_node = make_builtin(interns, "$forward", {stub_func});
+  AstNode* forward_decl = ast_new(AST_DECL);
+  assert(forward_decl != NULL);
+  ast_append_child(forward_decl, make_ident(interns, "fwd"));
+  ast_append_child(forward_decl, forward_node);
+  MorphlType* forward_type = morphl_infer_type_of_ast(ctx, forward_decl);
+  assert(forward_type != NULL && forward_type->kind == MORPHL_TYPE_FUNC);
+  Sym fwd_sym = interns_intern(interns, str_from("fwd", 3));
+  ForwardEntry* entry = type_context_lookup_forward(ctx, fwd_sym);
+  assert(entry != NULL && entry->resolved == false);
+
+  AstNode* body_func = make_builtin(interns, "$func", {make_literal("0"), make_literal("1")});
+  AstNode* body_decl = ast_new(AST_DECL);
+  assert(body_decl != NULL);
+  ast_append_child(body_decl, make_ident(interns, "fwd"));
+  ast_append_child(body_decl, body_func);
+  MorphlType* body_type = morphl_infer_type_of_ast(ctx, body_decl);
+  assert(body_type != NULL && body_type->kind == MORPHL_TYPE_FUNC);
+  assert(entry->resolved == true);
+
+  MorphlType* block_type = morphl_type_block(&arena, NULL, NULL, 0);
+  assert(type_context_push_this(ctx, block_type));
+  AstNode* this_node = make_builtin(interns, "$this", {});
+  MorphlType* this_type = morphl_infer_type_of_ast(ctx, this_node);
+  assert(this_type != NULL && this_type->kind == MORPHL_TYPE_BLOCK);
+  type_context_pop_this(ctx);
+
+  AstNode* block_node = ast_new(AST_BLOCK);
+  assert(block_node != NULL);
+  ast_append_child(block_node, make_literal("0"));
+  MorphlType* top_block_type = morphl_infer_type_of_ast(ctx, block_node);
+  assert(top_block_type != NULL && top_block_type->kind == MORPHL_TYPE_BLOCK);
+
+  AstNode* file_node = make_builtin(interns, "$file", {});
+  MorphlType* file_type = morphl_infer_type_of_ast(ctx, file_node);
+  assert(file_type != NULL && file_type->kind == MORPHL_TYPE_BLOCK);
+
+  AstNode* global_node = make_builtin(interns, "$global", {});
+  MorphlType* global_type = morphl_infer_type_of_ast(ctx, global_node);
+  assert(global_type != NULL && global_type->kind == MORPHL_TYPE_BLOCK);
+
+  ast_free(mut_node);
+  ast_free(const_node);
+  ast_free(inline_node);
+  ast_free(idtstr_node);
+  ast_free(strtid_node);
+  ast_free(forward_decl);
+  ast_free(body_decl);
+  ast_free(this_node);
+  ast_free(block_node);
+  ast_free(file_node);
+  ast_free(global_node);
+
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("✓ test_ref_meta_forward_ops passed\n");
+}
+
+// ============================================================================
 // Test: Preprocessor actions for $set
 // ============================================================================
 static void test_pp_set() {
@@ -632,6 +728,7 @@ int main() {
   test_infer_comparison_ops();
   test_infer_logic_ops();
   test_infer_bitwise_ops();
+  test_ref_meta_forward_ops();
   test_pp_set();
   test_pp_ret();
   test_pp_member();

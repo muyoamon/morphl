@@ -132,7 +132,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
   // Functions should have exactly 1 parameter
   if (func_type->data.func.param_count != 1) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: expected 1 parameter, function has %llu",
-           func_type->data.func.param_count);
+           (unsigned long long)func_type->data.func.param_count);
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -377,6 +377,20 @@ static MorphlType* pp_action_set(const OperatorInfo* info,
     return NULL;
   }
   
+  if (target_type && target_type->kind == MORPHL_TYPE_REF) {
+    if (!target_type->data.ref.is_mutable) {
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: target is not mutable");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    if (!morphl_type_equals(target_type->data.ref.target, value_type)) {
+      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: type mismatch in assignment");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return value_type;
+  }
+
   // Check type compatibility
   if (!morphl_type_equals(target_type, value_type)) {
     MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: type mismatch in assignment");
@@ -518,8 +532,15 @@ static OperatorRow kBuiltinOps[] = {
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE},
   {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE},
   {"$member", AST_BUILTIN, false, 2, 2,         pp_action_member,  0, OP_PP_KEEP_NODE},
-  {"$ret",    AST_BUILTIN, false, 1, 1,         NULL,              0, OP_PP_KEEP_NODE},
-  {"$while",  AST_BUILTIN, false, 2, 2,         NULL,              0, OP_PP_KEEP_NODE},
+  {"$mut",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$const",  AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$file",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$global", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$idtstr", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$strtid", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$forward",AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
   {"$break",  AST_BUILTIN, false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE},
   {"$continue",AST_BUILTIN,false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE},
 
