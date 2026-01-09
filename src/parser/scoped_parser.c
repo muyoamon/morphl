@@ -386,6 +386,7 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
   
   // Perform typing pass on the entire AST
   typing_pass_ast(ctx->type_context, *out_root);
+  (void)type_context_check_unresolved_forwards(ctx->type_context);
   
   return true;
 }

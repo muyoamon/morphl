@@ -12,6 +12,13 @@ typedef struct {
   MorphlType* type;
 } TypeEntry;
 
+// Forward declaration entry
+typedef struct {
+  Sym name;
+  MorphlType* type;
+  bool resolved;
+} ForwardEntry;
+
 // Variable entry in symbol table
 typedef struct {
   Sym name;
@@ -23,6 +30,10 @@ typedef struct {
   VarEntry* vars;
   size_t var_count;
   size_t var_capacity;
+  ForwardEntry* forwards;
+  size_t forward_count;
+  size_t forward_capacity;
+  bool has_forward_errors;
 } Scope;
 
 // Type checking context
@@ -42,6 +53,14 @@ typedef struct {
   
   // Current expected return type (set when checking function body)
   MorphlType* expected_return_type;
+
+  // Special scope bindings
+  MorphlType* file_type;
+  MorphlType* global_type;
+
+  MorphlType** this_stack;
+  size_t this_depth;
+  size_t this_capacity;
 } TypeContext;
 
 // Create/destroy TypeContext
@@ -60,6 +79,19 @@ bool type_context_check_duplicate_var(TypeContext* ctx, Sym name);
 // Function registry
 bool type_context_define_func(TypeContext* ctx, Sym name, MorphlType* func_type);
 MorphlType* type_context_lookup_func(TypeContext* ctx, Sym name);
+
+// Forward declarations
+bool type_context_define_forward(TypeContext* ctx, Sym name, MorphlType* func_type);
+bool type_context_define_forward_body(TypeContext* ctx, Sym name, MorphlType* func_type);
+ForwardEntry* type_context_lookup_forward(TypeContext* ctx, Sym name);
+bool type_context_check_unresolved_forwards(TypeContext* ctx);
+
+// Special scope bindings
+bool type_context_push_this(TypeContext* ctx, MorphlType* this_type);
+bool type_context_pop_this(TypeContext* ctx);
+MorphlType* type_context_get_this(TypeContext* ctx);
+MorphlType* type_context_get_file(TypeContext* ctx);
+MorphlType* type_context_get_global(TypeContext* ctx);
 
 // Return type management
 void type_context_set_return_type(TypeContext* ctx, MorphlType* ret_type);

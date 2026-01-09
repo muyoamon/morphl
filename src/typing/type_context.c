@@ -1,6 +1,7 @@
 #include "typing/type_context.h"
 #include <string.h>
 #include <stdlib.h>
+#include "util/error.h"
 
 // Helper: allocate and zero-init memory from arena
 static void* arena_alloc(Arena* a, size_t size) {
@@ -13,6 +14,8 @@ static void* arena_alloc(Arena* a, size_t size) {
 #define INITIAL_FUNC_CAPACITY 32
 #define INITIAL_SCOPE_CAPACITY 8
 #define INITIAL_VAR_CAPACITY 16
+#define INITIAL_FORWARD_CAPACITY 4
+#define INITIAL_THIS_CAPACITY 8
 
 TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   if (!arena || !interns) return NULL;
@@ -24,6 +27,12 @@ TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   ctx->arena = arena;
   ctx->interns = interns;
   ctx->expected_return_type = NULL;
+  ctx->file_type = NULL;
+  ctx->global_type = NULL;
+  ctx->this_stack = arena_alloc(arena, INITIAL_THIS_CAPACITY * sizeof(MorphlType*));
+  if (!ctx->this_stack) return NULL;
+  ctx->this_depth = 0;
+  ctx->this_capacity = INITIAL_THIS_CAPACITY;
   
   // Initialize function registry
   ctx->functions = arena_alloc(arena, INITIAL_FUNC_CAPACITY * sizeof(TypeEntry));
@@ -43,6 +52,11 @@ TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   if (!global->vars) return NULL;
   global->var_count = 0;
   global->var_capacity = INITIAL_VAR_CAPACITY;
+  global->forwards = arena_alloc(arena, INITIAL_FORWARD_CAPACITY * sizeof(ForwardEntry));
+  if (!global->forwards) return NULL;
+  global->forward_count = 0;
+  global->forward_capacity = INITIAL_FORWARD_CAPACITY;
+  global->has_forward_errors = false;
   
   return ctx;
 }
@@ -72,6 +86,11 @@ bool type_context_push_scope(TypeContext* ctx) {
   if (!new_scope->vars) return false;
   new_scope->var_count = 0;
   new_scope->var_capacity = INITIAL_VAR_CAPACITY;
+  new_scope->forwards = arena_alloc(ctx->arena, INITIAL_FORWARD_CAPACITY * sizeof(ForwardEntry));
+  if (!new_scope->forwards) return false;
+  new_scope->forward_count = 0;
+  new_scope->forward_capacity = INITIAL_FORWARD_CAPACITY;
+  new_scope->has_forward_errors = false;
   
   ctx->scope_count++;
   return true;
@@ -79,8 +98,19 @@ bool type_context_push_scope(TypeContext* ctx) {
 
 bool type_context_pop_scope(TypeContext* ctx) {
   if (!ctx || ctx->scope_count <= 1) return false;
+  Scope* current = &ctx->scopes[ctx->scope_count - 1];
+  if (current->forward_count > 0) {
+    for (size_t i = 0; i < current->forward_count; ++i) {
+      if (!current->forwards[i].resolved) {
+        Str name = interns_lookup(ctx->interns, current->forwards[i].name);
+        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward missing body for '%.*s'", (int)name.len, name.ptr);
+        morphl_error_emit(NULL, &err);
+        current->has_forward_errors = true;
+      }
+    }
+  }
   ctx->scope_count--;
-  return true;
+  return !current->has_forward_errors;
 }
 
 bool type_context_define_var(TypeContext* ctx, Sym name, MorphlType* type) {
@@ -167,6 +197,81 @@ MorphlType* type_context_lookup_func(TypeContext* ctx, Sym name) {
   return NULL;  // Function not found
 }
 
+bool type_context_define_forward(TypeContext* ctx, Sym name, MorphlType* func_type) {
+  if (!ctx || !name || !func_type || ctx->scope_count == 0) return false;
+  Scope* current = &ctx->scopes[ctx->scope_count - 1];
+  for (size_t i = 0; i < current->forward_count; ++i) {
+    if (current->forwards[i].name == name) {
+      return false;
+    }
+  }
+  if (current->forward_count >= current->forward_capacity) {
+    size_t new_cap = current->forward_capacity * 2;
+    ForwardEntry* new_forwards = arena_alloc(ctx->arena, new_cap * sizeof(ForwardEntry));
+    if (!new_forwards) return false;
+    memcpy(new_forwards, current->forwards, current->forward_count * sizeof(ForwardEntry));
+    current->forwards = new_forwards;
+    current->forward_capacity = new_cap;
+  }
+  current->forwards[current->forward_count].name = name;
+  current->forwards[current->forward_count].type = func_type;
+  current->forwards[current->forward_count].resolved = false;
+  current->forward_count++;
+  return true;
+}
+
+bool type_context_define_forward_body(TypeContext* ctx, Sym name, MorphlType* func_type) {
+  if (!ctx || !name || !func_type || ctx->scope_count == 0) return false;
+  Scope* current = &ctx->scopes[ctx->scope_count - 1];
+  for (size_t i = 0; i < current->forward_count; ++i) {
+    if (current->forwards[i].name == name) {
+      if (current->forwards[i].resolved) {
+        return false;
+      }
+      if (!morphl_type_equals(current->forwards[i].type, func_type)) {
+        return false;
+      }
+      current->forwards[i].resolved = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+ForwardEntry* type_context_lookup_forward(TypeContext* ctx, Sym name) {
+  if (!ctx || !name || ctx->scope_count == 0) return NULL;
+  Scope* current = &ctx->scopes[ctx->scope_count - 1];
+  for (size_t i = 0; i < current->forward_count; ++i) {
+    if (current->forwards[i].name == name) {
+      return &current->forwards[i];
+    }
+  }
+  return NULL;
+}
+
+bool type_context_check_unresolved_forwards(TypeContext* ctx) {
+  if (!ctx) return false;
+  bool ok = true;
+  for (size_t s = 0; s < ctx->scope_count; ++s) {
+    Scope* scope = &ctx->scopes[s];
+    if (scope->has_forward_errors) {
+      ok = false;
+      continue;
+    }
+    for (size_t i = 0; i < scope->forward_count; ++i) {
+      if (!scope->forwards[i].resolved) {
+        Str name = interns_lookup(ctx->interns, scope->forwards[i].name);
+        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward missing body for '%.*s'", (int)name.len, name.ptr);
+        morphl_error_emit(NULL, &err);
+        ok = false;
+        scope->has_forward_errors = true;
+        break;
+      }
+    }
+  }
+  return ok;
+}
+
 void type_context_set_return_type(TypeContext* ctx, MorphlType* ret_type) {
   if (!ctx) return;
   ctx->expected_return_type = ret_type;
@@ -175,4 +280,39 @@ void type_context_set_return_type(TypeContext* ctx, MorphlType* ret_type) {
 MorphlType* type_context_get_return_type(TypeContext* ctx) {
   if (!ctx) return NULL;
   return ctx->expected_return_type;
+}
+
+bool type_context_push_this(TypeContext* ctx, MorphlType* this_type) {
+  if (!ctx || !this_type) return false;
+  if (ctx->this_depth >= ctx->this_capacity) {
+    size_t new_cap = ctx->this_capacity * 2;
+    MorphlType** new_stack = arena_alloc(ctx->arena, new_cap * sizeof(MorphlType*));
+    if (!new_stack) return false;
+    memcpy(new_stack, ctx->this_stack, ctx->this_depth * sizeof(MorphlType*));
+    ctx->this_stack = new_stack;
+    ctx->this_capacity = new_cap;
+  }
+  ctx->this_stack[ctx->this_depth++] = this_type;
+  return true;
+}
+
+bool type_context_pop_this(TypeContext* ctx) {
+  if (!ctx || ctx->this_depth == 0) return false;
+  ctx->this_depth--;
+  return true;
+}
+
+MorphlType* type_context_get_this(TypeContext* ctx) {
+  if (!ctx || ctx->this_depth == 0) return NULL;
+  return ctx->this_stack[ctx->this_depth - 1];
+}
+
+MorphlType* type_context_get_file(TypeContext* ctx) {
+  if (!ctx) return NULL;
+  return ctx->file_type;
+}
+
+MorphlType* type_context_get_global(TypeContext* ctx) {
+  if (!ctx) return NULL;
+  return ctx->global_type;
 }

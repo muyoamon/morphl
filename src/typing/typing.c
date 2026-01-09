@@ -66,6 +66,17 @@ MorphlType* morphl_type_string(Arena* arena) {
   return t;
 }
 
+MorphlType* morphl_type_ident(Arena* arena) {
+  if (!arena) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_IDENT;
+  t->size = 8; // Assume symbol-sized
+  t->align = 8;
+  return t;
+}
+
 MorphlType* morphl_type_bool(Arena* arena) {
   if (!arena) return NULL;
   MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
@@ -104,6 +115,23 @@ MorphlType* morphl_type_func(Arena* arena,
   }
   
   t->data.func.return_type = return_type;
+  return t;
+}
+
+MorphlType* morphl_type_ref(Arena* arena,
+                            MorphlType* target,
+                            bool is_mutable,
+                            bool is_inline) {
+  if (!arena || !target) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_REF;
+  t->size = 8;
+  t->align = 8;
+  t->data.ref.target = target;
+  t->data.ref.is_mutable = is_mutable;
+  t->data.ref.is_inline = is_inline;
   return t;
 }
 
@@ -210,6 +238,11 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
       t->data.block.field_names = names;
       t->data.block.field_types = types;
     }
+  } else if (t->kind == MORPHL_TYPE_REF) {
+    if (t->data.ref.target) {
+      t->data.ref.target = morphl_type_clone(arena, t->data.ref.target);
+      if (!t->data.ref.target) return NULL;
+    }
   }
   
   return t;
@@ -255,6 +288,12 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
     }
     return true;
   }
+
+  if (a->kind == MORPHL_TYPE_REF) {
+    if (a->data.ref.is_mutable != b->data.ref.is_mutable) return false;
+    if (a->data.ref.is_inline != b->data.ref.is_inline) return false;
+    return morphl_type_equals(a->data.ref.target, b->data.ref.target);
+  }
   
   return true;
 }
@@ -277,8 +316,11 @@ Str morphl_type_to_string(const MorphlType* type) {
       case MORPHL_TYPE_FLOAT:
         result = "float";
         break;
-        case MORPHL_TYPE_STRING:
+      case MORPHL_TYPE_STRING:
         result = "string";
+        break;
+      case MORPHL_TYPE_IDENT:
+        result = "ident";
         break;
       case MORPHL_TYPE_BOOL:
         result = "bool";
@@ -296,6 +338,13 @@ Str morphl_type_to_string(const MorphlType* type) {
       }
       case MORPHL_TYPE_BLOCK: {
         snprintf(buf, sizeof(buf), "block{%llu}", (unsigned long long)type->data.block.field_count);
+        result = buf;
+        break;
+      }
+      case MORPHL_TYPE_REF: {
+        const char* mut = type->data.ref.is_mutable ? "mut" : "const";
+        const char* inl = type->data.ref.is_inline ? " inline" : "";
+        snprintf(buf, sizeof(buf), "ref[%s%s]", mut, inl);
         result = buf;
         break;
       }
