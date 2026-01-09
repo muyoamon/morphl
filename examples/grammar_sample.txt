@@ -8,6 +8,9 @@ end
 
 rule expr:
     %NUMBER => number
+    "return" $expr val => $ret val
+    "while" $expr cond $expr body => $while cond body
+    "if" $expr cond $expr thn => $if cond thn
     %IDENT => ident
     $expr[1] first $("," $expr[2] rest)+ => $group first $spread rest
     "{" $($stmnt s)* "}" => $block $spread s
@@ -19,6 +22,5 @@ rule expr:
     $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | $fmul lhs rhs
     $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs | $fdiv lhs rhs
     $expr id ":" "=" $expr exp => $decl id exp
-    "return" $expr exp => $ret exp
-    "while" $expr cond $expr body => $while cond body
+    $expr lhs "<" "=" $expr rhs => $lte lhs rhs
 end

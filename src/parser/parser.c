@@ -153,7 +153,7 @@ static bool parse_literal(const char** cursor, size_t* remaining, Str* out, bool
     if (!closed) { free(buf); return false; }
     buf[out_len] = '\0';
     *out = str_from(buf, out_len);
-    if (allocated) *allocated = true;
+    if (allocated) *allocated = true;  // Signal that this was a quoted literal
     return true;
   }
   while (len < *remaining && !isspace((unsigned char)start[len])) {
@@ -349,7 +349,8 @@ static bool parse_pattern(const char* line,
         ident_like = false;
       }
     }
-    if (ident_like && raw.ptr[0] != '%' && raw.ptr[0] != '$') {
+    // If identifier-like, not starting with % or $, AND not quoted, treat as capture label
+    if (ident_like && raw.ptr[0] != '%' && raw.ptr[0] != '$' && !literal_allocated) {
       Sym cap = interns_intern(interns, raw);
       if (literal_allocated) free((void*)raw.ptr);
       if (!cap) return false;

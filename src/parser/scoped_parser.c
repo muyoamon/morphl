@@ -309,17 +309,9 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
     return false;
   }
   
-  Grammar* current = scoped_parser_current_grammar(ctx);
-  
-  if (ctx->use_builtins || !current) {
-    // Use builtin parser for this expression
-    return builtin_parse_expr(tokens, token_count, cursor, ctx->interns, out_node);
-  } else {
-    // Use custom grammar parser
-    // For now, fall back to builtin (full grammar integration is complex)
-    // TODO: Integrate custom grammar parsing with cursor management
-    return builtin_parse_expr(tokens, token_count, cursor, ctx->interns, out_node);
-  }
+  // Always use builtin parser for now
+  // Grammar-based parsing is a future feature
+  return builtin_parse_expr(tokens, token_count, cursor, ctx->interns, out_node);
 }
 
 /**
@@ -351,6 +343,7 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
   if (!ctx || !tokens || !out_root) return false;
   
   // Start with builtin-only grammar (file-level default)
+  // Grammars can be loaded via $syntax directives in the source
   if (!scoped_parser_push_grammar(ctx, NULL)) {
     return false;
   }
