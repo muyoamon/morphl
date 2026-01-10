@@ -16,6 +16,8 @@ static void* arena_alloc(Arena* a, size_t size) {
 #define INITIAL_VAR_CAPACITY 16
 #define INITIAL_FORWARD_CAPACITY 4
 #define INITIAL_THIS_CAPACITY 8
+#define INITIAL_FILE_CAPACITY 4
+#define INITIAL_GLOBAL_CAPACITY 4
 
 TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   if (!arena || !interns) return NULL;
@@ -29,6 +31,14 @@ TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   ctx->expected_return_type = NULL;
   ctx->file_type = NULL;
   ctx->global_type = NULL;
+  ctx->file_stack = arena_alloc(arena, INITIAL_FILE_CAPACITY * sizeof(MorphlType*));
+  if (!ctx->file_stack) return NULL;
+  ctx->file_depth = 0;
+  ctx->file_capacity = INITIAL_FILE_CAPACITY;
+  ctx->global_stack = arena_alloc(arena, INITIAL_GLOBAL_CAPACITY * sizeof(MorphlType*));
+  if (!ctx->global_stack) return NULL;
+  ctx->global_depth = 0;
+  ctx->global_capacity = INITIAL_GLOBAL_CAPACITY;
   ctx->this_stack = arena_alloc(arena, INITIAL_THIS_CAPACITY * sizeof(MorphlType*));
   if (!ctx->this_stack) return NULL;
   ctx->this_depth = 0;
@@ -305,6 +315,48 @@ bool type_context_pop_this(TypeContext* ctx) {
 MorphlType* type_context_get_this(TypeContext* ctx) {
   if (!ctx || ctx->this_depth == 0) return NULL;
   return ctx->this_stack[ctx->this_depth - 1];
+}
+
+bool type_context_push_file(TypeContext* ctx, MorphlType* file_type) {
+  if (!ctx) return false;
+  if (ctx->file_depth >= ctx->file_capacity) {
+    size_t new_cap = ctx->file_capacity * 2;
+    MorphlType** new_stack = arena_alloc(ctx->arena, new_cap * sizeof(MorphlType*));
+    if (!new_stack) return false;
+    memcpy(new_stack, ctx->file_stack, ctx->file_depth * sizeof(MorphlType*));
+    ctx->file_stack = new_stack;
+    ctx->file_capacity = new_cap;
+  }
+  ctx->file_stack[ctx->file_depth++] = ctx->file_type;
+  ctx->file_type = file_type;
+  return true;
+}
+
+bool type_context_pop_file(TypeContext* ctx) {
+  if (!ctx || ctx->file_depth == 0) return false;
+  ctx->file_type = ctx->file_stack[--ctx->file_depth];
+  return true;
+}
+
+bool type_context_push_global(TypeContext* ctx, MorphlType* global_type) {
+  if (!ctx) return false;
+  if (ctx->global_depth >= ctx->global_capacity) {
+    size_t new_cap = ctx->global_capacity * 2;
+    MorphlType** new_stack = arena_alloc(ctx->arena, new_cap * sizeof(MorphlType*));
+    if (!new_stack) return false;
+    memcpy(new_stack, ctx->global_stack, ctx->global_depth * sizeof(MorphlType*));
+    ctx->global_stack = new_stack;
+    ctx->global_capacity = new_cap;
+  }
+  ctx->global_stack[ctx->global_depth++] = ctx->global_type;
+  ctx->global_type = global_type;
+  return true;
+}
+
+bool type_context_pop_global(TypeContext* ctx) {
+  if (!ctx || ctx->global_depth == 0) return false;
+  ctx->global_type = ctx->global_stack[--ctx->global_depth];
+  return true;
 }
 
 MorphlType* type_context_get_file(TypeContext* ctx) {

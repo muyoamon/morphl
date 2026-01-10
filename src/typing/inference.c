@@ -324,8 +324,12 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       if (node->child_count < 2) return NULL;
       AstNode* name_node = node->children[0];
       AstNode* init_node = node->children[1];
-      if (!name_node || name_node->kind != AST_IDENT || !name_node->op) return NULL;
+      if (!name_node || name_node->kind != AST_IDENT) return NULL;
       Sym var_sym = name_node->op;
+      if (!var_sym && name_node->value.ptr) {
+        var_sym = interns_intern(ctx->interns, name_node->value);
+      }
+      if (!var_sym) return NULL;
       if (!init_node) return NULL;
       Sym forward_sym = interns_intern(ctx->interns, str_from("$forward", 8));
       if (init_node->kind == AST_BUILTIN && init_node->op == forward_sym) {
@@ -442,7 +446,11 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         if (!stmt_type) { ok = false; break; }
         if (stmt && stmt->kind == AST_DECL && stmt->child_count >= 1) {
           AstNode* name_node = stmt->children[0];
-          if (!name_node || !name_node->op) { ok = false; break; }
+          if (!name_node) { ok = false; break; }
+          if (!name_node->op && name_node->value.ptr) {
+            name_node->op = interns_intern(ctx->interns, name_node->value);
+          }
+          if (!name_node->op) { ok = false; break; }
           if (field_count >= field_cap) {
             size_t new_cap = field_cap ? field_cap * 2 : 4;
             Sym* new_names = (Sym*)realloc(field_names, new_cap * sizeof(Sym));
@@ -482,6 +490,32 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       Sym strtid_sym = interns_intern(ctx->interns, str_from("$strtid", 7));
       Sym member_sym = interns_intern(ctx->interns, str_from("$member", 7));
       Sym set_sym = interns_intern(ctx->interns, str_from("$set", 4));
+      Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
+      if (node->op == import_sym) {
+        if (node->child_count != 1) {
+          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$import expects 1 arg");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+        AstNode* module_node = node->children[0];
+        if (!module_node) return NULL;
+        if (!type_context_push_file(ctx, NULL)) {
+          return NULL;
+        }
+        if (!type_context_push_global(ctx, NULL)) {
+          type_context_pop_file(ctx);
+          return NULL;
+        }
+        MorphlType* module_type = morphl_infer_type_of_ast(ctx, module_node);
+        type_context_pop_global(ctx);
+        type_context_pop_file(ctx);
+        if (!module_type || module_type->kind != MORPHL_TYPE_BLOCK) {
+          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$import: module must be a block");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+        return module_type;
+      }
       if (node->op == idtstr_sym) {
         if (node->child_count != 1) {
           MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$idtstr expects 1 arg");

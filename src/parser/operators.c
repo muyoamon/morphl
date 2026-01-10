@@ -1,10 +1,13 @@
 #include "parser/operators.h"
 #include "parser/scoped_parser.h"
+#include "lexer/lexer.h"
 #include "typing/typing.h"
 #include "typing/type_context.h"
 #include "typing/inference.h"
 #include "util/error.h"
+#include "util/file.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <string.h>
 
@@ -54,11 +57,60 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
                                     void* block_state,
                                     AstNode** args,
                                     size_t arg_count) {
-  (void)info; (void)global_state; (void)block_state;
+  (void)info; (void)block_state;
   if (arg_count != 1) return NULL;
+  if (!global_state) return NULL;
+  ScopedParserContext* ctx = (ScopedParserContext*)global_state;
   char tmp[512];
-  (void)unquote_literal(args[0], tmp, sizeof(tmp));
-  // Future: load module file and attach as block value
+  const char* filename = unquote_literal(args[0], tmp, sizeof(tmp));
+  if (!filename) return NULL;
+  char* source_buffer = NULL;
+  size_t source_len = 0;
+  if (!file_read_all(filename, &source_buffer, &source_len)) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "$import: failed to read '%s'", filename);
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  if (!lexer_tokenize(filename, str_from(source_buffer, source_len), ctx->interns, &tokens, &token_count)) {
+    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "$import: tokenization failed for '%s'", filename);
+    morphl_error_emit(NULL, &err);
+    free(source_buffer);
+    return NULL;
+  }
+
+  ScopedParserContext module_ctx;
+  if (!scoped_parser_init(&module_ctx, ctx->interns, ctx->arena)) {
+    free(tokens);
+    free(source_buffer);
+    return NULL;
+  }
+
+  AstNode* module_root = NULL;
+  bool ok = scoped_parse_ast(&module_ctx, tokens, token_count, &module_root);
+  scoped_parser_free(&module_ctx);
+  free(tokens);
+  free(source_buffer);
+
+  if (!ok || !module_root) {
+    return NULL;
+  }
+
+  if (module_root->kind != AST_BLOCK) {
+    AstNode* block = ast_new(AST_BLOCK);
+    if (!block || !ast_append_child(block, module_root)) {
+      ast_free(block);
+      ast_free(module_root);
+      return NULL;
+    }
+    module_root = block;
+  }
+
+  if (args[0]) {
+    ast_free(args[0]);
+  }
+  args[0] = module_root;
   return NULL;
 }
 
@@ -295,8 +347,12 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
   if (!init_expr) return NULL;
   
   // Extract the symbol from the identifier (op field contains the symbol)
-  if (!name_node->op) return NULL;
   Sym var_sym = name_node->op;
+  if (!var_sym && ctx->interns && name_node->value.ptr) {
+    var_sym = interns_intern(ctx->interns, name_node->value);
+    name_node->op = var_sym;
+  }
+  if (!var_sym) return NULL;
   
   // Check for duplicate declaration
   if (type_context_check_duplicate_var(ctx, var_sym)) {
