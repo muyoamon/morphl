@@ -16,6 +16,9 @@ extern const char* const LEXER_KIND_NUMBER;
 extern const char* const LEXER_KIND_SYMBOL;
 extern const char* const LEXER_KIND_EOF;
 
+#define MORPHL_SPAN_AT_CURSOR(cursor) \
+  morphl_span_from_loc(tokens[cursor].filename, tokens[cursor].row, tokens[cursor].col)
+
 bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* arena) {
   if (!ctx || !interns || !arena) return false;
   
@@ -308,7 +311,9 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
                               size_t depth,
                               AstNode** out_node) {
   if (depth > 128) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "parsing depth exceeded (recursion limit: 128)");
+    MorphlError err = MORPHL_ERR_FROM(MORPHL_E_PARSE, 
+      "parsing depth exceeded (recursion limit: 128)", 
+      MORPHL_SPAN_AT_CURSOR(*cursor));
     morphl_error_emit(NULL, &err);
     return false;
   }
@@ -358,7 +363,9 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
   
   if (!scoped_parse_block_contents(ctx, tokens, token_count, &cursor, 0, &children, &child_count)) {
     scoped_parser_pop_grammar(ctx);
-    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "failed to parse program content");
+    MorphlError err = MORPHL_ERR_FROM(MORPHL_E_PARSE, 
+                        "failed to parse program content", 
+                        MORPHL_SPAN_AT_CURSOR(cursor));
     morphl_error_emit(NULL, &err);
     return false;
   }

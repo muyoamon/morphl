@@ -154,6 +154,11 @@ size_t morphl_error_format(const MorphlError *err, char *out, size_t out_cap);
 #define MORPHL_NOTE(code, fmt, ...)  MORPHL_ERR_SPAN((code), MORPHL_SEV_NOTE,  morphl_span_unknown(), (fmt), ##__VA_ARGS__)
 #define MORPHL_FATAL(code, fmt, ...) MORPHL_ERR_SPAN((code), MORPHL_SEV_FATAL, morphl_span_unknown(), (fmt), ##__VA_ARGS__)
 
+#define MORPHL_ERR_FROM(code, fmt, span, ...)   MORPHL_ERR_SPAN((code), MORPHL_SEV_ERROR, (span), (fmt), ##__VA_ARGS__)
+#define MORPHL_WARN_FROM(code, fmt, span, ...)  MORPHL_ERR_SPAN((code), MORPHL_SEV_WARN,  (span), (fmt), ##__VA_ARGS__)
+#define MORPHL_NOTE_FROM(code, fmt, span, ...)  MORPHL_ERR_SPAN((code), MORPHL_SEV_NOTE,  (span), (fmt), ##__VA_ARGS__)
+#define MORPHL_FATAL_FROM(code, fmt, span, ...) MORPHL_ERR_SPAN((code), MORPHL_SEV_FATAL, (span), (fmt), ##__VA_ARGS__)
+
 // Early-return helper macro
 #define MORPHL_RETURN_IF_ERR(err_expr) do { \
     MorphlError _e = (err_expr);           \
