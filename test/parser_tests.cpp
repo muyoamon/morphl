@@ -174,10 +174,49 @@ end
   std::remove(grammar_path.c_str());
 }
 
+static void test_float_literal_token_kind() {
+  const char* grammar_src = R"GRAM(rule expr:
+    %NUMBER => number
+end
+)GRAM";
+
+  std::string grammar_path = write_temp_file(grammar_src);
+
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  Grammar grammar;
+  assert(grammar_load_file(&grammar, grammar_path.c_str(), interns, &arena));
+
+  const char* source = "3.14";
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  assert(lexer_tokenize("<test>", str_from(source, strlen(source)), interns, &tokens, &token_count));
+
+  AstNode* root = NULL;
+  assert(grammar_parse_ast(&grammar, 0, tokens, token_count, &root));
+  assert(root != NULL);
+  assert(root->kind == AST_LITERAL);
+
+  Sym float_sym = interns_intern(interns, str_from(LEXER_KIND_FLOAT, strlen(LEXER_KIND_FLOAT)));
+  assert(root->op == float_sym);
+
+  ast_free(root);
+  free(tokens);
+  grammar_free(&grammar);
+  arena_free(&arena);
+  interns_free(interns);
+  std::remove(grammar_path.c_str());
+}
+
 int main() {
   test_grammar_loading();
   test_parser_accept_reject();
   test_parser_ast_build();
+  test_float_literal_token_kind();
   std::puts("All parser tests passed.");
   return 0;
 }

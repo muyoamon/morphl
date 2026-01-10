@@ -1030,6 +1030,9 @@ static bool match_atom_ast(const ParsedRuleContext* ctx,
       if (out_node && atom->capture) {
         AstNode* leaf = ast_make_leaf(AST_LITERAL, tokens[*cursor].lexeme,
                                       tokens[*cursor].filename, tokens[*cursor].row, tokens[*cursor].col);
+        if (leaf) {
+          leaf->op = tokens[*cursor].kind;
+        }
         *out_node = leaf;
         Capture* c = ensure_capture(captures, capture_count, atom->capture);
         if (!c || !capture_append(c, leaf)) return false;
@@ -1038,7 +1041,19 @@ static bool match_atom_ast(const ParsedRuleContext* ctx,
       return true;
     case GRAMMAR_ATOM_TOKEN_KIND:
       if (*cursor >= token_count) return false;
-      if (tokens[*cursor].kind != atom->symbol) return false;
+      {
+        Sym number_sym = interns_intern(ctx->grammar->names,
+                                        str_from(LEXER_KIND_NUMBER, strlen(LEXER_KIND_NUMBER)));
+        Sym float_sym = interns_intern(ctx->grammar->names,
+                                       str_from(LEXER_KIND_FLOAT, strlen(LEXER_KIND_FLOAT)));
+        if (tokens[*cursor].kind != atom->symbol) {
+          if (!(number_sym && float_sym &&
+                atom->symbol == number_sym &&
+                tokens[*cursor].kind == float_sym)) {
+            return false;
+          }
+        }
+      }
       if (out_node) {
         AstKind kind = AST_LITERAL;
         // Heuristic: IDENT token kind -> AST_IDENT
@@ -1049,6 +1064,9 @@ static bool match_atom_ast(const ParsedRuleContext* ctx,
         }
         AstNode* leaf = ast_make_leaf(kind, tokens[*cursor].lexeme,
                                       tokens[*cursor].filename, tokens[*cursor].row, tokens[*cursor].col);
+        if (leaf && kind == AST_LITERAL) {
+          leaf->op = tokens[*cursor].kind;
+        }
         *out_node = leaf;
         if (atom->capture) {
           Capture* c = ensure_capture(captures, capture_count, atom->capture);

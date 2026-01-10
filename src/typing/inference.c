@@ -1,6 +1,7 @@
 #include "typing/inference.h"
 #include "parser/operators.h"
 #include "ast/ast.h"
+#include "lexer/lexer.h"
 #include "util/error.h"
 #include "util/util.h"
 #include <string.h>
@@ -624,6 +625,21 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
           node->value.ptr[0] == '"' &&
           node->value.ptr[node->value.len - 1] == '"') {
         return morphl_type_string(ctx->arena);
+      }
+
+      if (node->op) {
+        Sym number_kind = interns_intern(ctx->interns, str_from(LEXER_KIND_NUMBER, strlen(LEXER_KIND_NUMBER)));
+        Sym float_kind = interns_intern(ctx->interns, str_from(LEXER_KIND_FLOAT, strlen(LEXER_KIND_FLOAT)));
+        Sym string_kind = interns_intern(ctx->interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
+        if (string_kind && node->op == string_kind) {
+          return morphl_type_string(ctx->arena);
+        }
+        if (float_kind && node->op == float_kind) {
+          return morphl_type_float(ctx->arena);
+        }
+        if (number_kind && node->op == number_kind) {
+          return morphl_type_int(ctx->arena);
+        }
       }
 
       // Simple heuristic: if it looks like a number, assume int
