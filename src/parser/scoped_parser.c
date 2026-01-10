@@ -328,7 +328,7 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
  * @param ctx TypeContext for storing inferred types
  * @param node AST node to process
  */
-static void typing_pass_ast(TypeContext* ctx, const AstNode* node) {
+static void typing_pass_ast(TypeContext* ctx, AstNode* node) {
   if (!ctx || !node) return;
   
   // Infer type for this node (this may trigger preprocessor actions)
