@@ -36,6 +36,6 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
  * @param node AST node
  * @return Inferred type, or NULL if type unknown
  */
-MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, const AstNode* node);
+MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node);
 
 #endif  // MORPHL_TYPING_INFERENCE_H_

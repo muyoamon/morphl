@@ -28,6 +28,11 @@ static MorphlType* unwrap_ref(MorphlType* t) {
   return t;
 }
 
+static void morphl_error_swallow(void* user, const MorphlError* err) {
+  (void)user;
+  (void)err;
+}
+
 MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
                                      Sym op_sym,
                                      MorphlType** arg_types,
@@ -310,7 +315,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   return morphl_type_void(ctx->arena);
 }
 
-MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, const AstNode* node) {
+MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
   if (!ctx || !node) return NULL;
   
   switch (node->kind) {
@@ -638,8 +643,85 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, const AstNode* node) {
       }
     }
     
-    case AST_UNKNOWN:
     case AST_OVERLOAD:
+      if (node->child_count == 0) {
+        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "overload has no candidates");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+
+      MorphlErrorSink prev_sink = morphl_error_get_global_sink();
+      MorphlErrorSink silent_sink = { morphl_error_swallow, NULL };
+      morphl_error_set_global_sink(silent_sink);
+
+      MorphlType* chosen_type = NULL;
+      AstNode* chosen = NULL;
+
+      for (size_t i = 0; i < node->child_count; ++i) {
+        AstNode* candidate = node->children[i];
+        if (!candidate || !candidate->op) continue;
+
+        const OperatorInfo* info = operator_info_lookup(candidate->op);
+        if (!info) continue;
+
+        size_t arg_count = candidate->child_count;
+        MorphlType** arg_types = NULL;
+        if (arg_count > 0) {
+          arg_types = (MorphlType**)malloc(arg_count * sizeof(MorphlType*));
+          if (!arg_types) continue;
+          bool ok = true;
+          for (size_t j = 0; j < arg_count; ++j) {
+            arg_types[j] = morphl_infer_type_of_ast(ctx, candidate->children[j]);
+            if (!arg_types[j]) { ok = false; break; }
+          }
+          if (!ok) {
+            free(arg_types);
+            continue;
+          }
+        }
+
+        MorphlType* candidate_type = morphl_infer_type_for_op(ctx, candidate->op, arg_types, arg_count);
+        free(arg_types);
+        if (candidate_type) {
+          chosen = candidate;
+          chosen_type = candidate_type;
+          break;
+        }
+      }
+
+      morphl_error_set_global_sink(prev_sink);
+
+      if (!chosen) {
+        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "no overload matches");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+
+      for (size_t i = 0; i < node->child_count; ++i) {
+        if (node->children[i] != chosen) {
+          ast_free(node->children[i]);
+        }
+      }
+      free(node->children);
+
+      node->kind = chosen->kind;
+      node->op = chosen->op;
+      node->value = chosen->value;
+      node->children = chosen->children;
+      node->child_count = chosen->child_count;
+      node->child_capacity = chosen->child_capacity;
+      node->filename = chosen->filename;
+      node->row = chosen->row;
+      node->col = chosen->col;
+
+      chosen->children = NULL;
+      chosen->child_count = 0;
+      chosen->child_capacity = 0;
+      ast_free(chosen);
+
+      return chosen_type;
+
+    case AST_UNKNOWN:
     default:
       return morphl_type_void(ctx->arena);
   }

@@ -713,6 +713,37 @@ static void test_pp_while() {
 }
 
 // ============================================================================
+// Test: Overload Resolution
+// ============================================================================
+static void test_overload_resolution() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  AstNode* overload = ast_new(AST_OVERLOAD);
+  assert(overload != NULL);
+
+  AstNode* bad = make_builtin(interns, "$add", {make_literal("1"), make_literal("2.0")});
+  AstNode* good = make_builtin(interns, "$fadd", {make_literal("1.0"), make_literal("2.0")});
+  assert(ast_append_child(overload, bad));
+  assert(ast_append_child(overload, good));
+
+  MorphlType* inferred = morphl_infer_type_of_ast(ctx, overload);
+  assert(inferred != NULL);
+  assert(inferred->kind == MORPHL_TYPE_FLOAT);
+  assert(overload->kind == AST_BUILTIN);
+  assert(overload->op == interns_intern(interns, str_from("$fadd", 5)));
+
+  ast_free(overload);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_overload_resolution passed\n");
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -734,6 +765,7 @@ int main() {
   test_pp_member();
   test_pp_call_group_param();
   test_pp_while();
+  test_overload_resolution();
   // Note: Recursion is tested via examples/test_recursion.mpl
   // Unit testing recursion requires full parser integration
 
