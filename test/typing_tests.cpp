@@ -9,6 +9,7 @@ extern "C" {
 #include "typing/inference.h"
 #include "util/util.h"
 #include "parser/operators.h"
+#include "lexer/lexer.h"
 }
 
 // ============================================================================
@@ -38,6 +39,14 @@ static AstNode* make_ident(InternTable* interns, const char* name) {
 static AstNode* make_literal(const char* text) {
   size_t len = strlen(text);
   return ast_make_leaf(AST_LITERAL, str_from(text, len), "<test>", 1, 1);
+}
+
+static AstNode* make_literal_with_kind(InternTable* interns, const char* text, const char* kind_name) {
+  size_t len = strlen(text);
+  AstNode* node = ast_make_leaf(AST_LITERAL, str_from(text, len), "<test>", 1, 1);
+  if (!node) return NULL;
+  node->op = interns_intern(interns, str_from(kind_name, strlen(kind_name)));
+  return node;
 }
 
 // Helper: create builtin AST node with children
@@ -509,6 +518,36 @@ static void test_ref_meta_forward_ops() {
 }
 
 // ============================================================================
+// Test: Literal inference uses token kinds when available
+// ============================================================================
+static void test_literal_inference_kinds() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  AstNode* float_lit = make_literal_with_kind(interns, "3.14", LEXER_KIND_FLOAT);
+  AstNode* int_lit = make_literal_with_kind(interns, "42", LEXER_KIND_NUMBER);
+  AstNode* string_lit = make_literal_with_kind(interns, "\"ok\"", LEXER_KIND_STRING);
+
+  MorphlType* float_type = morphl_infer_type_of_ast(ctx, float_lit);
+  MorphlType* int_type = morphl_infer_type_of_ast(ctx, int_lit);
+  MorphlType* string_type = morphl_infer_type_of_ast(ctx, string_lit);
+
+  assert(float_type != NULL && float_type->kind == MORPHL_TYPE_FLOAT);
+  assert(int_type != NULL && int_type->kind == MORPHL_TYPE_INT);
+  assert(string_type != NULL && string_type->kind == MORPHL_TYPE_STRING);
+
+  ast_free(float_lit);
+  ast_free(int_lit);
+  ast_free(string_lit);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("✓ test_literal_inference_kinds passed\n");
+}
+
+// ============================================================================
 // Test: Preprocessor actions for $set
 // ============================================================================
 static void test_pp_set() {
@@ -760,6 +799,7 @@ int main() {
   test_infer_logic_ops();
   test_infer_bitwise_ops();
   test_ref_meta_forward_ops();
+  test_literal_inference_kinds();
   test_pp_set();
   test_pp_ret();
   test_pp_member();

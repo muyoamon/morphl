@@ -8,6 +8,7 @@
 // Token kind constants
 extern const char* const LEXER_KIND_IDENT;
 extern const char* const LEXER_KIND_NUMBER;
+extern const char* const LEXER_KIND_FLOAT;
 extern const char* const LEXER_KIND_STRING;
 extern const char* const LEXER_KIND_SYMBOL;
 extern const char* const LEXER_KIND_EOF;
@@ -16,7 +17,7 @@ extern const char* const LEXER_KIND_EOF;
  * @brief Tokenize a source buffer using a static rule set.
  *
  * The lexer recognizes identifiers (`[A-Za-z_][A-Za-z0-9_]*`), decimal
- * numbers (`[0-9]+`), string literals (`"..."`), and punctuation sequences
+ * numbers (`[0-9]+`), float numbers (`[0-9]+\\.[0-9]+`), string literals (`"..."`), and punctuation sequences
  * (any run of non-whitespace characters that are not alphanumeric or an
  * underscore). Whitespace is ignored while tracking row/column positions.
  * An explicit EOF token is appended to every stream. All token kinds are
@@ -40,6 +41,8 @@ bool lexer_tokenize(const char* filename,
 ///@{
 extern const char* const LEXER_KIND_IDENT;   /**< Identifier token kind name. */
 extern const char* const LEXER_KIND_NUMBER;  /**< Number token kind name. */
+extern const char* const LEXER_KIND_FLOAT;   /**< Float token kind name. */
+extern const char* const LEXER_KIND_STRING;  /**< String token kind name. */
 extern const char* const LEXER_KIND_SYMBOL;  /**< Punctuation token kind name. */
 extern const char* const LEXER_KIND_EOF;     /**< End-of-file token kind name. */
 ///@}

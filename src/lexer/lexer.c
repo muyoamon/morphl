@@ -9,6 +9,7 @@
 
 const char* const LEXER_KIND_IDENT = "IDENT";
 const char* const LEXER_KIND_NUMBER = "NUMBER";
+const char* const LEXER_KIND_FLOAT = "FLOAT";
 const char* const LEXER_KIND_STRING = "STRING";
 const char* const LEXER_KIND_SYMBOL = "SYMBOL";
 const char* const LEXER_KIND_EOF = "EOF";
@@ -27,15 +28,17 @@ static bool ensure_token_capacity(struct token** tokens, size_t* cap, size_t nee
 static bool intern_kinds(InternTable* interns,
                          TokenKind* ident,
                          TokenKind* number,
+                         TokenKind* number_float,
                          TokenKind* string,
                          TokenKind* symbol,
                          TokenKind* eof) {
   *ident = interns_intern(interns, str_from(LEXER_KIND_IDENT, strlen(LEXER_KIND_IDENT)));
   *number = interns_intern(interns, str_from(LEXER_KIND_NUMBER, strlen(LEXER_KIND_NUMBER)));
+  *number_float = interns_intern(interns, str_from(LEXER_KIND_FLOAT, strlen(LEXER_KIND_FLOAT)));
   *string = interns_intern(interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
   *symbol = interns_intern(interns, str_from(LEXER_KIND_SYMBOL, strlen(LEXER_KIND_SYMBOL)));
   *eof = interns_intern(interns, str_from(LEXER_KIND_EOF, strlen(LEXER_KIND_EOF)));
-  return *ident && *number && *string && *symbol && *eof;
+  return *ident && *number && *number_float && *string && *symbol && *eof;
 }
 
 bool lexer_tokenize(const char* filename,
@@ -48,8 +51,8 @@ bool lexer_tokenize(const char* filename,
   *out_count = 0;
   size_t cap = 0;
 
-  TokenKind ident_kind, number_kind, string_kind, symbol_kind, eof_kind;
-  if (!intern_kinds(interns, &ident_kind, &number_kind, &string_kind, &symbol_kind, &eof_kind)) {
+  TokenKind ident_kind, number_kind, float_kind, string_kind, symbol_kind, eof_kind;
+  if (!intern_kinds(interns, &ident_kind, &number_kind, &float_kind, &string_kind, &symbol_kind, &eof_kind)) {
     return false;
   }
 
@@ -108,10 +111,19 @@ bool lexer_tokenize(const char* filename,
       while (offset < source.len && isdigit((unsigned char)source.ptr[offset])) {
         offset++; col++;
       }
+      bool is_float = false;
+      if (offset + 1 < source.len && source.ptr[offset] == '.' &&
+          isdigit((unsigned char)source.ptr[offset + 1])) {
+        is_float = true;
+        offset++; col++;
+        while (offset < source.len && isdigit((unsigned char)source.ptr[offset])) {
+          offset++; col++;
+        }
+      }
       size_t len = offset - start;
       if (!ensure_token_capacity(out_tokens, &cap, *out_count + 1)) return false;
       (*out_tokens)[(*out_count)++] = (struct token){
-        .kind = number_kind,
+        .kind = is_float ? float_kind : number_kind,
         .lexeme = str_from(source.ptr + start, len),
         .filename = filename,
         .row = row,
