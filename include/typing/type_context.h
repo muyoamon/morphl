@@ -57,6 +57,12 @@ typedef struct {
   // Special scope bindings
   MorphlType* file_type;
   MorphlType* global_type;
+  MorphlType** file_stack;
+  size_t file_depth;
+  size_t file_capacity;
+  MorphlType** global_stack;
+  size_t global_depth;
+  size_t global_capacity;
 
   MorphlType** this_stack;
   size_t this_depth;
@@ -90,6 +96,10 @@ bool type_context_check_unresolved_forwards(TypeContext* ctx);
 bool type_context_push_this(TypeContext* ctx, MorphlType* this_type);
 bool type_context_pop_this(TypeContext* ctx);
 MorphlType* type_context_get_this(TypeContext* ctx);
+bool type_context_push_file(TypeContext* ctx, MorphlType* file_type);
+bool type_context_pop_file(TypeContext* ctx);
+bool type_context_push_global(TypeContext* ctx, MorphlType* global_type);
+bool type_context_pop_global(TypeContext* ctx);
 MorphlType* type_context_get_file(TypeContext* ctx);
 MorphlType* type_context_get_global(TypeContext* ctx);
 

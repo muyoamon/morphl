@@ -2,6 +2,11 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <fstream>
+#include <string>
+#include <cstdlib>
+#include <ctime>
+#include <sstream>
 
 extern "C" {
 #include "typing/typing.h"
@@ -9,6 +14,7 @@ extern "C" {
 #include "typing/inference.h"
 #include "util/util.h"
 #include "parser/operators.h"
+#include "parser/scoped_parser.h"
 #include "lexer/lexer.h"
 }
 
@@ -23,6 +29,36 @@ static Arena create_test_arena() {
 
 static InternTable* create_test_interns() {
   return interns_new();
+}
+
+static std::string write_temp_file(const char* contents) {
+  const char* tmpdir = std::getenv("TMP");
+  if (!tmpdir) tmpdir = std::getenv("TEMP");
+#ifdef _WIN32
+  const char* fallback = "C:/Windows/Temp";
+#else
+  const char* fallback = "/tmp";
+#endif
+  if (!tmpdir) tmpdir = fallback;
+
+  std::srand((unsigned)std::time(nullptr) ^ (unsigned)(uintptr_t)&tmpdir);
+
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    std::ostringstream name;
+    name << tmpdir;
+    name << "/";
+    name << "morphl_test_" << std::rand() << ".tmp";
+    std::string path = name.str();
+
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open()) continue;
+    out << contents;
+    out.close();
+    return path;
+  }
+
+  assert(false && "failed to open temp file");
+  return std::string();
 }
 
 // Helper: create identifier AST node with interned symbol
@@ -665,6 +701,63 @@ static void test_pp_member() {
 }
 
 // ============================================================================
+// Test: $import produces block fields for module declarations
+// ============================================================================
+static void test_import_block_fields() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  const char* module_src = "$decl foo 1; $decl bar 2;";
+  std::string module_path = write_temp_file(module_src);
+
+  ScopedParserContext parser_ctx;
+  assert(scoped_parser_init(&parser_ctx, interns, &arena));
+
+  std::string quoted_path = "\"" + module_path + "\"";
+  AstNode* import_arg = make_literal(quoted_path.c_str());
+  assert(import_arg != NULL);
+  AstNode* args[] = {import_arg};
+  Sym import_sym = interns_intern(interns, str_from("$import", 7));
+  const OperatorInfo* import_info = operator_info_lookup(import_sym);
+  assert(import_info != NULL && import_info->func != NULL);
+  import_info->func(import_info, &parser_ctx, NULL, args, 1);
+  assert(args[0] != NULL);
+  assert(args[0]->kind == AST_BLOCK);
+
+  AstNode* import_node = make_builtin(interns, "$import", {args[0]});
+  assert(import_node != NULL);
+
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+  MorphlType* module_type = morphl_infer_type_of_ast(ctx, import_node);
+  assert(module_type != NULL);
+  assert(module_type->kind == MORPHL_TYPE_BLOCK);
+  bool found_foo = false;
+  Sym foo_sym = interns_intern(interns, str_from("foo", 3));
+  for (size_t i = 0; i < module_type->data.block.field_count; ++i) {
+    if (module_type->data.block.field_names[i] == foo_sym) {
+      found_foo = true;
+      break;
+    }
+  }
+  assert(found_foo);
+
+  AstNode* member_node = make_builtin(interns, "$member", {import_node, make_ident(interns, "foo")});
+  assert(member_node != NULL);
+  MorphlType* result_type = morphl_infer_type_of_ast(ctx, member_node);
+  assert(result_type != NULL && result_type->kind == MORPHL_TYPE_INT);
+
+  ast_free(member_node);
+  type_context_free(ctx);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  std::remove(module_path.c_str());
+  printf("\u2713 test_import_block_fields passed\n");
+}
+
+// ============================================================================
 // Test: Preprocessor action for $call with group parameter
 // ============================================================================
 static void test_pp_call_group_param() {
@@ -803,6 +896,7 @@ int main() {
   test_pp_set();
   test_pp_ret();
   test_pp_member();
+  test_import_block_fields();
   test_pp_call_group_param();
   test_pp_while();
   test_overload_resolution();
