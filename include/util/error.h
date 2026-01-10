@@ -62,6 +62,16 @@ static inline MorphlSpan morphl_span_unknown(void) {
     return s;
 }
 
+static inline MorphlSpan morphl_span_from_loc(const char *path, size_t line, size_t col) {
+    MorphlSpan s;
+    s.path = path;
+    s.line = (line > UINT32_MAX) ? UINT32_MAX : (uint32_t)line;
+    s.col = (col > UINT32_MAX) ? UINT32_MAX : (uint32_t)col;
+    s.start = 0;
+    s.end = 0;
+    return s;
+}
+
 // ----------------------------
 // Error object
 // ----------------------------

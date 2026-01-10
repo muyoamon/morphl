@@ -14,12 +14,14 @@
  * Returns the inferred type, or NULL on type error.
  *
  * @param ctx TypeContext for error reporting and type allocation
+ * @param node AST node for span-aware diagnostics
  * @param op_sym Operator symbol (e.g., $add, $eq, etc.)
  * @param arg_types Array of argument types
  * @param arg_count Number of arguments
  * @return Inferred result type, or NULL on error
  */
 MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
+                                     const AstNode* node,
                                      Sym op_sym,
                                      MorphlType** arg_types,
                                      size_t arg_count);

@@ -11,6 +11,14 @@
 
 #include <string.h>
 
+static MorphlSpan span_from_node(const AstNode* node) {
+  if (!node) return morphl_span_unknown();
+  return morphl_span_from_loc(node->filename, node->row, node->col);
+}
+
+#define MORPHL_ERR_NODE(node, code, fmt, ...) \
+  MORPHL_ERR_SPAN((code), MORPHL_SEV_ERROR, span_from_node(node), (fmt), ##__VA_ARGS__)
+
 // Static table of builtin operators. sym is populated at init.
 typedef struct {
   const char* name;
@@ -67,14 +75,14 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   char* source_buffer = NULL;
   size_t source_len = 0;
   if (!file_read_all(filename, &source_buffer, &source_len)) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "$import: failed to read '%s'", filename);
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: failed to read '%s'", filename);
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   struct token* tokens = NULL;
   size_t token_count = 0;
   if (!lexer_tokenize(filename, str_from(source_buffer, source_len), ctx->interns, &tokens, &token_count)) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "$import: tokenization failed for '%s'", filename);
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: tokenization failed for '%s'", filename);
     morphl_error_emit(NULL, &err);
     free(source_buffer);
     return NULL;
@@ -159,7 +167,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
     func_type = type_context_lookup_func(ctx, func_expr->op);
     
     if (!func_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: function not defined");
+      MorphlError err = MORPHL_ERR_NODE(func_expr, MORPHL_E_TYPE, "$call: function not defined");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -168,7 +176,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
     func_type = morphl_infer_type_of_ast(ctx, func_expr);
     
     if (!func_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: cannot infer function type");
+      MorphlError err = MORPHL_ERR_NODE(func_expr, MORPHL_E_TYPE, "$call: cannot infer function type");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -176,14 +184,14 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
   
   // Validate it's a function type
   if (func_type->kind != MORPHL_TYPE_FUNC) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: target is not a function");
+    MorphlError err = MORPHL_ERR_NODE(func_expr, MORPHL_E_TYPE, "$call: target is not a function");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Functions should have exactly 1 parameter
   if (func_type->data.func.param_count != 1) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: expected 1 parameter, function has %llu",
+    MorphlError err = MORPHL_ERR_NODE(func_expr, MORPHL_E_TYPE, "$call: expected 1 parameter, function has %llu",
            (unsigned long long)func_type->data.func.param_count);
     morphl_error_emit(NULL, &err);
     return NULL;
@@ -192,7 +200,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
   // Infer the type of the provided parameter
   MorphlType* provided_param_type = morphl_infer_type_of_ast(ctx, param_expr);
   if (!provided_param_type) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: cannot infer type of parameter");
+    MorphlError err = MORPHL_ERR_NODE(param_expr, MORPHL_E_TYPE, "$call: cannot infer type of parameter");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -201,7 +209,7 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
   // (later can implement subtyping here)
   MorphlType* expected_param_type = func_type->data.func.param_types[0];
   if (!morphl_type_equals(provided_param_type, expected_param_type)) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$call: parameter type mismatch");
+    MorphlError err = MORPHL_ERR_NODE(param_expr, MORPHL_E_TYPE, "$call: parameter type mismatch");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -242,7 +250,7 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
   if (!param_type) {
     // If we can't infer the parameter type, still pop the scope but return error
     type_context_pop_scope(ctx);
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer parameter type");
+    MorphlError err = MORPHL_ERR_NODE(param_expr, MORPHL_E_TYPE, "$func: cannot infer parameter type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -259,7 +267,7 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
   if (!body_type) {
     type_context_pop_scope(ctx);
     type_context_set_return_type(ctx, NULL);
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer body type");
+    MorphlError err = MORPHL_ERR_NODE(func_body, MORPHL_E_TYPE, "$func: cannot infer body type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -275,7 +283,7 @@ static MorphlType* pp_action_func(const OperatorInfo* info,
   if (!return_type) {
     type_context_pop_scope(ctx);
     type_context_set_return_type(ctx, NULL);
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot determine return type");
+    MorphlError err = MORPHL_ERR_NODE(func_body, MORPHL_E_TYPE, "$func: cannot determine return type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -311,14 +319,14 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
   // Infer condition type
   MorphlType* cond_type = morphl_infer_type_of_ast(ctx, condition);
   if (!cond_type) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$if: cannot infer condition type");
+    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$if: cannot infer condition type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Check that condition is boolean
   if (cond_type->kind != MORPHL_TYPE_BOOL) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$if: condition must be bool");
+    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$if: condition must be bool");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -356,7 +364,7 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
   
   // Check for duplicate declaration
   if (type_context_check_duplicate_var(ctx, var_sym)) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: variable already declared");
+    MorphlError err = MORPHL_ERR_NODE(name_node, MORPHL_E_TYPE, "$decl: variable already declared");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -378,7 +386,7 @@ static MorphlType* pp_action_decl(const OperatorInfo* info,
   // Infer type of the initial expression
   MorphlType* var_type = morphl_infer_type_of_ast(ctx, init_expr);
   if (!var_type) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: cannot infer variable type");
+    MorphlError err = MORPHL_ERR_NODE(init_expr, MORPHL_E_TYPE, "$decl: cannot infer variable type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -412,14 +420,14 @@ static MorphlType* pp_action_set(const OperatorInfo* info,
   if (target->kind == AST_IDENT && target->op) {
     target_type = type_context_lookup_var(ctx, target->op);
     if (!target_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: variable not declared");
+      MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$set: variable not declared");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
   } else {
     target_type = morphl_infer_type_of_ast(ctx, target);
     if (!target_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: cannot infer target type");
+      MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$set: cannot infer target type");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -428,19 +436,19 @@ static MorphlType* pp_action_set(const OperatorInfo* info,
   // Infer value type
   MorphlType* value_type = morphl_infer_type_of_ast(ctx, value);
   if (!value_type) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: cannot infer value type");
+    MorphlError err = MORPHL_ERR_NODE(value, MORPHL_E_TYPE, "$set: cannot infer value type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   if (target_type && target_type->kind == MORPHL_TYPE_REF) {
     if (!target_type->data.ref.is_mutable) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: target is not mutable");
+      MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$set: target is not mutable");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
     if (!morphl_type_equals(target_type->data.ref.target, value_type)) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: type mismatch in assignment");
+      MorphlError err = MORPHL_ERR_NODE(value, MORPHL_E_TYPE, "$set: type mismatch in assignment");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -449,7 +457,7 @@ static MorphlType* pp_action_set(const OperatorInfo* info,
 
   // Check type compatibility
   if (!morphl_type_equals(target_type, value_type)) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: type mismatch in assignment");
+    MorphlError err = MORPHL_ERR_NODE(value, MORPHL_E_TYPE, "$set: type mismatch in assignment");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -473,7 +481,7 @@ static MorphlType* pp_action_ret(const OperatorInfo* info,
   // Get expected return type
   MorphlType* expected = type_context_get_return_type(ctx);
   if (!expected) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$ret: not inside a function");
+    MorphlError err = MORPHL_ERR_NODE(ret_expr, MORPHL_E_TYPE, "$ret: not inside a function");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -481,14 +489,14 @@ static MorphlType* pp_action_ret(const OperatorInfo* info,
   // Infer return expression type
   MorphlType* ret_type = morphl_infer_type_of_ast(ctx, ret_expr);
   if (!ret_type) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$ret: cannot infer return value type");
+    MorphlError err = MORPHL_ERR_NODE(ret_expr, MORPHL_E_TYPE, "$ret: cannot infer return value type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Check return type matches expected
   if (!morphl_type_equals(ret_type, expected)) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$ret: return type mismatch");
+    MorphlError err = MORPHL_ERR_NODE(ret_expr, MORPHL_E_TYPE, "$ret: return type mismatch");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -514,13 +522,13 @@ static MorphlType* pp_action_while(const OperatorInfo* info,
   // Validate condition type
   MorphlType* cond_type = morphl_infer_type_of_ast(ctx, condition);
   if (!cond_type) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$while: cannot infer condition type");
+    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$while: cannot infer condition type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   if (cond_type->kind != MORPHL_TYPE_BOOL) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$while: condition must be bool");
+    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$while: condition must be bool");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -549,14 +557,14 @@ static MorphlType* pp_action_member(const OperatorInfo* info,
   // Infer type of target expression
   MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
   if (!target_type) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: cannot infer target type");
+    MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$member: cannot infer target type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   
   // Only block types have fields
   if (target_type->kind != MORPHL_TYPE_BLOCK) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: target must be a block type");
+    MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$member: target must be a block type");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -569,7 +577,7 @@ static MorphlType* pp_action_member(const OperatorInfo* info,
     }
   }
   
-  MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: field not found in block");
+  MorphlError err = MORPHL_ERR_NODE(field_node, MORPHL_E_TYPE, "$member: field not found in block");
   morphl_error_emit(NULL, &err);
   return NULL;
 }
