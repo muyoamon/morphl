@@ -322,20 +322,20 @@ static void test_infer_arithmetic_ops() {
   // Test $add (int, int) -> int
   Sym add_sym = interns_intern(interns, str_from("$add", 4));
   MorphlType* arg_types[] = {t_int, t_int};
-  MorphlType* result = morphl_infer_type_for_op(ctx, add_sym, arg_types, 2);
+  MorphlType* result = morphl_infer_type_for_op(ctx, NULL, add_sym, arg_types, 2);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_INT);
   
   // Test $fadd (float, float) -> float
   Sym fadd_sym = interns_intern(interns, str_from("$fadd", 5));
   MorphlType* arg_types_f[] = {t_float, t_float};
-  result = morphl_infer_type_for_op(ctx, fadd_sym, arg_types_f, 2);
+  result = morphl_infer_type_for_op(ctx, NULL, fadd_sym, arg_types_f, 2);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_FLOAT);
   
   // Test type error: $add (int, float) should fail (output will be printed)
   MorphlType* mixed_args[] = {t_int, t_float};
-  result = morphl_infer_type_for_op(ctx, add_sym, mixed_args, 2);
+  result = morphl_infer_type_for_op(ctx, NULL, add_sym, mixed_args, 2);
   assert(result == NULL);
   
   type_context_free(ctx);
@@ -363,13 +363,13 @@ static void test_infer_comparison_ops() {
   // Test $eq (int, int) -> bool
   Sym eq_sym = interns_intern(interns, str_from("$eq", 3));
   MorphlType* arg_types[] = {t_int, t_int2};
-  MorphlType* result = morphl_infer_type_for_op(ctx, eq_sym, arg_types, 2);
+  MorphlType* result = morphl_infer_type_for_op(ctx, NULL, eq_sym, arg_types, 2);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_BOOL);
   
   // Test $lt (int, int) -> bool
   Sym lt_sym = interns_intern(interns, str_from("$lt", 3));
-  result = morphl_infer_type_for_op(ctx, lt_sym, arg_types, 2);
+  result = morphl_infer_type_for_op(ctx, NULL, lt_sym, arg_types, 2);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_BOOL);
   
@@ -399,20 +399,20 @@ static void test_infer_logic_ops() {
   // Test $and (bool, bool) -> bool
   Sym and_sym = interns_intern(interns, str_from("$and", 4));
   MorphlType* arg_types[] = {t_bool, t_bool2};
-  MorphlType* result = morphl_infer_type_for_op(ctx, and_sym, arg_types, 2);
+  MorphlType* result = morphl_infer_type_for_op(ctx, NULL, and_sym, arg_types, 2);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_BOOL);
   
   // Test $not (bool) -> bool
   Sym not_sym = interns_intern(interns, str_from("$not", 4));
   MorphlType* arg_types_not[] = {t_bool};
-  result = morphl_infer_type_for_op(ctx, not_sym, arg_types_not, 1);
+  result = morphl_infer_type_for_op(ctx, NULL, not_sym, arg_types_not, 1);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_BOOL);
   
   // Test type error: $and (int, int) should fail
   MorphlType* int_args[] = {t_int, t_int};
-  result = morphl_infer_type_for_op(ctx, and_sym, int_args, 2);
+  result = morphl_infer_type_for_op(ctx, NULL, and_sym, int_args, 2);
   assert(result == NULL);
   
   type_context_free(ctx);
@@ -440,14 +440,14 @@ static void test_infer_bitwise_ops() {
   // Test $band (int, int) -> int
   Sym band_sym = interns_intern(interns, str_from("$band", 5));
   MorphlType* arg_types[] = {t_int, t_int2};
-  MorphlType* result = morphl_infer_type_for_op(ctx, band_sym, arg_types, 2);
+  MorphlType* result = morphl_infer_type_for_op(ctx, NULL, band_sym, arg_types, 2);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_INT);
   
   // Test $bnot (int) -> int
   Sym bnot_sym = interns_intern(interns, str_from("$bnot", 5));
   MorphlType* arg_types_bnot[] = {t_int};
-  result = morphl_infer_type_for_op(ctx, bnot_sym, arg_types_bnot, 1);
+  result = morphl_infer_type_for_op(ctx, NULL, bnot_sym, arg_types_bnot, 1);
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_INT);
   

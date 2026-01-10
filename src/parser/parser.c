@@ -19,6 +19,11 @@ typedef struct ParsedRuleContext {
   const Grammar* grammar;
 } ParsedRuleContext;
 
+static MorphlSpan span_from_token(const struct token* tok) {
+  if (!tok) return morphl_span_unknown();
+  return morphl_span_from_loc(tok->filename, tok->row, tok->col);
+}
+
 static bool parse_rule_internal_ast(const ParsedRuleContext* ctx,
                                     const struct token* tokens,
                                     size_t token_count,
@@ -1293,7 +1298,7 @@ bool grammar_parse_ast(const Grammar* grammar,
     return false;
   }
   if (cursor != parse_count) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE,
+    MorphlError err = MORPHL_ERR_SPAN(MORPHL_E_PARSE, MORPHL_SEV_ERROR, span_from_token(&tokens[cursor]),
         "parse stopped at token %llu of %llu: '%.*s'",
         (unsigned long long)cursor, (unsigned long long)parse_count,
         (int)tokens[cursor].lexeme.len,

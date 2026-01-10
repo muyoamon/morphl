@@ -8,6 +8,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static MorphlSpan span_from_node(const AstNode* node) {
+  if (!node) return morphl_span_unknown();
+  return morphl_span_from_loc(node->filename, node->row, node->col);
+}
+
+#define MORPHL_ERR_AT(node, code, fmt, ...) \
+  MORPHL_ERR_SPAN((code), MORPHL_SEV_ERROR, span_from_node(node), (fmt), ##__VA_ARGS__)
+
+#define MORPHL_WARN_AT(node, code, fmt, ...) \
+  MORPHL_ERR_SPAN((code), MORPHL_SEV_WARN, span_from_node(node), (fmt), ##__VA_ARGS__)
+
 // Helper: check if two types are compatible for comparison
 static bool types_comparable(const MorphlType* a, const MorphlType* b) {
   if (!a || !b) return false;
@@ -35,6 +46,7 @@ static void morphl_error_swallow(void* user, const MorphlError* err) {
 }
 
 MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
+                                     const AstNode* node,
                                      Sym op_sym,
                                      MorphlType** arg_types,
                                      size_t arg_count) {
@@ -48,7 +60,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   
   // Check arity
   if (arg_count < info->min_args || arg_count > info->max_args) {
-    MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "operator %s expects %llu-%llu args, got %llu",
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "operator %s expects %llu-%llu args, got %llu",
             op_name, (unsigned long long)info->min_args, (unsigned long long)info->max_args, (unsigned long long)arg_count);
     morphl_error_emit(NULL, &err);
     return NULL;
@@ -59,12 +71,12 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$const", 6)) ||
       op_sym == interns_intern(ctx->interns, str_from("$inline", 7))) {
     if (arg_count != 1) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s expects 1 arg, got %llu", op_name, (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s expects 1 arg, got %llu", op_name, (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
     if (!arg_types[0]) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: cannot infer argument type", op_name);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: cannot infer argument type", op_name);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -76,7 +88,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   if (op_sym == interns_intern(ctx->interns, str_from("$this", 5))) {
     MorphlType* this_type = type_context_get_this(ctx);
     if (!this_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$this: no active block scope");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$this: no active block scope");
       morphl_error_emit(NULL, &err);
     }
     return this_type;
@@ -85,7 +97,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   if (op_sym == interns_intern(ctx->interns, str_from("$file", 5))) {
     MorphlType* file_type = type_context_get_file(ctx);
     if (!file_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$file: file scope unavailable");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$file: file scope unavailable");
       morphl_error_emit(NULL, &err);
     }
     return file_type;
@@ -94,7 +106,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   if (op_sym == interns_intern(ctx->interns, str_from("$global", 7))) {
     MorphlType* global_type = type_context_get_global(ctx);
     if (!global_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$global: global scope unavailable");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$global: global scope unavailable");
       morphl_error_emit(NULL, &err);
     }
     return global_type;
@@ -102,17 +114,17 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
 
   if (op_sym == interns_intern(ctx->interns, str_from("$forward", 8))) {
     if (arg_count != 1) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward expects 1 arg, got %llu", (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward expects 1 arg, got %llu", (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
     if (!arg_types[0]) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: cannot infer stub type");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: cannot infer stub type");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
     if (arg_types[0]->kind != MORPHL_TYPE_FUNC) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: stub must be a function");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: stub must be a function");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -128,7 +140,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$gte", 4))) {
     
     if (arg_count != 2) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "comparison %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "comparison %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -136,7 +148,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     MorphlType* left = unwrap_ref(arg_types[0]);
     MorphlType* right = unwrap_ref(arg_types[1]);
     if (!types_comparable(left, right)) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: types not compatible", op_name);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: types not compatible", op_name);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -149,7 +161,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$or", 3))) {
     
     if (arg_count != 2) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "logic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "logic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -157,7 +169,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     for (size_t i = 0; i < 2; ++i) {
       MorphlType* check = unwrap_ref(arg_types[i]);
       if (!check || check->kind != MORPHL_TYPE_BOOL) {
-        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: arg %llu must be bool", op_name, (unsigned long long)(i + 1));
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: arg %llu must be bool", op_name, (unsigned long long)(i + 1));
         morphl_error_emit(NULL, &err);
         return NULL;
       }
@@ -168,7 +180,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   
   if (op_sym == interns_intern(ctx->interns, str_from("$not", 4))) {
     if (arg_count != 1) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$not expects 1 arg, got %llu",
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$not expects 1 arg, got %llu",
                                    (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
@@ -176,7 +188,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     
     MorphlType* check = unwrap_ref(arg_types[0]);
     if (!check || check->kind != MORPHL_TYPE_BOOL) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$not: argument must be bool");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$not: argument must be bool");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -192,7 +204,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$div", 4))) {
     
     if (arg_count != 2) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "arithmetic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "arithmetic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -201,7 +213,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     MorphlType* right = unwrap_ref(arg_types[1]);
     if (!left || left->kind != MORPHL_TYPE_INT ||
         !right || right->kind != MORPHL_TYPE_INT) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -216,7 +228,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$fdiv", 5))) {
     
     if (arg_count != 2) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "float arithmetic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "float arithmetic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -225,7 +237,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     MorphlType* right = unwrap_ref(arg_types[1]);
     if (!left || left->kind != MORPHL_TYPE_FLOAT ||
         !right || right->kind != MORPHL_TYPE_FLOAT) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: both arguments must be float", op_name);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be float", op_name);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -241,7 +253,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$rshift", 7))) {
     
     if (arg_count != 2) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "bitwise %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "bitwise %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -250,7 +262,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     MorphlType* right = unwrap_ref(arg_types[1]);
     if (!left || left->kind != MORPHL_TYPE_INT ||
         !right || right->kind != MORPHL_TYPE_INT) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -260,7 +272,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   
   if (op_sym == interns_intern(ctx->interns, str_from("$bnot", 5))) {
     if (arg_count != 1) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$bnot expects 1 arg, got %llu",
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$bnot expects 1 arg, got %llu",
                                    (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
@@ -268,7 +280,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     
     MorphlType* check = unwrap_ref(arg_types[0]);
     if (!check || check->kind != MORPHL_TYPE_INT) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$bnot: argument must be int");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$bnot: argument must be int");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -285,7 +297,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   // Function definition: $func produces a function type
   if (op_sym == interns_intern(ctx->interns, str_from("$func", 5))) {
     if (arg_count != 2) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func expects 2 args, got %llu", (unsigned long long)arg_count);
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$func expects 2 args, got %llu", (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -293,7 +305,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     // First arg: parameter type(s)
     MorphlType* param_type = arg_types[0];
     if (!param_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer parameter type");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$func: cannot infer parameter type");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -301,7 +313,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     // Second arg: return type
     MorphlType* return_type = arg_types[1];
     if (!return_type) {
-      MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$func: cannot infer return type");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$func: cannot infer return type");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -311,7 +323,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
   
   // Unknown or untyped operator
-  MorphlError err = MORPHL_WARN(MORPHL_E_TYPE, "type inference not implemented for %s", op_name);
+  MorphlError err = MORPHL_WARN_AT(node, MORPHL_E_TYPE, "type inference not implemented for %s", op_name);
   morphl_error_emit(NULL, &err);
   return morphl_type_void(ctx->arena);
 }
@@ -334,24 +346,24 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       Sym forward_sym = interns_intern(ctx->interns, str_from("$forward", 8));
       if (init_node->kind == AST_BUILTIN && init_node->op == forward_sym) {
         if (init_node->child_count != 1) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: expected 1 stub expression");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: expected 1 stub expression");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
         AstNode* stub_node = init_node->children[0];
         MorphlType* stub_type = morphl_infer_type_of_ast(ctx, stub_node);
         if (!stub_type || stub_type->kind != MORPHL_TYPE_FUNC) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: stub must be a function");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: stub must be a function");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
         if (type_context_check_duplicate_var(ctx, var_sym)) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: variable already declared");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: variable already declared");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
         if (!type_context_define_forward(ctx, var_sym, stub_type)) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: duplicate stub in scope");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: duplicate stub in scope");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -372,7 +384,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
 
       MorphlType* init_type = morphl_infer_type_of_ast(ctx, init_node);
       if (!init_type) {
-        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: cannot infer variable type");
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$decl: cannot infer variable type");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
@@ -380,13 +392,13 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       ForwardEntry* forward = type_context_lookup_forward(ctx, var_sym);
       if (forward && !forward->resolved) {
         if (!type_context_define_forward_body(ctx, var_sym, init_type)) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: definition mismatch for stub");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: definition mismatch for stub");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
         return init_type;
       } else if (forward && forward->resolved) {
-        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$forward: multiple bodies for stub");
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: multiple bodies for stub");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
@@ -395,7 +407,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       if (dup) {
         MorphlType* existing = type_context_lookup_var(ctx, var_sym);
         if (!existing || !morphl_type_equals(existing, init_type)) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$decl: variable already declared");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$decl: variable already declared");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -493,7 +505,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
       if (node->op == import_sym) {
         if (node->child_count != 1) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$import expects 1 arg");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$import expects 1 arg");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -510,7 +522,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         type_context_pop_global(ctx);
         type_context_pop_file(ctx);
         if (!module_type || module_type->kind != MORPHL_TYPE_BLOCK) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$import: module must be a block");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$import: module must be a block");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -518,13 +530,13 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       }
       if (node->op == idtstr_sym) {
         if (node->child_count != 1) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$idtstr expects 1 arg");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$idtstr expects 1 arg");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
         AstNode* arg = node->children[0];
         if (!arg || arg->kind != AST_IDENT) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$idtstr expects identifier");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$idtstr expects identifier");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -532,14 +544,14 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       }
       if (node->op == strtid_sym) {
         if (node->child_count != 1) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$strtid expects 1 arg");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$strtid expects 1 arg");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
         AstNode* arg = node->children[0];
         if (!arg || arg->kind != AST_LITERAL || arg->value.len < 2 ||
             arg->value.ptr[0] != '"' || arg->value.ptr[arg->value.len - 1] != '"') {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$strtid expects string literal");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$strtid expects string literal");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -547,14 +559,14 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       }
       if (node->op == member_sym) {
         if (node->child_count != 2) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member expects 2 args");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member expects 2 args");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
         AstNode* target = node->children[0];
         AstNode* field_node = node->children[1];
         if (!field_node || field_node->kind != AST_IDENT) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member expects identifier field");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member expects identifier field");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -562,7 +574,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         if (!target_type) return NULL;
         target_type = unwrap_ref(target_type);
         if (!target_type || target_type->kind != MORPHL_TYPE_BLOCK) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: target must be block");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member: target must be block");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -575,13 +587,13 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
             return target_type->data.block.field_types[i];
           }
         }
-        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$member: field not found");
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member: field not found");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
       if (node->op == set_sym) {
         if (node->child_count != 2) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set expects 2 args");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set expects 2 args");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -590,19 +602,19 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         if (!target_type || !value_type) return NULL;
         if (target_type->kind == MORPHL_TYPE_REF) {
           if (!target_type->data.ref.is_mutable) {
-            MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: target is not mutable");
+            MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: target is not mutable");
             morphl_error_emit(NULL, &err);
             return NULL;
           }
           if (!morphl_type_equals(target_type->data.ref.target, value_type)) {
-            MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: type mismatch in assignment");
+            MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");
             morphl_error_emit(NULL, &err);
             return NULL;
           }
           return value_type;
         }
         if (!morphl_type_equals(target_type, value_type)) {
-          MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "$set: type mismatch in assignment");
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -627,7 +639,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       
       MorphlType* result = NULL;
       if (node->op) {
-        result = morphl_infer_type_for_op(ctx, node->op, arg_types, arg_count);
+        result = morphl_infer_type_for_op(ctx, node, node->op, arg_types, arg_count);
       }
       
       free(arg_types);
@@ -644,7 +656,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       MorphlType* var_type = type_context_lookup_var(ctx, sym);
       if (!var_type) {
         Str name = interns_lookup(ctx->interns, sym);
-        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "undefined variable '%.*s'", (int)name.len, name.ptr);
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "undefined variable '%.*s'", (int)name.len, name.ptr);
         morphl_error_emit(NULL, &err);
         return NULL;
       }
@@ -695,7 +707,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
     
     case AST_OVERLOAD:
       if (node->child_count == 0) {
-        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "overload has no candidates");
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "overload has no candidates");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
@@ -730,7 +742,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
           }
         }
 
-        MorphlType* candidate_type = morphl_infer_type_for_op(ctx, candidate->op, arg_types, arg_count);
+        MorphlType* candidate_type = morphl_infer_type_for_op(ctx, candidate, candidate->op, arg_types, arg_count);
         free(arg_types);
         if (candidate_type) {
           chosen = candidate;
@@ -742,7 +754,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       morphl_error_set_global_sink(prev_sink);
 
       if (!chosen) {
-        MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "no overload matches");
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "no overload matches");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
