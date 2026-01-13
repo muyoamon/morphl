@@ -403,6 +403,7 @@ The type checker resolves which candidate to use based on operand types.
 - **Delimiter**: `$$delim` - marks delimiter for greedy operations
 - **Spread**: `$$spread` - flatten group to individual atoms
 - **Maybe**: `$$maybe` - allow optional atom
+- **Operator**: `$$op` - parse next capture as operator
 
 #### Example: Comma-separated Expressions
 ```

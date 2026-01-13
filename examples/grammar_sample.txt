@@ -16,6 +16,7 @@ rule expr:
     "return" $expr val => $ret val
     "while" $expr cond $expr body => $while cond body
     "if" $expr cond $then_else_group t_e => $if cond t_e
+    %IDENT op $expr op1 $expr op2 => $$op op op1 op2
     %IDENT => ident
     $expr[1] first $("," $expr[2] rest)+ => $group first $$spread rest
     "{" $($stmnt s)* "}" => $block $$spread s

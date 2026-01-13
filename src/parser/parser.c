@@ -866,6 +866,20 @@ static AstNode* build_template_ast(const Production* prod,
   if (op_len == 0) return NULL;
   Sym op_sym = interns_intern(interns, str_from(op_tok, op_len));
   if (!op_sym) return NULL;
+  // Check for special case: $$op directive for captured operator
+  if (op_len == 4 && strncmp(op_tok, "$$op", 4) == 0) {
+    NEXT_TOKEN(name_tok, name_len);
+    if (name_len == 0) return NULL;
+    Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
+    if (!cap_sym) return NULL;
+    Capture* cap = find_capture(captures, capture_count, cap_sym);
+    if (!cap || cap->count == 0) return NULL;
+    // Expecting exactly one node: the operator symbol
+    if (cap->count != 1) return NULL;
+    AstNode* op_node = cap->nodes[0];
+    // Convert node to operator symbol
+    op_sym = interns_intern(interns, op_node->value);
+  }
   
   // Determine AST kind from operator registry
   AstKind op_kind = AST_BUILTIN;
