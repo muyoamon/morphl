@@ -119,7 +119,9 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
     ast_free(args[0]);
   }
   args[0] = module_root;
-  return NULL;
+  // return the block type containing the module's AST
+  TypeContext* type_ctx = (TypeContext*)block_state;
+  return morphl_infer_type_of_ast(type_ctx, module_root);
 }
 
 // $prop: validate at least one argument; keep node
