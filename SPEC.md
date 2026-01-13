@@ -255,14 +255,14 @@ $decl odd $forward $func ($decl n 0) 0
 
 $decl even $func ($decl n 0) {
     $if $eq n 0
-        ($group 1)
-        ($group $call odd $sub n 1)
+        $ret 1,
+        $ret $call odd $sub n 1
 }
 
 $decl odd $func ($decl n 0) {
     $if $eq n 0
-        ($group 0)
-        ($group $call even $sub n 1)
+        $ret 0,
+        $ret $call even $sub n 1
 }
 ```
 
