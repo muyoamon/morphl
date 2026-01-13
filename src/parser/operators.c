@@ -584,6 +584,56 @@ static MorphlType* pp_action_member(const OperatorInfo* info,
   return NULL;
 }
 
+static MorphlType* pp_action_mut(const OperatorInfo* info,
+                                  void* global_state,
+                                  void* block_state,
+                                  AstNode** args,
+                                  size_t arg_count) {
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 1) return NULL;
+  
+  AstNode* target = args[0];
+  if (!target) return NULL;
+  
+  // Infer type of target expression
+  MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
+  if (!target_type) {
+    MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$mut: cannot infer target type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Create mutable reference type
+  return morphl_type_ref(ctx->arena, target_type, true, false);
+}
+
+static MorphlType* pp_action_const(const OperatorInfo* info,
+                                  void* global_state,
+                                  void* block_state,
+                                  AstNode** args,
+                                  size_t arg_count) {
+  (void)info; (void)global_state;
+  
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 1) return NULL;
+  
+  AstNode* target = args[0];
+  if (!target) return NULL;
+  
+  // Infer type of target expression
+  MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
+  if (!target_type) {
+    MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$const: cannot infer target type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  
+  // Create immutable reference type
+  return morphl_type_ref(ctx->arena, target_type, false, false);
+}
+
 static OperatorRow kBuiltinOps[] = {
   // Structural
   {"$group",  AST_GROUP,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
@@ -598,8 +648,8 @@ static OperatorRow kBuiltinOps[] = {
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE},
   {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE},
   {"$member", AST_BUILTIN, false, 2, 2,         pp_action_member,  0, OP_PP_KEEP_NODE},
-  {"$mut",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$const",  AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
+  {"$mut",    AST_BUILTIN,false, 1, 1,          pp_action_mut,     0, OP_PP_KEEP_NODE},
+  {"$const",  AST_BUILTIN,false, 1, 1,          pp_action_const,   0, OP_PP_KEEP_NODE},
   {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
   {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
   {"$file",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
