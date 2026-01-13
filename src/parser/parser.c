@@ -10,6 +10,7 @@
 #include "util/file.h"
 #include "util/error.h"
 #include "ast/ast.h"
+#include "parser/builtin_parser.h"
 #include "parser/operators.h"
 
 #define PARSER_MAX_DEPTH 128
@@ -770,19 +771,6 @@ static AstNode* ast_group_from_list(AstNode** nodes, size_t count) {
   return g;
 }
 
-static void flatten_and_append(AstNode* parent, AstNode* node) {
-  if (!parent || !node) return;
-  if (node->kind == AST_GROUP) {
-    // Always recursively flatten group nodes (expand their children)
-    for (size_t i = 0; i < node->child_count; ++i) {
-      flatten_and_append(parent, node->children[i]);
-    }
-  } else {
-    // Non-group node: add directly
-    ast_append_child(parent, node);
-  }
-}
-
 static AstNode* ast_clone_tree(const AstNode* node) {
   if (!node) return NULL;
   AstNode* copy = ast_new(node->kind);
@@ -845,12 +833,204 @@ static Capture* clone_captures(const Capture* caps, size_t count) {
   return cloned;
 }
 
+typedef struct {
+  struct token* data;
+  size_t count;
+  size_t capacity;
+} TokenBuffer;
+
+typedef struct {
+  TokenKind ident;
+  TokenKind number;
+  TokenKind number_float;
+  TokenKind string;
+  TokenKind symbol;
+  TokenKind eof;
+} TokenKinds;
+
+static bool ensure_token_capacity(TokenBuffer* buf, size_t needed) {
+  if (buf->capacity >= needed) return true;
+  size_t new_cap = buf->capacity ? buf->capacity * 2 : 16;
+  while (new_cap < needed) new_cap *= 2;
+  struct token* resized = realloc(buf->data, new_cap * sizeof(*buf->data));
+  if (!resized) return false;
+  buf->data = resized;
+  buf->capacity = new_cap;
+  return true;
+}
+
+static bool intern_token_kinds(InternTable* interns, TokenKinds* kinds) {
+  if (!interns || !kinds) return false;
+  kinds->ident = interns_intern(interns, str_from(LEXER_KIND_IDENT, strlen(LEXER_KIND_IDENT)));
+  kinds->number = interns_intern(interns, str_from(LEXER_KIND_NUMBER, strlen(LEXER_KIND_NUMBER)));
+  kinds->number_float = interns_intern(interns, str_from(LEXER_KIND_FLOAT, strlen(LEXER_KIND_FLOAT)));
+  kinds->string = interns_intern(interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
+  kinds->symbol = interns_intern(interns, str_from(LEXER_KIND_SYMBOL, strlen(LEXER_KIND_SYMBOL)));
+  kinds->eof = interns_intern(interns, str_from(LEXER_KIND_EOF, strlen(LEXER_KIND_EOF)));
+  return kinds->ident && kinds->number && kinds->number_float &&
+         kinds->string && kinds->symbol && kinds->eof;
+}
+
+static TokenKind token_kind_for_text(Str text, const TokenKinds* kinds) {
+  if (!kinds) return 0;
+  if (text.len == 0 || !text.ptr) return kinds->symbol;
+  if (text.ptr[0] == '"') return kinds->string;
+  if (text.ptr[0] == '$' && text.len > 1) {
+    unsigned char next = (unsigned char)text.ptr[1];
+    if (isalpha(next) || next == '_' || next == '$') {
+      return kinds->ident;
+    }
+  }
+  if (isalpha((unsigned char)text.ptr[0]) || text.ptr[0] == '_') {
+    for (size_t i = 1; i < text.len; ++i) {
+      if (!isalnum((unsigned char)text.ptr[i]) && text.ptr[i] != '_') {
+        return kinds->symbol;
+      }
+    }
+    return kinds->ident;
+  }
+  bool saw_digit = false;
+  bool saw_dot = false;
+  for (size_t i = 0; i < text.len; ++i) {
+    char c = text.ptr[i];
+    if (isdigit((unsigned char)c)) {
+      saw_digit = true;
+      continue;
+    }
+    if (c == '.' && !saw_dot) {
+      saw_dot = true;
+      continue;
+    }
+    return kinds->symbol;
+  }
+  if (saw_digit) return saw_dot ? kinds->number_float : kinds->number;
+  return kinds->symbol;
+}
+
+static bool append_token(TokenBuffer* buf, struct token tok) {
+  if (!ensure_token_capacity(buf, buf->count + 1)) return false;
+  buf->data[buf->count++] = tok;
+  return true;
+}
+
+static const char* fallback_op_for_kind(AstKind kind) {
+  switch (kind) {
+    case AST_IF: return "$if";
+    case AST_FUNC: return "$func";
+    case AST_CALL: return "$call";
+    case AST_BLOCK: return "$block";
+    case AST_GROUP: return "$group";
+    case AST_DECL: return "$decl";
+    case AST_SET: return "$set";
+    case AST_OVERLOAD: return "$overload";
+    default: return NULL;
+  }
+}
+
+static bool append_ast_tokens(TokenBuffer* buf,
+                              const AstNode* node,
+                              InternTable* interns,
+                              const TokenKinds* kinds,
+                              const char* filename) {
+  if (!buf || !node || !interns || !kinds) return false;
+  if (node->kind == AST_LITERAL || node->kind == AST_IDENT) {
+    TokenKind kind = (node->kind == AST_IDENT) ? kinds->ident : node->op;
+    if (node->kind == AST_LITERAL && kind == 0) {
+      kind = token_kind_for_text(node->value, kinds);
+    }
+    if (kind == 0) return false;
+    struct token tok = {
+      .kind = kind,
+      .lexeme = node->value,
+      .filename = node->filename ? node->filename : filename,
+      .row = node->row ? node->row : 1,
+      .col = node->col ? node->col : 1,
+    };
+    return append_token(buf, tok);
+  }
+
+  Str op_name = {0};
+  const char* fallback = NULL;
+  if (node->op) {
+    op_name = interns_lookup(interns, node->op);
+  }
+  if (!op_name.ptr || op_name.len == 0) {
+    fallback = fallback_op_for_kind(node->kind);
+    if (fallback) {
+      op_name = str_from(fallback, strlen(fallback));
+    }
+  }
+  if (!op_name.ptr || op_name.len == 0) return false;
+
+  struct token op_tok = {
+    .kind = kinds->ident,
+    .lexeme = op_name,
+    .filename = node->filename ? node->filename : filename,
+    .row = node->row ? node->row : 1,
+    .col = node->col ? node->col : 1,
+  };
+  if (!append_token(buf, op_tok)) return false;
+
+  for (size_t i = 0; i < node->child_count; ++i) {
+    if (!append_ast_tokens(buf, node->children[i], interns, kinds, filename)) return false;
+  }
+  return true;
+}
+
+static bool append_ast_tokens_spread(TokenBuffer* buf,
+                                     const AstNode* node,
+                                     InternTable* interns,
+                                     const TokenKinds* kinds,
+                                     const char* filename) {
+  if (!node) return true;
+  if (node->kind == AST_GROUP) {
+    for (size_t i = 0; i < node->child_count; ++i) {
+      if (!append_ast_tokens_spread(buf, node->children[i], interns, kinds, filename)) return false;
+    }
+    return true;
+  }
+  return append_ast_tokens(buf, node, interns, kinds, filename);
+}
+
+static bool append_capture_tokens(TokenBuffer* buf,
+                                  const Capture* cap,
+                                  InternTable* interns,
+                                  const TokenKinds* kinds,
+                                  bool spread,
+                                  const char* filename) {
+  if (!cap || cap->count == 0) return false;
+  if (spread) {
+    for (size_t i = 0; i < cap->count; ++i) {
+      if (!append_ast_tokens_spread(buf, cap->nodes[i], interns, kinds, filename)) return false;
+    }
+    return true;
+  }
+  if (cap->count == 1) {
+    return append_ast_tokens(buf, cap->nodes[0], interns, kinds, filename);
+  }
+  struct token group_tok = {
+    .kind = kinds->ident,
+    .lexeme = str_from("$group", strlen("$group")),
+    .filename = filename,
+    .row = 1,
+    .col = 1,
+  };
+  if (!append_token(buf, group_tok)) return false;
+  for (size_t i = 0; i < cap->count; ++i) {
+    if (!append_ast_tokens(buf, cap->nodes[i], interns, kinds, filename)) return false;
+  }
+  return true;
+}
+
 static AstNode* build_template_ast(const Production* prod,
                                    size_t template_index,
                                    Capture* captures,
                                    size_t capture_count,
                                    InternTable* interns) {
   if (template_index >= prod->template_count) return NULL;
+  const char* template_filename = "<template>";
+  TokenKinds kinds = {0};
+  if (!intern_token_kinds(interns, &kinds)) return NULL;
   Str tmpl = prod->templates[template_index];
   const char* cur = tmpl.ptr;
   size_t rem = tmpl.len;
@@ -862,58 +1042,66 @@ static AstNode* build_template_ast(const Production* prod,
     cur += tok_len; rem -= tok_len;                            \
     while (rem > 0 && isspace((unsigned char)*cur)) { cur++; rem--; }
 
+  TokenBuffer buffer = {0};
+
   NEXT_TOKEN(op_tok, op_len);
   if (op_len == 0) return NULL;
-  Sym op_sym = interns_intern(interns, str_from(op_tok, op_len));
-  if (!op_sym) return NULL;
-  
-  // Determine AST kind from operator registry
-  AstKind op_kind = AST_BUILTIN;
-  const OperatorInfo* info = operator_info_lookup(op_sym);
-  if (info && info->ast_kind != AST_UNKNOWN) {
-    op_kind = info->ast_kind;
+  Str op_text = str_from(op_tok, op_len);
+  Str original_op_text = op_text;
+  char* owned_op_text = NULL;
+  if (op_text.len > 0 && op_text.ptr[0] != '$') {
+    owned_op_text = malloc(op_text.len + 2);
+    if (!owned_op_text) return NULL;
+    owned_op_text[0] = '$';
+    memcpy(owned_op_text + 1, op_text.ptr, op_text.len);
+    owned_op_text[op_text.len + 1] = '\0';
+    op_text = str_from(owned_op_text, op_text.len + 1);
   }
-  
-  AstNode* root = ast_new(op_kind);
-  if (!root) return NULL;
-  root->op = op_sym;
+  struct token op_token = {
+    .kind = token_kind_for_text(op_text, &kinds),
+    .lexeme = op_text,
+    .filename = template_filename,
+    .row = 1,
+    .col = 1,
+  };
+  if (!append_token(&buffer, op_token)) {
+    free(owned_op_text);
+    return NULL;
+  }
 
   while (rem > 0) {
     NEXT_TOKEN(arg_tok, arg_len);
     if (arg_len == 0) break;
+    Str arg_text = str_from(arg_tok, arg_len);
 
     // Check for $$spread directive (for flattening captures)
     if (arg_len == 8 && strncmp(arg_tok, "$$spread", 8) == 0) {
-      // Next token is the capture name to spread
       NEXT_TOKEN(name_tok, name_len);
-      if (name_len == 0) { ast_free(root); return NULL; }
+      if (name_len == 0) { free(owned_op_text); free(buffer.data); return NULL; }
       Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
-      if (!cap_sym) { ast_free(root); return NULL; }
+      if (!cap_sym) { free(owned_op_text); free(buffer.data); return NULL; }
       Capture* cap = find_capture(captures, capture_count, cap_sym);
-      if (!cap || cap->count == 0) { ast_free(root); return NULL; }
-
-      // Spread: recursively flatten all nodes
-      for (size_t i = 0; i < cap->count; ++i) {
-        flatten_and_append(root, cap->nodes[i]);
+      if (!cap || cap->count == 0) { free(owned_op_text); free(buffer.data); return NULL; }
+      if (!append_capture_tokens(&buffer, cap, interns, &kinds, true, template_filename)) {
+        free(owned_op_text);
+        free(buffer.data);
+        return NULL;
       }
       continue;
     }
 
     // Check for $$maybe directive (conditionally include capture if present)
     if (arg_len == 7 && strncmp(arg_tok, "$$maybe", 7) == 0) {
-      // Next token is the capture name to conditionally include
       NEXT_TOKEN(name_tok, name_len);
-      if (name_len == 0) { ast_free(root); return NULL; }
+      if (name_len == 0) { free(owned_op_text); free(buffer.data); return NULL; }
       Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
-      if (!cap_sym) { ast_free(root); return NULL; }
+      if (!cap_sym) { free(owned_op_text); free(buffer.data); return NULL; }
       Capture* cap = find_capture(captures, capture_count, cap_sym);
-      // If capture exists and has nodes, add them; otherwise skip
       if (cap && cap->count > 0) {
-        if (cap->count == 1) {
-          if (!ast_append_child(root, cap->nodes[0])) { ast_free(root); return NULL; }
-        } else {
-          AstNode* child = ast_group_from_list(cap->nodes, cap->count);
-          if (!child || !ast_append_child(root, child)) { ast_free(root); return NULL; }
+        if (!append_capture_tokens(&buffer, cap, interns, &kinds, false, template_filename)) {
+          free(owned_op_text);
+          free(buffer.data);
+          return NULL;
         }
       }
       continue;
@@ -921,47 +1109,77 @@ static AstNode* build_template_ast(const Production* prod,
 
     // Check for $$delim directive (reserved stop marker for greedy operators)
     if (arg_len == 7 && strncmp(arg_tok, "$$delim", 7) == 0) {
-      // Delim marks stop point but has no effect during AST construction
-      // It's processed by builtin parser to control greedy matching
       continue;
     }
 
     // Check for $spread operator (legacy, kept for backward compatibility)
     if (arg_len == 7 && strncmp(arg_tok, "$spread", 7) == 0) {
-      // Next token is the capture name to spread
       NEXT_TOKEN(name_tok, name_len);
-      if (name_len == 0) { ast_free(root); return NULL; }
+      if (name_len == 0) { free(owned_op_text); free(buffer.data); return NULL; }
       Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
-      if (!cap_sym) { ast_free(root); return NULL; }
+      if (!cap_sym) { free(owned_op_text); free(buffer.data); return NULL; }
       Capture* cap = find_capture(captures, capture_count, cap_sym);
-      if (!cap || cap->count == 0) { ast_free(root); return NULL; }
-
-      // Spread: recursively flatten all nodes
-      for (size_t i = 0; i < cap->count; ++i) {
-        flatten_and_append(root, cap->nodes[i]);
+      if (!cap || cap->count == 0) { free(owned_op_text); free(buffer.data); return NULL; }
+      if (!append_capture_tokens(&buffer, cap, interns, &kinds, true, template_filename)) {
+        free(owned_op_text);
+        free(buffer.data);
+        return NULL;
       }
       continue;
     }
 
-    // Regular capture reference
-    Sym cap_sym = interns_intern(interns, str_from(arg_tok, arg_len));
-    if (!cap_sym) { ast_free(root); return NULL; }
-    Capture* cap = find_capture(captures, capture_count, cap_sym);
-    if (!cap || cap->count == 0) { ast_free(root); return NULL; }
-    AstNode* child = NULL;
-    if (cap->count == 1) {
-      child = cap->nodes[0];
-    } else {
-      child = ast_group_from_list(cap->nodes, cap->count);
+    Sym cap_sym = interns_intern(interns, arg_text);
+    Capture* cap = cap_sym ? find_capture(captures, capture_count, cap_sym) : NULL;
+    if (cap) {
+      if (!append_capture_tokens(&buffer, cap, interns, &kinds, false, template_filename)) {
+        free(owned_op_text);
+        free(buffer.data);
+        return NULL;
+      }
+      continue;
     }
-    if (!child || !ast_append_child(root, child)) { ast_free(root); return NULL; }
+
+    struct token literal_token = {
+      .kind = token_kind_for_text(arg_text, &kinds),
+      .lexeme = arg_text,
+      .filename = template_filename,
+      .row = 1,
+      .col = 1,
+    };
+    if (!append_token(&buffer, literal_token)) {
+      free(owned_op_text);
+      free(buffer.data);
+      return NULL;
+    }
   }
 
-  if (root->child_count > 0) {
-    root->filename = root->children[0]->filename;
-    root->row = root->children[0]->row;
-    root->col = root->children[0]->col;
+  struct token eof_token = {
+    .kind = kinds.eof,
+    .lexeme = str_from(NULL, 0),
+    .filename = template_filename,
+    .row = 1,
+    .col = 1,
+  };
+  if (!append_token(&buffer, eof_token)) {
+    free(owned_op_text);
+    free(buffer.data);
+    return NULL;
   }
+
+  AstNode* root = NULL;
+  if (!builtin_parse_ast(buffer.data, buffer.count, interns, &root)) {
+    free(owned_op_text);
+    free(buffer.data);
+    return NULL;
+  }
+  if (root && original_op_text.len > 0 && original_op_text.ptr[0] != '$') {
+    Sym original_op = interns_intern(interns, original_op_text);
+    if (original_op) {
+      root->op = original_op;
+    }
+  }
+  free(owned_op_text);
+  free(buffer.data);
   return root;
 
 #undef NEXT_TOKEN
