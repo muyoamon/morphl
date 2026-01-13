@@ -89,7 +89,7 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   }
 
   ScopedParserContext module_ctx;
-  if (!scoped_parser_init(&module_ctx, ctx->interns, ctx->arena)) {
+  if (!scoped_parser_init(&module_ctx, ctx->interns, ctx->arena, filename)) {
     free(tokens);
     free(source_buffer);
     return NULL;

@@ -712,7 +712,7 @@ static void test_import_block_fields() {
   std::string module_path = write_temp_file(module_src);
 
   ScopedParserContext parser_ctx;
-  assert(scoped_parser_init(&parser_ctx, interns, &arena));
+  assert(scoped_parser_init(&parser_ctx, interns, &arena, NULL));
 
   std::string quoted_path = "\"" + module_path + "\"";
   AstNode* import_arg = make_literal(quoted_path.c_str());

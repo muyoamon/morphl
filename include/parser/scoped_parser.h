@@ -27,6 +27,7 @@ typedef struct ScopedParserContext {
   Arena* arena;                /**< Arena for grammar string allocations. */
   bool use_builtins;           /**< Whether current scope uses builtin fallback. */
   TypeContext* type_context;   /**< Type checking context. */
+  const char* filename;      /**< Current source file being parsed. */
 } ScopedParserContext;
 
 /**
@@ -35,9 +36,10 @@ typedef struct ScopedParserContext {
  * @param ctx     Context to initialize.
  * @param interns Intern table for symbols.
  * @param arena   Arena for string allocations.
+ * @param filename Current source file being parsed.
  * @return true on success, false on allocation failure.
  */
-bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* arena);
+bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* arena, const char* filename);
 
 /**
  * @brief Free scoped parser context resources.

@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
 
   // Initialize scoped parser context
   ScopedParserContext parser_ctx;
-  if (!scoped_parser_init(&parser_ctx, interns, &arena)) {
+  if (!scoped_parser_init(&parser_ctx, interns, &arena, source_path)) {
     fprintf(stderr, "failed to initialize parser context\n");
     arena_free(&arena);
     interns_free(interns);

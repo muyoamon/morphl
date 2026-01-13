@@ -5,6 +5,7 @@
 #include "typing/type_context.h"
 #include "typing/inference.h"
 #include "util/error.h"
+#include "util/fs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,7 @@ extern const char* const LEXER_KIND_EOF;
 #define MORPHL_SPAN_AT_CURSOR(cursor) \
   morphl_span_from_loc(tokens[cursor].filename, tokens[cursor].row, tokens[cursor].col)
 
-bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* arena) {
+bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* arena, const char* filename) {
   if (!ctx || !interns || !arena) return false;
   
   ctx->grammar_stack = NULL;
@@ -28,6 +29,7 @@ bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* a
   ctx->interns = interns;
   ctx->arena = arena;
   ctx->use_builtins = true; // Start with builtin-only
+  ctx->filename = filename;
   
   // Initialize TypeContext for type checking
   ctx->type_context = type_context_new(arena, interns);
@@ -95,20 +97,30 @@ bool scoped_parser_pop_grammar(ScopedParserContext* ctx) {
   return true;
 }
 
-bool scoped_parser_replace_grammar(ScopedParserContext* ctx, const char* grammar_path) {
+bool scoped_parser_replace_grammar(ScopedParserContext* ctx, 
+                                    const char* grammar_path) {
   if (!ctx || !grammar_path) return false;
   
   // Load new grammar
   Grammar* new_grammar = malloc(sizeof(Grammar));
   if (!new_grammar) return false;
 
-  // TODO: if a relative path is given, it should be relative to the source file
+  // if a relative path is given, it should be relative to the source file
+  // unless ctx->filename is NULL, which means grammar_path is relative to cwd
+  // thus no change is needed
+  memset(new_grammar, 0, sizeof(Grammar));
+  Str resolved_path;
+  if (fs_is_relative_path(grammar_path) && ctx->filename) {
+    resolved_path = fs_get_absolute_path_from_source(grammar_path, ctx->filename);
+  } else {
+    resolved_path = str_from(grammar_path, strlen(grammar_path));
+  }
 
   
-  if (!grammar_load_file(new_grammar, grammar_path, ctx->interns, ctx->arena)) {
+  if (!grammar_load_file(new_grammar, resolved_path.ptr, ctx->interns, ctx->arena)) {
     free(new_grammar);
     MorphlError err = MORPHL_WARN(MORPHL_E_PARSE,
-        "failed to load grammar from '%s', keeping current grammar", grammar_path);
+        "failed to load grammar from '%s', keeping current grammar", resolved_path.ptr);
     morphl_error_emit(NULL, &err);
     return false;
   }
