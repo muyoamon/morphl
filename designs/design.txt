@@ -211,5 +211,5 @@ $decl b3 ($block $decl y 10 $decl x 10) b3 : {y:int, x:int}
 $decl fact $func $decl n 0 {
 	$if $eq n 0
 		$ret 1,
-		$ret $mul $call fact $sub n 1
+		$ret $mul $call $group fact $sub n 1
 }
