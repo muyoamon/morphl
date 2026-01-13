@@ -586,6 +586,7 @@ static OperatorRow kBuiltinOps[] = {
   // Structural
   {"$group",  AST_GROUP,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
   {"$block",  AST_BLOCK,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
+  {"$overload", AST_OVERLOAD, false, 0, (size_t)-1, NULL,           0, OP_PP_KEEP_NODE},
 
   // Core constructs
   {"$call",   AST_CALL,   false, 2, 2,          pp_action_call,    0, OP_PP_KEEP_NODE},

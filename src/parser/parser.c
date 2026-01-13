@@ -875,9 +875,11 @@ static TokenKind token_kind_for_text(Str text, const TokenKinds* kinds) {
   if (!kinds) return 0;
   if (text.len == 0 || !text.ptr) return kinds->symbol;
   if (text.ptr[0] == '"') return kinds->string;
-  if (text.ptr[0] == '$' && text.len > 1 &&
-      (isalpha((unsigned char)text.ptr[1]) || text.ptr[1] == '_')) {
-    return kinds->ident;
+  if (text.ptr[0] == '$' && text.len > 1) {
+    unsigned char next = (unsigned char)text.ptr[1];
+    if (isalpha(next) || next == '_' || next == '$') {
+      return kinds->ident;
+    }
   }
   if (isalpha((unsigned char)text.ptr[0]) || text.ptr[0] == '_') {
     for (size_t i = 1; i < text.len; ++i) {
@@ -920,6 +922,7 @@ static const char* fallback_op_for_kind(AstKind kind) {
     case AST_GROUP: return "$group";
     case AST_DECL: return "$decl";
     case AST_SET: return "$set";
+    case AST_OVERLOAD: return "$overload";
     default: return NULL;
   }
 }
