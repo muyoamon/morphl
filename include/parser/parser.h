@@ -79,8 +79,9 @@ typedef struct GrammarRule {
  * Omitting the square-bracket suffix defaults the binding power to zero.
  * Associativity is expressed by using different binding powers for left and
  * right operands of an operator.
- * The text after `=>` is captured as a template string for downstream
- * expansion; the parser does not interpret template contents directly.
+ * The text after `=>` is captured as a template string and expanded into a
+ * builtin-operator expression by substituting captures before delegating to
+ * the builtin parser.
  */
 typedef struct Grammar {
   GrammarRule* rules;      /**< Rule list. */
