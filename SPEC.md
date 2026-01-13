@@ -426,7 +426,6 @@ These invariants are locked for implementation:
 7. Field order matters for record equality
 8. Subtyping: shorter arglists accepted if missing args have defaults
 9. Records may have width subtyping (more fields viewed as fewer)
-10. Recursion via `$mut` placeholder or `$forward` declarations
 
 ---
 
