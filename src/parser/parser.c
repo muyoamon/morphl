@@ -1022,6 +1022,23 @@ static bool append_capture_tokens(TokenBuffer* buf,
   return true;
 }
 
+static void next_template_token(const char** cur,
+                                size_t* rem,
+                                const char** tok,
+                                size_t* tok_len) {
+  *tok = *cur;
+  *tok_len = 0;
+  while (*tok_len < *rem && !isspace((unsigned char)(*tok)[*tok_len])) {
+    (*tok_len)++;
+  }
+  *cur += *tok_len;
+  *rem -= *tok_len;
+  while (*rem > 0 && isspace((unsigned char)**cur)) {
+    (*cur)++;
+    (*rem)--;
+  }
+}
+
 static AstNode* build_template_ast(const Production* prod,
                                    size_t template_index,
                                    Capture* captures,
@@ -1034,19 +1051,38 @@ static AstNode* build_template_ast(const Production* prod,
   Str tmpl = prod->templates[template_index];
   const char* cur = tmpl.ptr;
   size_t rem = tmpl.len;
-  // Parse tokens by whitespace
-  #define NEXT_TOKEN(tok, tok_len)                             \
-    const char* tok = cur;                                     \
-    size_t tok_len = 0;                                        \
-    while (tok_len < rem && !isspace((unsigned char)tok[tok_len])) tok_len++; \
-    cur += tok_len; rem -= tok_len;                            \
-    while (rem > 0 && isspace((unsigned char)*cur)) { cur++; rem--; }
 
   TokenBuffer buffer = {0};
 
-  NEXT_TOKEN(op_tok, op_len);
+  const char* op_tok = NULL;
+  size_t op_len = 0;
+  next_template_token(&cur, &rem, &op_tok, &op_len);
   if (op_len == 0) return NULL;
   Str op_text = str_from(op_tok, op_len);
+  Sym op_capture = interns_intern(interns, op_text);
+  Capture* op_cap = op_capture ? find_capture(captures, capture_count, op_capture) : NULL;
+  if (op_cap) {
+    bool only_directives = true;
+    const char* probe_cur = cur;
+    size_t probe_rem = rem;
+    while (probe_rem > 0) {
+      const char* probe_tok = NULL;
+      size_t probe_len = 0;
+      next_template_token(&probe_cur, &probe_rem, &probe_tok, &probe_len);
+      if (probe_len == 0) break;
+      if (!((probe_len == 5 && strncmp(probe_tok, "$$end", 5) == 0) ||
+            (probe_len == 7 && strncmp(probe_tok, "$$delim", 7) == 0))) {
+        only_directives = false;
+        break;
+      }
+    }
+    if (only_directives) {
+      if (op_cap->count == 1) {
+        return op_cap->nodes[0];
+      }
+      return ast_group_from_list(op_cap->nodes, op_cap->count);
+    }
+  }
   Str original_op_text = op_text;
   char* owned_op_text = NULL;
   if (op_text.len > 0 && op_text.ptr[0] != '$') {
@@ -1070,13 +1106,17 @@ static AstNode* build_template_ast(const Production* prod,
   }
 
   while (rem > 0) {
-    NEXT_TOKEN(arg_tok, arg_len);
+    const char* arg_tok = NULL;
+    size_t arg_len = 0;
+    next_template_token(&cur, &rem, &arg_tok, &arg_len);
     if (arg_len == 0) break;
     Str arg_text = str_from(arg_tok, arg_len);
 
     // Check for $$spread directive (for flattening captures)
     if (arg_len == 8 && strncmp(arg_tok, "$$spread", 8) == 0) {
-      NEXT_TOKEN(name_tok, name_len);
+      const char* name_tok = NULL;
+      size_t name_len = 0;
+      next_template_token(&cur, &rem, &name_tok, &name_len);
       if (name_len == 0) { free(owned_op_text); free(buffer.data); return NULL; }
       Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
       if (!cap_sym) { free(owned_op_text); free(buffer.data); return NULL; }
@@ -1092,7 +1132,9 @@ static AstNode* build_template_ast(const Production* prod,
 
     // Check for $$maybe directive (conditionally include capture if present)
     if (arg_len == 7 && strncmp(arg_tok, "$$maybe", 7) == 0) {
-      NEXT_TOKEN(name_tok, name_len);
+      const char* name_tok = NULL;
+      size_t name_len = 0;
+      next_template_token(&cur, &rem, &name_tok, &name_len);
       if (name_len == 0) { free(owned_op_text); free(buffer.data); return NULL; }
       Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
       if (!cap_sym) { free(owned_op_text); free(buffer.data); return NULL; }
@@ -1127,7 +1169,9 @@ static AstNode* build_template_ast(const Production* prod,
 
     // Check for $spread operator (legacy, kept for backward compatibility)
     if (arg_len == 7 && strncmp(arg_tok, "$spread", 7) == 0) {
-      NEXT_TOKEN(name_tok, name_len);
+      const char* name_tok = NULL;
+      size_t name_len = 0;
+      next_template_token(&cur, &rem, &name_tok, &name_len);
       if (name_len == 0) { free(owned_op_text); free(buffer.data); return NULL; }
       Sym cap_sym = interns_intern(interns, str_from(name_tok, name_len));
       if (!cap_sym) { free(owned_op_text); free(buffer.data); return NULL; }
@@ -1194,8 +1238,6 @@ static AstNode* build_template_ast(const Production* prod,
   free(owned_op_text);
   free(buffer.data);
   return root;
-
-#undef NEXT_TOKEN
 }
 
 static void free_captures(Capture* caps, size_t count) {
