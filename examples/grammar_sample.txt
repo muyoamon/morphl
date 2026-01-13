@@ -6,11 +6,16 @@ rule stmnt:
     $expr exp ";" => exp
 end
 
+rule then_else_group:
+  $expr thn "else" $expr el => $group thn el 
+  $expr thn => thn
+end
+
 rule expr:
     %NUMBER => number
     "return" $expr val => $ret val
     "while" $expr cond $expr body => $while cond body
-    "if" $expr cond $expr thn $("else" $expr el)? => $if cond $group thn $$maybe el
+    "if" $expr cond $then_else_group t_e => $if cond t_e
     %IDENT => ident
     $expr[1] first $("," $expr[2] rest)+ => $group first $$spread rest
     "{" $($stmnt s)* "}" => $block $$spread s

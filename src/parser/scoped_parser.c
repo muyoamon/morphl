@@ -142,6 +142,9 @@ bool scoped_parser_replace_grammar(ScopedParserContext* ctx,
       return false;
     }
   }
+  MorphlError err = MORPHL_NOTE(MORPHL_E_PARSE, 
+                                "loaded grammar from '%s", resolved_path.ptr);
+  morphl_error_emit(NULL, &err);
   
   return true;
 }
