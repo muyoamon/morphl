@@ -212,11 +212,109 @@ end
   std::remove(grammar_path.c_str());
 }
 
+static void test_capture_root_directive() {
+  const char* grammar_src = R"GRAM(rule stmnt:
+    $expr exp ";" => exp $$end
+end
+
+rule expr:
+    %IDENT => ident
+end
+)GRAM";
+
+  std::string grammar_path = write_temp_file(grammar_src);
+
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  Grammar grammar;
+  assert(grammar_load_file(&grammar, grammar_path.c_str(), interns, &arena));
+
+  const char* source = "foo;";
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  assert(lexer_tokenize("<test>", str_from(source, strlen(source)), interns, &tokens, &token_count));
+
+  AstNode* root = NULL;
+  assert(grammar_parse_ast(&grammar, 0, tokens, token_count, &root));
+  assert(root != NULL);
+  if (root->kind == AST_IDENT) {
+    assert(root->value.len == 3);
+    assert(strncmp(root->value.ptr, "foo", 3) == 0);
+  } else {
+    Sym end_sym = interns_intern(interns, str_from("$$end", 5));
+    assert(root->kind == AST_BUILTIN);
+    assert(root->op == end_sym);
+    assert(root->child_count == 1);
+    assert(root->children[0]->kind == AST_IDENT);
+    assert(root->children[0]->value.len == 3);
+    assert(strncmp(root->children[0]->value.ptr, "foo", 3) == 0);
+  }
+
+  ast_free(root);
+  free(tokens);
+  grammar_free(&grammar);
+  arena_free(&arena);
+  interns_free(interns);
+  std::remove(grammar_path.c_str());
+}
+
+static void test_capture_root_statement_boundary() {
+  const char* grammar_src = R"GRAM(rule program:
+    $($stmnt s)* => $$spread s
+end
+
+rule stmnt:
+    $expr exp ";" => exp $$end
+end
+
+rule expr:
+    %IDENT => ident
+end
+)GRAM";
+
+  std::string grammar_path = write_temp_file(grammar_src);
+
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  Grammar grammar;
+  assert(grammar_load_file(&grammar, grammar_path.c_str(), interns, &arena));
+
+  const char* source = "foo; bar;";
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  assert(lexer_tokenize("<test>", str_from(source, strlen(source)), interns, &tokens, &token_count));
+
+  AstNode* root = NULL;
+  assert(grammar_parse_ast(&grammar, 0, tokens, token_count, &root));
+  assert(root != NULL);
+  assert(root->kind == AST_GROUP);
+  assert(root->child_count == 2);
+  assert(root->children[0]->kind == AST_IDENT);
+  assert(root->children[1]->kind == AST_IDENT);
+
+  ast_free(root);
+  free(tokens);
+  grammar_free(&grammar);
+  arena_free(&arena);
+  interns_free(interns);
+  std::remove(grammar_path.c_str());
+}
+
 int main() {
   test_grammar_loading();
   test_parser_accept_reject();
   test_parser_ast_build();
   test_float_literal_token_kind();
+  test_capture_root_directive();
+  test_capture_root_statement_boundary();
   std::puts("All parser tests passed.");
   return 0;
 }
