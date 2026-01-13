@@ -1107,8 +1107,21 @@ static AstNode* build_template_ast(const Production* prod,
       continue;
     }
 
-    // Check for $$delim directive (reserved stop marker for greedy operators)
-    if (arg_len == 7 && strncmp(arg_tok, "$$delim", 7) == 0) {
+    // Check for $$end/$$delim directive (stop marker for greedy operators)
+    if ((arg_len == 5 && strncmp(arg_tok, "$$end", 5) == 0) ||
+        (arg_len == 7 && strncmp(arg_tok, "$$delim", 7) == 0)) {
+      struct token end_token = {
+        .kind = kinds.symbol,
+        .lexeme = str_from(";", 1),
+        .filename = template_filename,
+        .row = 1,
+        .col = 1,
+      };
+      if (!append_token(&buffer, end_token)) {
+        free(owned_op_text);
+        free(buffer.data);
+        return NULL;
+      }
       continue;
     }
 
