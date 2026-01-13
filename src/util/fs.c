@@ -12,7 +12,9 @@
 #include <unistd.h>
 #endif
 
+#ifndef MAX_PATH
 #define MAX_PATH 4096
+#endif
 
 typedef struct {
   char path[MAX_PATH];
