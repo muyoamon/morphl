@@ -1,4 +1,4 @@
-# Morphl Storage Mechanics
+# Morphl Storage Semantics
 
 ## Variable
 Variables in Morphl can be declared without explicit type annotations. The type is inferred from the initial value assigned to the variable.
