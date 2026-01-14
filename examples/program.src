@@ -1,7 +1,6 @@
 $syntax "grammar_sample.txt";
 foo := 2;
 foo := (foo + 2);
-foo(1,2,3);
 x := { 
     a := 1; 
     b := 2;

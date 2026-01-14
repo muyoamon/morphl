@@ -318,8 +318,23 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     
-    // For simplicity, assume single parameter
     return morphl_type_func(ctx->arena, param_type, return_type);
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$call", 5))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$call expects 2 args, got %llu", (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    // Function call: first arg is function type
+    MorphlType* func_type = unwrap_ref(arg_types[0]);
+    if (!func_type || func_type->kind != MORPHL_TYPE_FUNC) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$call: first argument must be a function");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return func_type->data.func.return_type;
   }
   
   // Unknown or untyped operator
