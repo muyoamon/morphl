@@ -145,6 +145,20 @@ bool type_context_define_var(TypeContext* ctx, Sym name, MorphlType* type) {
   return true;
 }
 
+bool type_context_update_var(TypeContext* ctx, Sym name, MorphlType* type) {
+  if (!ctx || ctx->scope_count == 0 || !name || !type) return false;
+
+  Scope* current = &ctx->scopes[ctx->scope_count - 1];
+  for (size_t i = 0; i < current->var_count; ++i) {
+    if (current->vars[i].name == name) {
+      current->vars[i].type = type;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 MorphlType* type_context_lookup_var(TypeContext* ctx, Sym name) {
   if (!ctx || !name) return NULL;
   
@@ -193,6 +207,19 @@ bool type_context_define_func(TypeContext* ctx, Sym name, MorphlType* func_type)
   ctx->functions[ctx->func_count].type = func_type;
   ctx->func_count++;
   return true;
+}
+
+bool type_context_update_func(TypeContext* ctx, Sym name, MorphlType* func_type) {
+  if (!ctx || !name || !func_type) return false;
+
+  for (size_t i = 0; i < ctx->func_count; ++i) {
+    if (ctx->functions[i].name == name) {
+      ctx->functions[i].type = func_type;
+      return true;
+    }
+  }
+
+  return false;
 }
 
 MorphlType* type_context_lookup_func(TypeContext* ctx, Sym name) {

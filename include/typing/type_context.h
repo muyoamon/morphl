@@ -79,11 +79,13 @@ bool type_context_pop_scope(TypeContext* ctx);
 
 // Variable tracking
 bool type_context_define_var(TypeContext* ctx, Sym name, MorphlType* type);
+bool type_context_update_var(TypeContext* ctx, Sym name, MorphlType* type);
 MorphlType* type_context_lookup_var(TypeContext* ctx, Sym name);
 bool type_context_check_duplicate_var(TypeContext* ctx, Sym name);
 
 // Function registry
 bool type_context_define_func(TypeContext* ctx, Sym name, MorphlType* func_type);
+bool type_context_update_func(TypeContext* ctx, Sym name, MorphlType* func_type);
 MorphlType* type_context_lookup_func(TypeContext* ctx, Sym name);
 
 // Forward declarations

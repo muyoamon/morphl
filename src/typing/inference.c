@@ -386,7 +386,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         type_context_define_func(ctx, var_sym, stub_type);
         return stub_type;
       }
-
+      bool declared_placeholder = false;
       if (init_node->kind == AST_FUNC ||
           (init_node->kind == AST_BUILTIN && init_node->op &&
            strcmp(op_name_str(init_node->op, ctx->interns), "$func") == 0)) {
@@ -395,7 +395,9 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
                                                   morphl_type_unknown(ctx->arena));
         type_context_define_func(ctx, var_sym, placeholder);
         type_context_define_var(ctx, var_sym, placeholder);
+        declared_placeholder = true;
       }
+
 
       MorphlType* init_type = morphl_infer_type_of_ast(ctx, init_node);
       if (!init_type) {
@@ -416,6 +418,12 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: multiple bodies for stub");
         morphl_error_emit(NULL, &err);
         return NULL;
+      }
+      
+      if (declared_placeholder) {
+        (void)type_context_update_var(ctx, var_sym, init_type);
+        (void)type_context_update_func(ctx, var_sym, init_type);
+        return init_type;
       }
 
       bool dup = type_context_check_duplicate_var(ctx, var_sym);
