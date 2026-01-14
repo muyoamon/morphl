@@ -482,7 +482,7 @@ bool grammar_load_file(Grammar* grammar,
 
   char* contents = NULL;
   size_t len = 0;
-  if (!file_read_all(path, &contents, &len)) {
+  if (!morphl_file_read_all(path, &contents, &len)) {
     return false;
   }
 

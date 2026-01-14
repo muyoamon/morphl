@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
 
   char* source_buffer = NULL;
   size_t source_len = 0;
-  if (!file_read_all(source_path, &source_buffer, &source_len)) {
+  if (!morphl_file_read_all(source_path, &source_buffer, &source_len)) {
     fprintf(stderr, "failed to read source from %s\n", source_path);
     interns_free(interns);
     return 1;

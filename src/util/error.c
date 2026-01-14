@@ -1,7 +1,9 @@
 #include "util/error.h"
+#include "util/file.h"
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // Global sink
 static MorphlErrorSink g_global_sink = { NULL, NULL };
@@ -93,14 +95,28 @@ size_t morphl_error_format(const MorphlError *err, char *out, size_t out_cap) {
     uint32_t col  = err->span.col;
 
     // Format: file:line:col: severity[code]: message
-    // If line/col unknown, keep them as 0 (or you can omit).
-    int n = snprintf(out, out_cap, "%s:%u:%u: %s[%d]: %s",
+    // If line/col unknown, omit.
+    int n = 0;
+    if (line == 0 || col == 0) {
+        n = snprintf(out, out_cap, "%s: %s[%d]: %s",
+                     path,
+                     sev_str(err->sev),
+                     (int)err->code,
+                     err->msg);
+    } else {
+        // get error line
+        const char *error_line = morphl_file_get_line(path, line);
+        n = snprintf(out, out_cap, "%s:%u:%u: %s[%d]: %s\n\t%s",
                      path,
                      (unsigned)line,
                      (unsigned)col,
                      sev_str(err->sev),
                      (int)err->code,
-                     err->msg);
+                     err->msg,
+                     error_line ? error_line : ""
+                    );
+        free((void*)error_line);
+    }
 
     if (n < 0) {
         out[0] = '\0';

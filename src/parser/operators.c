@@ -74,7 +74,7 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   if (!filename) return NULL;
   char* source_buffer = NULL;
   size_t source_len = 0;
-  if (!file_read_all(filename, &source_buffer, &source_len)) {
+  if (!morphl_file_read_all(filename, &source_buffer, &source_len)) {
     MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: failed to read '%s'", filename);
     morphl_error_emit(NULL, &err);
     return NULL;
