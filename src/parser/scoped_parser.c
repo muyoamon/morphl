@@ -334,16 +334,15 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
   }
   
   // Always use builtin parser for now
-  // Grammar-based parsing is a future feature
+  // Grammar-based parsing is a future feature (Maybe)
   return builtin_parse_expr(tokens, token_count, cursor, ctx->interns, out_node);
 }
 
 /**
- * @brief Recursively infer types for all nodes in an AST.
+ * @brief Run a typing pass on the AST root.
  *
- * Traverses the tree and calls morphl_infer_type_of_ast on each node to ensure
- * type information is computed. This populates the type context with variable
- * and function definitions discovered during parsing.
+ * morphl_infer_type_of_ast already traverses child nodes as needed, so we only
+ * need to invoke it once at the root to populate the type context.
  *
  * @param ctx TypeContext for storing inferred types
  * @param node AST node to process
@@ -353,11 +352,7 @@ static void typing_pass_ast(TypeContext* ctx, AstNode* node) {
   
   // Infer type for this node (this may trigger preprocessor actions)
   morphl_infer_type_of_ast(ctx, node);
-  
-  // Recursively infer types for children
-  for (size_t i = 0; i < node->child_count; ++i) {
-    typing_pass_ast(ctx, node->children[i]);
-  }
+
 }
 
 bool scoped_parse_ast(ScopedParserContext* ctx,
