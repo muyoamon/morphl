@@ -1,43 +1,34 @@
 # morphl
-programming language
 
+## Overview
 
+**MorphL** is a statically-typed programming language with a dynamic parser. It features a Pratt-style grammar system that can be loaded from text files, enabling flexible syntax extension without requiring recompilation of the compiler.
 
+### Key Features
+
+- **Dynamic Grammar System**: Grammar rules defined in text files, parsed at compile time
+- **Static Type Inference**: Full type checking with no implicit coercion
+- **Functional & Imperative**: Support for both paradigms
+- **Structural Typing**: Records with width subtyping support
+- **Traits System**: Interface-like behavior with implementations
+- **First-class Functions**: Functions are values that can be passed around
+- **Mutable & Immutable References**: Explicit storage modifiers
+
+### Project Status
+
+Currently implementing core language features. The lexer, parser, AST, and type inference system are in development.
+
+### Documentation
+- [Language Semantics](docs/semantics/storage.md)
+- [Typing System](docs/typing/typing.md)
 ### TODO
-- refactor code (important)
-- fix macro system
+- compiler backend
 - add compiler settings
 - add c ffi support
 - add static storage
 - add multithread support (maybe)
 
-## Dynamic parser and static tokenizer
-
-The lexer now uses static rules (identifiers, numbers, punctuation) while the
-parser consumes a Pratt-style grammar loaded from a text file. Grammar files
-declare blocks with `rule <name>:` followed by one or more pattern/template
-pairs and terminated by `end`.
-
-Patterns may contain literals, token kinds (e.g. `%IDENT`), and rule
-placeholders of the form `$name[n]` where *name* is any rule identifier and *n*
-is the minimum binding power for that operand. Omitting the square brackets
-defaults the binding power to zero. Associativity is encoded solely by the
-binding power choices on each side of an operator.
-
-Example grammar excerpt:
-
-```
-rule expr:
-    %NUMBER => $number
-    %IDENT => $ident
-    "(" $expr ")" => $group
-    "-" $expr[30] rhs => $neg rhs
-    $expr lhs "+" $expr[1] rhs => $add lhs rhs
-    $expr lhs "-" $expr[1] rhs => $sub lhs rhs
-    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs
-    $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs
-end
-```
+## Building
 
 Build and run using a grammar file and source program:
 
