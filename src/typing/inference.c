@@ -419,7 +419,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         morphl_error_emit(NULL, &err);
         return NULL;
       }
-      
+
       if (declared_placeholder) {
         (void)type_context_update_var(ctx, var_sym, init_type);
         (void)type_context_update_func(ctx, var_sym, init_type);
@@ -436,6 +436,25 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         }
         return existing;
       }
+      // if initial value is mutable reference but doesn't explicitly declare mutability,
+      // throw warning of implicit mutability.
+      // Allow `$decl <name> $mut <init>` to explicitly create new mutable reference. 
+      // Or `$decl <name> $inline <init>` to explicitly declare as alias.
+      if (init_type->kind == MORPHL_TYPE_REF && init_type->data.ref.is_mutable) {
+        bool has_explicit_mut = false;
+        if (init_node->kind == AST_BUILTIN &&
+            (init_node->op == interns_intern(ctx->interns, str_from("$mut", 4)) ||
+             init_node->op == interns_intern(ctx->interns, str_from("$inline", 7)))) {
+          has_explicit_mut = true;
+        }
+        if (!has_explicit_mut) {
+          MorphlError err = MORPHL_WARN_AT(name_node, MORPHL_E_PARSE, 
+            "$decl: variable '%s' is implicitly mutable; use '$mut' to create new mutable reference"
+            "or '$inline' to create an alias", interns_lookup(ctx->interns, var_sym).ptr);
+          morphl_error_emit(NULL, &err);
+        }
+      }
+ 
 
       type_context_define_var(ctx, var_sym, init_type);
       return init_type;
