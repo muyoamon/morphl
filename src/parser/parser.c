@@ -866,6 +866,9 @@ static AstNode* build_template_ast(const Production* prod,
   if (op_len == 0) return NULL;
   Sym op_sym = interns_intern(interns, str_from(op_tok, op_len));
   if (!op_sym) return NULL;
+  // // Check for special case: $spread at root
+  // bool root_spread = (op_len == 7 && strncmp(op_tok, "$spread", 7) == 0) ||
+  //                    (op_len == 8 && strncmp(op_tok, "$$spread", 8) == 0);
   // Check for special case: $$op directive for captured operator
   if (op_len == 4 && strncmp(op_tok, "$$op", 4) == 0) {
     NEXT_TOKEN(name_tok, name_len);
@@ -962,6 +965,12 @@ static AstNode* build_template_ast(const Production* prod,
     if (!cap_sym) { ast_free(root); return NULL; }
     Capture* cap = find_capture(captures, capture_count, cap_sym);
     if (!cap || cap->count == 0) { ast_free(root); return NULL; }
+    // if (root_spread) {
+    //   for (size_t i = 0; i < cap->count; ++i) {
+    //     flatten_and_append(root, cap->nodes[i]);
+    //   }
+    //   continue;
+    // }
     AstNode* child = NULL;
     if (cap->count == 1) {
       child = cap->nodes[0];

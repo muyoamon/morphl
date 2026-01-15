@@ -385,10 +385,30 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
   
   // Create root node
   if (child_count == 1) {
+    // if the only child is a group, unwrap it
+    if (children[0]->kind == AST_GROUP) {
+      AstNode* group = children[0];
+      *out_root = ast_new(AST_FILE);
+      if (!*out_root) {
+        for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
+        free(children);
+        MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "failed to allocate root AST node");
+        morphl_error_emit(NULL, &err);
+        return false;
+      }
+      (*out_root)->filename = group->filename;
+      (*out_root)->children = group->children;
+      (*out_root)->child_count = group->child_count;
+      group->children = NULL;
+      group->child_count = 0;
+      ast_free(group);
+      free(children);
+    } else {
     *out_root = children[0];
     free(children);
+    }
   } else {
-    AstNode* root = ast_new(AST_BLOCK);
+    AstNode* root = ast_new(AST_FILE);
     if (!root) {
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children);

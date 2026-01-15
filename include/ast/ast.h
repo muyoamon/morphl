@@ -23,6 +23,7 @@ typedef enum AstKind {
   AST_SET,
   AST_BUILTIN,
   AST_OVERLOAD,
+  AST_FILE,         // Block-like node representing a source file
   AST_UNKNOWN
 } AstKind;
 

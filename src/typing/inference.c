@@ -476,6 +476,7 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       return group_type;
     }
 
+    case AST_FILE:
     case AST_BLOCK: {
       if (!type_context_push_scope(ctx)) return NULL;
       MorphlType* block_type = morphl_type_block(ctx->arena, NULL, NULL, 0);

@@ -48,8 +48,20 @@ static void emit_indent(EmitBuffer *out, size_t indent) {
     }
 }
 
+typedef void (*emit_func_t)(AstNode *node, EmitBuffer *out);
+static size_t indent_level = 0;
+
+static void emit_line(emit_func_t fn, EmitBuffer *out, AstNode *node, const char* extra) {
+    emit_indent(out, indent_level);
+    fn(node, out);
+    if (extra) {
+        emit_append(out, extra);
+    }
+    emit_append(out, "\n");
+}
+
 static void emit_node_expr(AstNode *node, EmitBuffer *out);
-static void emit_node_stmt(AstNode *node, EmitBuffer *out, size_t indent);
+// static void emit_node_stmt(AstNode *node, EmitBuffer *out, size_t indent);
 static void emit_node_builtin(AstNode *node, EmitBuffer *out);
 static void emit_group_expr(AstNode *node, EmitBuffer *out);
 
@@ -119,21 +131,40 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out) {
                 emit_append(out, "0");
             }
             break;
-        case AST_DECL:
+        case AST_DECL: {
             if (node->child_count >= 2) {
-                emit_node_expr(node->children[1], out);
+                AstNode *name = node->children[0];
+                AstNode *value = node->children[1];
+                const char *type_name = infer_decl_type(value);
+                emit_append(out, type_name);
+                emit_append(out, " ");
+                emit_node_expr(name, out);
+                emit_append(out, " = ");
+                emit_node_expr(value, out);
             } else {
-                emit_append(out, "0");
+                emit_append(out, "/* malformed decl */");
             }
             break;
+            }
         case AST_FUNC:
             emit_append(out, "/* func */0");
             break;
         case AST_IF:
             emit_append(out, "/* if */0");
             break;
+        case AST_FILE:  // Treat as block
         case AST_BLOCK:
-            emit_append(out, "/* block */0");
+            // For now, naively emit each child separated by semicolons
+            // In future, seperate into struct and scope logic
+            emit_append(out, "{\n");
+            indent_level++;
+            for (size_t i = 0; i < node->child_count; ++i) {
+                // Indent child statements
+                emit_line(emit_node_expr, out, node->children[i], ";");
+            }
+            indent_level--;
+            emit_indent(out, indent_level);
+            emit_append(out, "}");
             break;
         default:
             emit_append(out, "0");
@@ -150,52 +181,6 @@ static void emit_group_expr(AstNode *node, EmitBuffer *out) {
             emit_append(out, ", ");
         }
         emit_node_expr(node->children[i], out);
-    }
-}
-
-static void emit_node_stmt(AstNode *node, EmitBuffer *out, size_t indent) {
-    if (!node) {
-        return;
-    }
-    switch (node->kind) {
-        case AST_BLOCK:
-            for (size_t i = 0; i < node->child_count; ++i) {
-                emit_node_stmt(node->children[i], out, indent);
-            }
-            break;
-        case AST_DECL: {
-            emit_indent(out, indent);
-            if (node->child_count >= 2) {
-                AstNode *name = node->children[0];
-                AstNode *value = node->children[1];
-                const char *type_name = infer_decl_type(value);
-                emit_append(out, type_name);
-                emit_append(out, " ");
-                emit_node_expr(name, out);
-                emit_append(out, " = ");
-                emit_node_expr(value, out);
-            } else {
-                emit_append(out, "/* malformed decl */");
-            }
-            emit_append(out, ";\n");
-            break;
-        }
-        case AST_SET:
-            emit_indent(out, indent);
-            if (node->child_count >= 2) {
-                emit_node_expr(node->children[0], out);
-                emit_append(out, " = ");
-                emit_node_expr(node->children[1], out);
-            } else {
-                emit_append(out, "/* malformed set */");
-            }
-            emit_append(out, ";\n");
-            break;
-        default:
-            emit_indent(out, indent);
-            emit_node_expr(node, out);
-            emit_append(out, ";\n");
-            break;
     }
 }
 
@@ -311,11 +296,13 @@ bool morphl_backend_func_c(MorphlBackendContext* context) {
         .pos = 0,
     };
     emit_append(&out, "#include <stdio.h>\n\nint main(void) {\n");
+    indent_level++;
     if (context->tree && context->tree->kind == AST_BLOCK) {
-        emit_node_stmt(context->tree, &out, 1);
+        emit_line(emit_node_expr, &out, context->tree, "");
     } else if (context->tree) {
-        emit_node_stmt(context->tree, &out, 1);
+        emit_line(emit_node_expr, &out, context->tree, ";");
     }
+    indent_level--;
     emit_append(&out, "  return 0;\n}\n");
     out.data[out.pos] = '\0';
 

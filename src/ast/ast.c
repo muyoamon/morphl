@@ -61,6 +61,7 @@ static const char* kind_name(AstKind kind) {
     case AST_SET: return "set";
     case AST_BUILTIN: return "builtin";
     case AST_OVERLOAD: return "overload";
+    case AST_FILE: return "file";
     case AST_UNKNOWN: return "unknown";
   }
   return "unknown";
@@ -101,6 +102,14 @@ static void ast_print_impl(const AstNode* node, InternTable* interns, size_t dep
     case AST_IDENT:
       fputs(" ", stdout);
       print_str(node->value);
+      break;
+    case AST_FILE:
+      fputs(" ", stdout);
+      if (node->filename) {
+        fputs(node->filename, stdout);
+      } else {
+        fputs("<unknown>", stdout);
+      }
       break;
     default:
       break;
