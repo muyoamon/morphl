@@ -69,6 +69,9 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out);
 static void emit_node_builtin(AstNode *node, EmitBuffer *out);
 static void emit_group_expr(AstNode *node, EmitBuffer *out);
 
+// forward declaration
+static const char *find_decl_type(AstNode *value);
+
 static const char *infer_decl_type(AstNode *value) {
     if (!value) {
         return "void";
@@ -84,6 +87,11 @@ static const char *infer_decl_type(AstNode *value) {
             }
         }
         return "long long";
+    }
+    // Try to find type from the value node
+    const char *type_name = find_decl_type(value);
+    if (type_name) {
+        return type_name;
     }
     return "void";
 }
@@ -140,11 +148,16 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out) {
                 AstNode *name = node->children[0];
                 AstNode *value = node->children[1];
                 const char *type_name = infer_decl_type(value);
+                if (strcmp(type_name, "void") == 0) {
+                    // try to resolve to infered type by name
+                    type_name = find_decl_type(name);
+                }
                 emit_append(out, type_name);
                 emit_append(out, " ");
                 emit_node_expr(name, out);
-                emit_append(out, " = ");
-                emit_node_expr(value, out);
+                // for now just omit the initialization
+                // emit_append(out, " = ");
+                // emit_node_expr(value, out);
             } else {
                 emit_append(out, "/* malformed decl */");
             }
@@ -598,6 +611,38 @@ static void emit_type_signature(EmitBuffer *out, TypeArray *type_arr, TypeContex
     }
 }
 
+static TypeArray type_arr;
+static InternTable* interns;
+
+static const char *find_decl_type(AstNode *value) {
+    if (!value) {
+        return NULL;
+    }
+    if (value->kind == AST_LITERAL) return infer_decl_type(value);
+    // try to find from type_arr
+    MorphlType *type = NULL;
+    // For simplicity, only handle IDENT nodes here
+    if (value->kind == AST_IDENT) {
+        Str ident_str = value->value;
+        for (size_t i = 0; i < type_arr.count; ++i) {
+            struct TypeEntry *entry = type_array_get(&type_arr, i);
+            Str type_name = interns_lookup(interns, entry->name);
+            if (type_name.len == ident_str.len &&
+                strncmp(type_name.ptr, ident_str.ptr, ident_str.len) == 0) {
+                type = &entry->type;
+                break;
+            }
+        }
+    }
+    if (type) {
+        Str type_str = get_ctype_name(type, interns, &type_arr);
+        static char buffer[64];
+        snprintf(buffer, sizeof(buffer), "%.*s", (int)type_str.len, type_str.ptr);
+        return buffer;
+    }
+    return NULL;
+}
+
 // compile to C source code
 bool morphl_backend_func_c(MorphlBackendContext* context) {
 
@@ -618,12 +663,12 @@ bool morphl_backend_func_c(MorphlBackendContext* context) {
     // handle type signatures, global variables, function declarations, etc. here
     // TODO: handle non-primitive types from type context
     // TODO: handle unamed types
-    TypeArray type_arr;
     type_array_init(&type_arr, 4);
     if (context->tree) {
         ctx_type_check(context->type_context, &type_arr);
         emit_type_signature(&out, &type_arr, context->type_context);
     }
+    interns = context->type_context->interns;
 
     // handle main function
     emit_append(&out, "int main(void) {\n");
