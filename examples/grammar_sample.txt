@@ -30,5 +30,6 @@ rule expr:
     $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | $fmul lhs rhs
     $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs | $fdiv lhs rhs
     $expr id ":" "=" $expr exp => $decl id exp
+    $expr lhs "=" $expr rhs => $set lhs rhs
     $expr lhs "<" "=" $expr rhs => $lte lhs rhs
 end
