@@ -4,11 +4,13 @@
 #include <stdbool.h>
 #include "ast/ast.h"
 #include "util/util.h"
+#include "typing/type_context.h"
 
 /// @brief Context passed to backend functions
 typedef struct {
     AstNode* tree;          ///< The AST to compile
     const char* out_file;   ///< Output file path
+    TypeContext* type_context; ///< Type context for type information
 } MorphlBackendContext;
 
 enum MorphlBackendType {

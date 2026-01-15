@@ -352,7 +352,6 @@ static void typing_pass_ast(TypeContext* ctx, AstNode* node) {
   
   // Infer type for this node (this may trigger preprocessor actions)
   morphl_infer_type_of_ast(ctx, node);
-
 }
 
 bool scoped_parse_ast(ScopedParserContext* ctx,

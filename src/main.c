@@ -97,11 +97,14 @@ int main(int argc, char** argv) {
     printf("parse succeeded\n");
     printf("AST:\n");
     ast_print(root, interns);
+    printf("Type info:\n");
+    type_context_print_debug(parser_ctx.type_context);
      // try backend code generation (C)
     {
       MorphlBackendContext backend_ctx;
       backend_ctx.tree = root;
       backend_ctx.out_file = "out.c";
+      backend_ctx.type_context = parser_ctx.type_context;
 
       if (morphl_compile(&backend_ctx)) {
         printf("C code generation succeeded, output written to out.c\n");

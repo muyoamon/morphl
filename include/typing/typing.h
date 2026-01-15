@@ -16,10 +16,10 @@ typedef enum {
   MORPHL_TYPE_BOOL,
   MORPHL_TYPE_FUNC,      // Function type with parameters and return type
   MORPHL_TYPE_REF,       // Reference type with mutability/inline flags
-  MORPHL_TYPE_PRIMITIVE, // Legacy: generic primitive
-  MORPHL_TYPE_BLOCK,     // Legacy: generic block
-  MORPHL_TYPE_GROUP,     // Legacy: generic group
-  MORPHL_TYPE_TRAIT,     // Legacy: generic trait
+  MORPHL_TYPE_PRIMITIVE, // (Deprecated) Primitive type placeholder
+  MORPHL_TYPE_BLOCK,     // Block type (struct-like)
+  MORPHL_TYPE_GROUP,     // Group type (tuple-like)
+  MORPHL_TYPE_TRAIT,     // Trait type (interface-like)
 } MorphlTypeKind;
 
 // Forward declaration
@@ -92,8 +92,23 @@ MorphlType* morphl_type_block(Arena* arena,
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type);
 
 // Type utilities
+
 bool morphl_type_equals(const MorphlType* a, const MorphlType* b);
-Str morphl_type_to_string(const MorphlType* type);
+
+/// @brief Convert a MorphlType to its string representation.
+/// @param type The type to convert.
+/// @param interns The intern table for string interning.
+/// @return A Str containing the string representation of the type. The caller is responsible for freeing the `ptr` field.
+Str morphl_type_to_string(const MorphlType* type, InternTable *interns);
+
 bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super);
+
+static inline bool morphl_type_is_primitive(const MorphlType* type) {
+  return type && (type->kind == MORPHL_TYPE_INT ||
+                     type->kind == MORPHL_TYPE_FLOAT ||
+                     type->kind == MORPHL_TYPE_BOOL || 
+                     type->kind == MORPHL_TYPE_STRING || 
+                     type->kind == MORPHL_TYPE_VOID);
+}
 
 #endif // MORPHL_TYPING_TYPING_H_

@@ -1,6 +1,7 @@
 #include "typing/type_context.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "util/error.h"
 
 // Helper: allocate and zero-init memory from arena
@@ -394,4 +395,42 @@ MorphlType* type_context_get_file(TypeContext* ctx) {
 MorphlType* type_context_get_global(TypeContext* ctx) {
   if (!ctx) return NULL;
   return ctx->global_type;
+}
+
+void type_context_print_debug(TypeContext* ctx) {
+  if (!ctx) return;
+  printf("TypeContext Debug Info:\n");
+  printf("Function Registry (%zu functions):\n", ctx->func_count);
+  for (size_t i = 0; i < ctx->func_count; ++i) {
+    Str name = interns_lookup(ctx->interns, ctx->functions[i].name);
+    printf("  %.*s : Type at %p\n", (int)name.len, name.ptr, (void*)ctx->functions[i].type);
+  }
+  printf("Scope Stack (%zu scopes):\n", ctx->scope_count);
+  for (size_t s = 0; s < ctx->scope_count; ++s) {
+    Scope* scope = &ctx->scopes[s];
+    printf("  Scope %zu: %zu vars, %zu forwards\n", s, scope->var_count, scope->forward_count);
+    for (size_t v = 0; v < scope->var_count; ++v) {
+      Str name = interns_lookup(ctx->interns, scope->vars[v].name);
+      printf("    Var: %.*s : Type at %p\n", (int)name.len, name.ptr, (void*)scope->vars[v].type);
+    }
+    for (size_t f = 0; f < scope->forward_count; ++f) {
+      Str name = interns_lookup(ctx->interns, scope->forwards[f].name);
+      printf("    Forward: %.*s : Type at %p, Resolved: %s\n", (int)name.len, name.ptr,
+             (void*)scope->forwards[f].type,
+             scope->forwards[f].resolved ? "yes" : "no");
+    }
+  }
+  // Print special bindings
+  printf("Special Bindings:\n");
+  Str this_type_str = morphl_type_to_string(type_context_get_this(ctx), ctx->interns);
+  Str file_type_str = morphl_type_to_string(ctx->file_type, ctx->interns);
+  Str global_type_str = morphl_type_to_string(ctx->global_type, ctx->interns);
+  printf("  This Type: %.*s\n", (int)this_type_str.len, this_type_str.ptr);
+  printf("  File Type: %.*s\n", (int)file_type_str.len, file_type_str.ptr);
+  printf("  Global Type: %.*s\n", (int)global_type_str.len, global_type_str.ptr);
+
+  // free strings if allocated
+  free((void*)this_type_str.ptr);
+  free((void*)file_type_str.ptr);
+  free((void*)global_type_str.ptr);
 }

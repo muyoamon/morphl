@@ -1,9 +1,13 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "ast/ast.h"
 #include "backend/backend.h"
 #include "parser/operators.h"
+#include "typing/typing.h"
+#include "util/util.h"
+#include "typing/type_context.h"
 
 typedef struct EmitBuffer {
     char *data;
@@ -67,7 +71,7 @@ static void emit_group_expr(AstNode *node, EmitBuffer *out);
 
 static const char *infer_decl_type(AstNode *value) {
     if (!value) {
-        return "double";
+        return "void";
     }
     if (value->kind == AST_LITERAL) {
         if (value->value.len > 0 && value->value.ptr[0] == '"') {
@@ -81,7 +85,7 @@ static const char *infer_decl_type(AstNode *value) {
         }
         return "long long";
     }
-    return "double";
+    return "void";
 }
 
 static void emit_node_expr(AstNode *node, EmitBuffer *out) {
@@ -277,7 +281,175 @@ static void emit_node_builtin(AstNode *node, EmitBuffer *out) {
     }
 }
 
+struct TypeEntry {
+    Sym name;
+    MorphlType type;
+};
 
+typedef struct TypeArray {
+    Arena arena;
+    size_t count;
+} TypeArray;
+
+static void type_array_init(TypeArray *arr, size_t initial_capacity) {
+    arena_init(&arr->arena, initial_capacity * sizeof(struct TypeEntry));
+    arr->count = 0;
+}
+
+static void type_array_free(TypeArray *arr) {
+    arena_free(&arr->arena);
+}
+
+static struct TypeEntry* type_array_get(TypeArray *arr, size_t index) {
+    return (struct TypeEntry*)(arr->arena.base + index * sizeof(struct TypeEntry));
+}
+
+static void ctx_type_check(TypeContext *ctx, TypeArray *type_arr) {
+    (void)ctx;
+    (void)type_arr;
+    // Look into file scope and global scope for non-primitive types
+    if (ctx->file_type) {
+        // Since file_type contains all global declarations, we need to check each child
+        for (size_t i = 0; i < ctx->file_type->data.block.field_count; ++i) {
+            MorphlType *field_type = ctx->file_type->data.block.field_types[i];
+            if (morphl_type_is_primitive(field_type) == false) {
+                Str type_as_str = morphl_type_to_string(field_type, ctx->interns);
+                printf("Detected non-primitive type in file scope; type: %.*s\n", 
+                    (int)type_as_str.len, type_as_str.ptr);
+                free((void*)type_as_str.ptr);
+                
+                // Store type info in type array for later emission
+                struct TypeEntry entry = {
+                    .name = ctx->file_type->data.block.field_names[i],
+                    .type = *field_type,
+                };
+                arena_push(&type_arr->arena, &entry, sizeof(struct TypeEntry));
+                type_arr->count++;
+            }
+        }
+    }
+}
+
+static Str get_ctype_name(MorphlType *type, InternTable *interns) {
+    if (morphl_type_is_primitive(type)) {
+        switch (type->kind) {
+            case MORPHL_TYPE_INT:
+                return str_from("long long", strlen("long long"));
+            case MORPHL_TYPE_FLOAT:
+                return str_from("double", strlen("double"));
+            case MORPHL_TYPE_BOOL:
+                return str_from("bool", strlen("bool"));
+            case MORPHL_TYPE_STRING:
+                return str_from("const char *", strlen("const char *"));
+            case MORPHL_TYPE_VOID:
+                return str_from("void", strlen("void"));
+            default:
+                return str_from("void", strlen("void"));
+        }
+    } else {
+        // For now, just convert to string using existing function
+        Str type_str = morphl_type_to_string(type, interns);
+        // Copy back to stack
+        static char buffer[512];
+        size_t len = (type_str.len < sizeof(buffer) - 1) ? type_str.len : sizeof(buffer) - 1;
+        memcpy(buffer, type_str.ptr, len);
+        buffer[len] = '\0';
+        return str_from(buffer, len);
+    }
+}
+
+static void emit_type_signature(EmitBuffer *out, TypeArray *type_arr, TypeContext *ctx) {
+    for (size_t i = 0; i < type_arr->count; ++i) {
+        struct TypeEntry *entry = type_array_get(type_arr, i);
+        if (morphl_type_is_primitive(&entry->type)) {
+            continue; // skip primitive types
+        }
+        if (entry->type.kind == MORPHL_TYPE_BLOCK) {
+            emit_append(out, "typedef struct {\n");
+            indent_level++;
+            MorphlBlockType *block = &entry->type.data.block;
+            for (size_t j = 0; j < block->field_count; ++j) {
+                MorphlType *field_type = block->field_types[j];
+                emit_indent(out, indent_level);
+
+                Str type_str = get_ctype_name(field_type, ctx->interns);
+                emit_append_n(out, type_str.ptr, type_str.len);
+
+                emit_append(out, " ");
+                Sym field_sym = block->field_names[j];
+                // For simplicity, just print the symbol as is
+                emit_append_n(out, interns_lookup(ctx->interns, field_sym).ptr,
+                               interns_lookup(ctx->interns, field_sym).len);
+                emit_append(out, ";\n");
+            }
+            indent_level--;
+            emit_append(out, "} ");
+            // print type name as <name>_block_t
+            char type_name[32];
+            snprintf(type_name, sizeof(type_name), "%.*s_block_t", 
+                     (int)interns_lookup(ctx->interns, entry->name).len,
+                     interns_lookup(ctx->interns, entry->name).ptr);
+            emit_append(out, type_name);
+            emit_append(out, ";\n\n");
+        } else if (entry->type.kind == MORPHL_TYPE_GROUP) {
+            emit_append(out, "typedef struct {\n");
+            indent_level++;
+            MorphlGroupType *group = &entry->type.data.group;
+            for (size_t j = 0; j < group->elem_count; ++j) {
+                MorphlType *elem_type = group->elem_types[j];
+                emit_indent(out, indent_level);
+
+                Str type_str = get_ctype_name(elem_type, ctx->interns);
+                emit_append_n(out, type_str.ptr, type_str.len);
+
+                emit_append(out, " ");
+                // Name elements as _0, _1, etc.
+                char elem_name[16];
+                snprintf(elem_name, sizeof(elem_name), "_%zu", j);
+                emit_append(out, " ");
+                emit_append(out, elem_name);
+                emit_append(out, ";\n");
+            }
+            indent_level--;
+            emit_append(out, "} ");
+            // print type name as <name>_group_t
+            char type_name[32];
+            snprintf(type_name, sizeof(type_name), "%.*s_group_t", 
+                     (int)interns_lookup(ctx->interns, entry->name).len,
+                     interns_lookup(ctx->interns, entry->name).ptr);
+            emit_append(out, type_name);
+            emit_append(out, ";\n\n");
+        } else if (entry->type.kind == MORPHL_TYPE_FUNC) {
+            // Function type
+            emit_append(out, "typedef ");
+            MorphlType *ret_type = entry->type.data.func.return_type;
+
+            Str type_str = get_ctype_name(ret_type, ctx->interns);
+            emit_append_n(out, type_str.ptr, type_str.len);
+                
+            emit_append(out, " (*");
+            // function name as <name>_func_t
+            char func_name[32];
+            snprintf(func_name, sizeof(func_name), "%.*s_func_t", 
+                     (int)interns_lookup(ctx->interns, entry->name).len,
+                     interns_lookup(ctx->interns, entry->name).ptr);
+            emit_append(out, func_name);
+            emit_append(out, ")(");
+            // parameters
+            for (size_t j = 0; j < entry->type.data.func.param_count; ++j) {
+                if (j > 0) {
+                    emit_append(out, ", ");
+                }
+                MorphlType *param_type = entry->type.data.func.param_types[j];
+
+                Str type_str = get_ctype_name(param_type, ctx->interns);
+                emit_append_n(out, type_str.ptr, type_str.len);
+                    
+            }
+            emit_append(out, ");\n\n");
+        }
+    }
+}
 
 // compile to C source code
 bool morphl_backend_func_c(MorphlBackendContext* context) {
@@ -295,7 +467,19 @@ bool morphl_backend_func_c(MorphlBackendContext* context) {
         .capacity = sizeof(out_str),
         .pos = 0,
     };
-    emit_append(&out, "#include <stdio.h>\n\nint main(void) {\n");
+    emit_append(&out, "#include <stdio.h>\n\n");
+    // handle type signatures, global variables, function declarations, etc. here
+    // TODO: handle non-primitive types from type context
+    // TODO: handle unamed types
+    TypeArray type_arr;
+    type_array_init(&type_arr, 4);
+    if (context->tree) {
+        ctx_type_check(context->type_context, &type_arr);
+        emit_type_signature(&out, &type_arr, context->type_context);
+    }
+
+    // handle main function
+    emit_append(&out, "int main(void) {\n");
     indent_level++;
     if (context->tree && context->tree->kind == AST_BLOCK) {
         emit_line(emit_node_expr, &out, context->tree, "");
@@ -309,5 +493,6 @@ bool morphl_backend_func_c(MorphlBackendContext* context) {
     // write to output file
     fwrite(out.data, 1, out.pos, out_file);
     fclose(out_file);
+    type_array_free(&type_arr);
     return true;
 }

@@ -1,6 +1,8 @@
 #include "typing/typing.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "util/util.h"
 
 // Helper: allocate and zero-init memory from arena
 static void* arena_alloc(Arena* a, size_t size) {
@@ -298,65 +300,100 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
   return true;
 }
 
+
+static char *new_cstr(const char *s) {
+    size_t len = strlen(s);
+    char *copy = malloc(len + 1);
+    if (copy) {
+        memcpy(copy, s, len + 1);
+    }
+    return copy;
+}
+
 // Display type as string
-Str morphl_type_to_string(const MorphlType* type) {
-  static char buf[256];
+Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
+  char buf[512] = {0};
   const char* result = NULL;
   
   if (!type) {
-    result = "<null>";
+    result = new_cstr("<null>");
   } else {
     switch (type->kind) {
       case MORPHL_TYPE_VOID:
-        result = "void";
+        result = new_cstr("void");
         break;
       case MORPHL_TYPE_INT:
-        result = "int";
+        result = new_cstr("int");
         break;
       case MORPHL_TYPE_FLOAT:
-        result = "float";
+        result = new_cstr("float");
         break;
       case MORPHL_TYPE_STRING:
-        result = "string";
+        result = new_cstr("string");
         break;
       case MORPHL_TYPE_IDENT:
-        result = "ident";
+        result = new_cstr("ident");
         break;
       case MORPHL_TYPE_BOOL:
-        result = "bool";
+        result = new_cstr("bool");
         break;
       case MORPHL_TYPE_FUNC: {
-        // Simple function type display
-        snprintf(buf, sizeof(buf), "func");
-        result = buf;
+        // Print in format: func: <params> => <return>
+        Str param_str = morphl_type_to_string(type->data.func.param_types[0], interns);
+        Str return_str = morphl_type_to_string(type->data.func.return_type, interns);
+        snprintf(buf, sizeof(buf), "func: (%.*s) => %.*s",
+                  (int)param_str.len, param_str.ptr,
+                  (int)return_str.len, return_str.ptr);
+        result = new_cstr(buf);
         break;
       }
       case MORPHL_TYPE_GROUP: {
-        snprintf(buf, sizeof(buf), "group[%llu]", (unsigned long long)type->data.group.elem_count);
-        result = buf;
+        // Print in format: group: (<elem1>, <elem2>, ...)
+        snprintf(buf, sizeof(buf), "group: (");
+        size_t offset = strlen(buf);
+        for (size_t i = 0; i < type->data.group.elem_count; ++i) {
+          Str elem_str = morphl_type_to_string(type->data.group.elem_types[i], interns);
+          int written = snprintf(buf + offset, sizeof(buf) - offset, "%.*s%s",
+                                 (int)elem_str.len, elem_str.ptr,
+                                 (i + 1 < type->data.group.elem_count) ? ", " : "");
+          offset += written;
+        }
+        snprintf(buf + offset, sizeof(buf) - offset, ")");
+        result = new_cstr(buf);
         break;
       }
       case MORPHL_TYPE_BLOCK: {
-        snprintf(buf, sizeof(buf), "block{%llu}", (unsigned long long)type->data.block.field_count);
-        result = buf;
+        // Print in format: block: {<name>:<type>, ...}
+        snprintf(buf, sizeof(buf), "block: {");
+        size_t offset = strlen(buf);
+        for (size_t i = 0; i < type->data.block.field_count; ++i) {
+          Str field_str = morphl_type_to_string(type->data.block.field_types[i], interns);
+          int written = snprintf(buf + offset, sizeof(buf) - offset, "%.*s:%.*s%s",
+                                 (int)interns_lookup(interns, type->data.block.field_names[i]).len, interns_lookup(interns, type->data.block.field_names[i]).ptr,
+                                 (int)field_str.len, field_str.ptr,
+                                 (i + 1 < type->data.block.field_count) ? ", " : "");
+          offset += written;
+        }
+        snprintf(buf + offset, sizeof(buf) - offset, "}");
+        result = new_cstr(buf);
         break;
       }
       case MORPHL_TYPE_REF: {
         const char* mut = type->data.ref.is_mutable ? "mut" : "const";
         const char* inl = type->data.ref.is_inline ? " inline" : "";
         snprintf(buf, sizeof(buf), "ref[%s%s]", mut, inl);
-        result = buf;
+        result = new_cstr(buf);
         break;
       }
       case MORPHL_TYPE_PRIMITIVE:
-        result = "primitive";
+        result = new_cstr("primitive");
         break;
       case MORPHL_TYPE_TRAIT:
-        result = "trait";
+        result = new_cstr("trait");
         break;
       case MORPHL_TYPE_UNKNOWN:
       default:
-        result = "unknown";
+        result = new_cstr("unknown");
         break;
     }
   }

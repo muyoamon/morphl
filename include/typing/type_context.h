@@ -109,4 +109,7 @@ MorphlType* type_context_get_global(TypeContext* ctx);
 void type_context_set_return_type(TypeContext* ctx, MorphlType* ret_type);
 MorphlType* type_context_get_return_type(TypeContext* ctx);
 
+// Utilities
+void type_context_print_debug(TypeContext* ctx);
+
 #endif  // MORPHL_TYPING_TYPE_CONTEXT_H_
