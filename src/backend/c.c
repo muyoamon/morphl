@@ -26,10 +26,10 @@ static void emit_node(AstNode *node, char *out_str, size_t *pos) {
             break;
         case AST_DECL:
             // Handle variable/function declarations
-            sprintf(out_str + *pos, "/* Declaration */");
+            *pos += sprintf(out_str + *pos, "/* Declaration */");
             break;
         default:
-            sprintf(out_str + *pos, "/* Unsupported AST Node */");
+            *pos += sprintf(out_str + *pos, "/* Unsupported AST Node */");
             break;
     }
 }
