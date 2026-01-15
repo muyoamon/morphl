@@ -8,6 +8,7 @@
 #include "parser/operators.h"
 #include "util/file.h"
 #include "util/util.h"
+#include <backend/backend.h>
 
 int main(int argc, char** argv) {
   if (argc < 2) {
@@ -96,10 +97,27 @@ int main(int argc, char** argv) {
     printf("parse succeeded\n");
     printf("AST:\n");
     ast_print(root, interns);
+     // try backend code generation (C)
+    {
+      MorphlBackendContext backend_ctx;
+      backend_ctx.tree = root;
+      backend_ctx.out_file = "out.c";
+
+      if (morphl_compile(&backend_ctx)) {
+        printf("C code generation succeeded, output written to out.c\n");
+      } else {
+        printf("C code generation failed\n");
+        accepted = false;
+      }
+    }
     ast_free(root);
   } else {
     printf("parse failed\n");
   }
+
+ 
+
+
 
   free(tokens);
   free(source_buffer);
@@ -108,3 +126,6 @@ int main(int argc, char** argv) {
   interns_free(interns);
   return accepted ? 0 : 1;
 }
+
+
+

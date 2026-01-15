@@ -19,6 +19,9 @@ static MorphlSpan span_from_node(const AstNode* node) {
 #define MORPHL_ERR_NODE(node, code, fmt, ...) \
   MORPHL_ERR_SPAN((code), MORPHL_SEV_ERROR, span_from_node(node), (fmt), ##__VA_ARGS__)
 
+// Static intern copy
+static InternTable *operator_interns = NULL;
+
 // Static table of builtin operators. sym is populated at init.
 typedef struct {
   const char* name;
@@ -29,6 +32,7 @@ typedef struct {
   OperatorPPActionFunc func;
   Sym sym;
   OperatorPPResultPolicy policy;
+  enum Operator op_enum;
 } OperatorRow;
 
 // Helpers
@@ -636,67 +640,70 @@ static MorphlType* pp_action_const(const OperatorInfo* info,
 
 static OperatorRow kBuiltinOps[] = {
   // Structural
-  {"$group",  AST_GROUP,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
-  {"$block",  AST_BLOCK,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE},
+  {"$group",  AST_GROUP,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE, GROUP},
+  {"$block",  AST_BLOCK,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE, BLOCK},
 
   // Core constructs
-  {"$call",   AST_CALL,   false, 2, 2,          pp_action_call,    0, OP_PP_KEEP_NODE},
-  {"$func",   AST_FUNC,   false, 2, 2,          pp_action_func,    0, OP_PP_KEEP_NODE},
-  {"$if",     AST_IF,     false, 2, 2,          pp_action_if,      0, OP_PP_KEEP_NODE},
-  {"$while",  AST_BUILTIN,false, 2, 2,          pp_action_while,   0, OP_PP_KEEP_NODE},
-  {"$set",    AST_SET,    false, 2, 2,          pp_action_set,     0, OP_PP_KEEP_NODE},
-  {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE},
-  {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE},
-  {"$member", AST_BUILTIN, false, 2, 2,         pp_action_member,  0, OP_PP_KEEP_NODE},
-  {"$mut",    AST_BUILTIN,false, 1, 1,          pp_action_mut,     0, OP_PP_KEEP_NODE},
-  {"$const",  AST_BUILTIN,false, 1, 1,          pp_action_const,   0, OP_PP_KEEP_NODE},
-  {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$file",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$global", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$idtstr", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$strtid", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$forward",AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE},
-  {"$break",  AST_BUILTIN, false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE},
-  {"$continue",AST_BUILTIN,false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE},
+  {"$call",   AST_CALL,   false, 2, 2,          pp_action_call,    0, OP_PP_KEEP_NODE, CALL},
+  {"$func",   AST_FUNC,   false, 2, 2,          pp_action_func,    0, OP_PP_KEEP_NODE, FUNC},
+  {"$if",     AST_IF,     false, 2, 2,          pp_action_if,      0, OP_PP_KEEP_NODE, IF},
+  {"$while",  AST_BUILTIN,false, 2, 2,          pp_action_while,   0, OP_PP_KEEP_NODE, WHILE},
+  {"$set",    AST_SET,    false, 2, 2,          pp_action_set,     0, OP_PP_KEEP_NODE, SET},
+  {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE, DECL},
+  {"$import", AST_BUILTIN,true,  1, 1,          pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},
+  {"$syntax", AST_BUILTIN,true,  1, 1,          pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
+  {"$prop",   AST_BUILTIN,true,  2, 2,          pp_action_prop,    0, OP_PP_KEEP_NODE, PROP},
+  {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE, RET},
+  {"$member", AST_BUILTIN, false, 2, 2,         pp_action_member,  0, OP_PP_KEEP_NODE, MEMBER},
+  {"$mut",    AST_BUILTIN,false, 1, 1,          pp_action_mut,     0, OP_PP_KEEP_NODE, MUT},
+  {"$const",  AST_BUILTIN,false, 1, 1,          pp_action_const,   0, OP_PP_KEEP_NODE, CONST},
+  {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, INLINE},
+  {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, THIS},
+  {"$file",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, FILE_},
+  {"$global", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, GLOBAL},
+  {"$idtstr", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, IDTSTR},
+  {"$strtid", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, STRTID},
+  {"$forward",AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, FORWARD},
+  {"$break",  AST_BUILTIN, false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE, BREAK},
+  {"$continue",AST_BUILTIN,false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE, CONTINUE},
 
   // Arithmetic (no pp actions yet; type checker will use registry later)
-  {"$add",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$sub",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$mul",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$div",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$mod",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$rem",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$fadd",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$fsub",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$fmul",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$fdiv",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$add",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, ADD},
+  {"$sub",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, SUB},
+  {"$mul",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, MUL},
+  {"$div",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, DIV},
+  {"$mod",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, MOD},
+  {"$rem",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, REM},
+  {"$fadd",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, FADD},
+  {"$fsub",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, FSUB},
+  {"$fmul",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, FMUL},
+  {"$fdiv",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, FDIV},
 
   // Comparison
-  {"$eq",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$neq",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$lt",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$gt",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$lte",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$gte",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$eq",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, EQ},
+  {"$neq",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, NEQ},
+  {"$lt",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, LT},
+  {"$gt",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, GT},
+  {"$lte",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, LTE},
+  {"$gte",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, GTE},
 
   // Logic
-  {"$and",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$or",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$not",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$and",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, AND},
+  {"$or",     AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, OR},
+  {"$not",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, NOT},
 
   // Bitwise
-  {"$band",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$bor",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$bxor",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$bnot",   AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$lshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
-  {"$rshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE},
+  {"$band",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, BAND},
+  {"$bor",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, BOR},
+  {"$bxor",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, BXOR},
+  {"$bnot",   AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, BNOT},
+  {"$lshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, LSHIFT},
+  {"$rshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, RSHIFT},
 
   // Preprocessor
-  {"$syntax", AST_BUILTIN,true,  1, 1,           pp_action_syntax,  0, OP_PP_DROP_NODE},
-  {"$import", AST_BUILTIN,true,  1, 1,           pp_action_import,  0, OP_PP_KEEP_NODE},
-  {"$prop",   AST_BUILTIN,true,  2, 2,           pp_action_prop,    0, OP_PP_KEEP_NODE},
+  {"$syntax", AST_BUILTIN,true,  1, 1,           pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
+  {"$import", AST_BUILTIN,true,  1, 1,           pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},
+  {"$prop",   AST_BUILTIN,true,  2, 2,           pp_action_prop,    0, OP_PP_KEEP_NODE, PROP},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 
@@ -708,6 +715,7 @@ bool operator_registry_init(InternTable* interns) {
     if (!sym) return false;
     kBuiltinOps[i].sym = sym;
   }
+  operator_interns = interns;
   return true;
 }
 
@@ -727,4 +735,28 @@ const OperatorInfo* operator_info_lookup(Sym op) {
     }
   }
   return NULL;
+}
+
+const OperatorInfo* operator_info_from_enum(enum Operator op) {
+  if (op < 0 || (size_t)op >= kBuiltinOpCount) return NULL;
+  for (size_t i = 0; i < kBuiltinOpCount; ++i) {
+    if (kBuiltinOps[i].op_enum == op) {
+      static OperatorInfo out;
+      out.op = kBuiltinOps[i].sym;
+      out.ast_kind = kBuiltinOps[i].ast_kind;
+      out.func = kBuiltinOps[i].func;
+      out.min_args = kBuiltinOps[i].min_args;
+      out.max_args = kBuiltinOps[i].max_args;
+      out.is_preprocessor = kBuiltinOps[i].is_preprocessor;
+      out.pp_policy = kBuiltinOps[i].policy;
+      return &out;
+    }
+  }
+  return NULL;
+}
+
+Sym operator_sym_from_enum(enum Operator op) {
+  const OperatorInfo* info = operator_info_from_enum(op);
+  if (!info) return 0;
+  return info->op;
 }

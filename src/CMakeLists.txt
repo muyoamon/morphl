@@ -11,6 +11,7 @@ target_link_libraries(morphlc
   morphl_typing
   morphl_ast
   morphl_util
+  morphl_backend
 )
 
 add_subdirectory(util)
@@ -18,6 +19,7 @@ add_subdirectory(lexer)
 add_subdirectory(parser)
 add_subdirectory(ast)
 add_subdirectory(typing)
+add_subdirectory(backend)
 
 
 

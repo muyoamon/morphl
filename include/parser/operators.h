@@ -30,7 +30,60 @@ typedef MorphlType* (*OperatorPPActionFunc)(const OperatorInfo* info,
                                             AstNode** args,
                                             size_t arg_count);
 
+enum Operator{
+  SYNTAX,
+  IMPORT,
+  PROP,
+  CALL,
+  FUNC,
+  IF,
+  WHILE,
+  SET,
+  DECL,
+  RET,
+  MEMBER,
+  MUT,
+  CONST,
+  INLINE,
+  THIS,
+  FILE_,  // FILE is a reserved keyword in C
+  GLOBAL,
+  IDTSTR,
+  STRTID,
+  FORWARD,
+  BREAK,
+  CONTINUE,
+  GROUP,
+  BLOCK,
+  ADD,
+  SUB,
+  MUL,
+  DIV,
+  MOD,
+  REM,
+  FADD,
+  FSUB,
+  FMUL,
+  FDIV,
+  EQ,
+  NEQ,
+  LT,
+  GT,
+  LTE,
+  GTE,
+  AND,
+  OR,
+  NOT,
+  BAND,
+  BOR,
+  BXOR,
+  BNOT,
+  LSHIFT,
+  RSHIFT
+};
+
 struct OperatorInfo {
+  enum Operator op_enum;     // enum value for this operator
   Sym op;                    // interned operator symbol
   AstKind ast_kind;          // preferred AST kind for this op
   OperatorPPActionFunc func; // optional preprocessing action
@@ -49,5 +102,13 @@ bool operator_registry_init(InternTable* interns);
  * @brief Lookup operator metadata by interned symbol.
  */
 const OperatorInfo* operator_info_lookup(Sym op);
+
+
+
+#define __VALUE_OF(x) #x
+#define OPERATOR_STR(op) ("$" __VALUE_OF(op))
+
+const OperatorInfo* operator_info_from_enum(enum Operator op);
+Sym operator_sym_from_enum(enum Operator op);
 
 #endif // MORPHL_PARSER_OPERATORS_H_
