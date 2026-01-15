@@ -354,6 +354,7 @@ static Str get_ctype_name(MorphlType *type, InternTable *interns) {
         size_t len = (type_str.len < sizeof(buffer) - 1) ? type_str.len : sizeof(buffer) - 1;
         memcpy(buffer, type_str.ptr, len);
         buffer[len] = '\0';
+        free((void*)type_str.ptr);
         return str_from(buffer, len);
     }
 }
