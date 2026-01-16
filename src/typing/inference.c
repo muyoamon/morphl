@@ -378,22 +378,27 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
 
-    // set expected return type in context
     MorphlType* ret_type = arg_types[0];
-    // check if ret_type is compatible with expected_return_type
-    if (ctx->expected_return_type) {
-      // if expected type is <unknown>, accept any type
+    if (!ctx->expected_return_type) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$ret: not inside a function");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    if (ret_type && ret_type->kind != MORPHL_TYPE_UNKNOWN) {
+      MorphlType* current_func = type_context_get_current_func(ctx);
       if (ctx->expected_return_type->kind == MORPHL_TYPE_UNKNOWN) {
-        // do nothing
+        type_context_set_return_type(ctx, ret_type);
+        if (current_func && current_func->kind == MORPHL_TYPE_FUNC) {
+          current_func->data.func.return_type = ret_type;
+        }
       } else if (!morphl_type_equals(unwrap_ref(ret_type), unwrap_ref(ctx->expected_return_type))) {
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "return type mismatch: expected different type");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
     }
-    type_context_set_return_type(ctx, ret_type);
     
-    // Return statement: type is void
+    // Return statement: void type
     return morphl_type_void(ctx->arena);
   }
 
@@ -415,8 +420,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
 
   // if
   if (op_sym == interns_intern(ctx->interns, str_from("$if", 3))) {
-    if (arg_count != 3) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if expects 3 args, got %llu", (unsigned long long)arg_count);
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if expects 2 args, got %llu", (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -426,17 +431,31 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    MorphlType* then_type = arg_types[1];
-    MorphlType* else_type = arg_types[2];
-    if (!then_type || !else_type) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: cannot infer branch types");
-      morphl_error_emit(NULL, &err);
-      return NULL;
-    }
-    if (!morphl_type_equals(unwrap_ref(then_type), unwrap_ref(else_type))) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: branch types do not match");
-      morphl_error_emit(NULL, &err);
-      return NULL;
+    MorphlType* then_else_type = arg_types[1];
+    MorphlType* then_type = NULL;
+    MorphlType* else_type = NULL;
+    if (then_else_type->kind == MORPHL_TYPE_GROUP) {
+      switch (then_else_type->data.group.elem_count) {
+        case 2:
+          else_type = then_else_type->data.group.elem_types[1];
+          // fallthrough
+        case 1:
+          then_type = then_else_type->data.group.elem_types[0];
+          break;
+        default:  { // Something is wrong
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: second argument must be a group of (then_type, else_type)");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+      }
+      // assert both types are compatible
+      if (!types_comparable(then_type, else_type)) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: then and else types are not compatible");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+    } else { // Single type, only then branch
+      then_type = then_else_type;
     }
     return then_type;
   }
@@ -502,10 +521,14 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         type_context_define_func(ctx, var_sym, placeholder);
         type_context_define_var(ctx, var_sym, placeholder);
         declared_placeholder = true;
+        type_context_set_pending_func(ctx, placeholder);
       }
 
 
       MorphlType* init_type = morphl_infer_type_of_ast(ctx, init_node);
+      if (declared_placeholder) {
+        type_context_set_pending_func(ctx, NULL);
+      }
       if (!init_type) {
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$decl: cannot infer variable type");
         morphl_error_emit(NULL, &err);
@@ -661,16 +684,30 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         return NULL;
       }
       
+      MorphlType* current_func = type_context_take_pending_func(ctx);
+      if (!current_func) {
+        current_func = morphl_type_func(ctx->arena, param_type, morphl_type_unknown(ctx->arena));
+      } else if (current_func->kind == MORPHL_TYPE_FUNC && current_func->data.func.param_count > 0) {
+        current_func->data.func.param_types[0] = param_type;
+      }
+      if (!current_func || !type_context_push_func(ctx, current_func)) {
+        type_context_pop_scope(ctx);
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$func: cannot establish function context");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+
       // Set expected return type to UNKNOWN initially
       // This allows $ret to establish the return type on first encounter
       // and enables recursion (recursive call sees UNKNOWN matching UNKNOWN)
-      type_context_set_return_type(ctx, morphl_type_unknown(ctx->arena));
+      type_context_set_return_type(ctx, current_func->data.func.return_type);
       
       // Infer return type from function body in the pseudo-scope
       // The body has access to variables declared in the parameter expression
       // If $ret is used, it will establish/validate the return type
       MorphlType* body_type = morphl_infer_type_of_ast(ctx, func_body);
       if (!body_type) {
+        type_context_pop_func(ctx);
         type_context_pop_scope(ctx);
         type_context_set_return_type(ctx, NULL);
         MorphlError err = MORPHL_ERR_AT(func_body, MORPHL_E_TYPE, "$func: cannot infer body type");
@@ -687,14 +724,17 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       }
       
       if (!return_type) {
+        type_context_pop_func(ctx);
         type_context_pop_scope(ctx);
         type_context_set_return_type(ctx, NULL);
         MorphlError err = MORPHL_ERR_AT(func_body, MORPHL_E_TYPE, "$func: cannot determine return type");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
+      current_func->data.func.return_type = return_type;
       
       // Pop the pseudo-scope
+      type_context_pop_func(ctx);
       type_context_pop_scope(ctx);
       
       // Clear return type after function

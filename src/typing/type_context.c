@@ -19,6 +19,7 @@ static void* arena_alloc(Arena* a, size_t size) {
 #define INITIAL_THIS_CAPACITY 8
 #define INITIAL_FILE_CAPACITY 4
 #define INITIAL_GLOBAL_CAPACITY 4
+#define INITIAL_FUNC_STACK_CAPACITY 4
 
 TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   if (!arena || !interns) return NULL;
@@ -30,6 +31,7 @@ TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   ctx->arena = arena;
   ctx->interns = interns;
   ctx->expected_return_type = NULL;
+  ctx->pending_func_type = NULL;
   ctx->file_type = NULL;
   ctx->global_type = NULL;
   ctx->file_stack = arena_alloc(arena, INITIAL_FILE_CAPACITY * sizeof(MorphlType*));
@@ -44,6 +46,11 @@ TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   if (!ctx->this_stack) return NULL;
   ctx->this_depth = 0;
   ctx->this_capacity = INITIAL_THIS_CAPACITY;
+
+  ctx->func_stack = arena_alloc(arena, INITIAL_FUNC_STACK_CAPACITY * sizeof(MorphlType*));
+  if (!ctx->func_stack) return NULL;
+  ctx->func_depth = 0;
+  ctx->func_stack_capacity = INITIAL_FUNC_STACK_CAPACITY;
   
   // Initialize function registry
   ctx->functions = arena_alloc(arena, INITIAL_FUNC_CAPACITY * sizeof(TypeEntry));
@@ -318,6 +325,43 @@ void type_context_set_return_type(TypeContext* ctx, MorphlType* ret_type) {
 MorphlType* type_context_get_return_type(TypeContext* ctx) {
   if (!ctx) return NULL;
   return ctx->expected_return_type;
+}
+
+void type_context_set_pending_func(TypeContext* ctx, MorphlType* func_type) {
+  if (!ctx) return;
+  ctx->pending_func_type = func_type;
+}
+
+MorphlType* type_context_take_pending_func(TypeContext* ctx) {
+  if (!ctx) return NULL;
+  MorphlType* pending = ctx->pending_func_type;
+  ctx->pending_func_type = NULL;
+  return pending;
+}
+
+bool type_context_push_func(TypeContext* ctx, MorphlType* func_type) {
+  if (!ctx) return false;
+  if (ctx->func_depth >= ctx->func_stack_capacity) {
+    size_t new_cap = ctx->func_stack_capacity * 2;
+    MorphlType** new_stack = arena_alloc(ctx->arena, new_cap * sizeof(MorphlType*));
+    if (!new_stack) return false;
+    memcpy(new_stack, ctx->func_stack, ctx->func_depth * sizeof(MorphlType*));
+    ctx->func_stack = new_stack;
+    ctx->func_stack_capacity = new_cap;
+  }
+  ctx->func_stack[ctx->func_depth++] = func_type;
+  return true;
+}
+
+bool type_context_pop_func(TypeContext* ctx) {
+  if (!ctx || ctx->func_depth == 0) return false;
+  ctx->func_depth--;
+  return true;
+}
+
+MorphlType* type_context_get_current_func(TypeContext* ctx) {
+  if (!ctx || ctx->func_depth == 0) return NULL;
+  return ctx->func_stack[ctx->func_depth - 1];
 }
 
 bool type_context_push_this(TypeContext* ctx, MorphlType* this_type) {

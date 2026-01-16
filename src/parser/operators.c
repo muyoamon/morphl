@@ -501,12 +501,19 @@ static MorphlType* pp_action_ret(const OperatorInfo* info,
     morphl_error_emit(NULL, &err);
     return NULL;
   }
-  
-  // Check return type matches expected
-  if (!morphl_type_equals(ret_type, expected)) {
-    MorphlError err = MORPHL_ERR_NODE(ret_expr, MORPHL_E_TYPE, "$ret: return type mismatch");
-    morphl_error_emit(NULL, &err);
-    return NULL;
+
+  if (ret_type->kind != MORPHL_TYPE_UNKNOWN) {
+    MorphlType* current_func = type_context_get_current_func(ctx);
+    if (expected->kind == MORPHL_TYPE_UNKNOWN) {
+      type_context_set_return_type(ctx, ret_type);
+      if (current_func && current_func->kind == MORPHL_TYPE_FUNC) {
+        current_func->data.func.return_type = ret_type;
+      }
+    } else if (!morphl_type_equals(ret_type, expected)) {
+      MorphlError err = MORPHL_ERR_NODE(ret_expr, MORPHL_E_TYPE, "$ret: return type mismatch");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
   }
   
   return ret_type;

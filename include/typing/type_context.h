@@ -53,6 +53,11 @@ typedef struct {
   
   // Current expected return type (set when checking function body)
   MorphlType* expected_return_type;
+  MorphlType* pending_func_type;
+
+  MorphlType** func_stack;
+  size_t func_depth;
+  size_t func_stack_capacity;
 
   // Special scope bindings
   MorphlType* file_type;
@@ -108,6 +113,11 @@ MorphlType* type_context_get_global(TypeContext* ctx);
 // Return type management
 void type_context_set_return_type(TypeContext* ctx, MorphlType* ret_type);
 MorphlType* type_context_get_return_type(TypeContext* ctx);
+void type_context_set_pending_func(TypeContext* ctx, MorphlType* func_type);
+MorphlType* type_context_take_pending_func(TypeContext* ctx);
+bool type_context_push_func(TypeContext* ctx, MorphlType* func_type);
+bool type_context_pop_func(TypeContext* ctx);
+MorphlType* type_context_get_current_func(TypeContext* ctx);
 
 // Utilities
 void type_context_print_debug(TypeContext* ctx);
