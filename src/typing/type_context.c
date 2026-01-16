@@ -403,7 +403,10 @@ void type_context_print_debug(TypeContext* ctx) {
   printf("Function Registry (%zu functions):\n", ctx->func_count);
   for (size_t i = 0; i < ctx->func_count; ++i) {
     Str name = interns_lookup(ctx->interns, ctx->functions[i].name);
-    printf("  %.*s : Type at %p\n", (int)name.len, name.ptr, (void*)ctx->functions[i].type);
+    Str type_str = morphl_type_to_string(ctx->functions[i].type, ctx->interns);
+    printf("  %.*s : Type at %p\n with type: %.*s\n", 
+      (int)name.len, name.ptr, (void*)ctx->functions[i].type, (int)type_str.len, type_str.ptr);
+    free((void*)type_str.ptr);
   }
   printf("Scope Stack (%zu scopes):\n", ctx->scope_count);
   for (size_t s = 0; s < ctx->scope_count; ++s) {

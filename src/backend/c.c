@@ -147,6 +147,10 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out) {
             if (node->child_count >= 2) {
                 AstNode *name = node->children[0];
                 AstNode *value = node->children[1];
+                // If value is $forward, skip this node
+                if (value->kind == AST_BUILTIN && value->op == operator_sym_from_enum(FORWARD)) {
+                    break;
+                }
                 const char *type_name = infer_decl_type(value);
                 if (strcmp(type_name, "void") == 0) {
                     // try to resolve to infered type by name
@@ -317,6 +321,7 @@ static struct TypeEntry* type_array_get(TypeArray *arr, size_t index) {
     return (struct TypeEntry*)(arr->arena.base + index * sizeof(struct TypeEntry));
 }
 
+// Recursively check compound types for non-primitive types
 static void compound_type_check(TypeContext *ctx, TypeArray *type_arr, MorphlType *type) {
     if (morphl_type_is_primitive(type)) {
         return;
@@ -340,6 +345,7 @@ static void compound_type_check(TypeContext *ctx, TypeArray *type_arr, MorphlTyp
                     // If the elem type is block or group, we may need to further decompose
                     compound_type_check(ctx, type_arr, field_type);
 
+                    
                     arena_push(&type_arr->arena, &entry, sizeof(struct TypeEntry));
                     type_arr->count++;
                 }
@@ -425,11 +431,15 @@ static void ctx_type_check(TypeContext *ctx, TypeArray *type_arr) {
         // Since file_type contains all global declarations, we need to check each child
         for (size_t i = 0; i < ctx->file_type->data.block.field_count; ++i) {
             MorphlType *field_type = ctx->file_type->data.block.field_types[i];
+            // // Debug: print type string
+            // Str type_str = morphl_type_to_string(field_type, ctx->interns);
+            // printf("File scope field %zu type: %.*s\n", i, (int)type_str.len, type_str.ptr);
+            // free((void*)type_str.ptr);
             if (morphl_type_is_primitive(field_type) == false) {
-                Str type_as_str = morphl_type_to_string(field_type, ctx->interns);
-                printf("Detected non-primitive type in file scope; type: %.*s\n", 
-                    (int)type_as_str.len, type_as_str.ptr);
-                free((void*)type_as_str.ptr);
+                // Str type_as_str = morphl_type_to_string(field_type, ctx->interns);
+                // printf("Detected non-primitive type in file scope; type: %.*s\n", 
+                //     (int)type_as_str.len, type_as_str.ptr);
+                // free((void*)type_as_str.ptr);
                 
                 // Store type info in type array for later emission
                 struct TypeEntry entry = {

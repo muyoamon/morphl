@@ -45,6 +45,56 @@ static void morphl_error_swallow(void* user, const MorphlError* err) {
   (void)err;
 }
 
+// static void morphl_set_func_ret_type(TypeContext* ctx, MorphlType* func_type, MorphlType* ret_type) {
+//   if (!ctx || !func_type || !ret_type) return;
+  
+  
+//   if (func_type->data.func.return_type) {
+//     if (!morphl_type_equals(func_type->data.func.return_type, ret_type)) {
+//       MorphlError err = MORPHL_ERR(MORPHL_E_TYPE, "function return type mismatch");
+//       morphl_error_emit(NULL, &err);
+//     }
+//     return;
+//   }
+//   // Set expected return type 
+//   func_type->data.func.return_type = ret_type;
+// }
+
+// static void morphl_infer_func_ret_type(TypeContext* ctx, AstNode* body_node, MorphlType* func_type) {
+//   if (!ctx || !body_node ) return;
+  
+
+//   // Traverse body to find return statements
+//   for (size_t i = 0; i < body_node->child_count; ++i) {
+//     AstNode* child = body_node->children[i];
+//     if (!child) continue;
+    
+//     if (child->kind == AST_BUILTIN && child->op == operator_sym_from_enum(RET)) {
+//       // debug print:
+//       MorphlError err = MORPHL_ERR_AT(child, MORPHL_E_TYPE, "found return statement in function body");
+//       morphl_error_emit(NULL, &err);
+//       // Return statement
+//       MorphlType* ret_type = NULL;
+//       if (child->child_count > 0) {
+//         ret_type = morphl_infer_type_of_ast(ctx, child->children[0]);
+//       } else {
+//         ret_type = morphl_type_void(ctx->arena);
+//       }
+//       if (ret_type) {
+//         morphl_set_func_ret_type(ctx, func_type, ret_type);
+//         // Debug print:
+//         Str type_str = morphl_type_to_string(func_type, ctx->interns);
+//         printf("Set function return type to: %.*s\n", (int)type_str.len, type_str.ptr);
+//         free((void*)type_str.ptr);
+//       }
+//     } else if (child->kind == AST_IF || child->kind == AST_BLOCK || child->kind == AST_GROUP) {
+//       // Recurse into blocks and if-statements
+//       morphl_infer_func_ret_type(ctx, child, func_type);
+//     }
+//   }
+// }
+
+
 MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
                                      const AstNode* node,
                                      Sym op_sym,
@@ -321,6 +371,32 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return morphl_type_func(ctx->arena, param_type, return_type);
   }
 
+  if (op_sym == interns_intern(ctx->interns, str_from("$ret", 4))) {
+    if (arg_count != 1) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$ret expects 1 arg, got %llu", (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+
+    // set expected return type in context
+    MorphlType* ret_type = arg_types[0];
+    // check if ret_type is compatible with expected_return_type
+    if (ctx->expected_return_type) {
+      // if expected type is <unknown>, accept any type
+      if (ctx->expected_return_type->kind == MORPHL_TYPE_UNKNOWN) {
+        // do nothing
+      } else if (!morphl_type_equals(unwrap_ref(ret_type), unwrap_ref(ctx->expected_return_type))) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "return type mismatch: expected different type");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+    }
+    type_context_set_return_type(ctx, ret_type);
+    
+    // Return statement: type is void
+    return morphl_type_void(ctx->arena);
+  }
+
   if (op_sym == interns_intern(ctx->interns, str_from("$call", 5))) {
     if (arg_count != 2) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$call expects 2 args, got %llu", (unsigned long long)arg_count);
@@ -336,6 +412,36 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     }
     return func_type->data.func.return_type;
   }
+
+  // if
+  if (op_sym == interns_intern(ctx->interns, str_from("$if", 3))) {
+    if (arg_count != 3) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if expects 3 args, got %llu", (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* cond_type = unwrap_ref(arg_types[0]);
+    if (!cond_type || cond_type->kind != MORPHL_TYPE_BOOL) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: condition must be bool");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* then_type = arg_types[1];
+    MorphlType* else_type = arg_types[2];
+    if (!then_type || !else_type) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: cannot infer branch types");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    if (!morphl_type_equals(unwrap_ref(then_type), unwrap_ref(else_type))) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: branch types do not match");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return then_type;
+  }
+
+  
   
   // Unknown or untyped operator
   MorphlError err = MORPHL_WARN_AT(node, MORPHL_E_TYPE, "type inference not implemented for %s", op_name);
@@ -534,10 +640,73 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
       free(field_types);
       return ok ? block_type : NULL;
     }
+    case AST_FUNC: {
+      AstNode* param_expr = node->children[0];   // Parameter expression
+      AstNode* func_body = node->children[1];    // Function body expression
+      
+      if (!param_expr || !func_body) return NULL;
+      
+      // Create a new scope for the function body
+      type_context_push_scope(ctx);
+      
+      // Process parameter expression to register declarations in the new scope
+      // This evaluates the parameter expression, which will trigger $decl preprocessor actions
+      // that register variables in the current scope
+      MorphlType* param_type = morphl_infer_type_of_ast(ctx, param_expr);
+      if (!param_type) {
+        // If we can't infer the parameter type, still pop the scope but return error
+        type_context_pop_scope(ctx);
+        MorphlError err = MORPHL_ERR_AT(param_expr, MORPHL_E_TYPE, "$func: cannot infer parameter type");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+      
+      // Set expected return type to UNKNOWN initially
+      // This allows $ret to establish the return type on first encounter
+      // and enables recursion (recursive call sees UNKNOWN matching UNKNOWN)
+      type_context_set_return_type(ctx, morphl_type_unknown(ctx->arena));
+      
+      // Infer return type from function body in the pseudo-scope
+      // The body has access to variables declared in the parameter expression
+      // If $ret is used, it will establish/validate the return type
+      MorphlType* body_type = morphl_infer_type_of_ast(ctx, func_body);
+      if (!body_type) {
+        type_context_pop_scope(ctx);
+        type_context_set_return_type(ctx, NULL);
+        MorphlError err = MORPHL_ERR_AT(func_body, MORPHL_E_TYPE, "$func: cannot infer body type");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+      
+      // Get the return type that was established during body inference
+      MorphlType* return_type = type_context_get_return_type(ctx);
+      
+      // If return type is still UNKNOWN (no $ret was used), use body type
+      if (return_type && return_type->kind == MORPHL_TYPE_UNKNOWN) {
+        return_type = body_type;
+      }
+      
+      if (!return_type) {
+        type_context_pop_scope(ctx);
+        type_context_set_return_type(ctx, NULL);
+        MorphlError err = MORPHL_ERR_AT(func_body, MORPHL_E_TYPE, "$func: cannot determine return type");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+      
+      // Pop the pseudo-scope
+      type_context_pop_scope(ctx);
+      
+      // Clear return type after function
+      type_context_set_return_type(ctx, NULL);
+      
+      // Create function type with 1 parameter (the parameter expression)
+      // The parameter type represents what the function accepts
+      return morphl_type_func(ctx->arena, param_type, return_type);
+    }
 
     case AST_BUILTIN:
     case AST_CALL:
-    case AST_FUNC:
     case AST_IF:
     case AST_SET: {
       if (!node->op) return NULL;

@@ -338,18 +338,18 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         result = new_cstr("bool");
         break;
       case MORPHL_TYPE_FUNC: {
-        // Print in format: func: <params> => <return>
+        // Print in format: <params> => <return>
         Str param_str = morphl_type_to_string(type->data.func.param_types[0], interns);
         Str return_str = morphl_type_to_string(type->data.func.return_type, interns);
-        snprintf(buf, sizeof(buf), "func: (%.*s) => %.*s",
+        snprintf(buf, sizeof(buf), "(%.*s) => %.*s",
                   (int)param_str.len, param_str.ptr,
                   (int)return_str.len, return_str.ptr);
         result = new_cstr(buf);
         break;
       }
       case MORPHL_TYPE_GROUP: {
-        // Print in format: group: (<elem1>, <elem2>, ...)
-        snprintf(buf, sizeof(buf), "group: (");
+        // Print in format: (<elem1>, <elem2>, ...)
+        snprintf(buf, sizeof(buf), "(");
         size_t offset = strlen(buf);
         for (size_t i = 0; i < type->data.group.elem_count; ++i) {
           Str elem_str = morphl_type_to_string(type->data.group.elem_types[i], interns);
@@ -363,8 +363,8 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         break;
       }
       case MORPHL_TYPE_BLOCK: {
-        // Print in format: block: {<name>:<type>, ...}
-        snprintf(buf, sizeof(buf), "block: {");
+        // Print in format: {<name>:<type>, ...}
+        snprintf(buf, sizeof(buf), "{");
         size_t offset = strlen(buf);
         for (size_t i = 0; i < type->data.block.field_count; ++i) {
           Str field_str = morphl_type_to_string(type->data.block.field_types[i], interns);
