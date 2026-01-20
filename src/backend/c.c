@@ -159,6 +159,7 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out) {
                 emit_append(out, type_name);
                 emit_append(out, " ");
                 emit_node_expr(name, out);
+                // TODO: handle initialization
                 // for now just omit the initialization
                 // emit_append(out, " = ");
                 // emit_node_expr(value, out);
@@ -671,8 +672,6 @@ bool morphl_backend_func_c(MorphlBackendContext* context) {
     };
     emit_append(&out, "#include <stdio.h>\n\n");
     // handle type signatures, global variables, function declarations, etc. here
-    // TODO: handle non-primitive types from type context
-    // TODO: handle unamed types
     type_array_init(&type_arr, 4);
     if (context->tree) {
         ctx_type_check(context->type_context, &type_arr);

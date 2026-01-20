@@ -14,9 +14,16 @@
 
 #define PARSER_MAX_DEPTH 128
 
+typedef struct ParseFailure {
+  size_t best_cursor;
+  Sym best_rule;
+  bool has_failure;
+} ParseFailure;
+
 typedef struct ParsedRuleContext {
   const GrammarRule* rule;
   const Grammar* grammar;
+  ParseFailure* failure;
 } ParsedRuleContext;
 
 static MorphlSpan span_from_token(const struct token* tok) {
@@ -31,6 +38,15 @@ static bool parse_rule_internal_ast(const ParsedRuleContext* ctx,
                                     size_t* cursor,
                                     size_t depth,
                                     AstNode** out_node);
+
+static void record_parse_failure(ParseFailure* failure, size_t cursor, Sym rule) {
+  if (!failure) return;
+  if (!failure->has_failure || cursor > failure->best_cursor) {
+    failure->best_cursor = cursor;
+    failure->best_rule = rule;
+    failure->has_failure = true;
+  }
+}
 
 typedef struct Capture {
   Sym name;
@@ -642,7 +658,7 @@ static bool match_atom(const ParsedRuleContext* ctx,
     case GRAMMAR_ATOM_RULE: {
       GrammarRule* target = find_rule(ctx->grammar, atom->symbol);
       if (!target) return false;
-      ParsedRuleContext nested = {.rule = target, .grammar = ctx->grammar};
+      ParsedRuleContext nested = {.rule = target, .grammar = ctx->grammar, .failure = ctx->failure};
       return parse_rule_internal(&nested, tokens, token_count, atom->min_bp, cursor, depth + 1);
     }
     case GRAMMAR_ATOM_REPEAT: {
@@ -685,7 +701,9 @@ static bool match_pattern(const ParsedRuleContext* ctx,
       if (prod->atoms[i].min_bp < min_bp) return false;
       continue;
     }
+    size_t progress = local;
     if (!match_atom(ctx, &prod->atoms[i], tokens, token_count, &local, depth)) {
+      record_parse_failure(ctx->failure, progress, ctx->rule->name);
       return false;
     }
   }
@@ -715,7 +733,10 @@ static bool parse_rule_internal(const ParsedRuleContext* ctx,
       break;
     }
   }
-  if (!prefix_matched) return false;
+  if (!prefix_matched) {
+    record_parse_failure(ctx->failure, *cursor, ctx->rule->name);
+    return false;
+  }
 
   while (true) {
     bool extended = false;
@@ -748,10 +769,40 @@ bool grammar_parse(const Grammar* grammar,
   Sym start = start_rule ? start_rule : grammar->start_rule;
   GrammarRule* rule = find_rule(grammar, start);
   if (!rule) return false;
-  ParsedRuleContext ctx = {.rule = rule, .grammar = grammar};
+  ParseFailure failure = {0};
+  ParsedRuleContext ctx = {.rule = rule, .grammar = grammar, .failure = &failure};
   size_t cursor = 0;
-  if (!parse_rule_internal(&ctx, tokens, parse_count, 0, &cursor, 0)) return false;
-  return cursor == parse_count;
+  if (!parse_rule_internal(&ctx, tokens, parse_count, 0, &cursor, 0)) {
+    size_t error_cursor = failure.has_failure ? failure.best_cursor : cursor;
+    Sym error_rule = failure.has_failure ? failure.best_rule : rule->name;
+    Str rule_name = interns_lookup(grammar->names, error_rule);
+    MorphlSpan span = (error_cursor < parse_count)
+                        ? span_from_token(&tokens[error_cursor])
+                        : morphl_span_unknown();
+    MorphlError err = MORPHL_ERR_SPAN(MORPHL_E_PARSE, MORPHL_SEV_ERROR, span,
+        "parse failed near rule '%.*s' at token %llu of %llu: '%.*s'",
+        (int)rule_name.len, rule_name.ptr ? rule_name.ptr : "",
+        (unsigned long long)error_cursor, (unsigned long long)parse_count,
+        (error_cursor < parse_count) ? (int)tokens[error_cursor].lexeme.len : 0,
+        (error_cursor < parse_count && tokens[error_cursor].lexeme.ptr) ? tokens[error_cursor].lexeme.ptr : "");
+    morphl_error_emit(NULL, &err);
+    return false;
+  }
+  if (cursor != parse_count) {
+    Str rule_name = interns_lookup(grammar->names, rule->name);
+    MorphlSpan span = (cursor < parse_count)
+                        ? span_from_token(&tokens[cursor])
+                        : morphl_span_unknown();
+    MorphlError err = MORPHL_ERR_SPAN(MORPHL_E_PARSE, MORPHL_SEV_ERROR, span,
+        "parse stopped at token %llu of %llu near rule '%.*s': '%.*s'",
+        (unsigned long long)cursor, (unsigned long long)parse_count,
+        (int)rule_name.len, rule_name.ptr ? rule_name.ptr : "",
+        (cursor < parse_count) ? (int)tokens[cursor].lexeme.len : 0,
+        (cursor < parse_count && tokens[cursor].lexeme.ptr) ? tokens[cursor].lexeme.ptr : "");
+    morphl_error_emit(NULL, &err);
+    return false;
+  }
+  return true;
 }
 
 // ---------- AST construction path (experimental) ----------
@@ -1106,7 +1157,7 @@ static bool match_atom_ast(const ParsedRuleContext* ctx,
     case GRAMMAR_ATOM_RULE: {
       GrammarRule* target = find_rule(ctx->grammar, atom->symbol);
       if (!target) return false;
-      ParsedRuleContext nested = {.rule = target, .grammar = ctx->grammar};
+      ParsedRuleContext nested = {.rule = target, .grammar = ctx->grammar, .failure = ctx->failure};
       AstNode* sub = NULL;
       if (!parse_rule_internal_ast(&nested, tokens, token_count, atom->min_bp, cursor, depth + 1, &sub)) {
         return false;
@@ -1201,7 +1252,9 @@ static bool match_pattern_ast(const ParsedRuleContext* ctx,
     }
     AstNode* produced = NULL;
     AstNode** out_slot = (collect_all_nodes || prod->atoms[i].capture) ? &produced : NULL;
+    size_t progress = local;
     if (!match_atom_ast(ctx, &prod->atoms[i], tokens, token_count, &local, depth, captures, capture_count, out_slot)) {
+      record_parse_failure(ctx->failure, progress, ctx->rule->name);
       return false;
     }
     if (first_node && produced && *first_node == NULL) {
@@ -1249,7 +1302,10 @@ static bool parse_rule_internal_ast(const ParsedRuleContext* ctx,
     }
   }
 
-  if (!lhs) return false;
+  if (!lhs) {
+    record_parse_failure(ctx->failure, *cursor, ctx->rule->name);
+    return false;
+  }
 
   // Infix/postfix: productions that extend a leading expression
   while (true) {
@@ -1314,16 +1370,32 @@ bool grammar_parse_ast(const Grammar* grammar,
     morphl_error_emit(NULL, &err);
     return false;
   }
-  ParsedRuleContext ctx = {.rule = rule, .grammar = grammar};
+  ParseFailure failure = {0};
+  ParsedRuleContext ctx = {.rule = rule, .grammar = grammar, .failure = &failure};
   size_t cursor = 0;
   AstNode* root = NULL;
   if (!parse_rule_internal_ast(&ctx, tokens, parse_count, 0, &cursor, 0, &root)) {
+    size_t error_cursor = failure.has_failure ? failure.best_cursor : cursor;
+    Sym error_rule = failure.has_failure ? failure.best_rule : rule->name;
+    Str rule_name = interns_lookup(grammar->names, error_rule);
+    MorphlSpan span = (error_cursor < parse_count)
+                        ? span_from_token(&tokens[error_cursor])
+                        : morphl_span_unknown();
+    MorphlError err = MORPHL_ERR_SPAN(MORPHL_E_PARSE, MORPHL_SEV_ERROR, span,
+        "parse failed near rule '%.*s' at token %llu of %llu: '%.*s'",
+        (int)rule_name.len, rule_name.ptr ? rule_name.ptr : "",
+        (unsigned long long)error_cursor, (unsigned long long)parse_count,
+        (error_cursor < parse_count) ? (int)tokens[error_cursor].lexeme.len : 0,
+        (error_cursor < parse_count && tokens[error_cursor].lexeme.ptr) ? tokens[error_cursor].lexeme.ptr : "");
+    morphl_error_emit(NULL, &err);
     return false;
   }
   if (cursor != parse_count) {
+    Str rule_name = interns_lookup(grammar->names, rule->name);
     MorphlError err = MORPHL_ERR_SPAN(MORPHL_E_PARSE, MORPHL_SEV_ERROR, span_from_token(&tokens[cursor]),
-        "parse stopped at token %llu of %llu: '%.*s'",
+        "parse stopped at token %llu of %llu near rule '%.*s': '%.*s'",
         (unsigned long long)cursor, (unsigned long long)parse_count,
+        (int)rule_name.len, rule_name.ptr ? rule_name.ptr : "",
         (int)tokens[cursor].lexeme.len,
         tokens[cursor].lexeme.ptr ? tokens[cursor].lexeme.ptr : "");
     morphl_error_emit(NULL, &err);

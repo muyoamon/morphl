@@ -10,3 +10,4 @@ fact := (n := 0) => {
         return n * fact(n-1);
     };
 };
+$call fact 4;
