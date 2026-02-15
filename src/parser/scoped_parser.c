@@ -164,7 +164,22 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
 
 // Preprocessor hook executor: returns true if node should be kept, false if dropped
 static bool apply_preprocessor_if_any(ScopedParserContext* ctx, AstNode* node) {
-  if (!node || node->kind != AST_BUILTIN || !node->op) return true;
+  if (!node) return true;
+
+  // First run preprocessor hooks on children so nested builtins (e.g. $import
+  // inside $decl) are materialized before parent inference/hooks execute.
+  size_t write_idx = 0;
+  for (size_t i = 0; i < node->child_count; ++i) {
+    AstNode* child = node->children[i];
+    if (apply_preprocessor_if_any(ctx, child)) {
+      node->children[write_idx++] = child;
+    } else {
+      ast_free(child);
+    }
+  }
+  node->child_count = write_idx;
+
+  if (node->kind != AST_BUILTIN || !node->op) return true;
   const OperatorInfo* info = operator_info_lookup(node->op);
   if (!info || !info->is_preprocessor || !info->func) return true;
   // Pass ctx as global_state and type_context as block_state
@@ -198,6 +213,45 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
         tokens[*cursor].lexeme.len == 1 && 
         tokens[*cursor].lexeme.ptr[0] == '}') {
       break;
+    }
+
+    // Builtin/preprocessor expressions (e.g. $syntax/$import/$decl) should remain
+    // available even when a custom grammar is active.
+    if (!ctx->use_builtins && tokens[*cursor].lexeme.len > 0 &&
+        tokens[*cursor].lexeme.ptr[0] == '$') {
+      AstNode* stmt = NULL;
+      if (!scoped_parse_expr(ctx, tokens, token_count, cursor, depth + 1, &stmt)) {
+        for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
+        free(children);
+        return false;
+      }
+
+      if (*cursor < token_count && tokens[*cursor].lexeme.len == 1 &&
+          tokens[*cursor].lexeme.ptr[0] == ';') {
+        (*cursor)++;
+      }
+
+      if (stmt) {
+        bool keep = apply_preprocessor_if_any(ctx, stmt);
+        if (keep) {
+          if (child_count >= child_capacity) {
+            size_t new_cap = child_capacity ? child_capacity * 2 : 4;
+            AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
+            if (!resized) {
+              ast_free(stmt);
+              for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
+              free(children);
+              return false;
+            }
+            children = resized;
+            child_capacity = new_cap;
+          }
+          children[child_count++] = stmt;
+        } else {
+          ast_free(stmt);
+        }
+      }
+      continue;
     }
 
     // If a custom grammar is active, parse the remaining tokens in this scope with it.

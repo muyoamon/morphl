@@ -6,6 +6,7 @@
 #include "typing/inference.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/fs.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -76,24 +77,31 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   char tmp[512];
   const char* filename = unquote_literal(args[0], tmp, sizeof(tmp));
   if (!filename) return NULL;
+  Str resolved_path;
+  if (fs_is_relative_path(filename) && ctx->filename) {
+    resolved_path = fs_get_absolute_path_from_source(filename, ctx->filename);
+  } else {
+    resolved_path = str_from(filename, strlen(filename));
+  }
+
   char* source_buffer = NULL;
   size_t source_len = 0;
-  if (!morphl_file_read_all(filename, &source_buffer, &source_len)) {
-    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: failed to read '%s'", filename);
+  if (!morphl_file_read_all(resolved_path.ptr, &source_buffer, &source_len)) {
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: failed to read '%s'", resolved_path.ptr);
     morphl_error_emit(NULL, &err);
     return NULL;
   }
   struct token* tokens = NULL;
   size_t token_count = 0;
-  if (!lexer_tokenize(filename, str_from(source_buffer, source_len), ctx->interns, &tokens, &token_count)) {
-    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: tokenization failed for '%s'", filename);
+  if (!lexer_tokenize(resolved_path.ptr, str_from(source_buffer, source_len), ctx->interns, &tokens, &token_count)) {
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: tokenization failed for '%s'", resolved_path.ptr);
     morphl_error_emit(NULL, &err);
     free(source_buffer);
     return NULL;
   }
 
   ScopedParserContext module_ctx;
-  if (!scoped_parser_init(&module_ctx, ctx->interns, ctx->arena, filename)) {
+  if (!scoped_parser_init(&module_ctx, ctx->interns, ctx->arena, resolved_path.ptr)) {
     free(tokens);
     free(source_buffer);
     return NULL;
