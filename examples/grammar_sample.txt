@@ -20,6 +20,7 @@ rule expr:
     "const" $expr val => $const val
     "mut" $expr val => $mut val
     "forward" $expr fn => $forward fn
+    "import" $expr mod => $import mod
     %IDENT op $expr op1 $expr op2 => $$op op op1 op2
     %IDENT => ident
     $expr[1] first $("," $expr[2] rest)+ => $group first $$spread rest

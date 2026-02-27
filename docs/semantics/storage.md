@@ -7,7 +7,7 @@ Variables in Morphl can be declared without explicit type annotations. The type 
     $decl x 42;            // 'x' is inferred to be of type int
     $decl name "Morphl";   // 'name' is inferred to be of type string
 ```
-Morphl's variable are always initialized upon declaration. Morphl's variables are also a reference type, meaning they hold references to values rather than the values themselves.
+Morphl's variable are always initialized upon declaration. 
 
 Notes: Having variable as initial value (e.g. `$decl x y;`) where y is mutable will throw warning: implicit mutable reference. This is because the variable y may change later, leading to unexpected behavior. To avoid this, either use `$decl x $mut y;` to explicitly declare x as new mutable reference, or use `$decl x $inline y;` to declare x as alias to y.
 
@@ -76,6 +76,20 @@ The `$inline` keyword can be used to tell the compiler that a variable's value s
     $decl point Pos;   // 'point' is always an inlined instance of 'Pos'
 ```
 
+It also has its use in to capture/extend lifetime of a variable without creating a new cell:
+
+```mpl
+    $decl makeCounter $func () {
+        $decl count $mut 0;
+        $decl inc $func () {
+            $decl inner_count $inline count;        // 'inner_count' is an inline reference to 'count', extending its lifetime without creating a new cell 
+            $set inner_count $add inner_count 1;   // modifies 'count' through 'inner_count'     
+            $ret inner_count;                       // return the current count
+        };
+        $ret inc;    // return the 'inc' function which has access to 'count'
+    };
+```
+
 ## `$set` Operation
 The `$set` operation is used to assign a new value to a mutable variable. The type of the new value must be compatible with the variable's inferred type.
 
@@ -87,3 +101,35 @@ The `$set` operation is used to assign a new value to a mutable variable. The ty
 ```
 
 Notes: The `$set` operation does not change the type of the variable; it only updates the value it references. Thus, `$set` operation does not extend the lifetime of the assigned value.
+
+## Function arguments semantics
+morphl function arguments are treated as a single object. When the function is called through `$call` operation, the arguments are evaluated and grouped together as a single value, and passed to the function as reference. If the arguments is passed by immediate expression, any modification of argument inside the function will not affect the original argument outside the function. However, if the argument is passed by variable reference, modification of the argument inside the function will affect the original variable outside the function.
+
+```mpl
+    $decl modifyArgs $func ($decl args $mut (0, 0)) {
+        $set args (1, 1);     // Modifying the group does not affect the original arguments
+        $ret args;            // Returns the modified group
+    };
+
+    $decl originalArgs $mut (0, 0);
+    $call modifyArgs $inline originalArgs;   // originalArgs changes to (1, 1) due to pass-by-reference semantics
+    $call modifyArgs originalArgs;           // originalArgs does not change, remains (0, 0) since sole expression is passed by value (immediate expression)
+```
+
+This would make the function declaration determine the contract (i.e. whether the argument is mutable or not) and the caller can decide whether to pass by value or by reference.
+
+Of course, we could extend the pass-by-value/reference semantics from call sites to function declaration contracts by:
+```mpl
+    // by expecting an inline group argument, the function contract requires the caller to pass by reference, and any modification to the argument inside the function will affect the original variable outside the function.
+    $decl someFunc $func (
+        $decl arg1 $inline $mut 0   // inline argument (pass by reference)
+        $decl arg2 $mut 0           // non-inline argument (pass semantics determined by call site)
+     ) {
+        ... // function body
+    };
+
+    $decl var1 $mut 0;
+    $decl var2 $mut 0;
+    $call someFunc ($inline var1, var2);   // var1 is passed by reference, var2 is passed by value
+    
+```

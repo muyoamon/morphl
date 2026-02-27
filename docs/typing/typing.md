@@ -53,6 +53,8 @@ Functions in Morphl can be defined without explicit type annotations. The types 
 Notes: `$func` takes two operands: a parameter list and a function body. The parameter list consists of `$decl` expressions within a group that define the parameters and their default values. The function body can be a block or a single expression.
 
 ## Subtype Relations
+Two types are considered to be in a subtype relation if one type can be used in place of the other without causing type errors. In case of morphl ABI, a type A is a subtype of type B if values of type A can be safely used in contexts that expect values of type B.
+
 Morphl supports subtype relations, allowing for more flexible type assignments. For example, a variable of type `(int, int, int)` can be assigned to a variable of type `(int, int)` if the first two elements match.
 
 ```mpl
@@ -62,8 +64,9 @@ Morphl supports subtype relations, allowing for more flexible type assignments. 
     $set point2D point3D;               // Valid assignment due to subtype relation
 ```
 
-However, the reverse is not true; a variable of type `(int, int)` cannot be assigned to a variable of type `(int, int, int)`.
 Similarly, a block of type `{x:int, y:int, z:int}` can be assigned to a variable of type `{x:int, y:int}`.
+However, the reverse is not true; a variable of type `(int, int)` cannot be assigned to a variable of type `(int, int, int)`.
+
 ```mpl
     $decl position2D $mut {
         $decl x 0;
@@ -87,5 +90,77 @@ Morphl does not include explicit `void` types. However, void-like behavior could
     $decl doNothing $func () () // Empty body, effectively returns an empty group;
 ```
 
-Notes: Due to subtyping rules, an empty group is considered a subtype of any type.
+Notes: Since empty group does not carry any meaningful value, it is essentially a subtype of all types, meaning it can be used in any context without causing type errors. This allows for flexible function definitions that do not require a specific return type.
+
+## Properties
+In morphl, properties are a special kind of member that can be accessed using `$member` operator with `$` prefix. Properties of a type is checked separately from the type itself, meaning that for a type to be a subtype of another type that has properties, it must have the same properties with compatible types.
+
+Properties are setted upon initialization and cannot be changed later, meaning that they are effectively constant. This allows for defining types with fixed properties that can be used in subtype relations without worrying about mutability issues.
+
+```mpl
+    $decl typeA {
+        $decl x 10;
+        $decl y 20;
+        $prop propA 30;     // 'propA' is a property of typeA
+    };
+
+    $decl typeB {
+        $decl x 0;
+        $decl y 0;
+    };
+
+    $decl typeC {
+        $prop propA 30;     // 'propA' is a property of typeC
+        $decl x 0;
+        $decl y 0;
+    };
+
+    // accessing properties
+    $member typeA $propA;   // Valid access, returns 30
+
+    $set typeB typeA;   // Valid assignment, typeB is a subtype of typeA
+    $set typeC typeA;   // Valid assignment, typeC is a subtype of typeA
+    $set typeA typeB;   // Error: typeA is not a subtype of typeB due to missing property 'propA'
+
+    // Noted that properties are not sequentially checked, meaning that the order of properties does not affect subtype relations:
+```
+
+## Traits
+Traits are a way to define shared behavior across different types. A trait defines a set of properties that can be implemented by any type. A type that implements a trait must provide implementations for all the properties defined in the trait.
+
+```mpl
+    $decl TraitA  $traits {
+        $prop propA 30;     // 'propA' is a property of TraitA
+        $prop methodB $func () 0;   // 'methodB' is a method property of TraitA
+        // traits object can only have properties, it cannot have regular members. This is because traits are meant to define behavior that can be shared across different types, and having regular members would make it difficult to implement the trait for different types with different member requirements.
+    };
+
+    $decl typeD {
+        $decl x 0;
+        $decl y 0;
+    };
+
+    // Implementing TraitA for typeD
+    // `$impl` takes atleast two operands:
+    // 1. The trait to be implemented (TraitA)
+    // 2. The type that implements the trait (typeD)
+    // 3. (Optional) A block that provides the implementations for the trait's properties. If the block is omitted, The implementation for that type will use the default implementations provided in the trait.
+    // Note that the type in morphl cannot change after declaration, so the implementation block will not be able to add new properties to the type. Instead, it will create a new type that has the same properties as the original type plus the properties defined in the trait. This means that the original type will not be modified, and the new type will be a subtype of the original type.
+    $decl typeE $impl TraitA typeD {
+        $prop propA 30;     // Implementing 'propA' for typeD
+        $prop methodB $func () 0;   // Implementing 'methodB' for typeD
+    }
+
+```
+
+Traits object can also be used as a type, meaning that a variable can be declared to be of a trait type, and it can hold any value that implements that trait.
+
+```mpl
+    $decl traitVar TraitA;   // 'traitVar' can hold any value that implements TraitA
+
+    $set traitVar typeE;     // Valid assignment, typeE implements TraitA
+    $set traitVar typeD;     // Error: typeD does not implement TraitA
+```
+
+
 
