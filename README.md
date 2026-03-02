@@ -22,12 +22,22 @@ Currently implementing core language features. The lexer, parser, AST, and type 
 - [Language Semantics](docs/semantics/storage.md)
 - [Typing System](docs/typing/typing.md)
 - [Specification](SPEC.md)
+- [VM Bytecode Format](docs/backend/vm_bytecode.md)
 ### TODO
 - compiler backend
 - add compiler settings
 - add c ffi support
 - add static storage
 - add multithread support (maybe)
+
+
+### Backend selection
+
+By default morphlc emits `out.c` using the C backend. You can select the VM backend to emit binary bytecode (`out.mbc`) with a magic header, string table, metadata section, and opcodes documented in `docs/backend/vm_bytecode.md`. Runtime Morphl operator symbols are preserved verbatim through string table entries used by the `OPERATOR` opcode, while compile-time operators are resolved during compilation.
+
+```
+./build/src/morphlc --backend vm examples/program.src
+```
 
 ## Building
 

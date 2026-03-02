@@ -15,6 +15,7 @@ typedef struct {
 
 enum MorphlBackendType {
     MORPHL_BACKEND_TYPE_C,
+    MORPHL_BACKEND_TYPE_VM,
 };
 
 /// @brief Function pointer type for backend functions, return true on success, false on failure

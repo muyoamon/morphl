@@ -3,6 +3,7 @@
 #include "backend/backend.h"
 
 extern bool morphl_backend_func_c(MorphlBackendContext* context);
+extern bool morphl_backend_func_vm(MorphlBackendContext* context);
 
 static MorphlBackendFunc registered_backend = NULL;
 
@@ -12,6 +13,10 @@ bool morphl_register_backend(enum MorphlBackendType type) {
         case MORPHL_BACKEND_TYPE_C:
             // Register the C backend
             registered_backend = morphl_backend_func_c;
+            return true;
+        case MORPHL_BACKEND_TYPE_VM:
+            // Register the VM backend
+            registered_backend = morphl_backend_func_vm;
             return true;
         default:
             return false;

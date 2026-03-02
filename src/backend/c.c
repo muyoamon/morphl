@@ -564,7 +564,7 @@ static void emit_type_signature(EmitBuffer *out, TypeArray *type_arr, TypeContex
 
                 emit_append(out, " ");
                 // Name elements as _0, _1, etc.
-                char elem_name[16];
+                char elem_name[32];
                 snprintf(elem_name, sizeof(elem_name), "_%zu", j);
                 emit_append(out, " ");
                 emit_append(out, elem_name);
@@ -573,7 +573,7 @@ static void emit_type_signature(EmitBuffer *out, TypeArray *type_arr, TypeContex
             indent_level--;
             emit_append(out, "} ");
             // print type name as <name>_group_t
-            char type_name[32];
+            char type_name[96];
             if (entry->name == 0) {
                 // Unnamed, print type name as anon<i>_group_t
                 snprintf(type_name, sizeof(type_name), "anon%zu_group_t", i);
@@ -595,7 +595,7 @@ static void emit_type_signature(EmitBuffer *out, TypeArray *type_arr, TypeContex
                 
             emit_append(out, " (*");
             
-            char func_name[32];
+            char func_name[96];
             if (entry->name == 0) {
                 snprintf(func_name, sizeof(func_name), "anon%zu_func_t", i);
             } else {
