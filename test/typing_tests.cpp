@@ -723,7 +723,7 @@ static void test_import_block_fields() {
   assert(import_info != NULL && import_info->func != NULL);
   import_info->func(import_info, &parser_ctx, NULL, args, 1);
   assert(args[0] != NULL);
-  assert(args[0]->kind == AST_BLOCK);
+  assert(args[0]->kind == AST_FILE);
 
   AstNode* import_node = make_builtin(interns, "$import", {args[0]});
   assert(import_node != NULL);
@@ -734,14 +734,19 @@ static void test_import_block_fields() {
   assert(module_type != NULL);
   assert(module_type->kind == MORPHL_TYPE_BLOCK);
   bool found_foo = false;
+  bool found_bar = false;
   Sym foo_sym = interns_intern(interns, str_from("foo", 3));
+  Sym bar_sym = interns_intern(interns, str_from("bar", 3));
   for (size_t i = 0; i < module_type->data.block.field_count; ++i) {
     if (module_type->data.block.field_names[i] == foo_sym) {
       found_foo = true;
-      break;
+    }
+    if (module_type->data.block.field_names[i] == bar_sym) {
+      found_bar = true;
     }
   }
   assert(found_foo);
+  assert(found_bar);
 
   AstNode* member_node = make_builtin(interns, "$member", {import_node, make_ident(interns, "foo")});
   assert(member_node != NULL);

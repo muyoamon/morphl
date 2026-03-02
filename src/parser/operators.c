@@ -117,15 +117,14 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
     return NULL;
   }
 
-  if (module_root->kind != AST_BLOCK) {
-    AstNode* block = ast_new(AST_BLOCK);
-    if (!block || !ast_append_child(block, module_root)) {
-      ast_free(block);
-      ast_free(module_root);
-      return NULL;
-    }
-    module_root = block;
+  // Imported modules should parse to AST_FILE at the root; if not, something is wrong with the source or grammar
+  if (module_root->kind != AST_FILE) {
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: expected file AST, got %d", (int)module_root->kind);
+    morphl_error_emit(NULL, &err);
+    ast_free(module_root);
+    return NULL;
   }
+  
 
   if (args[0]) {
     ast_free(args[0]);
