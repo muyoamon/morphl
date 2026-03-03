@@ -4,6 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+Str str_concat(struct Arena* arena, Str a, Str b) {
+  char* buf = (char*)arena_push(arena, NULL, a.len + b.len);
+  if (!buf) return str_from(NULL, 0);
+  memcpy(buf, a.ptr, a.len);
+  memcpy(buf + a.len, b.ptr, b.len);
+  return str_from(buf, a.len + b.len);
+}
+
 void arena_init(Arena* a, size_t cap) {
   a->base = (char*)malloc(cap);
   a->cap = cap;

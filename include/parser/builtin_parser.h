@@ -24,7 +24,7 @@
  * - Binary: $band, $bor, $bnot, $lshift, $rshift
  * - Logic: $and, $or, $not
  * - Comparison: $eq, $neq, $gt, $lt, $gte, $lte
- * - Compound: $group, $block, $tuple
+ * - Compound: $group, $block
  * - Import: $import, $syntax
  * - Meta: $idtstr, $strtid
  * - Namespace: $this, $file, $global, $member

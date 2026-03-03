@@ -668,9 +668,9 @@ static OperatorRow kBuiltinOps[] = {
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE, DECL},
   {"$import", AST_BUILTIN,true,  1, 1,          pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},
   {"$syntax", AST_BUILTIN,true,  1, 1,          pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
-  {"$prop",   AST_BUILTIN,true,  2, 2,          pp_action_prop,    0, OP_PP_KEEP_NODE, PROP},
+  {"$prop",   AST_PROP   ,true,  2, 2,          pp_action_prop,    0, OP_PP_KEEP_NODE, PROP},
   {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE, RET},
-  {"$member", AST_BUILTIN, false, 2, 2,         pp_action_member,  0, OP_PP_KEEP_NODE, MEMBER},
+  {"$member", AST_BUILTIN,false, 2, 2,          pp_action_member,  0, OP_PP_KEEP_NODE, MEMBER},
   {"$mut",    AST_BUILTIN,false, 1, 1,          pp_action_mut,     0, OP_PP_KEEP_NODE, MUT},
   {"$const",  AST_BUILTIN,false, 1, 1,          pp_action_const,   0, OP_PP_KEEP_NODE, CONST},
   {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, INLINE},
@@ -719,7 +719,6 @@ static OperatorRow kBuiltinOps[] = {
   // Preprocessor
   {"$syntax", AST_BUILTIN,true,  1, 1,           pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
   {"$import", AST_BUILTIN,true,  1, 1,           pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},
-  {"$prop",   AST_BUILTIN,true,  2, 2,           pp_action_prop,    0, OP_PP_KEEP_NODE, PROP},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

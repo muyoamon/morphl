@@ -34,7 +34,9 @@ rule expr:
     $expr[1] lhs "-" $expr[2] rhs => $sub lhs rhs | $fsub lhs rhs
     $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | $fmul lhs rhs
     $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs | $fdiv lhs rhs
+    $expr[20] lhs "." $expr[21] rhs => $member lhs rhs
     $expr id ":" "=" $expr exp => $decl id exp
+    $expr id "@" "=" $expr exp => $prop id exp
     $expr lhs "=" $expr rhs => $set lhs rhs
     $expr lhs "<" "=" $expr rhs => $lte lhs rhs
 end

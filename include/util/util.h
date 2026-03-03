@@ -25,6 +25,8 @@ void arena_init(Arena* a, size_t cap);
 void arena_free(Arena* a);
 char* arena_push(Arena* a, const void* data, size_t n);
 
+Str str_concat(Arena* arena, Str a, Str b);
+
 // Intern table
 typedef uint32_t Sym;
 

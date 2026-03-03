@@ -472,10 +472,27 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
   if (!ctx || !node) return NULL;
   
   switch (node->kind) {
+    case AST_PROP:
+    // for property, we can use logic of decl but prefix the name with $.
     case AST_DECL: {
       if (node->child_count < 2) return NULL;
       AstNode* name_node = node->children[0];
       AstNode* init_node = node->children[1];
+      if (node->kind == AST_PROP) {
+        // For property, we treat it as declaration of a variable with name prefixed by '$'.
+        if (!name_node || name_node->kind != AST_IDENT) return NULL;
+        Str prop_name_str = interns_lookup(ctx->interns, name_node->op);
+        if (!prop_name_str.ptr) {
+          prop_name_str = name_node->value;
+        }
+        if (!prop_name_str.ptr) return NULL;
+        Str var_name_str = str_concat(ctx->arena, str_from("$", 1), prop_name_str);
+        // printf("Declaring property '%.*s' as variable '%.*s'\n", (int)prop_name_str.len, prop_name_str.ptr, (int)var_name_str.len, var_name_str.ptr);
+        Sym var_sym = interns_intern(ctx->interns, var_name_str);
+        if (!var_sym) return NULL;
+        name_node->op = var_sym; // Update the name node to use the new symbol with '$' prefix
+        name_node->value = var_name_str; // Update the name node's value to the new string with '$' prefix
+      }
       if (!name_node || name_node->kind != AST_IDENT) return NULL;
       Sym var_sym = name_node->op;
       if (!var_sym && name_node->value.ptr) {
@@ -628,13 +645,18 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         AstNode* stmt = node->children[i];
         MorphlType* stmt_type = morphl_infer_type_of_ast(ctx, stmt);
         if (!stmt_type) { ok = false; break; }
-        if (stmt && stmt->kind == AST_DECL && stmt->child_count >= 1) {
+        // Handle both AST_DECL and AST_PROP for field registration
+        if (stmt && (stmt->kind == AST_DECL || stmt->kind == AST_PROP) && stmt->child_count >= 1) {
           AstNode* name_node = stmt->children[0];
           if (!name_node) { ok = false; break; }
+          
+          // For properties, the name is already prefixed with '$' in the symbol table
+          // by the AST_PROP case handler above
           if (!name_node->op && name_node->value.ptr) {
             name_node->op = interns_intern(ctx->interns, name_node->value);
           }
           if (!name_node->op) { ok = false; break; }
+          
           if (field_count >= field_cap) {
             size_t new_cap = field_cap ? field_cap * 2 : 4;
             Sym* new_names = (Sym*)realloc(field_names, new_cap * sizeof(Sym));

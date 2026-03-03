@@ -58,6 +58,7 @@ static const char* kind_name(AstKind kind) {
     case AST_BLOCK: return "block";
     case AST_GROUP: return "group";
     case AST_DECL: return "decl";
+    case AST_PROP: return "prop";
     case AST_SET: return "set";
     case AST_BUILTIN: return "builtin";
     case AST_OVERLOAD: return "overload";

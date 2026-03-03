@@ -850,6 +850,39 @@ static void test_pp_while() {
 }
 
 // ============================================================================
+// Test: $prop produces correct types for property declarations
+// ============================================================================
+static void test_pp_prop() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  // Build property declaration: $prop x int
+  interns_intern(interns, str_from("x", 1));
+  AstNode* prop_decl = ast_new(AST_PROP);
+  assert(prop_decl != NULL);
+  ast_append_child(prop_decl, make_ident(interns, "x"));
+  ast_append_child(prop_decl, make_literal("1"));
+
+  MorphlType* prop_type = morphl_infer_type_of_ast(ctx, prop_decl);
+  Str prop_type_str = morphl_type_to_string(prop_type, interns);
+  printf("Inferred property type: %.*s\n", (int)prop_type_str.len, prop_type_str.ptr);
+  assert(prop_type != NULL);
+  assert(prop_type->kind == MORPHL_TYPE_INT);
+
+
+  
+
+  ast_free(prop_decl);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_pp_prop passed\n");
+}
+
+// ============================================================================
 // Test: Overload Resolution
 // ============================================================================
 static void test_overload_resolution() {
@@ -905,6 +938,7 @@ int main() {
   test_pp_call_group_param();
   test_pp_while();
   test_overload_resolution();
+  test_pp_prop();
   // Note: Recursion is tested via examples/test_recursion.mpl
   // Unit testing recursion requires full parser integration
 

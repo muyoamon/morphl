@@ -21,6 +21,7 @@ typedef enum AstKind {
   AST_BLOCK,
   AST_GROUP,
   AST_DECL,
+  AST_PROP,
   AST_SET,
   AST_BUILTIN,
   AST_OVERLOAD,
