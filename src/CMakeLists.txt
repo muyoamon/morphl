@@ -12,6 +12,7 @@ target_link_libraries(morphlc
   morphl_ast
   morphl_util
   morphl_backend
+  morphl_runtime
 )
 
 add_subdirectory(util)
@@ -21,6 +22,4 @@ add_subdirectory(ast)
 add_subdirectory(typing)
 add_subdirectory(backend)
 
-
-
-
+add_subdirectory(runtime)

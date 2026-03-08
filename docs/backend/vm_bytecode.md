@@ -58,6 +58,17 @@ The VM emitter treats compile-time operators as already resolved by the compiler
 - `$decl` is lowered to stack-oriented behavior: emit RHS value, then `SET_SLOT <name>`.
 - Runtime operators (e.g. `$add`, `$set`, `$call`, etc.) are emitted verbatim through `OPERATOR` with a string table index.
 
+## Runtime operator support (V0.1)
+
+The V0.1 runtime executes `OPERATOR` instructions by symbol name. Supported operators:
+
+- `$add`: pops two operands, resolves identifier operands through slot bindings, parses both as numeric literals, and pushes the numeric sum as a literal string.
+- `$set`: pops `(lhs, rhs)`, requires `lhs` to be an identifier, writes `rhs` into that slot, and pushes `rhs`.
+
+All other runtime operators fail with a clear error message:
+
+- `runtime error: unsupported operator '<name>' (supported in V0.1: $add, $set)`
+
 ## Example invocation
 
 ```bash
