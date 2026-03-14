@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "interface/abi.h"
+#include "backend/vm.h"
+
 typedef struct MorphlVmProgram MorphlVmProgram;
 typedef struct MorphlVm MorphlVm;
 
@@ -21,10 +24,10 @@ MorphlVm* morphl_vm_new(const MorphlVmProgram* program);
 /// Destroy a VM instance.
 void morphl_vm_free(MorphlVm* vm);
 
-/// Execute bytecode in the VM. Returns true on success, false on runtime error.
-bool morphl_vm_execute(MorphlVm* vm, FILE* err_stream);
+/// Execute bytecode in the VM. Returns exit code (0 for success, nonzero for error).
+morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err_stream);
 
 /// Convenience helper for load + execute + teardown.
-bool morphl_vm_run_file(const char* path, FILE* err_stream);
+morphl_exit_code_t morphl_vm_run_file(const char* path, FILE* err_stream);
 
 #endif // MORPHL_RUNTIME_RUNTIME_H_

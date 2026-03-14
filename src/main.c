@@ -151,8 +151,9 @@ int main(int argc, char** argv) {
       printf("backend code generation succeeded, output written to %s\n", backend_ctx.out_file);
       if (run_bytecode) {
         printf("executing VM bytecode from %s...\n", backend_ctx.out_file);
-        if (!morphl_vm_run_file(backend_ctx.out_file, stderr)) {
-          printf("VM execution failed\n");
+        int exit_code = morphl_vm_run_file(backend_ctx.out_file, stderr);
+        if (exit_code != 0) {
+          printf("VM execution failed: code %d\n", exit_code);
           accepted = false;
         } else {
           printf("VM execution succeeded\n");

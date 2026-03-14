@@ -6,61 +6,15 @@
 #include "ast/ast.h"
 #include "backend/backend.h"
 #include "util/util.h"
+#include "runtime/runtime.h"
 
-#define MORPHL_VM_MAGIC "MVMB"
-#define MORPHL_VM_VERSION_MAJOR 1
-#define MORPHL_VM_VERSION_MINOR 0
+#include "backend/vm.h"
 
-enum VmOpcode {
-    /*
-    * Opcode
-    */
 
-    // halt
-    VM_OP_HALT = 0x00,
-    // push null onto stack
-    VM_OP_PUSH_NULL = 0x01,
-    // push literal string onto stack, operand=string table index
-    VM_OP_PUSH_LITERAL = 0x02,
-    // push identifier onto stack, operand=string table index
-    VM_OP_PUSH_IDENT = 0x03,
-    // make group from top N stack items, operand=N
-    VM_OP_MAKE_GROUP = 0x04,
-    // set slot on object, operand=string table index for slot name, value on stack
-    VM_OP_SET_SLOT = 0x05,
-    // perform operator, operand=string table index for operator name, operands on stack
-    VM_OP_OPERATOR = 0x06,
-    // fallback descriptor for node kinds not lowered yet, operand=ast node kind, string table index for op name, operand=child count, children on stack
-    VM_OP_NODE_META = 0x07,
-};
 
-typedef struct VmString {
-    char* ptr;
-    uint32_t len;
-} VmString;
 
-typedef struct VmStringTable {
-    VmString* items;
-    size_t count;
-    size_t capacity;
-} VmStringTable;
 
-typedef struct VmBytes {
-    uint8_t* data;
-    size_t len;
-    size_t capacity;
-} VmBytes;
 
-typedef struct VmMetadata {
-    uint32_t key_index;
-    uint32_t value_index;
-} VmMetadata;
-
-typedef struct VmMetadataTable {
-    VmMetadata* items;
-    size_t count;
-    size_t capacity;
-} VmMetadataTable;
 
 typedef struct VmEmitter {
     VmStringTable strings;
@@ -241,7 +195,9 @@ static bool emit_node(VmEmitter* emitter, AstNode* node) {
             if (!string_table_add(&emitter->strings, str_from("$call", 5), &idx)) {
                 return false;
             }
-            return emit_opcode_u32(emitter, VM_OP_OPERATOR, idx);
+
+            // TODO: handle function table
+            return emit_opcode_u32(emitter, VM_OP_CALL, idx);
         }
         case AST_DECL: {
             AstNode* rhs = (node->child_count > 1) ? node->children[1] : NULL;
@@ -289,6 +245,11 @@ static bool emit_node(VmEmitter* emitter, AstNode* node) {
                     }
                 }
                 return true;
+            }
+
+            // if '$ret', evaluate return expression then emit RET opcode with no operand 
+            if (op_name.len == 4 && memcmp(op_name.ptr, "$ret", 4) == 0) {
+                return emit_node(emitter, node->children[0]) && emit_opcode(emitter, VM_OP_RET);
             }
 
             for (size_t i = 0; i < node->child_count; ++i) {

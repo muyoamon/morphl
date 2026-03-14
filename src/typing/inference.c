@@ -646,6 +646,8 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
         MorphlType* stmt_type = morphl_infer_type_of_ast(ctx, stmt);
         if (!stmt_type) { ok = false; break; }
         // Handle both AST_DECL and AST_PROP for field registration
+        // For now, we treat properties as variables with '$' prefix in the block scope
+        // TODO: have properties as its own kind of member in the block type, separate from variables
         if (stmt && (stmt->kind == AST_DECL || stmt->kind == AST_PROP) && stmt->child_count >= 1) {
           AstNode* name_node = stmt->children[0];
           if (!name_node) { ok = false; break; }
