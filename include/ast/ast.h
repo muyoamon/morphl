@@ -7,8 +7,6 @@
 #include "util/util.h"
 #include "typing/typing.h"
 
-
-
 /**
  * @brief Kinds of AST nodes supported by the core language.
  */
@@ -45,6 +43,7 @@ typedef struct AstNode {
   const char* filename;     /**< Source filename for diagnostics. */
   size_t row;               /**< 1-based line. */
   size_t col;               /**< 1-based column. */
+  MorphlType* type;         /**< Resolved type, set by typing pass. NULL until then. */
 } AstNode;
 
 AstNode* ast_new(AstKind kind);

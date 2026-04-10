@@ -1,464 +1,629 @@
-# MorphL Language Specification
+# morphl Language Specification
 
-## Overview
-
-**MorphL** is a statically-typed programming language with a dynamic parser and static tokenizer. It features a Pratt-style grammar system that can be loaded from text files, enabling flexible syntax extension without requiring recompilation of the compiler.
-
-### Key Features
-
-- **Dynamic Grammar System**: Grammar rules defined in text files, parsed at compile time
-- **Static Type Inference**: Full type checking with no implicit coercion
-- **Functional & Imperative**: Support for both paradigms
-- **Structural Typing**: Records with width subtyping support
-- **Traits System**: Interface-like behavior with implementations
-- **First-class Functions**: Functions are values that can be passed around
-- **Mutable & Immutable References**: Explicit storage modifiers
+> **Status**: Draft — design is active and evolving. Sections marked ⚠️ are unsettled.
 
 ---
 
-## Core Language Constructs
+## 1. Design Philosophy
 
-### Literals
+morphl is a statically typed, structurally typed language designed around the following core principles:
 
-```
-42              // integer
-3.14            // float
-"text"          // string
-```
+**Verbatim execution** — program flow maps directly to written code. There are no implicit allocations, implicit copies, implicit conversions, or hidden control flow. Every runtime action corresponds to something the programmer explicitly wrote.
 
-### Basic Declarations
+**Everything is a declaration** — all named entities are introduced via `$decl`. There is no syntactic distinction between variables, structs, functions, or modules. Type is implied structurally through the shape of declarations.
 
-#### Immutable Binding
-```
-$decl name value
-```
+**No namespace pollution** — all language keywords are prefixed with `$`, reserving the unprefixed namespace entirely for user-defined identifiers.
 
-#### Mutable Reference
-```
-$decl x $mut 0      // x is a mutable reference to 0
-```
+**Explicit storage** — mutability, indirection, and ownership are expressed through storage expressions, not through separate annotation syntax.
 
-#### Const Reference
-```
-$decl x $const 0    // x is a const reference to 0
-```
+---
 
-#### Inline (Alias)
-```
-$decl x $inline 0   // x aliases 0
-```
+## 2. Keyword Namespace
 
-### Functions
+Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
-#### Function Definition
-```
-$decl f1 $func ($decl x 0, $decl y 0) $add x y
-```
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`.
 
-A function is defined with:
-- Parameters: declared as `$decl` bindings
-- Body: a single expression (which can be a block)
-- Return value: the value of the body expression
+---
 
-#### Function Calls
-```
-$call name $group arg1 arg2 ...
-```
+## 3. Core Construct: `$decl`
 
-All function calls are expressed via `$call`; surface syntax is lowered to this form.
+### 3.1 Declaration as Shape Definition
 
-#### Default Arguments
-
-Missing call arguments take parameter defaults if the parameter has a default value. This enables subtyping-by-shorter argument list.
+`$decl` is the single construct for introducing a named entity into a scope. It does not perform allocation or execution — it defines the **shape** of the enclosing block by binding a name to a storage expression.
 
 ```
-$decl add $func ($decl x 0, $decl y 0) $add x y
-$call add 5             // equivalent to $call add $group 5 0
+$decl <name> <storage-expr>;
 ```
 
-### Conditionals
+`$decl` contributes three things to the enclosing block:
 
-```
-$if condition then-else group
-```
+- The **name** of the field
+- The **type**, inferred from the storage expression
+- The **byte offset** in the block's layout, determined by declaration order with natural alignment
 
-The condition must evaluate to a boolean. Both branches are expressions and return a value.
+### 3.2 Block as Value
 
-```
-$decl abs $func ($decl n 0) {
-    $if $gte n 0
-        $ret n,
-        $ret $neg n
-}
-```
-
-### Blocks & Groups
-
-#### Block (Structural Record)
-```
-$block stmnt1 stmnt2 ...
-```
-
-Blocks are structures that act as scopes. They can contain declarations and statements.
+A block delimited by `{}` is both a struct and a code block — they are the same construct. Statements inside a block are initialization logic. The block's **type** is the structural shape of its surviving `$decl` expressions.
 
 ```
 $decl x {
-    $decl a 1
-    $decl b "foo"
-    $set a $add a 1
-}
+    $decl a 10;
+    a = a + 1;
+};
+// type of x: { a: i32 }
+// a = 11 at capture time
 ```
 
-Blocks have a type signature based on their members:
-- Only `$decl` members are part of the type (properties are excluded)
-- Field order matters for record equality
+`$decl` **suspends** the expression — the block executes once at declaration site and captures its final state. Referencing `x` later does not re-execute the block.
 
-#### Group (Ordered Tuple)
-```
-$group expr1 expr2 ...
-```
+### 3.3 Re-execution via `$new`
 
-Groups are ordered tuples used for collecting multiple expressions.
-
-### Assignments
+`$new` re-executes a block's initialization logic to produce a fresh, independent instance:
 
 ```
-$set target value
+$decl p $new x;    // fresh instance, a = 11, independent of x
+$decl q $new x;    // another fresh instance, independent of p
 ```
 
-Updates the value at a mutable reference.
+Mutating `p.a` does not affect `q.a`.
 
-### Return Statement
+### 3.4 Default Mutability
 
-```
-$ret value
-```
-
-Early return from a function. Returns the value immediately, bypassing remaining statements.
-
----
-
-## Built-in Operators
-
-### Arithmetic
-
-- `$add` - Addition
-- `$sub` - Subtraction
-- `$mul` - Multiplication
-- `$div` - Division
-
-### Float Arithmetic
-
-- `$fadd` - Float addition
-- `$fsub` - Float subtraction
-- `$fmul` - Float multiplication
-- `$fdiv` - Float division
-
-### Bitwise Operations
-
-- `$band` - Bitwise AND
-- `$bor` - Bitwise OR
-- `$bnot` - Bitwise NOT
-- `$lshift` - Left shift
-- `$rshift` - Right shift
-
-### Logical Operations
-
-- `$and` - Logical AND
-- `$or` - Logical OR
-- `$not` - Logical NOT
-
-### Comparison
-
-- `$eq` - Equality
-- `$neq` - Not equal
-- `$gt` - Greater than
-- `$lt` - Less than
-- `$gte` - Greater than or equal
-- `$lte` - Less than or equal
-
-### Special Operators
-
-- `$member obj field` - Access object member
-- `$this` - Current scope reference
-- `$neg expr` - Negation
-
----
-
-## Type System
-
-### Type Inference
-
-MorphL uses automatic type inference from literal values:
+A bare expression used as a storage expression is sugar for `$const`:
 
 ```
-$decl x 10              // x : int
-$decl y 3.14            // y : float
-$decl s "hi"            // s : string
-```
-
-### Subtyping Rules
-
-1. **Empty group** is a subtype of any type
-2. **Individual expression** is a subtype of a group if types match the first element
-3. **Block subtyping**: A block type is a subtype of another if it's an extension (same fields in same order, plus additional fields)
-
-#### Type Extension
-```
-$decl x {
-    $decl a 10
-}                       // x: {a: int}
-
-$decl y $extend x {
-    $decl b 20
-}                       // y: {a: int, b: int}
-
-$decl v1 $mut x
-$set v1 y               // Works (subtyping)
-$member v1 a            // Works
-$member v1 b            // Error - v1 has type x, no member b
-```
-
-### No Implicit Coercion
-
-All built-in operators have no implicit coercion. Type mismatches are compile-time errors. User-defined operations may implement coercion if desired.
-
----
-
-## Advanced Features
-
-### Forward Declarations
-
-Enable recursion and mutual recursion:
-
-```
-$decl fact $forward $func ($decl n 0) 0
-$decl fact $func ($decl n 0) {
-    $if $eq n 0
-        $ret 1,
-        $ret $mul n ($call fact $sub n 1)
-}
-```
-
-#### Rules
-- `$forward` marks an unresolved function stub
-- Stub must specify parameters (names, order, defaults) and return type placeholder
-- Later `$decl` with same name must provide the body; parameters must match exactly
-- Exactly one `$forward` per name per scope
-- Body must appear in the same scope
-- Calls allowed after stub; type comes from stub
-
-#### Mutual Recursion
-```
-$decl even $forward $func ($decl n 0) 0
-$decl odd $forward $func ($decl n 0) 0
-
-$decl even $func ($decl n 0) {
-    $if $eq n 0
-        $ret 1,
-        $ret $call odd $sub n 1
-}
-
-$decl odd $func ($decl n 0) {
-    $if $eq n 0
-        $ret 0,
-        $ret $call even $sub n 1
-}
-```
-
-### Properties & Traits
-
-#### Properties
-
-Properties are preprocessing members that don't appear in type signatures:
-
-```
-$decl x {
-    $decl a 10
-    $prop b 100
-}                       // x: {a: int}  (no b in type)
-```
-
-Access via `$member`:
-```
-$member x a             // 10
-$member x $b            // 100 (property requires $ prefix)
-```
-
-#### Traits
-
-Define shared behavior (similar to interfaces/protocols):
-
-```
-$decl loggable $traits {
-    $prop log $func ($this) $void
-}
-
-$decl x {
-    $decl a 0
-}
-
-$impl loggable x, {
-    $prop log $func ($this) {...}
-}
-
-$call $member x $log ()   // Call the trait method
-```
-
-Traits can be applied to any type, including primitives:
-
-```
-$decl y 10
-$impl loggable y, {
-    $prop log $func ($this) {...}
-}
-```
-
-### Module System
-
-#### Import
-```
-$decl mod1 $import "module1"
-```
-
-Imports are essentially block bindings containing the module's file-level scope.
-
-#### Namespacing
-- `$this` - Current scope
-- `$file` - File-level scope
-- `$global` - Global scope
-
-```
-$decl x {
-    $decl a 0
-    $member $this a     // Equivalent to x.a
-}
-```
-
-### Meta Operations
-
-#### Convert Identifier to String
-```
-$idtstr %identifier%
-```
-
-#### Convert String to Identifier
-```
-$strtid "literal"
+$decl foo 10;         // sugar for: $decl foo $const 10
 ```
 
 ---
 
-## Grammar System
+## 4. Storage Expressions
 
-### Overview
+Storage expressions determine the runtime behavior of a declaration. `$decl` only binds a name — all storage semantics come from the expression.
 
-The parser uses a Pratt-style grammar loaded from text files. Grammar rules declare patterns and templates to build the AST.
-
-### Rule Declaration
+### 4.1 `$const` — Immutable Storage
 
 ```
-rule expr:
-    %NUMBER => $intlit
-    %IDENT => $ident
-    $expr lhs "+" $expr[1] rhs => $add lhs rhs
-end
+$decl foo $const 10;
 ```
 
-### Pattern Components
+Allocates immutable storage initialized to the given value. The value cannot be overwritten after initialization.
 
-- **Literals**: `"+"`, `"-"`, etc.
-- **Token kinds**: `%IDENT`, `%NUMBER`, etc.
-- **Rule placeholders**: `$name[n]` where n is binding power (defaults to 0)
-
-### Binding Power & Associativity
-
-Binding power controls precedence and associativity:
+### 4.2 `$mut` — Mutable Storage
 
 ```
-rule expr:
-    $expr lhs "+" $expr[1] rhs => $add lhs rhs     // left-associative
-    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs // tighter than +
-end
+$decl foo $mut 10;
 ```
 
-### Overload Resolution
+Allocates mutable storage. The value can be overwritten via assignment.
 
-Multiple alternatives separated by `|` create an overload set:
+### 4.3 `$ref` — Reference (Relative Offset)
 
 ```
-rule expr:
-    $expr lhs "+" $expr[1] rhs => $add lhs rhs | $fadd lhs rhs
-end
+$decl r $ref x;
 ```
 
-The type checker resolves which candidate to use based on operand types.
+`$ref` is not a pointer — it is a **relative offset** to an existing storage location. It has fixed size regardless of the referent's type, which enables recursive type definitions.
 
-### Pattern Modifiers
+`$ref` is transparent in expressions — using `r` in an expression reads/writes through to `x`'s storage. The `$ref` keyword is only needed when explicitly bridging to the reference itself.
 
-- **Inline grouping**: `$( pattern )` - group a subpattern
-- **One or more**: `+` - match one or more repetitions
-- **Zero or more**: `*` - match zero or more repetitions
-- **Optional**: `?` - match zero or one
-- **Delimiter**: `$$delim` - marks delimiter for greedy operations
-- **Spread**: `$$spread` - flatten group to individual atoms
-- **Maybe**: `$$maybe` - allow optional atom
-- **Operator**: `$$op` - parse next capture as operator
+**As a local alias**: compile-time only, no runtime storage allocated.
 
-#### Example: Comma-separated Expressions
+**As a struct field**: runtime storage (a signed integer relative offset).
+
 ```
-rule expr:
-    $expr first $("," $expr)+ rest => $group first $$spread rest
-end
+$decl x $mut 5;
+$decl r $ref x;
+
+r + 1;      // transparent — reads x, computes 6
+r = 10;     // transparent — writes 10 to x's storage
+```
+
+### 4.4 Mutability Subtyping
+
+Mutable storage satisfies immutable expectations, but not vice versa:
+
+```
+{ x: $mut i32 } <: { x: $const i32 }   // safe — mutable can be read as immutable
+{ x: $const i32 } </: { x: $mut i32 }  // unsafe — cannot write to immutable
+```
+
+### 4.5 Storage Expression Summary
+
+| Expression | Meaning | Writable |
+|---|---|---|
+| `$const expr` | immutable storage | no |
+| `$mut expr` | mutable storage | yes |
+| `$ref name` | alias to existing storage | depends on referent |
+| `$new block` | fresh instance via re-execution | depends on fields |
+| `$import "file"` | reference to external file scope | no |
+| bare `expr` | sugar for `$const expr` | no |
+
+---
+
+## 5. Structural Type System
+
+### 5.1 Types Are Implied by Declaration Shape
+
+There are no explicit type annotations for structs. A type is the set of field names and their storage kinds as declared:
+
+```
+$decl point {
+    $decl x $mut 0;
+    $decl y $mut 0;
+};
+// type: { x: $mut i32, y: $mut i32 }
+```
+
+### 5.2 Structural Subtyping
+
+Two types are compatible if one's fields are a prefix match of the other's at identical byte offsets. A type `A` is a structural subtype of `B` if every field in `B` exists in `A` at the same offset with a compatible type.
+
+```
+type Animal { age: i32, weight: f64 }
+type Dog    { age: i32, weight: f64, name: $ref u8 }
+
+Dog <: Animal   // prefix matches, offsets identical
+```
+
+### 5.3 Struct Layout
+
+Fields are laid out in **declaration order with natural alignment**. Padding is inserted to align each field to its own size. This guarantees stable, predictable offsets across all implementations — the foundation of structural subtyping across module boundaries.
+
+```
+$decl Foo {
+    $decl a i32;    // offset 0  (4 bytes)
+                    // offset 4  (4 bytes padding)
+    $decl b f64;    // offset 8  (8 bytes)
+    $decl c i32;    // offset 16 (4 bytes)
+                    // offset 20 (4 bytes padding)
+};
+// total: 24 bytes
+```
+
+Fields are **never reordered** by the compiler. Reordering would break the prefix-match subtyping guarantee.
+
+### 5.4 Recursive Types via `$ref`
+
+Direct recursive fields are impossible because the type has no finite size:
+
+```
+$decl Node { $decl value i32; $decl next Node; };  // error — infinite size
+```
+
+`$ref` breaks the cycle by storing a fixed-size relative offset regardless of the referent's size:
+
+```
+$decl Node {
+    $decl value i32;
+    $decl next $ref Node;   // fixed size: sizeof(relative_offset)
+};
+```
+
+### 5.5 `$null`
+
+`$null` is defined as `$decl $null $ref $null` — a reference that refers to itself, forming an unresolvable indirection chain. It is not a value per se but a sentinel indicating "this reference points to nothing." Dereferencing `$null` is an error.
+
+---
+
+## 6. Functions
+
+### 6.1 `$func` Declaration
+
+Functions are first-class values declared with `$func`. The argument list is a **pseudo-scope** pasted before the function body in the scope chain:
+
+```
+$decl f $func ($decl x i32) {
+    $decl y x + 1;
+};
+// type: (i32) => { y: i32 }
+```
+
+### 6.2 Argument Pseudo-Scope
+
+Arguments live in a scope outside the function body. They are readable inside the body via scope resolution but are **not captured** into the body's structural type. Arguments are caller-owned and cleaned up by the caller (cdecl convention).
+
+### 6.3 Return Semantics
+
+**Implicit return** — if no `$ret` is used, the entire function body is the return value. Its type is the structural shape of the body's captured declarations:
+
+```
+$decl make_point $func ($decl x i32, $decl y i32) {
+    $decl px x;
+    $decl py y;
+};
+// type: (i32, i32) => { px: i32, py: i32 }
+```
+
+**Explicit return** — `$ret expr` returns a specific value and exits the function early:
+
+```
+$decl f $func ($decl x i32) {
+    $ret x + 1;
+};
+// type: (i32) => i32
+```
+
+`$ret` is scoped to the nearest enclosing `$func`. It does not propagate through nested blocks.
+
+**Mixed paths** — if some code paths use `$ret` and others rely on implicit return, the types must unify. A compile error is emitted if they do not.
+
+### 6.4 Encapsulation via `$ret`
+
+`$ret` is the sole encapsulation mechanism. Without it, all declarations in the body are exposed in the return type. With it, only the explicitly returned value is exposed:
+
+```
+$decl f $func ($decl x i32) {
+    $decl result x + 1;
+    $decl tmp 999;       // implementation detail
+    $ret { result };     // only result is exposed
+};
+// type: (i32) => { result: i32 }
+```
+
+### 6.5 Function Type Signature
+
+```
+(<arg-types>) => <return-type>
+```
+
+Functions are contravariant in argument types and covariant in return type for subtyping purposes.
+
+### 6.6 Calling Convention
+
+The caller pre-allocates the return slot before the call. The body writes directly into the return slot (sret convention for struct returns). On `$ret` or end of body, the pseudo-scope is discarded — the return value is already in place with no copy needed.
+
+Stack layout at call time:
+
+```
+| caller frame               |
+| return slot                |  ← pre-allocated by caller
+|----------------------------|
+| pseudo-scope (args)        |  ← pushed at call, popped after
+| function body              |  ← writes to return slot directly
+```
+
+### 6.7 Function Table
+
+All functions are entries in a global function table. A function value at runtime is a `u32` index into this table. This makes function pointers relocatable and safe — no absolute addresses, no forgeable indices.
+
+```
+FuncTable[n] = { bytecode_offset, arity, frame_size }
 ```
 
 ---
 
-## Design Invariants
+## 7. Scope Contexts
 
-These invariants are locked for implementation:
+Every scope maintains a set of reserved context references. These are `$ref`-based — relative offsets following the same semantics as user-defined references.
 
-1. All built-in operators have arity ≤ 2
-2. Calls are expressed via `$call`; surface syntax lowers to `$call`
-3. No implicit coercion for built-ins; mismatched types are errors
-4. Missing call arguments take parameter defaults
-5. Default values are parameter initializers in `$func` declarations
-6. Blocks are structural records; groups are ordered tuples
-7. Field order matters for record equality
-8. Subtyping: shorter arglists accepted if missing args have defaults
-9. Records may have width subtyping (more fields viewed as fewer)
+| Reference | Meaning |
+|---|---|
+| `$this` | the current block instance |
+| `$parent` | the enclosing block instance |
+| `$file` | the current file's scope |
+| `$global` | the root/global scope |
+| `$global.$parent` | `$null` — root has no parent |
 
----
+`$this` refers to the immediate scope, not any outer scope. Inside a function body, `$this` is the function's own block, not the enclosing module.
 
-## Compiler Usage
-
-```bash
-cmake -S . -B build && cmake --build build
-./build/src/morphlc <grammar-file> <source-file>
+```
+$decl mod {
+    $decl x 0;
+    $decl f $func () {
+        $this;      // f's own body — { }
+        $parent;    // mod's instance
+        $parent.x;  // mod's x field
+    };
+};
 ```
 
-Example:
-```bash
-./build/src/morphlc examples/grammar.txt examples/program.src
+The scope chain is a `$ref`-linked structure terminating at `$global.$parent = $null`. Traversal is uniform — the same machinery as user-defined `$ref` chains.
+
+---
+
+## 8. Properties
+
+### 8.1 `$prop` Declaration
+
+Properties are declared with `$prop` and accessed with the `$` prefix:
+
+```
+$decl mod {
+    $decl x 0;
+    $prop PI 3.14;
+};
+
+mod.x;      // field access
+mod.$PI;    // property access
+```
+
+Properties are extra context attached to a block. They are constant once declared — they cannot be reassigned.
+
+### 8.2 Properties Are Not Structurally Fixed
+
+Properties do not have fixed byte offsets and do not participate in structural subtyping. Two blocks with different field declaration order but identical `$decl` fields and identical properties have the same type:
+
+```
+$decl mod1 { $decl x 0; $prop PI 3.14; };
+$decl mod2 { $prop PI 3.14; $decl x 0; };
+// both have type: { x: i32 }($PI: f64)
+```
+
+### 8.3 Full Type Signature
+
+A type's full signature has two components:
+
+```
+{ <structural fields> }($<property name>: <type>, ...)
+```
+
+Structural subtyping only considers the structural component. A function requiring `{ x: i32 }` accepts both `mod1` and `mod2` — it ignores properties. A function requiring `{ x: i32 }($PI: f64)` requires the property to be present.
+
+### 8.4 Properties as Methods
+
+Properties can hold function values, making them constant method-like members:
+
+```
+$decl mod {
+    $decl x $mut 0;
+    $prop describe $func () {
+        $ret $parent.x;
+    };
+};
 ```
 
 ---
 
-## File Structure
+## 9. Traits
 
-- **Lexer** (`src/lexer/`) - Static tokenization
-- **Parser** (`src/parser/`) - Dynamic Pratt-style parsing
-- **AST** (`src/ast/`) - Abstract syntax tree representation
-- **Typing** (`src/typing/`) - Type inference and checking
-- **Utilities** (`src/util/`) - Error handling, file I/O, helpers
+### 9.1 Trait Declaration
+
+A trait defines a set of properties that can be implemented by any type. Traits may only contain properties — no structural fields:
+
+```
+$decl TraitA $traits {
+    $prop propA 30;
+    $prop methodB $func () 0;
+};
+```
+
+### 9.2 Trait Implementation via `$impl`
+
+`$impl` derives a new type from an existing type by injecting trait properties. The original type is never modified:
+
+```
+$decl typeD {
+    $decl x 0;
+    $decl y 0;
+};
+
+$decl typeE $impl TraitA typeD {
+    $prop propA 99;
+    $prop methodB $func () { $ret $parent.x; };
+};
+```
+
+If the implementation block is omitted, the trait's default property values are used. Partial overrides are allowed — unspecified properties use the trait's defaults.
+
+`typeE` is a structural subtype of `typeD`:
+
+```
+typeE <: typeD   // structural fields are identical
+typeD </: typeE  // typeD lacks TraitA's properties
+```
+
+### 9.3 Trait-Typed Variables
+
+A variable can be declared with a trait type. It can hold any value that implements that trait:
+
+```
+$decl traitVar TraitA;
+$set traitVar typeE;    // valid — typeE implements TraitA
+$set traitVar typeD;    // error — typeD does not implement TraitA
+```
+
+### 9.4 Trait Variable Representation
+
+A trait-typed variable is a fat block with two `$ref` fields:
+
+```
+traitVar ~= {
+    $impl: $ref <property table>     // points to trait property implementations
+    $data: $ref <concrete instance>  // points to actual data
+}
+```
+
+This is a regular block using existing `$ref` machinery — no special VM support needed. The property table is a singleton block produced once per `$impl`.
+
+Calling a trait method:
+
+```
+$call traitVar.$methodB ();
+// 1. load traitVar.$impl
+// 2. load $impl.$methodB  (function table index)
+// 3. set $parent = traitVar.$data
+// 4. CALLF
+```
 
 ---
 
-## Future Enhancements
+## 10. Modules and Imports
 
-- Refactor core code
-- Fix macro system
-- Compiler settings support
-- C FFI (Foreign Function Interface)
-- Static storage support
-- Multithreading support (maybe)
+### 10.1 Files as Blocks
+
+A file is a block. Its type is the structural shape of its top-level `$decl` expressions. `$file` is the reserved reference to the current file's scope.
+
+### 10.2 `$import`
+
+`$import` is a storage expression that loads an external file's scope:
+
+```
+$decl module $import "some_module";
+module.some_var;
+```
+
+Inline import without binding:
+
+```
+($import "some_module").some_var;
+```
+
+The imported module's type is structurally inferred from its file scope. No separate interface file or explicit export list is required — all top-level declarations are visible.
+
+---
+
+## 11. VM Opcode Set
+
+The VM uses **typed opcodes** — the operand type and size are encoded in the opcode itself, not in the values. Values on the stack are raw bits with no runtime type tags.
+
+### 11.1 Load / Store
+
+```
+ILOAD  <offset>    — load i32 from frame offset
+FLOAD  <offset>    — load f64 from frame offset
+RLOAD  <offset>    — load relative offset ($ref) from frame offset
+ISTORE <offset>    — store i32 to frame offset
+FSTORE <offset>    — store f64 to frame offset
+RSTORE <offset>    — store relative offset to frame offset
+```
+
+### 11.2 Constants
+
+```
+ICONST <imm>       — push i32 literal
+FCONST <imm>       — push f64 literal
+RNULL              — push $null reference
+```
+
+### 11.3 Arithmetic
+
+```
+IADD  ISUB  IMUL  IDIV  IMOD   — i32 arithmetic
+FADD  FSUB  FMUL  FDIV         — f64 arithmetic
+```
+
+### 11.4 Comparison
+
+```
+IEQ  INEQ  ILT  IGT  ILTE  IGTE   — i32 comparisons, push bool
+FEQ  FNEQ  FLT  FGT  FLTE  FGTE   — f64 comparisons, push bool
+REQ  RNEQ                          — reference equality
+```
+
+### 11.5 Type Conversion
+
+```
+I2F    — convert i32 → f64
+F2I    — convert f64 → i32 (truncate)
+```
+
+### 11.6 Scope / Block
+
+```
+ENTER  <size>      — push new scope region of <size> bytes
+LEAVE  <size>      — pop scope region
+```
+
+### 11.7 Function Call
+
+```
+RESERVE <size>     — pre-allocate return slot in caller frame
+CALL    <index>    — direct call by function table index
+CALLF   <offset>   — indirect call: load function index from frame offset, then dispatch
+RET                — pop pseudo-scope, return to caller
+```
+
+### 11.8 Reference / Indirection
+
+```
+ADDREF  <offset>   — compute relative offset to a frame location
+DEREF              — resolve a relative offset to its target location
+PLOAD   <offset>   — load field from $parent via its $ref
+PSTORE  <offset>   — store field to $parent via its $ref
+```
+
+### 11.9 Block Instantiation
+
+```
+NEW <offset> <size>   — re-execute block at <offset>, write result into <size> bytes
+```
+
+`NEW` is the only opcode that re-executes logic. It corresponds directly to `$new` in source.
+
+### 11.10 Control Flow
+
+```
+JMP   <label>      — unconditional jump
+JIF   <label>      — jump if top of stack is truthy
+JNULL <label>      — jump if top of stack is $null reference
+```
+
+### 11.11 Design Notes
+
+- No GC opcodes — memory is stack-managed and explicit
+- No type tag opcodes — types are encoded in instructions, not values
+- No dynamic dispatch opcodes — structural subtyping resolves to field offsets at compile time
+- No implicit copy opcodes — copies are explicit load/store pairs
+- Function pointers are `u32` indices into the global function table
+
+---
+
+## 12. Type System Summary
+
+| Layer | Mechanism | Participates in subtyping |
+|---|---|---|
+| Structural fields | `$decl`, fixed byte offsets | yes — prefix match |
+| Properties | `$prop`, no fixed offset | no |
+| Traits | `$traits` + `$impl` | via property table |
+| Mutability | `$mut` / `$const` in field type | yes — `$mut <: $const` |
+| References | `$ref`, relative offset | yes — same as referent type |
+
+---
+
+## 13. Grammar Reference (Informal)
+
+```
+program     ::= decl*
+decl        ::= '$decl' name storage-expr ';'
+             |  '$prop' name expr ';'
+storage-expr::= '$mut' expr
+             |  '$const' expr
+             |  '$ref' name
+             |  '$new' expr
+             |  '$import' string
+             |  '$func' '(' params ')' block
+             |  '$traits' block
+             |  '$impl' name name block?
+             |  expr
+block       ::= '{' stmt* '}'
+stmt        ::= decl
+             |  expr ';'
+             |  '$ret' expr? ';'
+             |  '$set' name expr ';'
+             |  '$call' expr expr ';'
+params      ::= (decl (',' decl)*)?
+expr        ::= name
+             |  literal
+             |  expr '.' name
+             |  expr '$' name
+             |  '(' expr ')'
+             |  expr op expr
+             |  '$this' | '$parent' | '$file' | '$global' | '$null'
+             |  '(' '$import' string ')'
+```
+
+---
+
+## 14. Open Design Questions
+
+⚠️ **Implicit `$parent` in method calls** — the mechanism by which `$parent` is wired as calling context when invoking block-declared functions is not yet fully specified.
+
+⚠️ **`$null` representation** — the concrete sentinel value for `$null` in relative offset storage is not yet determined.
+
+⚠️ **Cross-frame `$ref` lifetime** — rules governing whether a `$ref` may point into a parent frame, and what happens when the parent frame is popped, are not yet settled.
+
+⚠️ **Property table dispatch for `$parent`** — how `$parent` resolves correctly when a trait method is called through a fat trait variable is not yet fully specified.
+
+⚠️ **`$mut` / `$const` on `$ref` fields** — the interaction between reference mutability and referent mutability needs precise definition.

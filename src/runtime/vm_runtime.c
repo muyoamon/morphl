@@ -1,864 +1,510 @@
-#include "runtime/runtime.h"
+/*
+ * src/runtime/vm_runtime.c — morphl VM bytecode interpreter
+ *
+ * Executes typed, frame-offset-based bytecode produced by the vm.c emitter.
+ * The stack is a flat byte array; variables are accessed by signed offsets
+ * relative to the current call frame's base pointer.
+ *
+ * Calling convention (sret):
+ *   Caller:  RESERVE <ret_size>   — extends stack by ret_size zeroed bytes
+ *            [push args]
+ *            CALL <func_idx>      — saves IP, sets frame_base = stack.top,
+ *                                   reserves frame_size bytes for callee
+ *   Callee:  body runs; $ret writes result to frame[-ret_size]
+ *            RET                  — restores IP, collapses callee frame
+ *   Caller:  return value sits at stack[caller_top .. caller_top+ret_size]
+ */
 
-#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 
-#define MORPHL_VM_MAGIC "MVMB"
+#include "backend/vm.h"
+#include "interface/abi.h"
+#include "runtime/runtime.h"
 
-
-
-typedef enum {
-    VM_VALUE_NULL,
-    VM_VALUE_LITERAL,
-    VM_VALUE_IDENT,
-    VM_VALUE_GROUP,
-} VmValueKind;
-
-typedef struct VmValue VmValue;
-
-struct VmValue {
-    VmValueKind kind;
-    char* text;
-    VmValue* items;
-    size_t item_count;
-};
+/* ── flat byte stack ─────────────────────────────────────────────────────── */
 
 typedef struct {
-    char* name;
-    VmValue value;
-} VmSlot;
+    uint8_t* data;
+    size_t   top;       /* next free byte index (exclusive) */
+    size_t   capacity;
+} VmByteStack;
+
+static bool stack_grow(VmByteStack* s, size_t min_cap) {
+    size_t cap = s->capacity ? s->capacity : 4096;
+    while (cap < min_cap) cap *= 2;
+    uint8_t* p = (uint8_t*)realloc(s->data, cap);
+    if (!p) return false;
+    s->data     = p;
+    s->capacity = cap;
+    return true;
+}
+
+static bool stack_reserve(VmByteStack* s, size_t n) {
+    if (n == 0) return true;
+    if (s->top + n > s->capacity) {
+        if (!stack_grow(s, s->top + n)) return false;
+    }
+    memset(s->data + s->top, 0, n);
+    s->top += n;
+    return true;
+}
+
+static bool stack_push_i64(VmByteStack* s, int64_t v) {
+    if (s->top + 8 > s->capacity) {
+        if (!stack_grow(s, s->top + 8)) return false;
+    }
+    memcpy(s->data + s->top, &v, 8);
+    s->top += 8;
+    return true;
+}
+
+static bool stack_push_f64(VmByteStack* s, double v) {
+    if (s->top + 8 > s->capacity) {
+        if (!stack_grow(s, s->top + 8)) return false;
+    }
+    memcpy(s->data + s->top, &v, 8);
+    s->top += 8;
+    return true;
+}
+
+static bool stack_pop_i64(VmByteStack* s, int64_t* out) {
+    if (s->top < 8) return false;
+    s->top -= 8;
+    memcpy(out, s->data + s->top, 8);
+    return true;
+}
+
+static bool stack_pop_f64(VmByteStack* s, double* out) {
+    if (s->top < 8) return false;
+    s->top -= 8;
+    memcpy(out, s->data + s->top, 8);
+    return true;
+}
+
+/* ── call frame ─────────────────────────────────────────────────────────── */
+
+typedef struct {
+    size_t   frame_base;  /* stack.top value when this frame was entered */
+    size_t   return_ip;   /* instruction pointer to restore on RET */
+    uint32_t func_index;  /* for diagnostics */
+} VmCallFrame;
+
+/* ── program and VM structs (opaque in runtime.h) ───────────────────────── */
 
 struct MorphlVmProgram {
-    uint16_t version_major;
-    uint16_t version_minor;
-    char** strings;
-    uint32_t string_count;
-    uint8_t* code;
-    uint32_t code_len;
+    uint16_t        version_major;
+    uint16_t        version_minor;
+    VmFunctionMeta* functions;
+    uint32_t        func_count;
+    uint8_t*        code;
+    uint32_t        code_len;
 };
-
-typedef struct {
-    uint32_t func_index;    // index of function in program's function table
-    size_t ip;              // entry point in code
-    size_t base;            // base index in value stack for this call frame
-    size_t local_base;      // base index in slot list for this call frame's local variables
-    size_t return_ip;       // instruction pointer to return to after call
-    size_t return_base;     // base index in value stack to restore after call
-    size_t return_local_base; // base index in slot list to restore after call
-    uint32_t scope_depth;   // scope depth at time of call, used for unwinding scopes on return or error
-} VmCallFrame;
 
 struct MorphlVm {
     const MorphlVmProgram* program;
-    size_t ip;                  // instruction pointer
-    VmValue* stack;             // Value stack
-    size_t stack_count;
-    size_t stack_capacity;
-    VmSlot* slots;              // Named slots for variables, functions, etc.
-    size_t slot_count;
-    size_t slot_capacity;
-    VmCallFrame* call_frames;   // Call stack
-    size_t call_frame_count;
-    size_t call_frame_capacity;
+    size_t          ip;
+    VmByteStack     stack;
+    VmCallFrame*    call_frames;
+    size_t          call_frame_count;
+    size_t          call_frame_capacity;
 };
 
-static void vm_value_free(VmValue* value) {
-    if (!value) {
-        return;
-    }
-    free(value->text);
-    value->text = NULL;
-    for (size_t i = 0; i < value->item_count; ++i) {
-        vm_value_free(&value->items[i]);
-    }
-    free(value->items);
-    value->items = NULL;
-    value->item_count = 0;
-    value->kind = VM_VALUE_NULL;
-}
+/* ── low-level file helpers ─────────────────────────────────────────────── */
 
-static bool vm_value_copy(const VmValue* src, VmValue* dst) {
-    memset(dst, 0, sizeof(*dst));
-    dst->kind = src->kind;
-
-    if (src->text) {
-        size_t n = strlen(src->text);
-        dst->text = malloc(n + 1);
-        if (!dst->text) {
-            return false;
-        }
-        memcpy(dst->text, src->text, n + 1);
-    }
-
-    if (src->item_count > 0) {
-        dst->items = calloc(src->item_count, sizeof(VmValue));
-        if (!dst->items) {
-            vm_value_free(dst);
-            return false;
-        }
-
-        for (size_t i = 0; i < src->item_count; ++i) {
-            if (!vm_value_copy(&src->items[i], &dst->items[i])) {
-                for (size_t j = 0; j < i; ++j) {
-                    vm_value_free(&dst->items[j]);
-                }
-                free(dst->items);
-                dst->items = NULL;
-                vm_value_free(dst);
-                return false;
-            }
-        }
-        dst->item_count = src->item_count;
-    }
-
+static bool read_bytes(const uint8_t* buf, size_t buf_len,
+                       size_t* pos, void* out, size_t n) {
+    if (*pos + n > buf_len) return false;
+    memcpy(out, buf + *pos, n);
+    *pos += n;
     return true;
 }
 
-static bool read_u16(const uint8_t* bytes, size_t len, size_t* off, uint16_t* out) {
-    if ((*off + 2) > len) {
-        return false;
-    }
-    *out = (uint16_t)(bytes[*off] | (uint16_t)(bytes[*off + 1] << 8));
-    *off += 2;
+static bool read_u16_le(const uint8_t* buf, size_t len, size_t* pos, uint16_t* out) {
+    uint8_t raw[2];
+    if (!read_bytes(buf, len, pos, raw, 2)) return false;
+    *out = (uint16_t)(raw[0] | ((uint16_t)raw[1] << 8));
     return true;
 }
 
-static bool read_u32(const uint8_t* bytes, size_t len, size_t* off, uint32_t* out) {
-    if ((*off + 4) > len) {
-        return false;
-    }
-    *out = (uint32_t)bytes[*off] |
-           ((uint32_t)bytes[*off + 1] << 8) |
-           ((uint32_t)bytes[*off + 2] << 16) |
-           ((uint32_t)bytes[*off + 3] << 24);
-    *off += 4;
+static bool read_u32_le(const uint8_t* buf, size_t len, size_t* pos, uint32_t* out) {
+    uint8_t raw[4];
+    if (!read_bytes(buf, len, pos, raw, 4)) return false;
+    *out = (uint32_t)(raw[0] | ((uint32_t)raw[1] << 8) |
+                      ((uint32_t)raw[2] << 16) | ((uint32_t)raw[3] << 24));
     return true;
 }
 
-static void report_error(FILE* err_stream, const char* message) {
-    FILE* out = err_stream ? err_stream : stderr;
-    fprintf(out, "runtime error: %s\n", message);
-}
+/* ── program loader ─────────────────────────────────────────────────────── */
 
-static const VmValue* vm_resolve_value(const MorphlVm* vm, const VmValue* value) {
-    if (value->kind != VM_VALUE_IDENT || !value->text) {
-        return value;
+bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
+    if (!path || !out) return false;
+
+    FILE* f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "vm: cannot open '%s'\n", path); return false; }
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fsize <= 0) { fclose(f); return false; }
+
+    uint8_t* buf = (uint8_t*)malloc((size_t)fsize);
+    if (!buf) { fclose(f); return false; }
+    if (fread(buf, 1, (size_t)fsize, f) != (size_t)fsize) {
+        free(buf); fclose(f); return false;
+    }
+    fclose(f);
+
+    size_t pos = 0;
+    size_t len = (size_t)fsize;
+
+    /* magic */
+    uint8_t magic[4];
+    if (!read_bytes(buf, len, &pos, magic, 4) ||
+        memcmp(magic, MORPHL_VM_MAGIC, 4) != 0) {
+        fprintf(stderr, "vm: bad magic in '%s'\n", path);
+        free(buf); return false;
     }
 
-    for (size_t i = 0; i < vm->slot_count; ++i) {
-        if (strcmp(vm->slots[i].name, value->text) == 0) {
-            return &vm->slots[i].value;
+    MorphlVmProgram* prog = (MorphlVmProgram*)calloc(1, sizeof(*prog));
+    if (!prog) { free(buf); return false; }
+
+    /* version */
+    uint16_t vmaj, vmin;
+    if (!read_u16_le(buf, len, &pos, &vmaj) ||
+        !read_u16_le(buf, len, &pos, &vmin)) goto err;
+    if (vmaj != MORPHL_VM_VERSION_MAJOR) {
+        fprintf(stderr, "vm: unsupported bytecode version %u.%u (expected %u.x)\n",
+                vmaj, vmin, MORPHL_VM_VERSION_MAJOR);
+        goto err;
+    }
+    prog->version_major = vmaj;
+    prog->version_minor = vmin;
+
+    /* flags (reserved) */
+    uint32_t flags;
+    if (!read_u32_le(buf, len, &pos, &flags)) goto err;
+
+    /* function table */
+    if (!read_u32_le(buf, len, &pos, &prog->func_count)) goto err;
+    if (prog->func_count > 0) {
+        prog->functions = (VmFunctionMeta*)malloc(
+            prog->func_count * sizeof(VmFunctionMeta));
+        if (!prog->functions) goto err;
+        for (uint32_t i = 0; i < prog->func_count; i++) {
+            VmFunctionMeta* fn = &prog->functions[i];
+            if (!read_u32_le(buf, len, &pos, &fn->entry_point) ||
+                !read_u32_le(buf, len, &pos, &fn->frame_size)  ||
+                !read_u32_le(buf, len, &pos, &fn->param_size)  ||
+                !read_u32_le(buf, len, &pos, &fn->flags))
+                goto err;
         }
     }
 
-    return value;
-}
-
-// Push a value onto the VM stack, growing it if necessary. Returns true on success, false on OOM.
-static bool vm_stack_push(MorphlVm* vm, const VmValue* value) {
-    if (vm->stack_count == vm->stack_capacity) {
-        size_t new_capacity = (vm->stack_capacity == 0) ? 16 : vm->stack_capacity * 2;
-        VmValue* grown = realloc(vm->stack, new_capacity * sizeof(VmValue));
-        if (!grown) {
-            return false;
-        }
-        vm->stack = grown;
-        vm->stack_capacity = new_capacity;
+    /* code section */
+    if (!read_u32_le(buf, len, &pos, &prog->code_len)) goto err;
+    if (prog->code_len > 0) {
+        prog->code = (uint8_t*)malloc(prog->code_len);
+        if (!prog->code) goto err;
+        if (!read_bytes(buf, len, &pos, prog->code, prog->code_len)) goto err;
     }
 
-    VmValue copy = {0};
-    if (!vm_value_copy(value, &copy)) {
-        return false;
-    }
-
-    vm->stack[vm->stack_count++] = copy;
+    free(buf);
+    *out = prog;
     return true;
-}
 
-static bool vm_stack_pop(MorphlVm* vm, VmValue* out) {
-    if (vm->stack_count == 0) {
-        return false;
-    }
-
-    *out = vm->stack[--vm->stack_count];
-    memset(&vm->stack[vm->stack_count], 0, sizeof(VmValue));
-    return true;
-}
-
-// Set a named slot in the VM, growing the slot list if necessary. Returns true on success, false on OOM.
-static bool vm_set_slot(MorphlVm* vm, const char* name, const VmValue* value) {
-    for (size_t i = 0; i < vm->slot_count; ++i) {
-        if (strcmp(vm->slots[i].name, name) == 0) {
-            vm_value_free(&vm->slots[i].value);
-            return vm_value_copy(value, &vm->slots[i].value);
-        }
-    }
-
-    if (vm->slot_count == vm->slot_capacity) {
-        size_t new_capacity = (vm->slot_capacity == 0) ? 16 : vm->slot_capacity * 2;
-        VmSlot* grown = realloc(vm->slots, new_capacity * sizeof(VmSlot));
-        if (!grown) {
-            return false;
-        }
-        vm->slots = grown;
-        vm->slot_capacity = new_capacity;
-    }
-
-    char* dup_name = malloc(strlen(name) + 1);
-    if (!dup_name) {
-        return false;
-    }
-    strcpy(dup_name, name);
-
-    VmValue copy = {0};
-    if (!vm_value_copy(value, &copy)) {
-        free(dup_name);
-        return false;
-    }
-
-    vm->slots[vm->slot_count].name = dup_name;
-    vm->slots[vm->slot_count].value = copy;
-    vm->slot_count++;
-    return true;
-}
-
-static bool vm_value_to_number(const VmValue* value, double* out_num) {
-    if (!value || value->kind != VM_VALUE_LITERAL || !value->text) {
-        return false;
-    }
-
-    char* end = NULL;
-    errno = 0;
-    double parsed = strtod(value->text, &end);
-    if (errno != 0 || end == value->text || *end != '\0') {
-        return false;
-    }
-
-    *out_num = parsed;
-    return true;
-}
-
-static bool vm_execute_operator(MorphlVm* vm, const char* op_name, FILE* err_stream) {
-    if (strcmp(op_name, "$add") == 0) {
-        VmValue rhs = {0};
-        VmValue lhs = {0};
-        if (!vm_stack_pop(vm, &rhs) || !vm_stack_pop(vm, &lhs)) {
-            vm_value_free(&rhs);
-            vm_value_free(&lhs);
-            report_error(err_stream, "$add requires two operands");
-            return false;
-        }
-
-        const VmValue* lhs_resolved = vm_resolve_value(vm, &lhs);
-        const VmValue* rhs_resolved = vm_resolve_value(vm, &rhs);
-
-        double lhs_num = 0;
-        double rhs_num = 0;
-        if (!vm_value_to_number(lhs_resolved, &lhs_num) || !vm_value_to_number(rhs_resolved, &rhs_num)) {
-            vm_value_free(&rhs);
-            vm_value_free(&lhs);
-            report_error(err_stream, "$add currently supports numeric literal operands only");
-            return false;
-        }
-
-        char buffer[64];
-        int written = snprintf(buffer, sizeof(buffer), "%.17g", lhs_num + rhs_num);
-        if (written <= 0 || (size_t)written >= sizeof(buffer)) {
-            vm_value_free(&rhs);
-            vm_value_free(&lhs);
-            report_error(err_stream, "failed to format $add result");
-            return false;
-        }
-
-        VmValue result = {
-            .kind = VM_VALUE_LITERAL,
-            .text = malloc((size_t)written + 1),
-            .items = NULL,
-            .item_count = 0,
-        };
-        if (!result.text) {
-            vm_value_free(&rhs);
-            vm_value_free(&lhs);
-            report_error(err_stream, "out of memory building $add result");
-            return false;
-        }
-        memcpy(result.text, buffer, (size_t)written + 1);
-
-        bool ok = vm_stack_push(vm, &result);
-        vm_value_free(&result);
-        vm_value_free(&rhs);
-        vm_value_free(&lhs);
-        if (!ok) {
-            report_error(err_stream, "out of memory pushing $add result");
-        }
-        return ok;
-    }
-
-    if (strcmp(op_name, "$set") == 0) {
-        VmValue rhs = {0};
-        VmValue lhs = {0};
-        if (!vm_stack_pop(vm, &rhs) || !vm_stack_pop(vm, &lhs)) {
-            vm_value_free(&rhs);
-            vm_value_free(&lhs);
-            report_error(err_stream, "$set requires identifier and value operands");
-            return false;
-        }
-
-        if (lhs.kind != VM_VALUE_IDENT || !lhs.text) {
-            vm_value_free(&rhs);
-            vm_value_free(&lhs);
-            report_error(err_stream, "$set lhs must be an identifier");
-            return false;
-        }
-
-        if (!vm_set_slot(vm, lhs.text, &rhs)) {
-            vm_value_free(&rhs);
-            vm_value_free(&lhs);
-            report_error(err_stream, "failed to write slot during $set");
-            return false;
-        }
-
-        bool ok = vm_stack_push(vm, &rhs);
-        vm_value_free(&rhs);
-        vm_value_free(&lhs);
-        if (!ok) {
-            report_error(err_stream, "out of memory pushing $set result");
-        }
-        return ok;
-    }
-
-    {
-        FILE* out = err_stream ? err_stream : stderr;
-        fprintf(out,
-                "runtime error: unsupported operator '%s' (supported in V0.1: $add, $set)\n",
-                op_name);
-    }
+err:
+    free(prog->functions);
+    free(prog->code);
+    free(prog);
+    free(buf);
     return false;
 }
 
-static bool vm_return(MorphlVm* vm, FILE* err_stream) {
-    // Unwind active scopes in the current call frame
-    if (vm->call_frame_count == 0) {
-        // No call frame to return from - i.e. return from top-level code. should be handled by caller (e.g. morphl_vm_execute)
-        // and not here so throw an error
-        report_error(err_stream, "attempted to return from top-level code");
-        return false;
-    }
-    VmCallFrame* frame = &vm->call_frames[vm->call_frame_count - 1];
-
-    // get top value on stack as return value
-    VmValue return_value = {0};
-    if (!vm_stack_pop(vm, &return_value)) {
-        report_error(err_stream, "stack underflow while trying to return value");
-        return false;
-    }
-
-    // Clean up slots created in this call frame
-    while (vm->slot_count > frame->base) {
-        vm_value_free(&vm->slots[--vm->slot_count].value);
-        free(vm->slots[vm->slot_count].name);
-        vm->slots[vm->slot_count].name = NULL;
-    }
-
-    // Pop call frame
-    vm->call_frame_count--;
-
-    // Jump back to return address
-    vm->ip = frame->return_ip;
-
-    // Push return value onto stack
-    if (!vm_stack_push(vm, &return_value)) {
-        vm_value_free(&return_value);
-        report_error(err_stream, "out of memory pushing return value onto stack");
-        return false;
-    }
-
-    return true;
+void morphl_vm_program_free(MorphlVmProgram* prog) {
+    if (!prog) return;
+    free(prog->functions);
+    free(prog->code);
+    free(prog);
 }
 
-// Call a function by index, pushing a new call frame. Returns true on success, false on error.
-// TODO: finish implementing argument passing and function entry point lookup. For now just pushes a new call frame with ip set to 0 so it's possible to call into main function at index 0.
-static bool vm_call(MorphlVm* vm, uint32_t func_index, FILE* err_stream) {
-    // record return point
-    size_t return_ip = vm->ip + 4; // return to instruction after the call
-    size_t return_base = vm->stack_count;
-    size_t return_local_base = vm->slot_count;
-
-    // allocate new call frame
-    if (vm->call_frame_count == vm->call_frame_capacity) {
-        size_t new_capacity = (vm->call_frame_capacity == 0) ? 16 : vm->call_frame_capacity * 2;
-        VmCallFrame* grown = realloc(vm->call_frames, new_capacity * sizeof(VmCallFrame));
-        if (!grown) {
-            return false;
-        }
-        vm->call_frames = grown;
-        vm->call_frame_capacity = new_capacity;
-    }
-    VmCallFrame* frame = &vm->call_frames[vm->call_frame_count++];
-    frame->func_index = func_index;
-    frame->return_ip = return_ip;
-    frame->return_base = return_base;
-    frame->return_local_base = return_local_base;
-    frame->ip = 0; // will be set to function entry point after we read it from the program
-    frame->base = vm->stack_count;
-    frame->local_base = vm->slot_count;
-    frame->scope_depth = vm->call_frame_count ? vm->call_frames[vm->call_frame_count - 2].scope_depth + 1 : 0;
-
-    // TODO: read function entry point from program's function table using func_index and set frame->ip to it. For now just set to 0 to make it possible to call into main function at index 0.
-    frame->ip = 0;
-
-    // TODO: copy arguments from stack to callee's local variable slots
-    (void)err_stream;
-    
-
-    return true;
-}
-
-// Initialize the main call frame and set the instruction pointer to the entry point. Returns true on success, false on error.
-static bool vm_init_call_frame(MorphlVm* vm, FILE* err_stream) {
-    if (vm->call_frame_count == vm->call_frame_capacity) {
-        size_t new_capacity = (vm->call_frame_capacity == 0) ? 16 : vm->call_frame_capacity * 2;
-        VmCallFrame* grown = realloc(vm->call_frames, new_capacity * sizeof(VmCallFrame));
-        if (!grown) {
-            report_error(err_stream, "out of memory allocating call frames");
-            return false;
-        }
-        vm->call_frames = grown;
-        vm->call_frame_capacity = new_capacity;
-    }
-    VmCallFrame* frame = &vm->call_frames[vm->call_frame_count++];
-    frame->func_index = 0; // main function is always at index 0
-    frame->return_ip = 0;
-    frame->base = 0;
-    frame->local_base = 0;
-    frame->scope_depth = 0;
-
-    frame->ip = vm->ip;
-
-    return true;
-}
-
-bool morphl_vm_program_load(const char* path, MorphlVmProgram** out_program) {
-    if (!path || !out_program) {
-        return false;
-    }
-
-    *out_program = NULL;
-
-    FILE* file = fopen(path, "rb");
-    if (!file) {
-        return false;
-    }
-
-    if (fseek(file, 0, SEEK_END) != 0) {
-        fclose(file);
-        return false;
-    }
-
-    long file_size = ftell(file);
-    if (file_size < 0) {
-        fclose(file);
-        return false;
-    }
-
-    if (fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
-        return false;
-    }
-
-    uint8_t* bytes = malloc((size_t)file_size);
-    if (!bytes) {
-        fclose(file);
-        return false;
-    }
-
-    bool ok = (fread(bytes, 1, (size_t)file_size, file) == (size_t)file_size);
-    fclose(file);
-    if (!ok) {
-        free(bytes);
-        return false;
-    }
-
-    MorphlVmProgram* program = calloc(1, sizeof(MorphlVmProgram));
-    if (!program) {
-        free(bytes);
-        return false;
-    }
-
-    size_t off = 0;
-    if ((size_t)file_size < 4 || memcmp(bytes, MORPHL_VM_MAGIC, 4) != 0) {
-        free(bytes);
-        morphl_vm_program_free(program);
-        return false;
-    }
-    off += 4;
-
-    uint32_t reserved = 0;
-    uint32_t metadata_count = 0;
-    if (!read_u16(bytes, (size_t)file_size, &off, &program->version_major) ||
-        !read_u16(bytes, (size_t)file_size, &off, &program->version_minor) ||
-        !read_u32(bytes, (size_t)file_size, &off, &reserved) ||
-        !read_u32(bytes, (size_t)file_size, &off, &program->string_count)) {
-        free(bytes);
-        morphl_vm_program_free(program);
-        return false;
-    }
-
-    if (program->string_count > 0) {
-        program->strings = calloc(program->string_count, sizeof(char*));
-        if (!program->strings) {
-            free(bytes);
-            morphl_vm_program_free(program);
-            return false;
-        }
-    }
-
-    for (uint32_t i = 0; i < program->string_count; ++i) {
-        uint32_t len = 0;
-        if (!read_u32(bytes, (size_t)file_size, &off, &len) || (off + len) > (size_t)file_size) {
-            free(bytes);
-            morphl_vm_program_free(program);
-            return false;
-        }
-
-        char* text = malloc((size_t)len + 1);
-        if (!text) {
-            free(bytes);
-            morphl_vm_program_free(program);
-            return false;
-        }
-        memcpy(text, bytes + off, len);
-        text[len] = '\0';
-        off += len;
-        program->strings[i] = text;
-    }
-
-    if (!read_u32(bytes, (size_t)file_size, &off, &metadata_count)) {
-        free(bytes);
-        morphl_vm_program_free(program);
-        return false;
-    }
-
-    for (uint32_t i = 0; i < metadata_count; ++i) {
-        uint32_t key = 0;
-        uint32_t value = 0;
-        if (!read_u32(bytes, (size_t)file_size, &off, &key) ||
-            !read_u32(bytes, (size_t)file_size, &off, &value)) {
-            free(bytes);
-            morphl_vm_program_free(program);
-            return false;
-        }
-    }
-
-    if (!read_u32(bytes, (size_t)file_size, &off, &program->code_len) ||
-        (off + program->code_len) > (size_t)file_size) {
-        free(bytes);
-        morphl_vm_program_free(program);
-        return false;
-    }
-
-    if (program->code_len > 0) {
-        program->code = malloc(program->code_len);
-        if (!program->code) {
-            free(bytes);
-            morphl_vm_program_free(program);
-            return false;
-        }
-        memcpy(program->code, bytes + off, program->code_len);
-    }
-
-    free(bytes);
-    *out_program = program;
-    return true;
-}
-
-void morphl_vm_program_free(MorphlVmProgram* program) {
-    if (!program) {
-        return;
-    }
-
-    for (uint32_t i = 0; i < program->string_count; ++i) {
-        free(program->strings[i]);
-    }
-    free(program->strings);
-    free(program->code);
-    free(program);
-}
+/* ── VM lifecycle ───────────────────────────────────────────────────────── */
 
 MorphlVm* morphl_vm_new(const MorphlVmProgram* program) {
-    if (!program) {
-        return NULL;
-    }
-
-    MorphlVm* vm = calloc(1, sizeof(MorphlVm));
-    if (!vm) {
-        return NULL;
-    }
+    if (!program) return NULL;
+    MorphlVm* vm = (MorphlVm*)calloc(1, sizeof(*vm));
+    if (!vm) return NULL;
     vm->program = program;
+    vm->ip      = 0;
     return vm;
 }
 
 void morphl_vm_free(MorphlVm* vm) {
-    if (!vm) {
-        return;
-    }
-
-    for (size_t i = 0; i < vm->stack_count; ++i) {
-        vm_value_free(&vm->stack[i]);
-    }
-    free(vm->stack);
-
-    for (size_t i = 0; i < vm->slot_count; ++i) {
-        free(vm->slots[i].name);
-        vm_value_free(&vm->slots[i].value);
-    }
-    free(vm->slots);
-
-    for (size_t i = 0; i < vm->call_frame_count; ++i) {
-        // no heap allocations in call frames currently, but if we add any in the future we should free them here
-    }
+    if (!vm) return;
+    free(vm->stack.data);
     free(vm->call_frames);
-
     free(vm);
 }
 
-morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err_stream) {
-    if (!vm || !vm->program || !vm->program->code) {
-        report_error(err_stream, "invalid VM state");
-        return 1;
+/* ── frame pointer ──────────────────────────────────────────────────────── */
+
+static uint8_t* frame_ptr(MorphlVm* vm, int32_t offset) {
+    if (vm->call_frame_count == 0) {
+        return vm->stack.data + (ptrdiff_t)offset;
     }
-
-    // initialize main call frame
-    if (!vm_init_call_frame(vm, err_stream)) {
-        report_error(err_stream, "failed to initialize call frame");
-        return 1;
-    }
-
-    while (vm->ip < vm->program->code_len) {
-        uint8_t op = vm->program->code[vm->ip++];
-
-        if (op == VM_OP_HALT) {
-            return 0;
-        }
-
-        if (op == VM_OP_PUSH_NULL) {
-            VmValue value = {.kind = VM_VALUE_NULL, .text = NULL, .items = NULL, .item_count = 0};
-            if (!vm_stack_push(vm, &value)) {
-                report_error(err_stream, "out of memory during PUSH_NULL");
-                return 1;
-            }
-            continue;
-        }
-
-        if (op == VM_OP_PUSH_LITERAL || op == VM_OP_PUSH_IDENT) {
-            uint32_t idx = 0;
-            if ((vm->ip + 4) > vm->program->code_len) {
-                report_error(err_stream, "truncated PUSH payload");
-                return 1;
-            }
-            idx = (uint32_t)vm->program->code[vm->ip] |
-                  ((uint32_t)vm->program->code[vm->ip + 1] << 8) |
-                  ((uint32_t)vm->program->code[vm->ip + 2] << 16) |
-                  ((uint32_t)vm->program->code[vm->ip + 3] << 24);
-            vm->ip += 4;
-
-            if (idx >= vm->program->string_count) {
-                report_error(err_stream, "string index out of bounds");
-                return 1;
-            }
-
-            VmValue value = {
-                .kind = (op == VM_OP_PUSH_LITERAL) ? VM_VALUE_LITERAL : VM_VALUE_IDENT,
-                .text = vm->program->strings[idx],
-                .items = NULL,
-                .item_count = 0,
-            };
-            if (!vm_stack_push(vm, &value)) {
-                report_error(err_stream, "out of memory during PUSH");
-                return 1;
-            }
-            continue;
-        }
-
-        if (op == VM_OP_MAKE_GROUP) {
-            uint32_t arity = 0;
-            if ((vm->ip + 4) > vm->program->code_len) {
-                report_error(err_stream, "truncated MAKE_GROUP payload");
-                return 1;
-            }
-            arity = (uint32_t)vm->program->code[vm->ip] |
-                    ((uint32_t)vm->program->code[vm->ip + 1] << 8) |
-                    ((uint32_t)vm->program->code[vm->ip + 2] << 16) |
-                    ((uint32_t)vm->program->code[vm->ip + 3] << 24);
-            vm->ip += 4;
-
-            if ((size_t)arity > vm->stack_count) {
-                report_error(err_stream, "MAKE_GROUP arity exceeds stack depth");
-                return 1;
-            }
-
-            VmValue group = {.kind = VM_VALUE_GROUP, .text = NULL, .items = NULL, .item_count = arity};
-            if (arity > 0) {
-                group.items = calloc(arity, sizeof(VmValue));
-                if (!group.items) {
-                    report_error(err_stream, "out of memory during MAKE_GROUP");
-                    return 1;
-                }
-            }
-
-            for (size_t i = 0; i < arity; ++i) {
-                VmValue item = {0};
-                if (!vm_stack_pop(vm, &item)) {
-                    vm_value_free(&group);
-                    report_error(err_stream, "stack underflow during MAKE_GROUP");
-                    return 1;
-                }
-                group.items[arity - i - 1] = item;
-            }
-
-            if (!vm_stack_push(vm, &group)) {
-                vm_value_free(&group);
-                report_error(err_stream, "out of memory pushing group");
-                return 1;
-            }
-            vm_value_free(&group);
-            continue;
-        }
-
-        if (op == VM_OP_SET_SLOT) {
-            uint32_t idx = 0;
-            if ((vm->ip + 4) > vm->program->code_len) {
-                report_error(err_stream, "truncated SET_SLOT payload");
-                return 1;
-            }
-            idx = (uint32_t)vm->program->code[vm->ip] |
-                  ((uint32_t)vm->program->code[vm->ip + 1] << 8) |
-                  ((uint32_t)vm->program->code[vm->ip + 2] << 16) |
-                  ((uint32_t)vm->program->code[vm->ip + 3] << 24);
-            vm->ip += 4;
-
-            if (idx >= vm->program->string_count) {
-                report_error(err_stream, "SET_SLOT index out of bounds");
-                return 1;
-            }
-
-            VmValue value = {0};
-            if (!vm_stack_pop(vm, &value)) {
-                report_error(err_stream, "SET_SLOT requires a value on stack");
-                return 1;
-            }
-
-            bool ok = vm_set_slot(vm, vm->program->strings[idx], &value);
-            if (ok) {
-                ok = vm_stack_push(vm, &value);
-            }
-            vm_value_free(&value);
-            if (!ok) {
-                report_error(err_stream, "failed to assign slot");
-                return 1;
-            }
-            continue;
-        }
-
-        if (op == VM_OP_OPERATOR) {
-            uint32_t idx = 0;
-            if ((vm->ip + 4) > vm->program->code_len) {
-                report_error(err_stream, "truncated OPERATOR payload");
-                return 1;
-            }
-            idx = (uint32_t)vm->program->code[vm->ip] |
-                  ((uint32_t)vm->program->code[vm->ip + 1] << 8) |
-                  ((uint32_t)vm->program->code[vm->ip + 2] << 16) |
-                  ((uint32_t)vm->program->code[vm->ip + 3] << 24);
-            vm->ip += 4;
-
-            if (idx >= vm->program->string_count) {
-                report_error(err_stream, "OPERATOR index out of bounds");
-                return 1;
-            }
-
-            if (!vm_execute_operator(vm, vm->program->strings[idx], err_stream)) {
-                return 1;
-            }
-            continue;
-        }
-
-        if (op == VM_OP_RET) {
-            // if current call frame is main (i.e. call_frame_count == 1), then return from execute with the value on top of the stack as the exit code
-            if (vm->call_frame_count == 1) {
-                VmValue exit_value = {0};
-                if (!vm_stack_pop(vm, &exit_value)) {
-                    report_error(err_stream, "stack underflow while trying to read exit code");
-                    return 1;
-                }
-
-                double exit_num = 0;
-                if (!vm_value_to_number(&exit_value, &exit_num) || exit_num < 0 || exit_num > 255) {
-                    vm_value_free(&exit_value);
-                    report_error(err_stream, "invalid exit code (must be a number between 0 and 255)");
-                    return 1;
-                }
-
-                vm_value_free(&exit_value);
-                return (morphl_exit_code_t)(int)exit_num;
-            }
-
-            // otherwise, return from current function
-            if (!vm_return(vm, err_stream)) {
-                report_error(err_stream, "failed to return from function");
-                return 1;
-            }
-        }
-
-        if (op == VM_OP_CALL) {
-            uint32_t func_index = 0;
-            if ((vm->ip + 4) > vm->program->code_len) {
-                report_error(err_stream, "truncated CALL payload");
-                return 1;
-            }
-            func_index = (uint32_t)vm->program->code[vm->ip] |
-                         ((uint32_t)vm->program->code[vm->ip + 1] << 8) |
-                         ((uint32_t)vm->program->code[vm->ip + 2] << 16) |
-                         ((uint32_t)vm->program->code[vm->ip + 3] << 24);
-            vm->ip += 4;
-
-            if (!vm_call(vm, func_index, err_stream)) {
-                report_error(err_stream, "failed to call function");
-                return 1;
-            }
-            continue;
-        }
-
-        if (op == VM_OP_NODE_META) {
-            report_error(err_stream, "NODE_META execution is not supported in V0.1 runtime");
-            return 1;
-        }
-
-        report_error(err_stream, "unknown opcode");
-        return 1;
-    }
-
-    report_error(err_stream, "program terminated without HALT");
-    return 1;
+    VmCallFrame* cf = &vm->call_frames[vm->call_frame_count - 1];
+    return vm->stack.data + (ptrdiff_t)cf->frame_base + (ptrdiff_t)offset;
 }
 
-morphl_exit_code_t morphl_vm_run_file(const char* path, FILE* err_stream) {
-    MorphlVmProgram* program = NULL;
-    if (!morphl_vm_program_load(path, &program)) {
-        report_error(err_stream, "failed to load bytecode file");
+/* ── call frame push ────────────────────────────────────────────────────── */
+
+static bool push_call_frame(MorphlVm* vm, VmCallFrame cf) {
+    if (vm->call_frame_count >= vm->call_frame_capacity) {
+        size_t newcap = vm->call_frame_capacity ? vm->call_frame_capacity * 2 : 64;
+        VmCallFrame* p = (VmCallFrame*)realloc(vm->call_frames,
+                                               newcap * sizeof(VmCallFrame));
+        if (!p) return false;
+        vm->call_frames         = p;
+        vm->call_frame_capacity = newcap;
+    }
+    vm->call_frames[vm->call_frame_count++] = cf;
+    return true;
+}
+
+/* ── operand read macros ─────────────────────────────────────────────────── */
+
+#define CHECK_IP(n) do { \
+    if (vm->ip + (n) > (size_t)vm->program->code_len) { \
+        fprintf(err, "vm: ip overrun at %zu\n", vm->ip); return 1; \
+    } } while(0)
+
+#define READ_U8(v) do { \
+    CHECK_IP(1); \
+    (v) = vm->program->code[vm->ip++]; \
+} while(0)
+
+#define READ_U32(v) do { \
+    CHECK_IP(4); \
+    uint8_t _r[4]; memcpy(_r, vm->program->code + vm->ip, 4); vm->ip += 4; \
+    (v) = (uint32_t)(_r[0] | ((uint32_t)_r[1]<<8) | ((uint32_t)_r[2]<<16) | ((uint32_t)_r[3]<<24)); \
+} while(0)
+
+#define READ_I32(v) do { \
+    uint32_t _u; READ_U32(_u); (v) = (int32_t)_u; \
+} while(0)
+
+#define READ_I64(v) do { \
+    CHECK_IP(8); \
+    uint8_t _r[8]; memcpy(_r, vm->program->code + vm->ip, 8); vm->ip += 8; \
+    uint64_t _u = (uint64_t)_r[0] | ((uint64_t)_r[1]<<8) | ((uint64_t)_r[2]<<16) | \
+                  ((uint64_t)_r[3]<<24) | ((uint64_t)_r[4]<<32) | ((uint64_t)_r[5]<<40) | \
+                  ((uint64_t)_r[6]<<48) | ((uint64_t)_r[7]<<56); \
+    (v) = (int64_t)_u; \
+} while(0)
+
+#define READ_F64(v) do { \
+    CHECK_IP(8); \
+    uint8_t _r[8]; memcpy(_r, vm->program->code + vm->ip, 8); vm->ip += 8; \
+    uint64_t _u = (uint64_t)_r[0] | ((uint64_t)_r[1]<<8) | ((uint64_t)_r[2]<<16) | \
+                  ((uint64_t)_r[3]<<24) | ((uint64_t)_r[4]<<32) | ((uint64_t)_r[5]<<40) | \
+                  ((uint64_t)_r[6]<<48) | ((uint64_t)_r[7]<<56); \
+    memcpy(&(v), &_u, 8); \
+} while(0)
+
+#define PUSH_I64(v) do { if (!stack_push_i64(&vm->stack, (v))) { fprintf(err, "vm: stack overflow\n"); return 1; } } while(0)
+#define PUSH_F64(v) do { if (!stack_push_f64(&vm->stack, (v))) { fprintf(err, "vm: stack overflow\n"); return 1; } } while(0)
+#define POP_I64(v)  do { if (!stack_pop_i64(&vm->stack,  &(v))) { fprintf(err, "vm: stack underflow\n"); return 1; } } while(0)
+#define POP_F64(v)  do { if (!stack_pop_f64(&vm->stack,  &(v))) { fprintf(err, "vm: stack underflow\n"); return 1; } } while(0)
+
+/* ── main execute loop ──────────────────────────────────────────────────── */
+
+morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
+    if (!vm || !vm->program) return 1;
+    if (!err) err = stderr;
+
+    if (vm->program->func_count == 0) {
+        fprintf(err, "vm: no functions in program\n");
         return 1;
     }
+    vm->ip = vm->program->functions[0].entry_point;
 
-    MorphlVm* vm = morphl_vm_new(program);
-    if (!vm) {
-        report_error(err_stream, "failed to initialize VM");
-        morphl_vm_program_free(program);
-        return 1;
+    while (vm->ip < (size_t)vm->program->code_len) {
+        uint8_t op;
+        READ_U8(op);
+
+        switch (op) {
+
+        /* ── halt ── */
+        case VM_OP_HALT:
+            return 0;
+
+        /* ── constants ── */
+        case VM_OP_ICONST: { int64_t v; READ_I64(v); PUSH_I64(v); break; }
+        case VM_OP_FCONST: { double  v; READ_F64(v); PUSH_F64(v); break; }
+        case VM_OP_RNULL:  { PUSH_I64(0); break; }
+
+        /* ── integer arithmetic ── */
+        case VM_OP_IADD: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a + b); break; }
+        case VM_OP_ISUB: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a - b); break; }
+        case VM_OP_IMUL: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a * b); break; }
+        case VM_OP_IDIV: {
+            int64_t b, a; POP_I64(b); POP_I64(a);
+            if (b == 0) { fprintf(err, "vm: integer division by zero\n"); return 1; }
+            PUSH_I64(a / b); break;
+        }
+        case VM_OP_IMOD: {
+            int64_t b, a; POP_I64(b); POP_I64(a);
+            if (b == 0) { fprintf(err, "vm: integer modulo by zero\n"); return 1; }
+            PUSH_I64(a % b); break;
+        }
+
+        /* ── float arithmetic ── */
+        case VM_OP_FADD: { double b, a; POP_F64(b); POP_F64(a); PUSH_F64(a + b); break; }
+        case VM_OP_FSUB: { double b, a; POP_F64(b); POP_F64(a); PUSH_F64(a - b); break; }
+        case VM_OP_FMUL: { double b, a; POP_F64(b); POP_F64(a); PUSH_F64(a * b); break; }
+        case VM_OP_FDIV: { double b, a; POP_F64(b); POP_F64(a); PUSH_F64(a / b); break; }
+
+        /* ── integer comparison ── */
+        case VM_OP_IEQ:  { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a==b?1:0); break; }
+        case VM_OP_INEQ: { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a!=b?1:0); break; }
+        case VM_OP_ILT:  { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a< b?1:0); break; }
+        case VM_OP_IGT:  { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a> b?1:0); break; }
+        case VM_OP_ILTE: { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a<=b?1:0); break; }
+        case VM_OP_IGTE: { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a>=b?1:0); break; }
+
+        /* ── float comparison ── */
+        case VM_OP_FEQ:  { double b,a; POP_F64(b); POP_F64(a); PUSH_I64(a==b?1:0); break; }
+        case VM_OP_FNEQ: { double b,a; POP_F64(b); POP_F64(a); PUSH_I64(a!=b?1:0); break; }
+        case VM_OP_FLT:  { double b,a; POP_F64(b); POP_F64(a); PUSH_I64(a< b?1:0); break; }
+        case VM_OP_FGT:  { double b,a; POP_F64(b); POP_F64(a); PUSH_I64(a> b?1:0); break; }
+        case VM_OP_FLTE: { double b,a; POP_F64(b); POP_F64(a); PUSH_I64(a<=b?1:0); break; }
+        case VM_OP_FGTE: { double b,a; POP_F64(b); POP_F64(a); PUSH_I64(a>=b?1:0); break; }
+
+        /* ── type conversion ── */
+        case VM_OP_I2F: { int64_t v; POP_I64(v); PUSH_F64((double)v);  break; }
+        case VM_OP_F2I: { double  v; POP_F64(v); PUSH_I64((int64_t)v); break; }
+
+        /* ── scope management ── */
+        case VM_OP_ENTER: {
+            uint32_t sz; READ_U32(sz);
+            if (!stack_reserve(&vm->stack, sz)) {
+                fprintf(err, "vm: OOM on ENTER\n"); return 1;
+            }
+            break;
+        }
+        case VM_OP_LEAVE: {
+            uint32_t sz; READ_U32(sz);
+            if (sz > vm->stack.top) {
+                fprintf(err, "vm: LEAVE underflow\n"); return 1;
+            }
+            vm->stack.top -= sz;
+            break;
+        }
+
+        /* ── load / store ── */
+        case VM_OP_ILOAD: {
+            int32_t off; READ_I32(off);
+            int64_t v;
+            memcpy(&v, frame_ptr(vm, off), 8);
+            PUSH_I64(v);
+            break;
+        }
+        case VM_OP_FLOAD: {
+            int32_t off; READ_I32(off);
+            double v;
+            memcpy(&v, frame_ptr(vm, off), 8);
+            PUSH_F64(v);
+            break;
+        }
+        case VM_OP_ISTORE: {
+            int32_t off; READ_I32(off);
+            int64_t v; POP_I64(v);
+            memcpy(frame_ptr(vm, off), &v, 8);
+            break;
+        }
+        case VM_OP_FSTORE: {
+            int32_t off; READ_I32(off);
+            double v; POP_F64(v);
+            memcpy(frame_ptr(vm, off), &v, 8);
+            break;
+        }
+
+        /* ── control flow ── */
+        case VM_OP_JMP: {
+            int32_t rel; READ_I32(rel);
+            vm->ip = (size_t)((ptrdiff_t)vm->ip + rel);
+            break;
+        }
+        case VM_OP_JIF: {
+            int32_t rel; READ_I32(rel);
+            int64_t v; POP_I64(v);
+            if (v) vm->ip = (size_t)((ptrdiff_t)vm->ip + rel);
+            break;
+        }
+
+        /* ── function calls ── */
+        case VM_OP_RESERVE: {
+            uint32_t sz; READ_U32(sz);
+            if (!stack_reserve(&vm->stack, sz)) {
+                fprintf(err, "vm: OOM on RESERVE\n"); return 1;
+            }
+            break;
+        }
+        case VM_OP_CALL: {
+            uint32_t idx; READ_U32(idx);
+            if (idx >= vm->program->func_count) {
+                fprintf(err, "vm: CALL index %u out of range\n", idx);
+                return 1;
+            }
+            VmFunctionMeta* fn = &vm->program->functions[idx];
+            VmCallFrame cf = {
+                .frame_base = vm->stack.top,
+                .return_ip  = vm->ip,
+                .func_index = idx,
+            };
+            if (!push_call_frame(vm, cf)) {
+                fprintf(err, "vm: call frame OOM\n"); return 1;
+            }
+            if (!stack_reserve(&vm->stack, fn->frame_size)) {
+                fprintf(err, "vm: OOM on CALL frame\n"); return 1;
+            }
+            vm->ip = fn->entry_point;
+            break;
+        }
+        case VM_OP_RET: {
+            if (vm->call_frame_count == 0) {
+                return 0;
+            }
+            VmCallFrame cf = vm->call_frames[--vm->call_frame_count];
+            vm->stack.top = cf.frame_base;
+            vm->ip        = cf.return_ip;
+            break;
+        }
+
+        default:
+            fprintf(err, "vm: unknown opcode 0x%02X at ip=%zu\n", op, vm->ip - 1);
+            return 1;
+        }
     }
 
-    morphl_exit_code_t ok = morphl_vm_execute(vm, err_stream);
+    return 0;
+}
+
+/* ── convenience wrapper ─────────────────────────────────────────────────── */
+
+morphl_exit_code_t morphl_vm_run_file(const char* path, FILE* err) {
+    MorphlVmProgram* prog = NULL;
+    if (!morphl_vm_program_load(path, &prog)) return 1;
+
+    MorphlVm* vm = morphl_vm_new(prog);
+    if (!vm) { morphl_vm_program_free(prog); return 1; }
+
+    morphl_exit_code_t code = morphl_vm_execute(vm, err);
+
     morphl_vm_free(vm);
-    morphl_vm_program_free(program);
-    return ok;
+    morphl_vm_program_free(prog);
+    return code;
 }

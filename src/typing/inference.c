@@ -468,7 +468,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   return morphl_type_void(ctx->arena);
 }
 
-MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
+static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* node) {
   if (!ctx || !node) return NULL;
   
   switch (node->kind) {
@@ -1063,4 +1063,10 @@ MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
     default:
       return morphl_type_void(ctx->arena);
   }
+}
+
+MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
+  MorphlType* t = morphl_infer_type_of_ast_inner(ctx, node);
+  if (node) node->type = t;
+  return t;
 }
