@@ -587,6 +587,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             {"$gt",   VM_OP_IGT,   VM_OP_FGT},
             {"$lte",  VM_OP_ILTE,  VM_OP_FLTE},
             {"$gte",  VM_OP_IGTE,  VM_OP_FGTE},
+            /* float-specific aliases (produced by grammar overload resolution) */
+            {"$fadd", 0xFF, VM_OP_FADD},
+            {"$fsub", 0xFF, VM_OP_FSUB},
+            {"$fmul", 0xFF, VM_OP_FMUL},
+            {"$fdiv", 0xFF, VM_OP_FDIV},
         };
         for (size_t i = 0; i < sizeof(binops)/sizeof(binops[0]); i++) {
             size_t nlen = strlen(binops[i].name);

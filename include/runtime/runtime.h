@@ -30,4 +30,12 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err_stream);
 /// Convenience helper for load + execute + teardown.
 morphl_exit_code_t morphl_vm_run_file(const char* path, FILE* err_stream);
 
+/// Read an i64 from the raw byte stack at byte_offset after execution.
+/// Returns false if out-of-bounds or arguments are NULL.
+bool morphl_vm_read_stack_i64(const MorphlVm* vm, size_t byte_offset, int64_t* out);
+
+/// Read an f64 from the raw byte stack at byte_offset after execution.
+/// Returns false if out-of-bounds or arguments are NULL.
+bool morphl_vm_read_stack_f64(const MorphlVm* vm, size_t byte_offset, double* out);
+
 #endif // MORPHL_RUNTIME_RUNTIME_H_

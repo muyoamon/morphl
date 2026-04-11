@@ -508,3 +508,17 @@ morphl_exit_code_t morphl_vm_run_file(const char* path, FILE* err) {
     morphl_vm_program_free(prog);
     return code;
 }
+
+/* ── test accessors ──────────────────────────────────────────────────────── */
+
+bool morphl_vm_read_stack_i64(const MorphlVm* vm, size_t byte_offset, int64_t* out) {
+    if (!vm || !out || byte_offset + 8 > vm->stack.top) return false;
+    memcpy(out, vm->stack.data + byte_offset, 8);
+    return true;
+}
+
+bool morphl_vm_read_stack_f64(const MorphlVm* vm, size_t byte_offset, double* out) {
+    if (!vm || !out || byte_offset + 8 > vm->stack.top) return false;
+    memcpy(out, vm->stack.data + byte_offset, 8);
+    return true;
+}
