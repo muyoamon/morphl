@@ -220,6 +220,124 @@ static void test_e2e_multiple_decls() {
     printf("PASS test_e2e_multiple_decls\n");
 }
 
+/* Spec §4.3 ($ref local alias): using r reads through to x */
+static void test_e2e_ref_alias_read() {
+    int rc = compile_and_run(
+        "$decl x $mut 42;\n"
+        "$decl r $ref x;\n"
+        "$decl y $add r 1;\n"   /* reads x via alias r, y = 43 */
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_ref_alias_read\n");
+}
+
+/* Spec §4.3 ($ref local alias): assigning through r writes to x */
+static void test_e2e_ref_alias_write() {
+    int rc = compile_and_run(
+        "$decl x $mut 10;\n"
+        "$decl r $ref x;\n"
+        "$set r 99;\n"          /* writes through alias to x */
+        "$decl z $add x 1;\n"  /* x should now be 99, z = 100 */
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_ref_alias_write\n");
+}
+
+/* Spec §6 ($func) + CALLF: call a function stored as a value */
+static void test_e2e_callf() {
+    int rc = compile_and_run(
+        "$decl add $func ($decl a 0, $decl b 0) {\n"
+        "    $ret $add a b;\n"
+        "};\n"
+        "$decl result $call add (3 4);\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_callf\n");
+}
+
+/* Spec §5.5 ($null): push and compare null reference */
+static void test_e2e_null() {
+    int rc = compile_and_run(
+        "$decl n $null;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_null\n");
+}
+
+/* Spec §7 ($this): $this resolves to the current function's frame address */
+static void test_e2e_this() {
+    int rc = compile_and_run(
+        "$decl f $func () {\n"
+        "    $ret $this;\n"
+        "};\n"
+        "$call f ();\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_this\n");
+}
+
+/* Spec §7 ($parent): $parent resolves to the caller's frame address (hidden arg) */
+static void test_e2e_parent() {
+    int rc = compile_and_run(
+        "$decl x 10;\n"
+        "$decl f $func () {\n"
+        "    $ret $parent;\n"
+        "};\n"
+        "$call f ();\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_parent\n");
+}
+
+/* Spec §9.1 ($traits): basic trait declaration */
+static void test_e2e_traits_decl() {
+    int rc = compile_and_run(
+        "$decl TraitA $traits {\n"
+        "    $prop propA 30;\n"
+        "};\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_traits_decl\n");
+}
+
+/* Spec §9.2 ($impl): impl declaration extending a base type with trait properties */
+static void test_e2e_impl_decl() {
+    int rc = compile_and_run(
+        "$decl typeD {\n"
+        "    $decl x 0;\n"
+        "};\n"
+        "$decl TraitA $traits {\n"
+        "    $prop propA 30;\n"
+        "};\n"
+        "$decl typeE $impl TraitA typeD {\n"
+        "    $prop propA 99;\n"
+        "};\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_impl_decl\n");
+}
+
+/* Spec §9.2 ($impl): impl with function property default */
+static void test_e2e_impl_with_func_prop() {
+    int rc = compile_and_run(
+        "$decl typeD {\n"
+        "    $decl x 5;\n"
+        "};\n"
+        "$decl TraitA $traits {\n"
+        "    $prop propA 0;\n"
+        "    $prop methodB $func () 0;\n"
+        "};\n"
+        "$decl typeE $impl TraitA typeD {\n"
+        "    $prop propA 99;\n"
+        "    $prop methodB $func () {\n"
+        "        $ret $parent;\n"
+        "    };\n"
+        "};\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_impl_with_func_prop\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -232,6 +350,15 @@ int main(void) {
     test_e2e_if_true_branch();
     test_e2e_if_false_branch();
     test_e2e_multiple_decls();
+    test_e2e_ref_alias_read();
+    test_e2e_ref_alias_write();
+    test_e2e_callf();
+    test_e2e_null();
+    test_e2e_this();
+    test_e2e_parent();
+    test_e2e_traits_decl();
+    test_e2e_impl_decl();
+    test_e2e_impl_with_func_prop();
     printf("All integration tests passed.\n");
     return 0;
 }

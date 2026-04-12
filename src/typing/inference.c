@@ -144,6 +144,19 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return this_type;
   }
 
+  if (op_sym == interns_intern(ctx->interns, str_from("$parent", 7))) {
+    /* $parent: the block scope enclosing the current function.
+     * Inside a function body, type_context_get_this() returns the block type
+     * of the scope that contains the function (since AST_FUNC doesn't push_this),
+     * which is exactly the $parent type. */
+    MorphlType* parent_type = type_context_get_this(ctx);
+    if (!parent_type) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$parent: no enclosing block scope");
+      morphl_error_emit(NULL, &err);
+    }
+    return parent_type;
+  }
+
   if (op_sym == interns_intern(ctx->interns, str_from("$file", 5))) {
     MorphlType* file_type = type_context_get_file(ctx);
     if (!file_type) {
@@ -160,6 +173,55 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
     }
     return global_type;
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$ref", 4))) {
+    if (arg_count != 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$ref expects 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    /* When $ref targets a qualifier-ref ($mut x), unwrap it and inherit mutability.
+     * This avoids double-wrapping: $ref($mut(i64)) → REF{is_mutable,is_ref}(i64)
+     * not REF{is_ref}(REF{is_mutable}(i64)), so $set type checks work correctly. */
+    MorphlType* target = arg_types[0];
+    MorphlType* inner_type;
+    bool inherited_mutable;
+    if (target->kind == MORPHL_TYPE_REF && !target->data.ref.is_ref) {
+      inner_type = target->data.ref.target;
+      inherited_mutable = target->data.ref.is_mutable;
+    } else {
+      inner_type = target;
+      inherited_mutable = false;
+    }
+    MorphlType* ref_type = morphl_type_ref(ctx->arena, inner_type, inherited_mutable, false);
+    if (ref_type) {
+      ref_type->data.ref.is_ref = true;
+      ref_type->size = 4;
+      ref_type->align = 4;
+    }
+    return ref_type;
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$null", 5))) {
+    MorphlType* void_t = morphl_type_void(ctx->arena);
+    MorphlType* ref_type = void_t ? morphl_type_ref(ctx->arena, void_t, false, false) : NULL;
+    if (ref_type) {
+      ref_type->data.ref.is_ref = true;
+      ref_type->size = 4;
+      ref_type->align = 4;
+    }
+    return ref_type;
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$new", 4))) {
+    if (arg_count != 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$new expects 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    // $new re-executes a block, returning a fresh instance of the same type
+    return unwrap_ref(arg_types[0]);
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$forward", 8))) {
@@ -342,6 +404,30 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   if (op_sym == interns_intern(ctx->interns, str_from("$group", 6)) ||
       op_sym == interns_intern(ctx->interns, str_from("$block", 6))) {
     return morphl_type_void(ctx->arena);
+  }
+
+  // Trait system
+  if (op_sym == interns_intern(ctx->interns, str_from("$traits", 7))) {
+    /* $traits { $prop... } — the arg is the traits block; return its type (MORPHL_TYPE_BLOCK
+     * with $-prefixed prop fields). Callers can check kind == MORPHL_TYPE_BLOCK to find props. */
+    if (arg_count != 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$traits expects 1 block argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return arg_types[0];
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$impl", 5))) {
+    /* $impl TraitA typeD { overrides } — returns the base type (typeD) as the impl type.
+     * arg_types[0] = trait type, arg_types[1] = base type, arg_types[2] = override block. */
+    if (arg_count < 2 || !arg_types[1]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$impl expects at least 2 arguments (trait, base)");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    /* Return the base type — the impl type is structurally identical to the base for now. */
+    return arg_types[1];
   }
 
   // Function definition: $func produces a function type

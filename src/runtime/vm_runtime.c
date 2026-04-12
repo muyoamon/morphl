@@ -419,6 +419,14 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             PUSH_F64(v);
             break;
         }
+        case VM_OP_RLOAD: {
+            /* load i64 ref (absolute stack address) stored at frame[off]; push as i64 */
+            int32_t off; READ_I32(off);
+            int64_t v;
+            memcpy(&v, frame_ptr(vm, off), 8);
+            PUSH_I64(v);
+            break;
+        }
         case VM_OP_ISTORE: {
             int32_t off; READ_I32(off);
             int64_t v; POP_I64(v);
@@ -428,6 +436,13 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_FSTORE: {
             int32_t off; READ_I32(off);
             double v; POP_F64(v);
+            memcpy(frame_ptr(vm, off), &v, 8);
+            break;
+        }
+        case VM_OP_RSTORE: {
+            /* pop i64 ref (absolute stack address), store as i64 at frame[off] */
+            int32_t off; READ_I32(off);
+            int64_t v; POP_I64(v);
             memcpy(frame_ptr(vm, off), &v, 8);
             break;
         }
@@ -442,6 +457,13 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int32_t rel; READ_I32(rel);
             int64_t v; POP_I64(v);
             if (v) vm->ip = (size_t)((ptrdiff_t)vm->ip + rel);
+            break;
+        }
+        case VM_OP_JNULL: {
+            /* pop i64 ref; jump if it is null (== 0) */
+            int32_t rel; READ_I32(rel);
+            int64_t v; POP_I64(v);
+            if (v == 0) vm->ip = (size_t)((ptrdiff_t)vm->ip + rel);
             break;
         }
 
@@ -481,6 +503,83 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             VmCallFrame cf = vm->call_frames[--vm->call_frame_count];
             vm->stack.top = cf.frame_base;
             vm->ip        = cf.return_ip;
+            break;
+        }
+        case VM_OP_CALLF: {
+            /* indirect call: load func index from frame[off], then dispatch */
+            int32_t off; READ_I32(off);
+            int64_t raw;
+            memcpy(&raw, frame_ptr(vm, off), 8);
+            uint32_t idx = (uint32_t)raw;
+            if (idx >= vm->program->func_count) {
+                fprintf(err, "vm: CALLF index %u out of range\n", idx);
+                return 1;
+            }
+            VmFunctionMeta* fn = &vm->program->functions[idx];
+            VmCallFrame cf = {
+                .frame_base = vm->stack.top,
+                .return_ip  = vm->ip,
+                .func_index = idx,
+            };
+            if (!push_call_frame(vm, cf)) {
+                fprintf(err, "vm: call frame OOM\n"); return 1;
+            }
+            if (!stack_reserve(&vm->stack, fn->frame_size)) {
+                fprintf(err, "vm: OOM on CALLF frame\n"); return 1;
+            }
+            vm->ip = fn->entry_point;
+            break;
+        }
+
+        /* ── reference / indirection ── */
+        case VM_OP_ADDREF: {
+            /* push absolute stack address of frame[off] as i64 */
+            int32_t off; READ_I32(off);
+            int64_t abs_addr = (int64_t)(ptrdiff_t)(frame_ptr(vm, off) - vm->stack.data);
+            PUSH_I64(abs_addr);
+            break;
+        }
+        case VM_OP_DEREF: {
+            /* pop absolute stack address, push i64 at that address */
+            int64_t addr; POP_I64(addr);
+            if (addr < 0 || (size_t)addr + 8 > vm->stack.top) {
+                fprintf(err, "vm: DEREF address %lld out of bounds\n", (long long)addr);
+                return 1;
+            }
+            int64_t v;
+            memcpy(&v, vm->stack.data + (size_t)addr, 8);
+            PUSH_I64(v);
+            break;
+        }
+
+        /* ── $parent field access ── */
+        case VM_OP_PLOAD: {
+            /* load i64 from (parent_base + off) where parent_base = frame[0] as abs addr */
+            int32_t off; READ_I32(off);
+            int64_t parent_addr;
+            memcpy(&parent_addr, frame_ptr(vm, 0), 8);  /* $parent slot at frame offset 0 */
+            int64_t field_addr = parent_addr + off;
+            if (field_addr < 0 || (size_t)field_addr + 8 > vm->stack.top) {
+                fprintf(err, "vm: PLOAD address %lld out of bounds\n", (long long)field_addr);
+                return 1;
+            }
+            int64_t v;
+            memcpy(&v, vm->stack.data + (size_t)field_addr, 8);
+            PUSH_I64(v);
+            break;
+        }
+        case VM_OP_PSTORE: {
+            /* store i64 to (parent_base + off) */
+            int32_t off; READ_I32(off);
+            int64_t v; POP_I64(v);
+            int64_t parent_addr;
+            memcpy(&parent_addr, frame_ptr(vm, 0), 8);
+            int64_t field_addr = parent_addr + off;
+            if (field_addr < 0 || (size_t)field_addr + 8 > vm->stack.top) {
+                fprintf(err, "vm: PSTORE address %lld out of bounds\n", (long long)field_addr);
+                return 1;
+            }
+            memcpy(vm->stack.data + (size_t)field_addr, &v, 8);
             break;
         }
 

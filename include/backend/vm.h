@@ -69,30 +69,29 @@ enum VmOpcode {
   /* ── Load / Store  [i32 signed frame offset] ── */
   VM_OP_ILOAD  = 0x30,  // push i64 from frame[offset]
   VM_OP_FLOAD  = 0x31,  // push f64 from frame[offset]
+  VM_OP_RLOAD  = 0x32,  // [i32 off]  push i64 containing i32 ref stored at frame[offset]
   VM_OP_ISTORE = 0x38,  // pop i64  → frame[offset]
   VM_OP_FSTORE = 0x39,  // pop f64  → frame[offset]
+  VM_OP_RSTORE = 0x3A,  // [i32 off]  pop i64, store low 32 bits as ref at frame[offset]
 
   /* ── Control flow  [i32 relative offset from end of instruction] ── */
-  VM_OP_JMP = 0x40,   // unconditional jump
-  VM_OP_JIF = 0x41,   // jump if top of stack is truthy (i64 != 0); pops the value
+  VM_OP_JMP   = 0x40,   // unconditional jump
+  VM_OP_JIF   = 0x41,   // jump if top of stack is truthy (i64 != 0); pops the value
+  VM_OP_JNULL = 0x42,   // [i32 rel]  pop i64, jump if it is 0 (null ref)
 
   /* ── Function calls ── */
-  VM_OP_RESERVE = 0x50,  // [u32 size]   zero-extend frame by <size> bytes (return slot)
-  VM_OP_CALL    = 0x51,  // [u32 idx]    call function table entry <idx>
-  VM_OP_RET     = 0x52,  // no operand   return to caller
+  VM_OP_RESERVE = 0x50,  // [u32 size]  zero-extend frame by <size> bytes (return slot)
+  VM_OP_CALL    = 0x51,  // [u32 idx]   call function table entry <idx> (static)
+  VM_OP_RET     = 0x52,  // no operand  return to caller
+  VM_OP_CALLF   = 0x53,  // [i32 off]   indirect call: load func index from frame[off], dispatch
 
-  /*
-   * TODO: reference / block-instantiation opcodes (not yet implemented)
-   *   VM_OP_RLOAD  = 0x32  [i32 off]  — load relative ref from frame
-   *   VM_OP_RSTORE = 0x3A  [i32 off]  — store relative ref to frame
-   *   VM_OP_JNULL  = 0x42  [i32 rel]  — jump if ref is null
-   *   VM_OP_CALLF  = 0x53  [i32 off]  — indirect call via func-index at frame[off]
-   *   VM_OP_ADDREF = 0x60  [i32 off]  — push relative offset to frame location
-   *   VM_OP_DEREF  = 0x61             — resolve relative offset to absolute byte ptr
-   *   VM_OP_PLOAD  = 0x62  [u32 off]  — load field via $parent ref
-   *   VM_OP_PSTORE = 0x63  [u32 off]  — store field via $parent ref
-   *   VM_OP_NEW    = 0x64  [u32 fidx] [u32 size]  — re-execute block, write <size> bytes
-   */
+  /* ── Reference / indirection ── */
+  VM_OP_ADDREF  = 0x60,  // [i32 off]  push absolute stack address of frame[off] as i64
+  VM_OP_DEREF   = 0x61,  // pop i64 (absolute stack addr), push i64 at that address
+
+  /* ── $parent field access ── */
+  VM_OP_PLOAD   = 0x62,  // [i32 off]  load i64 from absolute address stored in parent slot + off
+  VM_OP_PSTORE  = 0x63,  // [i32 off]  store i64 to absolute address stored in parent slot + off
 };
 
 /*

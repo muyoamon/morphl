@@ -50,6 +50,7 @@ typedef struct {
   MorphlType* target;
   bool is_mutable;
   bool is_inline;
+  bool is_ref;     // true for $ref (relative-offset reference); false for $mut/$const/$inline qualifiers
 } MorphlRefType;
 
 // Main type structure
