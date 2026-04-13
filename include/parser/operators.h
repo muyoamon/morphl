@@ -46,8 +46,12 @@ enum Operator{
   CONST,
   INLINE,
   THIS,
+  PARENT,
   FILE_,  // FILE is a reserved keyword in C
   GLOBAL,
+  REF,
+  NULLREF,
+  NEW,
   IDTSTR,
   STRTID,
   FORWARD,
@@ -79,7 +83,10 @@ enum Operator{
   BXOR,
   BNOT,
   LSHIFT,
-  RSHIFT
+  RSHIFT,
+  TRAITS,
+  IMPL,
+  EXIT
 };
 
 struct OperatorInfo {

@@ -323,10 +323,11 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
   (void)info; (void)global_state;
   
   TypeContext* ctx = (TypeContext*)block_state;
-  if (!ctx || arg_count != 2) return NULL;
-  
+  if (!ctx || arg_count < 2 || arg_count > 3) return NULL;
+
   // args[0]: condition expression
-  // args[1]: then-else group
+  // args[1]: then expression/block
+  // args[2]: (optional) else expression/block
   
   AstNode* condition = args[0];
   if (!condition) return NULL;
@@ -662,7 +663,7 @@ static OperatorRow kBuiltinOps[] = {
   // Core constructs
   {"$call",   AST_CALL,   false, 2, 2,          pp_action_call,    0, OP_PP_KEEP_NODE, CALL},
   {"$func",   AST_FUNC,   false, 2, 2,          pp_action_func,    0, OP_PP_KEEP_NODE, FUNC},
-  {"$if",     AST_IF,     false, 2, 2,          pp_action_if,      0, OP_PP_KEEP_NODE, IF},
+  {"$if",     AST_IF,     false, 2, 3,          pp_action_if,      0, OP_PP_KEEP_NODE, IF},
   {"$while",  AST_BUILTIN,false, 2, 2,          pp_action_while,   0, OP_PP_KEEP_NODE, WHILE},
   {"$set",    AST_SET,    false, 2, 2,          pp_action_set,     0, OP_PP_KEEP_NODE, SET},
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE, DECL},
@@ -675,8 +676,12 @@ static OperatorRow kBuiltinOps[] = {
   {"$const",  AST_BUILTIN,false, 1, 1,          pp_action_const,   0, OP_PP_KEEP_NODE, CONST},
   {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, INLINE},
   {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, THIS},
+  {"$parent", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, PARENT},
   {"$file",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, FILE_},
   {"$global", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, GLOBAL},
+  {"$ref",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, REF},
+  {"$null",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, NULLREF},
+  {"$new",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, NEW},
   {"$idtstr", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, IDTSTR},
   {"$strtid", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, STRTID},
   {"$forward",AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, FORWARD},
@@ -719,6 +724,13 @@ static OperatorRow kBuiltinOps[] = {
   // Preprocessor
   {"$syntax", AST_BUILTIN,true,  1, 1,           pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
   {"$import", AST_BUILTIN,true,  1, 1,           pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},
+
+  // Trait system
+  {"$traits", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, TRAITS},
+  {"$impl",   AST_BUILTIN,false, 2, 3,           NULL,              0, OP_PP_KEEP_NODE, IMPL},
+
+  // Exit
+  {"$exit",   AST_BUILTIN,false, 0, 1,           NULL,              0, OP_PP_KEEP_NODE, EXIT},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

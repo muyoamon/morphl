@@ -410,10 +410,11 @@ static void test_infer_logic_ops() {
   assert(result != NULL);
   assert(result->kind == MORPHL_TYPE_BOOL);
   
-  // Test type error: $and (int, int) should fail
+  // Test $and (int, int) -> bool: ints are truthy, accepted for logical ops
   MorphlType* int_args[] = {t_int, t_int};
   result = morphl_infer_type_for_op(ctx, NULL, and_sym, int_args, 2);
-  assert(result == NULL);
+  assert(result != NULL);
+  assert(result->kind == MORPHL_TYPE_BOOL);
   
   type_context_free(ctx);
   interns_free(interns);

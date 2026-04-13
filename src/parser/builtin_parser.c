@@ -79,22 +79,26 @@ static bool parse_builtin_expr(const struct token* tokens,
     if (!op_sym) return false;
     (*cursor)++; // Consume operator
 
-    // Parse arguments until we hit a delimiter or end
+    // Look up operator registry to get arity limit and AST kind
+    const OperatorInfo* info = operator_info_lookup(op_sym);
+    size_t max_args = (info) ? info->max_args : SIZE_MAX;
+    AstKind op_kind = (info && info->ast_kind != AST_UNKNOWN) ? info->ast_kind : AST_BUILTIN;
+
+    // Parse arguments until we hit a delimiter, end, or the operator's max arity.
+    // Respecting max_args prevents greedy consumption of tokens that belong to a
+    // parent operator (e.g. the '{' body block of $while/$if).
     AstNode** children = NULL;
     size_t child_count = 0;
     size_t child_capacity = 0;
 
-    // Determine arity based on operator
-    // Most builtins are variadic; some are unary/binary
-    // For simplicity, parse all available arguments
-    while (*cursor < token_count) {
+    while (*cursor < token_count && child_count < max_args) {
       const struct token* next = &tokens[*cursor];
-      
+
       // Stop at EOF
       if (next->kind == eof_kind) {
         break;
       }
-      
+
       // Stop at closing delimiters or separators
       if (next->kind == symbol_kind && next->lexeme.len == 1) {
         char c = next->lexeme.ptr[0];
@@ -126,13 +130,6 @@ static bool parse_builtin_expr(const struct token* tokens,
       children[child_count++] = child;
     }
 
-    // Choose AST kind based on operator registry (defaults to builtin)
-    AstKind op_kind = AST_BUILTIN;
-    const OperatorInfo* info = operator_info_lookup(op_sym);
-    if (info && info->ast_kind != AST_UNKNOWN) {
-      op_kind = info->ast_kind;
-    }
-
     AstNode* node = ast_new(op_kind);
     if (!node) {
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
@@ -144,6 +141,88 @@ static bool parse_builtin_expr(const struct token* tokens,
     node->child_count = child_count;
     *out_node = node;
     return true;
+  }
+
+  // Handle parenthesized group: (expr1, expr2, ...) → AST_GROUP
+  if (tok->kind == symbol_kind && tok->lexeme.len == 1 && tok->lexeme.ptr[0] == '(') {
+    (*cursor)++; // consume '('
+    AstNode** children = NULL;
+    size_t child_count = 0, child_capacity = 0;
+    bool ok = true;
+    while (*cursor < token_count && ok) {
+      const struct token* next = &tokens[*cursor];
+      if (next->kind == symbol_kind && next->lexeme.len == 1 && next->lexeme.ptr[0] == ')') {
+        (*cursor)++; break;
+      }
+      if (next->kind == symbol_kind && next->lexeme.len == 1 && next->lexeme.ptr[0] == ',') {
+        (*cursor)++; continue;
+      }
+      if (child_count >= child_capacity) {
+        size_t new_cap = child_capacity ? child_capacity * 2 : 4;
+        AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
+        if (!resized) { ok = false; break; }
+        children = resized; child_capacity = new_cap;
+      }
+      AstNode* child = NULL;
+      if (!parse_builtin_expr(tokens, token_count, cursor, interns, ident_kind, number_kind,
+                              float_kind, string_kind, symbol_kind, eof_kind, depth + 1, &child)) {
+        ok = false; break;
+      }
+      children[child_count++] = child;
+    }
+    if (!ok) {
+      for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
+      free(children); return false;
+    }
+    Sym group_sym = interns_intern(interns, str_from("$group", 6));
+    AstNode* node = ast_new(AST_GROUP);
+    if (!node) {
+      for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
+      free(children); return false;
+    }
+    node->op = group_sym; node->children = children; node->child_count = child_count;
+    *out_node = node; return true;
+  }
+
+  // Handle block: {stmt1; stmt2; ...} → AST_BLOCK
+  if (tok->kind == symbol_kind && tok->lexeme.len == 1 && tok->lexeme.ptr[0] == '{') {
+    (*cursor)++; // consume '{'
+    AstNode** children = NULL;
+    size_t child_count = 0, child_capacity = 0;
+    bool ok = true;
+    while (*cursor < token_count && ok) {
+      const struct token* next = &tokens[*cursor];
+      if (next->kind == symbol_kind && next->lexeme.len == 1 && next->lexeme.ptr[0] == '}') {
+        (*cursor)++; break;
+      }
+      if (next->kind == symbol_kind && next->lexeme.len == 1 && next->lexeme.ptr[0] == ';') {
+        (*cursor)++; continue;
+      }
+      if (child_count >= child_capacity) {
+        size_t new_cap = child_capacity ? child_capacity * 2 : 4;
+        AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
+        if (!resized) { ok = false; break; }
+        children = resized; child_capacity = new_cap;
+      }
+      AstNode* child = NULL;
+      if (!parse_builtin_expr(tokens, token_count, cursor, interns, ident_kind, number_kind,
+                              float_kind, string_kind, symbol_kind, eof_kind, depth + 1, &child)) {
+        ok = false; break;
+      }
+      children[child_count++] = child;
+    }
+    if (!ok) {
+      for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
+      free(children); return false;
+    }
+    Sym block_sym = interns_intern(interns, str_from("$block", 6));
+    AstNode* node = ast_new(AST_BLOCK);
+    if (!node) {
+      for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
+      free(children); return false;
+    }
+    node->op = block_sym; node->children = children; node->child_count = child_count;
+    *out_node = node; return true;
   }
 
   // Handle literals and identifiers
