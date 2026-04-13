@@ -79,22 +79,26 @@ static bool parse_builtin_expr(const struct token* tokens,
     if (!op_sym) return false;
     (*cursor)++; // Consume operator
 
-    // Parse arguments until we hit a delimiter or end
+    // Look up operator registry to get arity limit and AST kind
+    const OperatorInfo* info = operator_info_lookup(op_sym);
+    size_t max_args = (info) ? info->max_args : SIZE_MAX;
+    AstKind op_kind = (info && info->ast_kind != AST_UNKNOWN) ? info->ast_kind : AST_BUILTIN;
+
+    // Parse arguments until we hit a delimiter, end, or the operator's max arity.
+    // Respecting max_args prevents greedy consumption of tokens that belong to a
+    // parent operator (e.g. the '{' body block of $while/$if).
     AstNode** children = NULL;
     size_t child_count = 0;
     size_t child_capacity = 0;
 
-    // Determine arity based on operator
-    // Most builtins are variadic; some are unary/binary
-    // For simplicity, parse all available arguments
-    while (*cursor < token_count) {
+    while (*cursor < token_count && child_count < max_args) {
       const struct token* next = &tokens[*cursor];
-      
+
       // Stop at EOF
       if (next->kind == eof_kind) {
         break;
       }
-      
+
       // Stop at closing delimiters or separators
       if (next->kind == symbol_kind && next->lexeme.len == 1) {
         char c = next->lexeme.ptr[0];
@@ -124,13 +128,6 @@ static bool parse_builtin_expr(const struct token* tokens,
         return false;
       }
       children[child_count++] = child;
-    }
-
-    // Choose AST kind based on operator registry (defaults to builtin)
-    AstKind op_kind = AST_BUILTIN;
-    const OperatorInfo* info = operator_info_lookup(op_sym);
-    if (info && info->ast_kind != AST_UNKNOWN) {
-      op_kind = info->ast_kind;
     }
 
     AstNode* node = ast_new(op_kind);

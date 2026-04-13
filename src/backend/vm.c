@@ -129,6 +129,12 @@ typedef struct {
     Str target;  /* the target name (e.g. "x") */
 } RefAlias;
 
+/* Loop context: tracks jump targets for $break/$continue inside $while bodies */
+typedef struct {
+    size_t break_label;    /* jump target for $break    (exit_label) */
+    size_t continue_label; /* jump target for $continue (loop_start) */
+} VmLoopCtx;
+
 typedef struct VmEmitter {
     VmBytes         code;
     VmFunctionTable functions;
@@ -146,6 +152,9 @@ typedef struct VmEmitter {
     /* compile-time $ref aliases (local, non-struct refs) */
     RefAlias*       ref_aliases;
     size_t          alias_count, alias_capacity;
+    /* loop context stack for $break/$continue target resolution */
+    VmLoopCtx*      loop_stack;
+    size_t          loop_stack_count, loop_stack_capacity;
     /* true while emitting a deferred function body (false for top-level) */
     bool            in_function;
     /* function table index of top-level 'main', or SIZE_MAX if not declared */
@@ -808,6 +817,134 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return emit_node(e, &tmp);
         }
 
+        /* $while cond body — backwards-jump loop */
+        if (OP_IS("$while")) {
+            if (node->child_count < 2) return false;
+
+            size_t loop_start = label_new(e);
+            size_t exit_lbl   = label_new(e);
+            if (loop_start == SIZE_MAX || exit_lbl == SIZE_MAX) return false;
+
+            /* push loop context so $break/$continue can resolve targets */
+            if (e->loop_stack_count >= e->loop_stack_capacity) {
+                if (!vm_grow((void**)&e->loop_stack, &e->loop_stack_capacity,
+                             sizeof(VmLoopCtx), e->loop_stack_count + 1)) return false;
+            }
+            e->loop_stack[e->loop_stack_count++] = (VmLoopCtx){ exit_lbl, loop_start };
+
+            /* bind loop_start before condition (continue jumps here) */
+            if (!label_bind(e, loop_start))        { e->loop_stack_count--; return false; }
+            if (!emit_node(e, node->children[0]))   { e->loop_stack_count--; return false; }
+            /* negate condition: ICONST 0, IEQ → 1 when condition is false */
+            if (!emit_iconst(e, 0))                 { e->loop_stack_count--; return false; }
+            if (!emit_op(e, VM_OP_IEQ))             { e->loop_stack_count--; return false; }
+            /* jump to exit if condition was false */
+            if (!emit_jump(e, VM_OP_JIF, exit_lbl)) { e->loop_stack_count--; return false; }
+            /* Emit body inline — do NOT call emit_node(body) for an AST_BLOCK here.
+             * emit_node for AST_BLOCK would push a new logical emitter frame, making
+             * outer-scope vars appear at negative offsets (the $parent cross-function
+             * convention). Instead we emit ENTER/children/LEAVE without a frame push,
+             * so outer vars like the loop counter remain at their correct positive offsets.
+             * Note: $break/$continue inside a nested sub-block (with its own ENTER/LEAVE)
+             * will skip that LEAVE — a known limitation until scope unwinding is added. */
+            struct AstNode* body = node->children[1];
+            if (body && body->kind == AST_BLOCK) {
+                size_t bsz = block_scope_size(body);
+                if (bsz > 0 && !emit_op_u32(e, VM_OP_ENTER, (uint32_t)bsz))
+                    { e->loop_stack_count--; return false; }
+                for (size_t k = 0; k < body->child_count; k++) {
+                    if (!emit_node(e, body->children[k]))
+                        { e->loop_stack_count--; return false; }
+                }
+                if (bsz > 0 && !emit_op_u32(e, VM_OP_LEAVE, (uint32_t)bsz))
+                    { e->loop_stack_count--; return false; }
+            } else if (body) {
+                if (!emit_node(e, body)) { e->loop_stack_count--; return false; }
+            }
+            /* unconditional backward jump to re-evaluate condition */
+            if (!emit_jump(e, VM_OP_JMP, loop_start)) { e->loop_stack_count--; return false; }
+
+            e->loop_stack_count--;
+            return label_bind(e, exit_lbl);
+        }
+
+        /* $not expr — logical negation (ICONST 0, IEQ → 1 if false, 0 if true) */
+        if (OP_IS("$not")) {
+            if (node->child_count < 1) return false;
+            return emit_node(e, node->children[0]) &&
+                   emit_iconst(e, 0) &&
+                   emit_op(e, VM_OP_IEQ);
+        }
+
+        /* $and lhs rhs — short-circuit: skip rhs if lhs is false */
+        if (OP_IS("$and")) {
+            if (node->child_count < 2) return false;
+            size_t false_lbl = label_new(e);
+            size_t end_lbl   = label_new(e);
+            if (false_lbl == SIZE_MAX || end_lbl == SIZE_MAX) return false;
+
+            if (!emit_node(e, node->children[0])) return false;
+            if (!emit_iconst(e, 0)) return false;
+            if (!emit_op(e, VM_OP_IEQ)) return false;      /* negate: 1 if lhs false */
+            if (!emit_jump(e, VM_OP_JIF, false_lbl)) return false;
+
+            if (!emit_node(e, node->children[1])) return false;
+            if (!emit_iconst(e, 0)) return false;
+            if (!emit_op(e, VM_OP_INEQ)) return false;     /* normalize rhs → 0/1 */
+            if (!emit_jump(e, VM_OP_JMP, end_lbl)) return false;
+
+            if (!label_bind(e, false_lbl)) return false;
+            if (!emit_iconst(e, 0)) return false;
+            return label_bind(e, end_lbl);
+        }
+
+        /* $or lhs rhs — short-circuit: skip rhs if lhs is true */
+        if (OP_IS("$or")) {
+            if (node->child_count < 2) return false;
+            size_t true_lbl = label_new(e);
+            size_t end_lbl  = label_new(e);
+            if (true_lbl == SIZE_MAX || end_lbl == SIZE_MAX) return false;
+
+            if (!emit_node(e, node->children[0])) return false;
+            if (!emit_iconst(e, 0)) return false;
+            if (!emit_op(e, VM_OP_INEQ)) return false;     /* 1 if lhs truthy */
+            if (!emit_jump(e, VM_OP_JIF, true_lbl)) return false;
+
+            if (!emit_node(e, node->children[1])) return false;
+            if (!emit_iconst(e, 0)) return false;
+            if (!emit_op(e, VM_OP_INEQ)) return false;     /* normalize rhs → 0/1 */
+            if (!emit_jump(e, VM_OP_JMP, end_lbl)) return false;
+
+            if (!label_bind(e, true_lbl)) return false;
+            if (!emit_iconst(e, 1)) return false;
+            return label_bind(e, end_lbl);
+        }
+
+        /* $break — jump to enclosing loop's exit label
+         * Note: if $break is inside a nested block with ENTER/LEAVE, the LEAVE
+         * is skipped and that block's stack space is leaked. Avoid nesting $break
+         * inside sub-blocks until scope unwinding is implemented. */
+        if (OP_IS("$break")) {
+            if (e->loop_stack_count == 0) {
+                fprintf(stderr, "vm emitter: $break outside loop at %s:%zu:%zu\n",
+                        node->filename ? node->filename : "?", node->row, node->col);
+                return false;
+            }
+            return emit_jump(e, VM_OP_JMP,
+                             e->loop_stack[e->loop_stack_count - 1].break_label);
+        }
+
+        /* $continue — jump back to loop condition (same caveat as $break re: LEAVE) */
+        if (OP_IS("$continue")) {
+            if (e->loop_stack_count == 0) {
+                fprintf(stderr, "vm emitter: $continue outside loop at %s:%zu:%zu\n",
+                        node->filename ? node->filename : "?", node->row, node->col);
+                return false;
+            }
+            return emit_jump(e, VM_OP_JMP,
+                             e->loop_stack[e->loop_stack_count - 1].continue_label);
+        }
+
         /* type conversions */
         if (OP_IS("$i2f")) {
             return node->child_count > 0 && emit_node(e, node->children[0]) &&
@@ -1028,6 +1165,7 @@ static void emitter_free(VmEmitter* e) {
     free(e->labels.offsets);
     free(e->deferred);
     free(e->ref_aliases);
+    free(e->loop_stack);
     morphl_backend_frame_free(&e->frameInfo);
     memset(e, 0, sizeof(*e));
 }

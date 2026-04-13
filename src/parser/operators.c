@@ -323,10 +323,11 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
   (void)info; (void)global_state;
   
   TypeContext* ctx = (TypeContext*)block_state;
-  if (!ctx || arg_count != 2) return NULL;
-  
+  if (!ctx || arg_count < 2 || arg_count > 3) return NULL;
+
   // args[0]: condition expression
-  // args[1]: then-else group
+  // args[1]: then expression/block
+  // args[2]: (optional) else expression/block
   
   AstNode* condition = args[0];
   if (!condition) return NULL;
@@ -662,7 +663,7 @@ static OperatorRow kBuiltinOps[] = {
   // Core constructs
   {"$call",   AST_CALL,   false, 2, 2,          pp_action_call,    0, OP_PP_KEEP_NODE, CALL},
   {"$func",   AST_FUNC,   false, 2, 2,          pp_action_func,    0, OP_PP_KEEP_NODE, FUNC},
-  {"$if",     AST_IF,     false, 2, 2,          pp_action_if,      0, OP_PP_KEEP_NODE, IF},
+  {"$if",     AST_IF,     false, 2, 3,          pp_action_if,      0, OP_PP_KEEP_NODE, IF},
   {"$while",  AST_BUILTIN,false, 2, 2,          pp_action_while,   0, OP_PP_KEEP_NODE, WHILE},
   {"$set",    AST_SET,    false, 2, 2,          pp_action_set,     0, OP_PP_KEEP_NODE, SET},
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE, DECL},

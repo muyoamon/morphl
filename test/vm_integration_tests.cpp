@@ -374,6 +374,74 @@ static void test_e2e_main_returns_zero() {
     printf("PASS test_e2e_main_returns_zero\n");
 }
 
+// ── $while / $and / $or / $not / $break / $continue ─────────────────────────
+
+static void test_e2e_while_basic() {
+    int rc = compile_and_run(
+        "$decl i $mut 0;\n"
+        "$while $lt i 5 { $set i $add i 1; };\n"
+        "$exit i;\n"
+    );
+    assert(rc == 5);
+    printf("PASS test_e2e_while_basic\n");
+}
+
+static void test_e2e_while_no_iter() {
+    int rc = compile_and_run(
+        "$decl x $mut 99;\n"
+        "$while $lt 5 3 { $set x 0; };\n"
+        "$exit x;\n"
+    );
+    assert(rc == 99);
+    printf("PASS test_e2e_while_no_iter\n");
+}
+
+static void test_e2e_not() {
+    assert(compile_and_run("$exit $not 1;") == 0);
+    assert(compile_and_run("$exit $not 0;") == 1);
+    printf("PASS test_e2e_not\n");
+}
+
+static void test_e2e_and() {
+    assert(compile_and_run("$exit $and 1 1;") == 1);
+    assert(compile_and_run("$exit $and 1 0;") == 0);
+    assert(compile_and_run("$exit $and 0 1;") == 0);
+    printf("PASS test_e2e_and\n");
+}
+
+static void test_e2e_or() {
+    assert(compile_and_run("$exit $or 0 0;") == 0);
+    assert(compile_and_run("$exit $or 0 1;") == 1);
+    assert(compile_and_run("$exit $or 1 0;") == 1);
+    printf("PASS test_e2e_or\n");
+}
+
+static void test_e2e_break() {
+    int rc = compile_and_run(
+        "$decl i $mut 0;\n"
+        "$while 1 { $set i $add i 1; $if $eq i 3 { $break; }; };\n"
+        "$exit i;\n"
+    );
+    assert(rc == 3);
+    printf("PASS test_e2e_break\n");
+}
+
+static void test_e2e_continue() {
+    /* sum even numbers from 1..6: 2+4+6 = 12 */
+    int rc = compile_and_run(
+        "$decl i $mut 0;\n"
+        "$decl s $mut 0;\n"
+        "$while $lt i 6 {\n"
+        "    $set i $add i 1;\n"
+        "    $if $eq $mod i 2 1 { $continue; };\n"
+        "    $set s $add s i;\n"
+        "};\n"
+        "$exit s;\n"
+    );
+    assert(rc == 12);
+    printf("PASS test_e2e_continue\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -399,6 +467,13 @@ int main(void) {
     test_e2e_exit_nonzero();
     test_e2e_main_autocall();
     test_e2e_main_returns_zero();
+    test_e2e_while_basic();
+    test_e2e_while_no_iter();
+    test_e2e_not();
+    test_e2e_and();
+    test_e2e_or();
+    test_e2e_break();
+    test_e2e_continue();
     printf("All integration tests passed.\n");
     return 0;
 }

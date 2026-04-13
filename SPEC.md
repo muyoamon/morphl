@@ -22,7 +22,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`.
 
 ---
 
@@ -330,7 +330,107 @@ FuncTable[n] = { bytecode_offset, arity, frame_size }
 
 ---
 
-## 7. Scope Contexts
+## 7. Control Flow
+
+### 7.1 `$if` — Conditional Expression
+
+```
+$if <cond> <then> [<else>]
+```
+
+Evaluates `<cond>` (must be of type `bool` or `i32`). If truthy (non-zero), executes `<then>`; otherwise executes `<else>` if present. The else branch is optional.
+
+```
+$if $lt x 10 {
+    $set x $add x 1;
+};
+
+$if $eq x 0 {
+    $ret 1;
+} {
+    $ret x;
+};
+```
+
+- Condition must be `bool` (result of a comparison) or `i32` (truthy if non-zero).
+- The two forms accept any expression as branches — including blocks `{}` or bare values.
+- Both branches should produce compatible types when the `$if` result is used as a value.
+
+### 7.2 `$while` — Loop
+
+```
+$while <cond> <body>
+```
+
+Repeatedly evaluates `<cond>`. If truthy, executes `<body>` and re-evaluates; if falsy, exits the loop.
+
+```
+$decl i $mut 0;
+$while $lt i 10 {
+    $set i $add i 1;
+};
+```
+
+- Condition is re-evaluated before every iteration.
+- `<body>` is a block expression `{}` (or any single expression).
+- Variables declared inside the body are re-initialized on each iteration; they are not accessible after the loop exits.
+
+**Known limitation**: `$break`/`$continue` nested inside a sub-block within the body (with its own scope allocation) bypass the sub-block's `LEAVE` instruction. Avoid nesting `$break`/`$continue` inside inner `{}` blocks within a while body until scope unwinding is implemented.
+
+### 7.3 `$break` and `$continue` — Loop Control
+
+`$break` exits the nearest enclosing `$while` immediately.
+
+`$continue` skips the remainder of the current iteration and re-evaluates the loop condition.
+
+```
+$decl i $mut 0;
+$while 1 {
+    $set i $add i 1;
+    $if $eq i 5 { $break; };
+};
+// i == 5 here
+
+$decl sum $mut 0;
+$decl j $mut 0;
+$while $lt j 10 {
+    $set j $add j 1;
+    $if $eq $mod j 2 1 { $continue; };   // skip odd j
+    $set sum $add sum j;
+};
+```
+
+Both `$break` and `$continue` take no arguments. Using either outside a `$while` body is a compile error.
+
+### 7.4 Logical Operators
+
+```
+$and <lhs> <rhs>   — logical AND (short-circuit)
+$or  <lhs> <rhs>   — logical OR  (short-circuit)
+$not <expr>        — logical NOT
+```
+
+Operands may be `bool` (result of a comparison) or `i32` (truthy if non-zero). The result is always `bool` (0 or 1 as i32).
+
+**Short-circuit evaluation**: `$and` does not evaluate `<rhs>` if `<lhs>` is false; `$or` does not evaluate `<rhs>` if `<lhs>` is true.
+
+```
+$decl a 1;
+$decl b 0;
+
+$and a b;          // 0 — both are evaluated
+$or  a b;          // 1 — rhs not evaluated (a is truthy)
+$not a;            // 0
+$not 0;            // 1
+
+$if $and $gt x 0 $lt x 100 {
+    // x is in (0, 100)
+};
+```
+
+---
+
+## 8. Scope Contexts
 
 Every scope maintains a set of reserved context references. These are `$ref`-based — relative offsets following the same semantics as user-defined references.
 
@@ -359,9 +459,9 @@ The scope chain is a `$ref`-linked structure terminating at `$global.$parent = $
 
 ---
 
-## 8. Properties
+## 9. Properties
 
-### 8.1 `$prop` Declaration
+### 9.1 `$prop` Declaration
 
 Properties are declared with `$prop` and accessed with the `$` prefix:
 
@@ -377,7 +477,7 @@ mod.$PI;    // property access
 
 Properties are extra context attached to a block. They are constant once declared — they cannot be reassigned.
 
-### 8.2 Properties Are Not Structurally Fixed
+### 9.2 Properties Are Not Structurally Fixed
 
 Properties do not have fixed byte offsets and do not participate in structural subtyping. Two blocks with different field declaration order but identical `$decl` fields and identical properties have the same type:
 
@@ -387,7 +487,7 @@ $decl mod2 { $prop PI 3.14; $decl x 0; };
 // both have type: { x: i32 }($PI: f64)
 ```
 
-### 8.3 Full Type Signature
+### 9.3 Full Type Signature
 
 A type's full signature has two components:
 
@@ -397,7 +497,7 @@ A type's full signature has two components:
 
 Structural subtyping only considers the structural component. A function requiring `{ x: i32 }` accepts both `mod1` and `mod2` — it ignores properties. A function requiring `{ x: i32 }($PI: f64)` requires the property to be present.
 
-### 8.4 Properties as Methods
+### 9.4 Properties as Methods
 
 Properties can hold function values, making them constant method-like members:
 
@@ -412,9 +512,9 @@ $decl mod {
 
 ---
 
-## 9. Traits
+## 10. Traits
 
-### 9.1 Trait Declaration
+### 10.1 Trait Declaration
 
 A trait defines a set of properties that can be implemented by any type. Traits may only contain properties — no structural fields:
 
@@ -425,7 +525,7 @@ $decl TraitA $traits {
 };
 ```
 
-### 9.2 Trait Implementation via `$impl`
+### 10.2 Trait Implementation via `$impl`
 
 `$impl` derives a new type from an existing type by injecting trait properties. The original type is never modified:
 
@@ -450,7 +550,7 @@ typeE <: typeD   // structural fields are identical
 typeD </: typeE  // typeD lacks TraitA's properties
 ```
 
-### 9.3 Trait-Typed Variables
+### 10.3 Trait-Typed Variables
 
 A variable can be declared with a trait type. It can hold any value that implements that trait:
 
@@ -460,7 +560,7 @@ $set traitVar typeE;    // valid — typeE implements TraitA
 $set traitVar typeD;    // error — typeD does not implement TraitA
 ```
 
-### 9.4 Trait Variable Representation
+### 10.4 Trait Variable Representation
 
 A trait-typed variable is a fat block with two `$ref` fields:
 
@@ -485,13 +585,13 @@ $call traitVar.$methodB ();
 
 ---
 
-## 10. Modules and Imports
+## 11. Modules and Imports
 
-### 10.1 Files as Blocks
+### 11.1 Files as Blocks
 
 A file is a block. Its type is the structural shape of its top-level `$decl` expressions. `$file` is the reserved reference to the current file's scope.
 
-### 10.2 `$import`
+### 11.2 `$import`
 
 `$import` is a storage expression that loads an external file's scope:
 
@@ -510,11 +610,219 @@ The imported module's type is structurally inferred from its file scope. No sepa
 
 ---
 
-## 11. VM Opcode Set
+## 12. Grammar System
+
+morphl has two parsing modes that can coexist in the same program: the **builtin parser** and the **grammar-driven parser**. Both produce the same AST; they differ in how the programmer writes source code.
+
+### 12.1 Builtin Parser
+
+The builtin parser is always available. It requires no configuration and no grammar file. All language constructs are written using `$`-prefixed operator keywords in prefix notation:
+
+```
+$op arg1 arg2 ...
+```
+
+**Argument boundaries** are determined by the operator's registered maximum arity (`max_args`). Once the argument count reaches `max_args`, the parser stops consuming tokens for that operator and returns. This is how nested operators are unambiguous:
+
+```
+$while $lt i 5 { ... }
+// $lt has max_args=2: consumes 'i' and '5', then stops
+// $while gets $lt(i,5) as cond and { ... } as body
+```
+
+**Token rules for the builtin parser:**
+- `$`-prefixed identifiers are operator heads — their arguments are the next `max_args` expressions
+- `{ stmt; ... }` is a **block** expression (AST_BLOCK) — statements separated by `;`
+- `( expr, ... )` is a **group** expression (AST_GROUP) — comma-separated
+- Bare identifiers and literals are leaf expressions
+- The following symbols terminate an argument list: `)`, `}`, `]`, `;`, `,`
+
+### 12.2 Custom Grammar Files
+
+The builtin prefix-notation syntax is the canonical representation, but morphl allows blocks to switch to an infix/natural-language syntax via a **grammar file**. A grammar file defines how surface syntax maps to the same builtin AST operators.
+
+Grammar files are plain text with `.g` or `.txt` extension. They define named **rules** as Pratt-style productions:
+
+```
+rule <rule_name>:
+    <pattern> => <template>
+    <pattern> => <template>
+    ...
+end
+```
+
+Multiple rules may appear in one file. The **first rule** is the start rule for that grammar. An alternate production is written as another line under the same rule.
+
+**Complete example:**
+
+```
+rule program:
+    $($stmnt s)*  => $$spread s
+end
+
+rule stmnt:
+    $expr exp ";"  => exp
+end
+
+rule expr:
+    %NUMBER              => number
+    %IDENT               => ident
+    "return" $expr val   => $ret val
+    "while" $expr cond $expr body => $while cond body
+    "if" $expr cond $expr thn "else" $expr el => $if cond thn el
+    "if" $expr cond $expr thn                 => $if cond thn
+    "{" $($stmnt s)* "}" => $block $$spread s
+    "(" $expr inner ")"  => inner
+    $expr[20] func "(" $expr params ")" => $call func params
+    $expr[1]  lhs "+" $expr[2]  rhs => $add lhs rhs | $fadd lhs rhs
+    $expr[1]  lhs "-" $expr[2]  rhs => $sub lhs rhs | $fsub lhs rhs
+    $expr[10] lhs "*" $expr[11] rhs => $mul lhs rhs | $fmul lhs rhs
+    $expr[10] lhs "/" $expr[11] rhs => $div lhs rhs | $fdiv lhs rhs
+    $expr     id  ":=" $expr exp    => $decl id exp
+    $expr     lhs "="  $expr rhs    => $set  lhs rhs
+end
+```
+
+### 12.3 Pattern Atoms
+
+Each production pattern is a sequence of **atoms**:
+
+| Atom syntax | Meaning |
+|---|---|
+| `"literal"` | Match the exact token lexeme (keyword, punctuation, operator symbol) |
+| `%IDENT` | Match any identifier token |
+| `%NUMBER` | Match any integer literal token |
+| `%FLOAT` | Match any float literal token |
+| `%STRING` | Match any string literal token |
+| `$rule_name` | Recursively match `rule_name` with binding power 0 |
+| `$rule_name[n]` | Recursively match `rule_name` requiring binding power ≥ n |
+| `$( atoms )* ` | Match zero or more repetitions of the sub-pattern |
+| `$( atoms )+` | Match one or more repetitions |
+| `capture_name` | A bare word (not quoted, no `$`/`%`) acts as a **capture label** — names the preceding atom's result for use in the template |
+
+Capture labels bind to the immediately preceding atom. If placed before the first atom, they bind forward.
+
+### 12.4 Operator Precedence via Binding Power
+
+Binding power (`[n]`) controls precedence and associativity in a Pratt-style fashion. Higher numbers bind tighter.
+
+```
+$expr[1]  lhs "+" $expr[2]  rhs   // left-associative:  lhs bp≥1, rhs bp≥2
+$expr[10] lhs "*" $expr[11] rhs   // left-associative:  higher precedence than +
+$expr[15] lhs "^" $expr[15] rhs   // right-associative: lhs and rhs same bp
+```
+
+- **Left-associative**: rhs binding power = lhs binding power + 1
+- **Right-associative**: rhs binding power = lhs binding power (same value)
+- **Higher number = tighter binding**: `*` at `[10]` binds tighter than `+` at `[1]`
+
+A production whose first atom is a `$rule_name` (or labeled rule reference) is treated as an **infix/postfix production**. The Pratt loop offers it only when the current left-hand expression has sufficient binding power.
+
+### 12.5 Template Directives
+
+Templates describe how matched captures become AST nodes. A template is a space-separated sequence of tokens after `=>`:
+
+```
+<pattern> => $op capture1 capture2 ...
+```
+
+The first token names the AST operator; subsequent tokens are children. In addition to capture names, special directives are available:
+
+| Directive | Meaning |
+|---|---|
+| `$$spread name` | Flatten all children of the captured node as individual children (useful for repetition results) |
+| `$$maybe name` | Include the captured node only if it was matched (for optional sub-patterns) |
+| `$$op name` | Use the captured identifier's lexeme as the operator name (dynamic dispatch to builtin) |
+| `capture_name` | Insert the captured node as a child of the result |
+
+**Overload alternatives** — a template can offer multiple candidates separated by `|`. The type checker selects the matching variant:
+
+```
+$expr[1] lhs "+" $expr[2] rhs => $add lhs rhs | $fadd lhs rhs
+```
+
+This produces an `AST_OVERLOAD` node; the type inference pass resolves it to `$add` (integers) or `$fadd` (floats) based on the operand types.
+
+**Using `$$spread` with repetition:**
+
+```
+rule program:
+    $($stmnt s)*  => $$spread s   // spread all matched stmnts into a flat block
+end
+```
+
+`$($stmnt s)*` matches zero or more `stmnt` productions, collecting them all into capture `s`. `$$spread s` then flattens them as siblings in the resulting AST node.
+
+### 12.6 The `$syntax` Directive
+
+`$syntax` activates a custom grammar for the current scope:
+
+```
+$syntax "path/to/grammar.g";
+```
+
+Rules:
+- The argument is a **string literal** containing the path to a grammar file.
+- Paths are resolved **relative to the source file's directory**.
+- `$syntax` is a preprocessor directive — it is consumed during parsing and **does not appear in the AST**.
+- Grammar activation applies to **all statements following `$syntax`** in the same block.
+- On **block exit**, the grammar reverts to the parent block's grammar (LIFO stack).
+
+**Scope example:**
+
+```
+// file: main.mpl
+$syntax "mygrammar.g";    // active from here to end of file (or enclosing block)
+
+x := 10;                  // parsed with mygrammar.g
+y := x + 5;               // parsed with mygrammar.g
+
+{                         // inner block inherits mygrammar.g
+    z := y * 2;           // also mygrammar.g
+};                        // grammar reverts to mygrammar.g on block exit (same here)
+```
+
+**Mixing builtin and custom grammar:**
+
+When a custom grammar is active, the following builtin directives remain unconditionally available regardless of the grammar:
+
+- `$syntax` — to switch grammars in a nested block
+- `$import` — to import another file
+- `$decl`, `$prop`, `$func`, `$traits`, `$impl` — structural declarations
+
+All other constructs are parsed through the custom grammar's productions.
+
+**Nesting grammars** — different blocks in the same file may use different grammars:
+
+```
+$syntax "grammar_a.g";
+a_style_code;
+
+{
+    $syntax "grammar_b.g";   // grammar_b active for this block only
+    b_style_code;
+}                            // reverts to grammar_a
+
+more_a_style_code;
+```
+
+### 12.7 Relationship Between the Two Parsers
+
+The grammar-driven parser and the builtin parser produce **identical AST representations**. A program written entirely in builtin syntax:
+
+```
+$decl result $add $mul a b c;
+```
+
+is semantically equivalent to a grammar rule that maps `a * b + c` to `$add ($mul a b) c`. The grammar is purely a surface transformation — there are no runtime semantics attached to grammar rules.
+
+---
+
+## 13. VM Opcode Set
 
 The VM uses **typed opcodes** — the operand type and size are encoded in the opcode itself, not in the values. Values on the stack are raw bits with no runtime type tags.
 
-### 11.1 Load / Store
+### 13.1 Load / Store
 
 ```
 ILOAD  <offset>    — load i32 from frame offset
@@ -525,7 +833,7 @@ FSTORE <offset>    — store f64 to frame offset
 RSTORE <offset>    — store relative offset to frame offset
 ```
 
-### 11.2 Constants
+### 13.2 Constants
 
 ```
 ICONST <imm>       — push i32 literal
@@ -533,14 +841,14 @@ FCONST <imm>       — push f64 literal
 RNULL              — push $null reference
 ```
 
-### 11.3 Arithmetic
+### 13.3 Arithmetic
 
 ```
 IADD  ISUB  IMUL  IDIV  IMOD   — i32 arithmetic
 FADD  FSUB  FMUL  FDIV         — f64 arithmetic
 ```
 
-### 11.4 Comparison
+### 13.4 Comparison
 
 ```
 IEQ  INEQ  ILT  IGT  ILTE  IGTE   — i32 comparisons, push bool
@@ -548,21 +856,21 @@ FEQ  FNEQ  FLT  FGT  FLTE  FGTE   — f64 comparisons, push bool
 REQ  RNEQ                          — reference equality
 ```
 
-### 11.5 Type Conversion
+### 13.5 Type Conversion
 
 ```
 I2F    — convert i32 → f64
 F2I    — convert f64 → i32 (truncate)
 ```
 
-### 11.6 Scope / Block
+### 13.6 Scope / Block
 
 ```
 ENTER  <size>      — push new scope region of <size> bytes
 LEAVE  <size>      — pop scope region
 ```
 
-### 11.7 Function Call
+### 13.7 Function Call
 
 ```
 RESERVE <size>     — pre-allocate return slot in caller frame
@@ -571,7 +879,7 @@ CALLF   <offset>   — indirect call: load function index from frame offset, the
 RET                — pop pseudo-scope, return to caller
 ```
 
-### 11.8 Reference / Indirection
+### 13.8 Reference / Indirection
 
 ```
 ADDREF  <offset>   — compute relative offset to a frame location
@@ -580,7 +888,7 @@ PLOAD   <offset>   — load field from $parent via its $ref
 PSTORE  <offset>   — store field to $parent via its $ref
 ```
 
-### 11.9 Block Instantiation
+### 13.9 Block Instantiation
 
 ```
 NEW <offset> <size>   — re-execute block at <offset>, write result into <size> bytes
@@ -588,7 +896,7 @@ NEW <offset> <size>   — re-execute block at <offset>, write result into <size>
 
 `NEW` is the only opcode that re-executes logic. It corresponds directly to `$new` in source.
 
-### 11.10 Control Flow
+### 13.10 Control Flow
 
 ```
 JMP   <label>      — unconditional jump
@@ -596,7 +904,7 @@ JIF   <label>      — jump if top of stack is truthy
 JNULL <label>      — jump if top of stack is $null reference
 ```
 
-### 11.11 Process Control
+### 13.11 Process Control
 
 ```
 EXIT               — pop i64 from stack; exit the process with that value as exit code
@@ -604,7 +912,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 
 `EXIT` is emitted by `$exit expr` and by the `main` auto-call convention. It unconditionally terminates the VM and propagates the exit code to the host OS.
 
-### 11.12 Design Notes
+### 13.12 Design Notes
 
 - No GC opcodes — memory is stack-managed and explicit
 - No type tag opcodes — types are encoded in instructions, not values
@@ -614,7 +922,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 
 ---
 
-## 12. Type System Summary
+## 14. Type System Summary
 
 | Layer | Mechanism | Participates in subtyping |
 |---|---|---|
@@ -626,7 +934,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 
 ---
 
-## 13. Grammar Reference (Informal)
+## 15. Grammar Reference (Informal)
 
 ```
 program     ::= decl*
@@ -648,6 +956,10 @@ stmt        ::= decl
              |  '$exit' expr ';'
              |  '$set' name expr ';'
              |  '$call' expr expr ';'
+             |  '$if' expr expr expr? ';'
+             |  '$while' expr block ';'
+             |  '$break' ';'
+             |  '$continue' ';'
 params      ::= (decl (',' decl)*)?
 expr        ::= name
              |  literal
@@ -655,13 +967,18 @@ expr        ::= name
              |  expr '$' name
              |  '(' expr ')'
              |  expr op expr
+             |  '$if' expr expr expr?
+             |  '$while' expr block
+             |  '$and' expr expr
+             |  '$or'  expr expr
+             |  '$not' expr
              |  '$this' | '$parent' | '$file' | '$global' | '$null'
              |  '(' '$import' string ')'
 ```
 
 ---
 
-## 14. Open Design Questions
+## 16. Open Design Questions
 
 ⚠️ **Implicit `$parent` in method calls** — the mechanism by which `$parent` is wired as calling context when invoking block-declared functions is not yet fully specified.
 

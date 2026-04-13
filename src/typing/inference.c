@@ -280,8 +280,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     
     for (size_t i = 0; i < 2; ++i) {
       MorphlType* check = unwrap_ref(arg_types[i]);
-      if (!check || check->kind != MORPHL_TYPE_BOOL) {
-        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: arg %llu must be bool", op_name, (unsigned long long)(i + 1));
+      if (!check || (check->kind != MORPHL_TYPE_BOOL && check->kind != MORPHL_TYPE_INT)) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: arg %llu must be bool or int", op_name, (unsigned long long)(i + 1));
         morphl_error_emit(NULL, &err);
         return NULL;
       }
@@ -299,8 +299,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     }
     
     MorphlType* check = unwrap_ref(arg_types[0]);
-    if (!check || check->kind != MORPHL_TYPE_BOOL) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$not: argument must be bool");
+    if (!check || (check->kind != MORPHL_TYPE_BOOL && check->kind != MORPHL_TYPE_INT)) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$not: argument must be bool or int");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -313,7 +313,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   if (op_sym == interns_intern(ctx->interns, str_from("$add", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$sub", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$mul", 4)) ||
-      op_sym == interns_intern(ctx->interns, str_from("$div", 4))) {
+      op_sym == interns_intern(ctx->interns, str_from("$div", 4)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$mod", 4))) {
     
     if (arg_count != 2) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "arithmetic %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
@@ -422,7 +423,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     /* $exit          — exits with code 0  (no args)
      * $exit <expr>   — exits with code <expr> (must be INT) */
     if (arg_count == 1) {
-      if (!arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_INT) {
+      MorphlType* exit_arg = unwrap_ref(arg_types[0]);
+      if (!exit_arg || exit_arg->kind != MORPHL_TYPE_INT) {
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: argument must be of type i32 (integer)");
         morphl_error_emit(NULL, &err);
         return NULL;
@@ -521,10 +523,10 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return func_type->data.func.return_type;
   }
 
-  // if
+  // if: $if <cond> <then> [else]  (2 or 3 args)
   if (op_sym == interns_intern(ctx->interns, str_from("$if", 3))) {
-    if (arg_count != 2) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if expects 2 args, got %llu", (unsigned long long)arg_count);
+    if (arg_count < 2 || arg_count > 3) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if expects 2-3 args, got %llu", (unsigned long long)arg_count);
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -534,31 +536,14 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    MorphlType* then_else_type = arg_types[1];
-    MorphlType* then_type = NULL;
-    MorphlType* else_type = NULL;
-    if (then_else_type->kind == MORPHL_TYPE_GROUP) {
-      switch (then_else_type->data.group.elem_count) {
-        case 2:
-          else_type = then_else_type->data.group.elem_types[1];
-          // fallthrough
-        case 1:
-          then_type = then_else_type->data.group.elem_types[0];
-          break;
-        default:  { // Something is wrong
-          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: second argument must be a group of (then_type, else_type)");
-          morphl_error_emit(NULL, &err);
-          return NULL;
-        }
-      }
-      // assert both types are compatible
-      if (!types_comparable(then_type, else_type)) {
+    MorphlType* then_type = arg_types[1];
+    if (arg_count == 3) {
+      MorphlType* else_type = arg_types[2];
+      if (then_type && else_type && !types_comparable(then_type, else_type)) {
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: then and else types are not compatible");
         morphl_error_emit(NULL, &err);
         return NULL;
       }
-    } else { // Single type, only then branch
-      then_type = then_else_type;
     }
     return then_type;
   }
