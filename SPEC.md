@@ -653,6 +653,8 @@ end
 
 Multiple rules may appear in one file. The **first rule** is the start rule for that grammar. An alternate production is written as another line under the same rule.
 
+Rule ordering is semantically significant. Earlier productions always take precedence over later ones when both could match.
+
 **Complete example:**
 
 ```
@@ -734,6 +736,9 @@ The first token names the AST operator; subsequent tokens are children. In addit
 | `$$maybe name` | Include the captured node only if it was matched (for optional sub-patterns) |
 | `$$op name` | Use the captured identifier's lexeme as the operator name (dynamic dispatch to builtin) |
 | `capture_name` | Insert the captured node as a child of the result |
+
+[!NOTE]
+`$$op` with an unrecognized builtin name is a compile-time error, reported during the codegen pass with a reference to grammar rule that produced it.
 
 **Overload alternatives** — a template can offer multiple candidates separated by `|`. The type checker selects the matching variant:
 
