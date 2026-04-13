@@ -84,6 +84,7 @@ enum VmOpcode {
   VM_OP_CALL    = 0x51,  // [u32 idx]   call function table entry <idx> (static)
   VM_OP_RET     = 0x52,  // no operand  return to caller
   VM_OP_CALLF   = 0x53,  // [i32 off]   indirect call: load func index from frame[off], dispatch
+  VM_OP_EXIT    = 0x54,  //             pop i64 from stack, exit program with that value as exit code
 
   /* ── Reference / indirection ── */
   VM_OP_ADDREF  = 0x60,  // [i32 off]  push absolute stack address of frame[off] as i64

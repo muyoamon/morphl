@@ -338,6 +338,42 @@ static void test_e2e_impl_with_func_prop() {
     printf("PASS test_e2e_impl_with_func_prop\n");
 }
 
+/* Spec §$exit: explicit exit with code 0 */
+static void test_e2e_exit_zero() {
+    int rc = compile_and_run("$exit 0;\n");
+    assert(rc == 0);
+    printf("PASS test_e2e_exit_zero\n");
+}
+
+/* Spec §$exit: explicit exit with non-zero code */
+static void test_e2e_exit_nonzero() {
+    int rc = compile_and_run("$exit 42;\n");
+    assert(rc == 42);
+    printf("PASS test_e2e_exit_nonzero\n");
+}
+
+/* Spec §main: top-level main auto-called, return value used as exit code */
+static void test_e2e_main_autocall() {
+    int rc = compile_and_run(
+        "$decl main $func () {\n"
+        "    $ret 7;\n"
+        "};\n"
+    );
+    assert(rc == 7);
+    printf("PASS test_e2e_main_autocall\n");
+}
+
+/* Spec §main: main returning 0 produces exit code 0 */
+static void test_e2e_main_returns_zero() {
+    int rc = compile_and_run(
+        "$decl main $func () {\n"
+        "    $ret 0;\n"
+        "};\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_main_returns_zero\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -359,6 +395,10 @@ int main(void) {
     test_e2e_traits_decl();
     test_e2e_impl_decl();
     test_e2e_impl_with_func_prop();
+    test_e2e_exit_zero();
+    test_e2e_exit_nonzero();
+    test_e2e_main_autocall();
+    test_e2e_main_returns_zero();
     printf("All integration tests passed.\n");
     return 0;
 }

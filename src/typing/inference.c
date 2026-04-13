@@ -418,6 +418,23 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return arg_types[0];
   }
 
+  if (op_sym == interns_intern(ctx->interns, str_from("$exit", 5))) {
+    /* $exit          — exits with code 0  (no args)
+     * $exit <expr>   — exits with code <expr> (must be INT) */
+    if (arg_count == 1) {
+      if (!arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_INT) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: argument must be of type i32 (integer)");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+    } else if (arg_count != 0) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: expects 0 or 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_void(ctx->arena);
+  }
+
   if (op_sym == interns_intern(ctx->interns, str_from("$impl", 5))) {
     /* $impl TraitA typeD { overrides } — returns the base type (typeD) as the impl type.
      * arg_types[0] = trait type, arg_types[1] = base type, arg_types[2] = override block. */

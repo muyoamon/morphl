@@ -727,6 +727,9 @@ static OperatorRow kBuiltinOps[] = {
   // Trait system
   {"$traits", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, TRAITS},
   {"$impl",   AST_BUILTIN,false, 2, 3,           NULL,              0, OP_PP_KEEP_NODE, IMPL},
+
+  // Exit
+  {"$exit",   AST_BUILTIN,false, 0, 1,           NULL,              0, OP_PP_KEEP_NODE, EXIT},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

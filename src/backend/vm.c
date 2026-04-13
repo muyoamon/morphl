@@ -146,6 +146,10 @@ typedef struct VmEmitter {
     /* compile-time $ref aliases (local, non-struct refs) */
     RefAlias*       ref_aliases;
     size_t          alias_count, alias_capacity;
+    /* true while emitting a deferred function body (false for top-level) */
+    bool            in_function;
+    /* function table index of top-level 'main', or SIZE_MAX if not declared */
+    size_t          main_func_fidx;
 } VmEmitter;
 
 /* ── opcode helpers ─────────────────────────────────────────────────────── */
@@ -441,6 +445,19 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                              sizeof(DeferredFunc), e->deferred_count + 1)) return false;
             }
             e->deferred[e->deferred_count++] = (DeferredFunc){ rhs, fidx, name };
+            /* record 'main' for auto-call injection (top-level only) */
+            if (!e->in_function &&
+                name.len == 4 && memcmp(name.ptr, "main", 4) == 0) {
+                /* validate that main returns i32 */
+                const MorphlType* fn_type = unwrap_ref(node->type);
+                if (!fn_type || fn_type->kind != MORPHL_TYPE_FUNC ||
+                    !fn_type->data.func.return_type ||
+                    fn_type->data.func.return_type->kind != MORPHL_TYPE_INT) {
+                    fprintf(stderr, "vm emitter: 'main' must have return type i32, e.g. main := () => { $ret 0; };\n");
+                    return false;
+                }
+                e->main_func_fidx = fidx;
+            }
             /* store function table index as i64 in frame */
             if (!emit_iconst(e, (int64_t)fidx)) return false;
             return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
@@ -773,6 +790,16 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return emit_op_u32(e, VM_OP_CALL, fidx);
         }
 
+        /* $exit [expr] — exit program with given code (default 0) */
+        if (OP_IS("$exit")) {
+            if (node->child_count > 0 && node->children[0]) {
+                if (!emit_node(e, node->children[0])) return false;
+            } else {
+                if (!emit_iconst(e, 0)) return false;
+            }
+            return emit_op(e, VM_OP_EXIT);
+        }
+
         /* $if (parsed as AST_BUILTIN with $if in some grammar versions) */
         if (OP_IS("$if")) {
             /* re-use AST_IF logic */
@@ -864,6 +891,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t func_idx) {
     if (!func_node || func_node->kind != AST_FUNC) return false;
     if (func_node->child_count < 2) return false;
+    bool saved_in_function = e->in_function;
+    e->in_function = true;
 
     struct AstNode* params = func_node->children[0]; /* AST_GROUP of AST_DECL */
     struct AstNode* body   = func_node->children[1]; /* AST_BLOCK */
@@ -986,6 +1015,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     e->functions.items[func_idx].frame_size = (uint32_t)(param_sz + body_scope_sz);
 
     morphl_backend_pop_frame(&e->frameInfo);
+    e->in_function = saved_in_function;
     return true;
 }
 
@@ -1009,9 +1039,10 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
 
     VmEmitter e;
     memset(&e, 0, sizeof(e));
-    e.interns   = context->type_context ? context->type_context->interns : NULL;
-    e.type_ctx  = context->type_context;
-    e.frameInfo = morphl_backend_frame_init();
+    e.interns         = context->type_context ? context->type_context->interns : NULL;
+    e.type_ctx        = context->type_context;
+    e.main_func_fidx  = SIZE_MAX;
+    e.frameInfo       = morphl_backend_frame_init();
     if (!e.frameInfo.root) { emitter_free(&e); return false; }
 
     /* function 0 = top-level program (implicit main) */
@@ -1025,6 +1056,18 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
         emitter_free(&e);
         return false;
     }
+    /* if a top-level 'main : () => i32' was declared, auto-call it and exit */
+    if (e.main_func_fidx != SIZE_MAX) {
+        /* RESERVE 8 (i32 return slot), ADDREF 0 (hidden parent), CALL main, EXIT */
+        if (!emit_op_u32(&e, VM_OP_RESERVE, 8) ||
+            !emit_op_i32(&e, VM_OP_ADDREF, 0)  ||
+            !emit_op_u32(&e, VM_OP_CALL, (uint32_t)e.main_func_fidx) ||
+            !emit_op(&e, VM_OP_EXIT)) {
+            emitter_free(&e);
+            return false;
+        }
+    }
+
     if (!emit_op(&e, VM_OP_HALT)) {
         emitter_free(&e);
         return false;

@@ -22,7 +22,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`.
 
 ---
 
@@ -262,7 +262,43 @@ $decl f $func ($decl x i32) {
 // type: (i32) => { result: i32 }
 ```
 
-### 6.5 Function Type Signature
+### 6.5 `$exit` — Explicit Process Exit
+
+`$exit` terminates the process immediately with a given integer exit code:
+
+```
+$exit 0;      // exit with code 0 (success)
+$exit 1;      // exit with code 1
+$exit code;   // exit with value of 'code' (must be i32)
+```
+
+Rules:
+- The argument must be of type `i32`. Any other type is a compile error.
+- `$exit` can appear anywhere in top-level code or inside a function.
+- There is no `$exit` with zero arguments — use `$exit 0` for explicit success exit.
+
+### 6.6 `main` — Program Entry Point
+
+If a top-level declaration named `main` is present and has the signature `() => i32`, the VM backend automatically calls it after all top-level statements have executed, and uses its return value as the process exit code.
+
+```
+$decl main $func () {
+    // program logic
+    $ret 0;   // exit code
+};
+```
+
+Constraints enforced at compile time:
+- `main` **must** have return type `i32`. Any other return type is a compile error.
+- `main` takes no explicit arguments (the hidden `$parent` argument is always present).
+- If no `main` is declared, top-level code runs and exits with code 0 on `HALT`.
+
+Interaction with `$exit`:
+- `$exit` within `main` exits immediately with the given code, bypassing the return value.
+- `$exit` at top-level (outside `main`) exits before `main` is called.
+- Simple scripts with neither `main` nor `$exit` run to completion and exit 0.
+
+### 6.7 Function Type Signature
 
 ```
 (<arg-types>) => <return-type>
@@ -560,7 +596,15 @@ JIF   <label>      — jump if top of stack is truthy
 JNULL <label>      — jump if top of stack is $null reference
 ```
 
-### 11.11 Design Notes
+### 11.11 Process Control
+
+```
+EXIT               — pop i64 from stack; exit the process with that value as exit code
+```
+
+`EXIT` is emitted by `$exit expr` and by the `main` auto-call convention. It unconditionally terminates the VM and propagates the exit code to the host OS.
+
+### 11.12 Design Notes
 
 - No GC opcodes — memory is stack-managed and explicit
 - No type tag opcodes — types are encoded in instructions, not values
@@ -601,6 +645,7 @@ block       ::= '{' stmt* '}'
 stmt        ::= decl
              |  expr ';'
              |  '$ret' expr? ';'
+             |  '$exit' expr ';'
              |  '$set' name expr ';'
              |  '$call' expr expr ';'
 params      ::= (decl (',' decl)*)?

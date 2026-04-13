@@ -505,6 +505,10 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             vm->ip        = cf.return_ip;
             break;
         }
+        case VM_OP_EXIT: {
+            int64_t v; POP_I64(v);
+            return (morphl_exit_code_t)v;
+        }
         case VM_OP_CALLF: {
             /* indirect call: load func index from frame[off], then dispatch */
             int32_t off; READ_I32(off);
