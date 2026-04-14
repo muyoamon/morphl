@@ -43,6 +43,10 @@ typedef struct {
   Sym* field_names;
   MorphlType** field_types;
   size_t field_count;
+  // Properties ($prop) — do not participate in structural subtyping
+  Sym* prop_names;
+  MorphlType** prop_types;
+  size_t prop_count;
 } MorphlBlockType;
 
 // Reference type metadata
@@ -90,6 +94,13 @@ MorphlType* morphl_type_block(Arena* arena,
                               Sym* field_names,
                               MorphlType** field_types,
                               size_t field_count);
+MorphlType* morphl_type_block_with_props(Arena* arena,
+                                         Sym* field_names,
+                                         MorphlType** field_types,
+                                         size_t field_count,
+                                         Sym* prop_names,
+                                         MorphlType** prop_types,
+                                         size_t prop_count);
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type);
 
 // Type utilities

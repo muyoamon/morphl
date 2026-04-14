@@ -438,15 +438,82 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$impl", 5))) {
-    /* $impl TraitA typeD { overrides } — returns the base type (typeD) as the impl type.
-     * arg_types[0] = trait type, arg_types[1] = base type, arg_types[2] = override block. */
-    if (arg_count < 2 || !arg_types[1]) {
+    /* $impl TraitA typeD [{ overrides }]
+     * arg_types[0] = trait type, arg_types[1] = base type,
+     * arg_types[2] = override block (optional). */
+    if (arg_count < 2 || !arg_types[0] || !arg_types[1]) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$impl expects at least 2 arguments (trait, base)");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    /* Return the base type — the impl type is structurally identical to the base for now. */
-    return arg_types[1];
+    MorphlType* trait_type = arg_types[0];
+    MorphlType* base_type  = arg_types[1];
+    MorphlType* override_type = (arg_count >= 3) ? arg_types[2] : NULL;
+
+    if (!trait_type || trait_type->kind != MORPHL_TYPE_BLOCK) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$impl: first argument must be a traits block");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+
+    /* Verify override block types against trait property types */
+    if (override_type && override_type->kind == MORPHL_TYPE_BLOCK) {
+      for (size_t oi = 0; oi < override_type->data.block.prop_count; ++oi) {
+        Sym oname = override_type->data.block.prop_names[oi];
+        MorphlType* otype = override_type->data.block.prop_types[oi];
+        /* Find matching trait property */
+        bool found = false;
+        for (size_t ti = 0; ti < trait_type->data.block.prop_count; ++ti) {
+          if (trait_type->data.block.prop_names[ti] == oname) {
+            found = true;
+            if (!morphl_type_is_subtype(otype, trait_type->data.block.prop_types[ti])) {
+              MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                  "$impl: property override type is incompatible with trait declaration");
+              morphl_error_emit(NULL, &err);
+              return NULL;
+            }
+            break;
+          }
+        }
+        if (!found) {
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+              "$impl: override provides property not declared in trait");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+      }
+    }
+
+    /* Build result: base structural fields + merged props (trait defaults + overrides) */
+    /* Merge: start with trait props, replace with override where provided */
+    size_t total_props = trait_type->data.block.prop_count;
+    Sym* merged_names = (Sym*)malloc(total_props * sizeof(Sym));
+    MorphlType** merged_types = (MorphlType**)malloc(total_props * sizeof(MorphlType*));
+    if (!merged_names || !merged_types) {
+      free(merged_names); free(merged_types);
+      return NULL;
+    }
+    for (size_t ti = 0; ti < trait_type->data.block.prop_count; ++ti) {
+      merged_names[ti] = trait_type->data.block.prop_names[ti];
+      merged_types[ti] = trait_type->data.block.prop_types[ti]; /* default */
+      if (override_type && override_type->kind == MORPHL_TYPE_BLOCK) {
+        for (size_t oi = 0; oi < override_type->data.block.prop_count; ++oi) {
+          if (override_type->data.block.prop_names[oi] == merged_names[ti]) {
+            merged_types[ti] = override_type->data.block.prop_types[oi];
+            break;
+          }
+        }
+      }
+    }
+    MorphlType* result = morphl_type_block_with_props(
+        ctx->arena,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_names : NULL,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_types : NULL,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_count : 0,
+        merged_names, merged_types, total_props);
+    free(merged_names);
+    free(merged_types);
+    return result;
   }
 
   // Function definition: $func produces a function type
@@ -728,25 +795,30 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       MorphlType** field_types = NULL;
       size_t field_count = 0;
       size_t field_cap = 0;
+      Sym* prop_names = NULL;
+      MorphlType** prop_types = NULL;
+      size_t prop_count = 0;
+      size_t prop_cap = 0;
       bool ok = true;
       for (size_t i = 0; i < node->child_count; ++i) {
         AstNode* stmt = node->children[i];
         MorphlType* stmt_type = morphl_infer_type_of_ast(ctx, stmt);
         if (!stmt_type) { ok = false; break; }
-        // Handle both AST_DECL and AST_PROP for field registration
-        // For now, we treat properties as variables with '$' prefix in the block scope
-        // TODO: have properties as its own kind of member in the block type, separate from variables
-        if (stmt && (stmt->kind == AST_DECL || stmt->kind == AST_PROP) && stmt->child_count >= 1) {
-          AstNode* name_node = stmt->children[0];
-          if (!name_node) { ok = false; break; }
-          
-          // For properties, the name is already prefixed with '$' in the symbol table
-          // by the AST_PROP case handler above
-          if (!name_node->op && name_node->value.ptr) {
-            name_node->op = interns_intern(ctx->interns, name_node->value);
-          }
-          if (!name_node->op) { ok = false; break; }
-          
+        if (!stmt || stmt->child_count < 1) continue;
+
+        bool is_decl = (stmt->kind == AST_DECL);
+        bool is_prop = (stmt->kind == AST_PROP);
+        if (!is_decl && !is_prop) continue;
+
+        AstNode* name_node = stmt->children[0];
+        if (!name_node) { ok = false; break; }
+        if (!name_node->op && name_node->value.ptr) {
+          name_node->op = interns_intern(ctx->interns, name_node->value);
+        }
+        if (!name_node->op) { ok = false; break; }
+
+        if (is_decl) {
+          // Structural field — participates in subtyping
           if (field_count >= field_cap) {
             size_t new_cap = field_cap ? field_cap * 2 : 4;
             Sym* new_names = (Sym*)realloc(field_names, new_cap * sizeof(Sym));
@@ -767,12 +839,36 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           block_type->data.block.field_names = names;
           block_type->data.block.field_types = types;
           block_type->data.block.field_count = field_count;
+        } else {
+          // Property — does NOT participate in structural subtyping (SPEC §9.2)
+          if (prop_count >= prop_cap) {
+            size_t new_cap = prop_cap ? prop_cap * 2 : 4;
+            Sym* new_names = (Sym*)realloc(prop_names, new_cap * sizeof(Sym));
+            MorphlType** new_types = (MorphlType**)realloc(prop_types, new_cap * sizeof(MorphlType*));
+            if (!new_names || !new_types) { ok = false; break; }
+            prop_names = new_names;
+            prop_types = new_types;
+            prop_cap = new_cap;
+          }
+          prop_names[prop_count] = name_node->op;
+          prop_types[prop_count] = stmt_type;
+          prop_count++;
+          Sym* pnames = (Sym*)arena_push(ctx->arena, NULL, prop_count * sizeof(Sym));
+          MorphlType** ptypes = (MorphlType**)arena_push(ctx->arena, NULL, prop_count * sizeof(MorphlType*));
+          if (!pnames || !ptypes) { ok = false; break; }
+          memcpy(pnames, prop_names, prop_count * sizeof(Sym));
+          memcpy(ptypes, prop_types, prop_count * sizeof(MorphlType*));
+          block_type->data.block.prop_names = pnames;
+          block_type->data.block.prop_types = ptypes;
+          block_type->data.block.prop_count = prop_count;
         }
       }
       type_context_pop_this(ctx);
       type_context_pop_scope(ctx);
       free(field_names);
       free(field_types);
+      free(prop_names);
+      free(prop_types);
       return ok ? block_type : NULL;
     }
     case AST_FUNC: {

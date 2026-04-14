@@ -102,6 +102,10 @@ struct MorphlVmProgram {
     uint32_t        func_count;
     uint8_t*        code;
     uint32_t        code_len;
+    /* string table: pointers into str_data buffer (null-terminated C strings) */
+    char**          str_table;
+    uint32_t        str_count;
+    uint8_t*        str_data;  /* raw string bytes (owned); str_table[i] points into here */
 };
 
 struct MorphlVm {
@@ -212,6 +216,34 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
         if (!read_bytes(buf, len, &pos, prog->code, prog->code_len)) goto err;
     }
 
+    /* string table (optional — older bytecode may not have it) */
+    if (pos < len) {
+        if (!read_u32_le(buf, len, &pos, &prog->str_count)) goto err;
+        if (prog->str_count > 0) {
+            prog->str_table = (char**)malloc(prog->str_count * sizeof(char*));
+            if (!prog->str_table) goto err;
+            /* accumulate all string bytes into str_data first */
+            size_t data_cap = 256;
+            size_t data_len = 0;
+            prog->str_data = (uint8_t*)malloc(data_cap);
+            if (!prog->str_data) goto err;
+            for (uint32_t i = 0; i < prog->str_count; i++) {
+                uint32_t slen;
+                if (!read_u32_le(buf, len, &pos, &slen)) goto err;
+                /* slen+1 bytes (including NUL) */
+                while (data_len + slen + 1 > data_cap) {
+                    data_cap *= 2;
+                    uint8_t* p = (uint8_t*)realloc(prog->str_data, data_cap);
+                    if (!p) goto err;
+                    prog->str_data = p;
+                }
+                prog->str_table[i] = (char*)(prog->str_data + data_len);
+                if (!read_bytes(buf, len, &pos, prog->str_data + data_len, slen + 1)) goto err;
+                data_len += slen + 1;
+            }
+        }
+    }
+
     free(buf);
     *out = prog;
     return true;
@@ -219,6 +251,8 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
 err:
     free(prog->functions);
     free(prog->code);
+    free(prog->str_table);
+    free(prog->str_data);
     free(prog);
     free(buf);
     return false;
@@ -228,6 +262,8 @@ void morphl_vm_program_free(MorphlVmProgram* prog) {
     if (!prog) return;
     free(prog->functions);
     free(prog->code);
+    free(prog->str_table);
+    free(prog->str_data);
     free(prog);
 }
 
@@ -584,6 +620,38 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 return 1;
             }
             memcpy(vm->stack.data + (size_t)field_addr, &v, 8);
+            break;
+        }
+
+        /* ── String operations ── */
+        case VM_OP_SCONST: {
+            /* push pointer to string table entry as i64 */
+            uint32_t idx; READ_U32(idx);
+            if (idx >= vm->program->str_count) {
+                fprintf(err, "vm: SCONST index %u out of range (table size %u)\n",
+                        idx, vm->program->str_count);
+                return 1;
+            }
+            int64_t ptr = (int64_t)(uintptr_t)vm->program->str_table[idx];
+            PUSH_I64(ptr);
+            break;
+        }
+        case VM_OP_SEQ: {
+            /* pop two string pointers, push 1 if strcmp==0 else 0 */
+            int64_t b; POP_I64(b);
+            int64_t a; POP_I64(a);
+            const char* sa = (const char*)(uintptr_t)a;
+            const char* sb = (const char*)(uintptr_t)b;
+            PUSH_I64(strcmp(sa, sb) == 0 ? 1 : 0);
+            break;
+        }
+        case VM_OP_SNEQ: {
+            /* pop two string pointers, push 0 if strcmp==0 else 1 */
+            int64_t b; POP_I64(b);
+            int64_t a; POP_I64(a);
+            const char* sa = (const char*)(uintptr_t)a;
+            const char* sb = (const char*)(uintptr_t)b;
+            PUSH_I64(strcmp(sa, sb) != 0 ? 1 : 0);
             break;
         }
 

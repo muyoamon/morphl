@@ -442,6 +442,121 @@ static void test_e2e_continue() {
     printf("PASS test_e2e_continue\n");
 }
 
+/* Step 4 — $break/$continue scope unwinding:
+ * Verify that $break inside a nested {} block properly emits LEAVE before JMP,
+ * so the stack is cleaned up and execution continues after the loop. */
+static void test_e2e_break_in_nested_block() {
+    /* i increments to 1, then { $break; } fires — should exit with i==1 */
+    int rc = compile_and_run(
+        "$decl i $mut 0;\n"
+        "$while $lt i 10 {\n"
+        "    $set i $add i 1;\n"
+        "    { $break; };\n"
+        "};\n"
+        "$exit i;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_break_in_nested_block\n");
+}
+
+/* Step 4 — $continue scope unwinding:
+ * $continue inside a nested {} block emits LEAVE before JMP to loop top. */
+static void test_e2e_continue_in_nested_block() {
+    /* i counts up to 5; { $continue; } skips $set s, so s stays 0 */
+    int rc = compile_and_run(
+        "$decl i $mut 0;\n"
+        "$decl s $mut 0;\n"
+        "$while $lt i 5 {\n"
+        "    $set i $add i 1;\n"
+        "    { $continue; };\n"
+        "    $set s $add s i;\n"
+        "};\n"
+        "$exit s;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_continue_in_nested_block\n");
+}
+
+/* Step 7 — string: declare and compare (no $exit on bool — use $if wrapper) */
+static void test_e2e_string_assign() {
+    /* String literal compiles; $exit 0 just checks no crash */
+    int rc = compile_and_run(
+        "$decl s \"hello\";\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_string_assign\n");
+}
+
+static void test_e2e_string_eq() {
+    /* $eq on equal strings → 1; on different strings → 0 */
+    int rc1 = compile_and_run(
+        "$decl s \"hello\";\n"
+        "$decl result $if $eq s \"hello\" 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc1 == 1);
+
+    int rc2 = compile_and_run(
+        "$decl s \"hello\";\n"
+        "$decl result $if $eq s \"world\" 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc2 == 0);
+    printf("PASS test_e2e_string_eq\n");
+}
+
+static void test_e2e_string_neq() {
+    /* $neq on different strings → 1; on equal strings → 0 */
+    int rc1 = compile_and_run(
+        "$decl s \"hello\";\n"
+        "$decl result $if $neq s \"world\" 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc1 == 1);
+
+    int rc2 = compile_and_run(
+        "$decl s \"hello\";\n"
+        "$decl result $if $neq s \"hello\" 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc2 == 0);
+    printf("PASS test_e2e_string_neq\n");
+}
+
+static void test_e2e_string_mutation() {
+    /* $set a string variable then compare */
+    int rc = compile_and_run(
+        "$decl s $mut \"hello\";\n"
+        "$set s \"world\";\n"
+        "$decl result $if $eq s \"world\" 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_string_mutation\n");
+}
+
+/* Step 5 — $import VM backend:
+ * Verify that the VM emitter handles $import without crashing ("unhandled builtin").
+ * The imported module's AST is emitted inline. */
+static void test_e2e_import_basic() {
+    /* Write a module with 2+ declarations so scoped_parse_ast wraps in AST_FILE */
+    std::string mod_path = write_temp_source(
+        "$decl modval 42;\n"
+        "$decl other 1;\n"
+    );
+
+    /* Main file imports the module; $exit 0 verifies no crash */
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$exit 0;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_import_basic\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -474,6 +589,13 @@ int main(void) {
     test_e2e_or();
     test_e2e_break();
     test_e2e_continue();
+    test_e2e_break_in_nested_block();
+    test_e2e_continue_in_nested_block();
+    test_e2e_string_assign();
+    test_e2e_string_eq();
+    test_e2e_string_neq();
+    test_e2e_string_mutation();
+    test_e2e_import_basic();
     printf("All integration tests passed.\n");
     return 0;
 }

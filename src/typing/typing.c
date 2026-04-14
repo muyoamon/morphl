@@ -63,7 +63,7 @@ MorphlType* morphl_type_string(Arena* arena) {
   if (!t) return NULL;
   memset(t, 0, sizeof(MorphlType));
   t->kind = MORPHL_TYPE_STRING;
-  t->size = 16; // Assume pointer + length (2 x 8 bytes)
+  t->size = 8; // stored as 8-byte pointer into the bytecode string table
   t->align = 8;
   return t;
 }
@@ -168,6 +168,17 @@ MorphlType* morphl_type_block(Arena* arena,
                               Sym* field_names,
                               MorphlType** field_types,
                               size_t field_count) {
+  return morphl_type_block_with_props(arena, field_names, field_types, field_count,
+                                      NULL, NULL, 0);
+}
+
+MorphlType* morphl_type_block_with_props(Arena* arena,
+                                         Sym* field_names,
+                                         MorphlType** field_types,
+                                         size_t field_count,
+                                         Sym* prop_names,
+                                         MorphlType** prop_types,
+                                         size_t prop_count) {
   if (!arena) return NULL;
   MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
   if (!t) return NULL;
@@ -186,10 +197,18 @@ MorphlType* morphl_type_block(Arena* arena,
     t->data.block.field_names = names;
     t->data.block.field_types = types;
     t->data.block.field_count = field_count;
-  } else {
-    t->data.block.field_names = NULL;
-    t->data.block.field_types = NULL;
-    t->data.block.field_count = 0;
+  }
+  if (prop_count > 0 && prop_names && prop_types) {
+    Sym* pnames = arena_alloc(arena, prop_count * sizeof(Sym));
+    MorphlType** ptypes = arena_alloc(arena, prop_count * sizeof(MorphlType*));
+    if (!pnames || !ptypes) return NULL;
+    for (size_t i = 0; i < prop_count; ++i) {
+      pnames[i] = prop_names[i];
+      ptypes[i] = prop_types[i];
+    }
+    t->data.block.prop_names = pnames;
+    t->data.block.prop_types = ptypes;
+    t->data.block.prop_count = prop_count;
   }
   return t;
 }
@@ -240,6 +259,18 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
       t->data.block.field_names = names;
       t->data.block.field_types = types;
     }
+    if (t->data.block.prop_count > 0 && t->data.block.prop_types && t->data.block.prop_names) {
+      Sym* pnames = arena_alloc(arena, t->data.block.prop_count * sizeof(Sym));
+      MorphlType** ptypes = arena_alloc(arena, t->data.block.prop_count * sizeof(MorphlType*));
+      if (!pnames || !ptypes) return NULL;
+      for (size_t i = 0; i < t->data.block.prop_count; ++i) {
+        pnames[i] = t->data.block.prop_names[i];
+        ptypes[i] = morphl_type_clone(arena, t->data.block.prop_types[i]);
+        if (!ptypes[i]) return NULL;
+      }
+      t->data.block.prop_names = pnames;
+      t->data.block.prop_types = ptypes;
+    }
   } else if (t->kind == MORPHL_TYPE_REF) {
     if (t->data.ref.target) {
       t->data.ref.target = morphl_type_clone(arena, t->data.ref.target);
@@ -285,6 +316,14 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
     for (size_t i = 0; i < a->data.block.field_count; ++i) {
       if (a->data.block.field_names[i] != b->data.block.field_names[i]) return false;
       if (!morphl_type_equals(a->data.block.field_types[i], b->data.block.field_types[i])) {
+        return false;
+      }
+    }
+    // Also compare properties for exact equality
+    if (a->data.block.prop_count != b->data.block.prop_count) return false;
+    for (size_t i = 0; i < a->data.block.prop_count; ++i) {
+      if (a->data.block.prop_names[i] != b->data.block.prop_names[i]) return false;
+      if (!morphl_type_equals(a->data.block.prop_types[i], b->data.block.prop_types[i])) {
         return false;
       }
     }
@@ -363,7 +402,7 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         break;
       }
       case MORPHL_TYPE_BLOCK: {
-        // Print in format: {<name>:<type>, ...}
+        // Print in format: {<name>:<type>, ...}($<prop>:<type>, ...)
         snprintf(buf, sizeof(buf), "{");
         size_t offset = strlen(buf);
         for (size_t i = 0; i < type->data.block.field_count; ++i) {
@@ -374,7 +413,19 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
                                  (i + 1 < type->data.block.field_count) ? ", " : "");
           offset += written;
         }
-        snprintf(buf + offset, sizeof(buf) - offset, "}");
+        offset += snprintf(buf + offset, sizeof(buf) - offset, "}");
+        if (type->data.block.prop_count > 0) {
+          offset += snprintf(buf + offset, sizeof(buf) - offset, "(");
+          for (size_t i = 0; i < type->data.block.prop_count; ++i) {
+            Str prop_str = morphl_type_to_string(type->data.block.prop_types[i], interns);
+            int written = snprintf(buf + offset, sizeof(buf) - offset, "$%.*s:%.*s%s",
+                                   (int)interns_lookup(interns, type->data.block.prop_names[i]).len, interns_lookup(interns, type->data.block.prop_names[i]).ptr,
+                                   (int)prop_str.len, prop_str.ptr,
+                                   (i + 1 < type->data.block.prop_count) ? ", " : "");
+            offset += written;
+          }
+          snprintf(buf + offset, sizeof(buf) - offset, ")");
+        }
         result = new_cstr(buf);
         break;
       }
@@ -401,7 +452,23 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
   return str_from(result, strlen(result));
 }
 
-// Check subtype relationship (simplified: exact match for now)
+// Check subtype relationship.
+// For block types: sub must have at least all of super's structural fields
+// at the same positions with compatible types. Properties ($prop) are ignored
+// for structural subtyping per SPEC §9.2.
 bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super) {
+  if (!sub || !super) return sub == super;
+  if (sub->kind != super->kind) return false;
+  if (sub->kind == MORPHL_TYPE_BLOCK) {
+    // super must be a prefix of sub's fields (same names, compatible types)
+    if (sub->data.block.field_count < super->data.block.field_count) return false;
+    for (size_t i = 0; i < super->data.block.field_count; ++i) {
+      if (sub->data.block.field_names[i] != super->data.block.field_names[i]) return false;
+      if (!morphl_type_is_subtype(sub->data.block.field_types[i],
+                                   super->data.block.field_types[i])) return false;
+    }
+    return true;
+  }
+  // For all other types, fall back to exact equality
   return morphl_type_equals(sub, super);
 }

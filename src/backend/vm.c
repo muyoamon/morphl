@@ -131,8 +131,9 @@ typedef struct {
 
 /* Loop context: tracks jump targets for $break/$continue inside $while bodies */
 typedef struct {
-    size_t break_label;    /* jump target for $break    (exit_label) */
-    size_t continue_label; /* jump target for $continue (loop_start) */
+    size_t break_label;       /* jump target for $break    (exit_label) */
+    size_t continue_label;    /* jump target for $continue (loop_start) */
+    size_t scope_depth_at_entry; /* emitter scope_depth when the loop started */
 } VmLoopCtx;
 
 typedef struct VmEmitter {
@@ -155,6 +156,12 @@ typedef struct VmEmitter {
     /* loop context stack for $break/$continue target resolution */
     VmLoopCtx*      loop_stack;
     size_t          loop_stack_count, loop_stack_capacity;
+    /* scope stack for unwinding: each entry is the ENTER size for that scope level */
+    uint32_t*       scope_sizes;
+    size_t          scope_depth, scope_capacity;
+    /* string table: collect deduplicated string literals for SCONST emission */
+    char**          str_table;
+    size_t          str_count, str_capacity;
     /* true while emitting a deferred function body (false for top-level) */
     bool            in_function;
     /* function table index of top-level 'main', or SIZE_MAX if not declared */
@@ -181,6 +188,54 @@ static bool emit_iconst(VmEmitter* e, int64_t v) {
 
 static bool emit_fconst(VmEmitter* e, double v) {
     return emit_op(e, VM_OP_FCONST) && bytes_push_f64_le(&e->code, v);
+}
+
+/* Add a string literal to the emitter's string table; return its index (deduplicated). */
+static uint32_t string_intern(VmEmitter* e, Str s) {
+    /* Linear scan for dedup — string tables are small */
+    for (size_t i = 0; i < e->str_count; i++) {
+        size_t slen = strlen(e->str_table[i]);
+        if (slen == s.len && memcmp(e->str_table[i], s.ptr, s.len) == 0) {
+            return (uint32_t)i;
+        }
+    }
+    if (e->str_count >= e->str_capacity) {
+        size_t new_cap = e->str_capacity ? e->str_capacity * 2 : 8;
+        char** p = (char**)realloc(e->str_table, new_cap * sizeof(char*));
+        if (!p) return UINT32_MAX;
+        e->str_table = p;
+        e->str_capacity = new_cap;
+    }
+    char* copy = (char*)malloc(s.len + 1);
+    if (!copy) return UINT32_MAX;
+    memcpy(copy, s.ptr, s.len);
+    copy[s.len] = '\0';
+    uint32_t idx = (uint32_t)e->str_count;
+    e->str_table[e->str_count++] = copy;
+    return idx;
+}
+
+/* Emit SCONST <u32 idx> for a string literal */
+static bool emit_sconst(VmEmitter* e, Str s) {
+    uint32_t idx = string_intern(e, s);
+    if (idx == UINT32_MAX) return false;
+    return emit_op(e, VM_OP_SCONST) && bytes_push_u32_le(&e->code, idx);
+}
+
+/* Push an ENTER scope of given size, tracking depth for $break/$continue unwinding */
+static bool emit_enter(VmEmitter* e, uint32_t sz) {
+    if (e->scope_depth >= e->scope_capacity) {
+        if (!vm_grow((void**)&e->scope_sizes, &e->scope_capacity,
+                     sizeof(uint32_t), e->scope_depth + 1)) return false;
+    }
+    e->scope_sizes[e->scope_depth++] = sz;
+    return emit_op_u32(e, VM_OP_ENTER, sz);
+}
+
+/* Pop an ENTER scope, emitting LEAVE */
+static bool emit_leave(VmEmitter* e, uint32_t sz) {
+    if (e->scope_depth > 0) e->scope_depth--;
+    return emit_op_u32(e, VM_OP_LEAVE, sz);
 }
 
 /* ── label / backpatch ──────────────────────────────────────────────────── */
@@ -266,7 +321,8 @@ static size_t type_frame_size(const MorphlType* t) {
     switch (t->kind) {
         case MORPHL_TYPE_INT:
         case MORPHL_TYPE_FLOAT:
-        case MORPHL_TYPE_BOOL:   return 8;   /* stored as i64 or f64 */
+        case MORPHL_TYPE_BOOL:
+        case MORPHL_TYPE_STRING: return 8;   /* stored as i64 or f64 or string pointer */
         case MORPHL_TYPE_FUNC:   return 8;   /* stored as i64 (function table index) */
         case MORPHL_TYPE_REF:
             /* $ref (is_ref=true) stores a 4-byte absolute stack address.
@@ -284,13 +340,14 @@ static uint8_t load_op(const MorphlType* t) {
     switch (t->kind) {
         case MORPHL_TYPE_INT:
         case MORPHL_TYPE_BOOL:
-        case MORPHL_TYPE_FUNC:  return VM_OP_ILOAD;
-        case MORPHL_TYPE_FLOAT: return VM_OP_FLOAD;
+        case MORPHL_TYPE_FUNC:
+        case MORPHL_TYPE_STRING: return VM_OP_ILOAD;   /* string pointer fits in i64 slot */
+        case MORPHL_TYPE_FLOAT:  return VM_OP_FLOAD;
         case MORPHL_TYPE_REF:
             if (t->data.ref.is_ref) return VM_OP_RLOAD;
             /* qualifier refs: fall through to load from target type */
             return t->data.ref.target ? load_op(t->data.ref.target) : 0xFF;
-        default:                return 0xFF;
+        default:                 return 0xFF;
     }
 }
 
@@ -300,8 +357,9 @@ static uint8_t store_op(const MorphlType* t) {
     switch (t->kind) {
         case MORPHL_TYPE_INT:
         case MORPHL_TYPE_BOOL:
-        case MORPHL_TYPE_FUNC:  return VM_OP_ISTORE;
-        case MORPHL_TYPE_FLOAT: return VM_OP_FSTORE;
+        case MORPHL_TYPE_FUNC:
+        case MORPHL_TYPE_STRING: return VM_OP_ISTORE;  /* string pointer fits in i64 slot */
+        case MORPHL_TYPE_FLOAT:  return VM_OP_FSTORE;
         case MORPHL_TYPE_REF:
             if (t->data.ref.is_ref) return VM_OP_RSTORE;
             return t->data.ref.target ? store_op(t->data.ref.target) : 0xFF;
@@ -368,6 +426,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             buf[n] = '\0';
             double v = atof(buf);
             return emit_fconst(e, v);
+        }
+        if (t->kind == MORPHL_TYPE_STRING) {
+            /* String literal: strip surrounding quotes and intern into string table */
+            Str raw = node->value;
+            if (raw.len >= 2 && raw.ptr[0] == '"' && raw.ptr[raw.len - 1] == '"') {
+                raw.ptr++;
+                raw.len -= 2;
+            }
+            return emit_sconst(e, raw);
         }
         /* INT, BOOL, or anything else → ICONST */
         char buf[32];
@@ -489,7 +556,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
     case AST_BLOCK: {
         size_t scope_sz = block_scope_size(node);
         if (!morphl_backend_push_frame(&e->frameInfo)) return false;
-        if (!emit_op_u32(e, VM_OP_ENTER, (uint32_t)scope_sz)) {
+        if (!emit_enter(e, (uint32_t)scope_sz)) {
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
@@ -499,7 +566,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 return false;
             }
         }
-        if (!emit_op_u32(e, VM_OP_LEAVE, (uint32_t)scope_sz)) {
+        if (!emit_leave(e, (uint32_t)scope_sz)) {
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
@@ -830,7 +897,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (!vm_grow((void**)&e->loop_stack, &e->loop_stack_capacity,
                              sizeof(VmLoopCtx), e->loop_stack_count + 1)) return false;
             }
-            e->loop_stack[e->loop_stack_count++] = (VmLoopCtx){ exit_lbl, loop_start };
+            e->loop_stack[e->loop_stack_count++] = (VmLoopCtx){ exit_lbl, loop_start, e->scope_depth };
 
             /* bind loop_start before condition (continue jumps here) */
             if (!label_bind(e, loop_start))        { e->loop_stack_count--; return false; }
@@ -845,18 +912,18 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
              * outer-scope vars appear at negative offsets (the $parent cross-function
              * convention). Instead we emit ENTER/children/LEAVE without a frame push,
              * so outer vars like the loop counter remain at their correct positive offsets.
-             * Note: $break/$continue inside a nested sub-block (with its own ENTER/LEAVE)
-             * will skip that LEAVE — a known limitation until scope unwinding is added. */
+             * $break/$continue now emit LEAVE instructions for any nested scopes
+             * before jumping, so nested sub-blocks are correctly unwound. */
             struct AstNode* body = node->children[1];
             if (body && body->kind == AST_BLOCK) {
                 size_t bsz = block_scope_size(body);
-                if (bsz > 0 && !emit_op_u32(e, VM_OP_ENTER, (uint32_t)bsz))
+                if (bsz > 0 && !emit_enter(e, (uint32_t)bsz))
                     { e->loop_stack_count--; return false; }
                 for (size_t k = 0; k < body->child_count; k++) {
                     if (!emit_node(e, body->children[k]))
                         { e->loop_stack_count--; return false; }
                 }
-                if (bsz > 0 && !emit_op_u32(e, VM_OP_LEAVE, (uint32_t)bsz))
+                if (bsz > 0 && !emit_leave(e, (uint32_t)bsz))
                     { e->loop_stack_count--; return false; }
             } else if (body) {
                 if (!emit_node(e, body)) { e->loop_stack_count--; return false; }
@@ -920,26 +987,32 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return label_bind(e, end_lbl);
         }
 
-        /* $break — jump to enclosing loop's exit label
-         * Note: if $break is inside a nested block with ENTER/LEAVE, the LEAVE
-         * is skipped and that block's stack space is leaked. Avoid nesting $break
-         * inside sub-blocks until scope unwinding is implemented. */
+        /* $break — emit LEAVE for any nested scopes entered since the loop started,
+         * then jump to the loop's exit label. */
         if (OP_IS("$break")) {
             if (e->loop_stack_count == 0) {
                 fprintf(stderr, "vm emitter: $break outside loop at %s:%zu:%zu\n",
                         node->filename ? node->filename : "?", node->row, node->col);
                 return false;
             }
+            size_t loop_depth = e->loop_stack[e->loop_stack_count - 1].scope_depth_at_entry;
+            for (size_t d = e->scope_depth; d > loop_depth; d--) {
+                if (!emit_op_u32(e, VM_OP_LEAVE, e->scope_sizes[d - 1])) return false;
+            }
             return emit_jump(e, VM_OP_JMP,
                              e->loop_stack[e->loop_stack_count - 1].break_label);
         }
 
-        /* $continue — jump back to loop condition (same caveat as $break re: LEAVE) */
+        /* $continue — emit LEAVE for nested scopes, then jump to loop condition. */
         if (OP_IS("$continue")) {
             if (e->loop_stack_count == 0) {
                 fprintf(stderr, "vm emitter: $continue outside loop at %s:%zu:%zu\n",
                         node->filename ? node->filename : "?", node->row, node->col);
                 return false;
+            }
+            size_t loop_depth = e->loop_stack[e->loop_stack_count - 1].scope_depth_at_entry;
+            for (size_t d = e->scope_depth; d > loop_depth; d--) {
+                if (!emit_op_u32(e, VM_OP_LEAVE, e->scope_sizes[d - 1])) return false;
             }
             return emit_jump(e, VM_OP_JMP,
                              e->loop_stack[e->loop_stack_count - 1].continue_label);
@@ -953,6 +1026,21 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (OP_IS("$f2i")) {
             return node->child_count > 0 && emit_node(e, node->children[0]) &&
                    emit_op(e, VM_OP_F2I);
+        }
+
+        /* string comparison: $eq and $neq on string operands use SEQ/SNEQ */
+        if ((op_name.len == 3 && memcmp(op_name.ptr, "$eq",  3) == 0) ||
+            (op_name.len == 4 && memcmp(op_name.ptr, "$neq", 4) == 0)) {
+            if (node->child_count >= 2) {
+                const MorphlType* lhs_t = unwrap_ref(
+                    node->children[0]->type ? node->children[0]->type : node->type);
+                if (lhs_t && lhs_t->kind == MORPHL_TYPE_STRING) {
+                    if (!emit_node(e, node->children[0])) return false;
+                    if (!emit_node(e, node->children[1])) return false;
+                    bool is_eq = (op_name.len == 3);
+                    return emit_op(e, is_eq ? VM_OP_SEQ : VM_OP_SNEQ);
+                }
+            }
         }
 
         /* binary arithmetic / comparison */
@@ -993,6 +1081,18 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 return emit_op(e, op_byte);
             }
         }
+
+        /* $import "file" — the child was already replaced with the parsed AST_FILE
+         * by pp_action_import in operators.c. Emit it inline: the AST_FILE handler
+         * does ENTER/children/LEAVE with its own frame push, matching SPEC §11.1
+         * ("files are blocks"). Functions inside are deferred into the global table.
+         * TODO: cache imported modules to avoid running initialization twice on
+         * duplicate imports (SPEC does not yet specify deduplication semantics). */
+        if (OP_IS("$import")) {
+            if (node->child_count < 1 || !node->children[0]) return false;
+            return emit_node(e, node->children[0]);
+        }
+
 #undef OP_IS
 
         fprintf(stderr, "vm emitter: unhandled builtin '%.*s' at %s:%zu:%zu\n",
@@ -1029,7 +1129,9 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     if (!func_node || func_node->kind != AST_FUNC) return false;
     if (func_node->child_count < 2) return false;
     bool saved_in_function = e->in_function;
+    size_t saved_scope_depth = e->scope_depth;
     e->in_function = true;
+    e->scope_depth = 0; /* reset scope tracking for this function body */
 
     struct AstNode* params = func_node->children[0]; /* AST_GROUP of AST_DECL */
     struct AstNode* body   = func_node->children[1]; /* AST_BLOCK */
@@ -1081,7 +1183,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     }
 
     /* emit ENTER for params */
-    if (!emit_op_u32(e, VM_OP_ENTER, (uint32_t)param_sz)) {
+    if (!emit_enter(e, (uint32_t)param_sz)) {
         morphl_backend_pop_frame(&e->frameInfo);
         return false;
     }
@@ -1109,7 +1211,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
-        if (!emit_op_u32(e, VM_OP_ENTER, (uint32_t)body_scope_sz)) {
+        if (!emit_enter(e, (uint32_t)body_scope_sz)) {
             morphl_backend_pop_frame(&e->frameInfo);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
@@ -1138,7 +1240,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     }
 
     if (body_scope_sz > 0) {
-        emit_op_u32(e, VM_OP_LEAVE, (uint32_t)body_scope_sz);
+        emit_leave(e, (uint32_t)body_scope_sz);
         morphl_backend_pop_frame(&e->frameInfo);
     }
 
@@ -1153,6 +1255,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
 
     morphl_backend_pop_frame(&e->frameInfo);
     e->in_function = saved_in_function;
+    e->scope_depth = saved_scope_depth;
     return true;
 }
 
@@ -1166,6 +1269,9 @@ static void emitter_free(VmEmitter* e) {
     free(e->deferred);
     free(e->ref_aliases);
     free(e->loop_stack);
+    free(e->scope_sizes);
+    for (size_t i = 0; i < e->str_count; i++) free(e->str_table[i]);
+    free(e->str_table);
     morphl_backend_frame_free(&e->frameInfo);
     memset(e, 0, sizeof(*e));
 }
@@ -1252,6 +1358,14 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     /* code section */
     ok = ok && bytes_push_u32_le(&file, (uint32_t)e.code.len);
     ok = ok && bytes_push(&file, e.code.data, e.code.len);
+
+    /* string table: u32 count, then for each entry: u32 len + bytes (null-terminated) */
+    ok = ok && bytes_push_u32_le(&file, (uint32_t)e.str_count);
+    for (size_t i = 0; ok && i < e.str_count; i++) {
+        uint32_t slen = (uint32_t)strlen(e.str_table[i]);
+        ok = ok && bytes_push_u32_le(&file, slen);
+        ok = ok && bytes_push(&file, (const uint8_t*)e.str_table[i], slen + 1); /* +1 for NUL */
+    }
 
     if (ok) ok = (fwrite(file.data, 1, file.len, out) == file.len);
 

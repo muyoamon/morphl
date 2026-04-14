@@ -120,6 +120,8 @@ r + 1;      // transparent — reads x, computes 6
 r = 10;     // transparent — writes 10 to x's storage
 ```
 
+**Lifetime rule**: a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. The compiler does not enforce this in v1.0 — it is a programmer responsibility. Storing a `$ref` to a local that is subsequently popped results in undefined behavior.
+
 ### 4.4 Mutability Subtyping
 
 Mutable storage satisfies immutable expectations, but not vice versa:
@@ -128,6 +130,16 @@ Mutable storage satisfies immutable expectations, but not vice versa:
 { x: $mut i32 } <: { x: $const i32 }   // safe — mutable can be read as immutable
 { x: $const i32 } </: { x: $mut i32 }  // unsafe — cannot write to immutable
 ```
+
+**`$mut`/`$const` on `$ref` fields**: the qualifier on a `$ref` describes access through the reference, not the storage of the reference slot itself:
+
+```
+$decl x $mut 5;
+$decl r $const $ref x;   // read-only access through r, even though x is $mut
+$decl w $mut   $ref x;   // read-write access (valid because x is $mut)
+```
+
+`$mut $ref x` is only valid when x is itself `$mut`. `$const $ref x` is always valid regardless of x's own mutability.
 
 ### 4.5 Storage Expression Summary
 
@@ -204,6 +216,8 @@ $decl Node {
 ### 5.5 `$null`
 
 `$null` is defined as `$decl $null $ref $null` — a reference that refers to itself, forming an unresolvable indirection chain. It is not a value per se but a sentinel indicating "this reference points to nothing." Dereferencing `$null` is an error.
+
+**Concrete representation**: `$null` is stored as the relative offset `INT32_MIN` (0x80000000). The `RNULL` opcode pushes this value. `DEREF` traps at runtime if it encounters `INT32_MIN`. `JNULL` branches when the top of stack equals `INT32_MIN`.
 
 ---
 
@@ -983,14 +997,19 @@ expr        ::= name
 
 ---
 
-## 16. Open Design Questions
+## 16. Resolved Design Decisions
 
-⚠️ **Implicit `$parent` in method calls** — the mechanism by which `$parent` is wired as calling context when invoking block-declared functions is not yet fully specified.
+The following questions were previously open; they are now settled.
 
-⚠️ **`$null` representation** — the concrete sentinel value for `$null` in relative offset storage is not yet determined.
+**Implicit `$parent` in method calls** — when emitting `$call obj.method args`, the caller pushes `$parent = &obj` as a hidden argument before the normal arguments, matching the existing calling convention (caller-owned, cleaned up after CALL). The VM emitter is responsible for inserting this push. This is consistent with the existing `$parent` slot at `frame[0]` inside every function body.
 
-⚠️ **Cross-frame `$ref` lifetime** — rules governing whether a `$ref` may point into a parent frame, and what happens when the parent frame is popped, are not yet settled.
+**`$null` representation** — `RNULL` pushes `INT32_MIN` (0x80000000) as the null sentinel. `DEREF` traps at runtime if it encounters this value. `JNULL` branches when the top of stack equals `INT32_MIN`. The self-referential definition `$decl $null $ref $null` in §5.5 maps to this concrete value.
 
-⚠️ **Property table dispatch for `$parent`** — how `$parent` resolves correctly when a trait method is called through a fat trait variable is not yet fully specified.
+**Cross-frame `$ref` lifetime** — a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. This rule is not enforced by the compiler in v1.0; it is a programmer responsibility documented here. Violating it (e.g. storing a `$ref` to a local that is then popped) results in undefined behavior.
 
-⚠️ **`$mut` / `$const` on `$ref` fields** — the interaction between reference mutability and referent mutability needs precise definition.
+**`$mut` / `$const` on `$ref` fields** — the mutability qualifier on a `$ref` describes access through the reference, not storage of the reference itself:
+- `$const $ref x` — read-only access through the ref, regardless of x's own mutability.
+- `$mut $ref x` — read-write access through the ref, but only valid if x is itself `$mut`.
+The ref's own storage (the signed relative-offset integer) is always fixed-size and always writable as a slot (it is the access semantics that are controlled, not the ref slot).
+
+**Property table dispatch for `$parent`** — when a trait method is called through a fat trait variable (`traitVar.$impl.$methodB`), the calling sequence is: (1) load `traitVar.$impl` to get the property table ref, (2) load the method's function-table index from the property table, (3) load `traitVar.$data` and push it as `$parent`, (4) CALLF. The `$parent` slot at the callee's `frame[0]` then points to the concrete data instance, not the fat variable itself.

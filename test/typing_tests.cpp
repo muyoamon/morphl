@@ -13,6 +13,7 @@ extern "C" {
 #include "typing/type_context.h"
 #include "typing/inference.h"
 #include "util/util.h"
+#include "util/error.h"
 #include "parser/operators.h"
 #include "parser/scoped_parser.h"
 #include "lexer/lexer.h"
@@ -915,6 +916,128 @@ static void test_overload_resolution() {
 }
 
 // ============================================================================
+// Test: $prop nodes go into prop_names/prop_types, not field_names/field_types
+// ============================================================================
+static void test_prop_not_in_structural_fields() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  // Block: { $decl x 1; $prop p 0; }
+  AstNode* x_decl = ast_new(AST_DECL);
+  assert(x_decl != NULL);
+  ast_append_child(x_decl, make_ident(interns, "x"));
+  ast_append_child(x_decl, make_literal("1"));
+
+  AstNode* p_prop = ast_new(AST_PROP);
+  assert(p_prop != NULL);
+  ast_append_child(p_prop, make_ident(interns, "p"));
+  ast_append_child(p_prop, make_literal("0"));
+
+  AstNode* block = ast_new(AST_BLOCK);
+  assert(block != NULL);
+  ast_append_child(block, x_decl);
+  ast_append_child(block, p_prop);
+
+  MorphlType* t = morphl_infer_type_of_ast(ctx, block);
+  assert(t != NULL);
+  assert(t->kind == MORPHL_TYPE_BLOCK);
+
+  // x is a structural field
+  assert(t->data.block.field_count == 1);
+  Sym x_sym = interns_intern(interns, str_from("x", 1));
+  assert(t->data.block.field_names[0] == x_sym);
+
+  // p is a property, not a structural field
+  assert(t->data.block.prop_count == 1);
+  // $prop handler prefixes name with '$' in the AST, check by iterating
+  bool found_p = false;
+  for (size_t i = 0; i < t->data.block.prop_count; ++i) {
+    Str pname = interns_lookup(interns, t->data.block.prop_names[i]);
+    if (pname.len >= 1 && pname.ptr[pname.len - 1] == 'p') {
+      found_p = true;
+    }
+  }
+  assert(found_p);
+
+  ast_free(block);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_prop_not_in_structural_fields passed\n");
+}
+
+// ============================================================================
+// Test: $impl with incompatible property type returns NULL (type error)
+// ============================================================================
+static void test_impl_type_mismatch_error() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  // $decl TraitA $traits { $prop propA 0; }  — propA has type int
+  AstNode* traitPropA = ast_new(AST_PROP);
+  ast_append_child(traitPropA, make_ident(interns, "propA"));
+  ast_append_child(traitPropA, make_literal("0"));
+  AstNode* traits_block = ast_new(AST_BLOCK);
+  ast_append_child(traits_block, traitPropA);
+  AstNode* traits_node = make_builtin(interns, "$traits", {traits_block});
+  AstNode* traitA_decl = ast_new(AST_DECL);
+  ast_append_child(traitA_decl, make_ident(interns, "TraitA"));
+  ast_append_child(traitA_decl, traits_node);
+  MorphlType* traitA_type = morphl_infer_type_of_ast(ctx, traitA_decl);
+  assert(traitA_type != NULL);
+
+  // $decl typeD { $decl x 0; }
+  AstNode* x_decl = ast_new(AST_DECL);
+  ast_append_child(x_decl, make_ident(interns, "x"));
+  ast_append_child(x_decl, make_literal("0"));
+  AstNode* typeD_block = ast_new(AST_BLOCK);
+  ast_append_child(typeD_block, x_decl);
+  AstNode* typeD_decl = ast_new(AST_DECL);
+  ast_append_child(typeD_decl, make_ident(interns, "typeD"));
+  ast_append_child(typeD_decl, typeD_block);
+  MorphlType* typeD_type = morphl_infer_type_of_ast(ctx, typeD_decl);
+  assert(typeD_type != NULL);
+
+  // $impl TraitA typeD { $prop propA 1.0; }  — override propA with float (mismatch!)
+  AstNode* override_propA = ast_new(AST_PROP);
+  ast_append_child(override_propA, make_ident(interns, "propA"));
+  ast_append_child(override_propA, make_literal("1.0"));
+  AstNode* override_block = ast_new(AST_BLOCK);
+  ast_append_child(override_block, override_propA);
+  AstNode* impl_node = make_builtin(interns, "$impl", {
+    make_ident(interns, "TraitA"),
+    make_ident(interns, "typeD"),
+    override_block
+  });
+
+  // Silence error output during this expected-failure inference
+  MorphlErrorSink null_sink = {NULL, NULL};
+  MorphlErrorSink prev = morphl_error_get_global_sink();
+  morphl_error_set_global_sink(null_sink);
+
+  MorphlType* result = morphl_infer_type_of_ast(ctx, impl_node);
+
+  morphl_error_set_global_sink(prev);
+
+  // float override for an int trait property must be rejected
+  assert(result == NULL);
+
+  ast_free(traitA_decl);
+  ast_free(typeD_decl);
+  ast_free(impl_node);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_impl_type_mismatch_error passed\n");
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -940,6 +1063,8 @@ int main() {
   test_pp_while();
   test_overload_resolution();
   test_pp_prop();
+  test_prop_not_in_structural_fields();
+  test_impl_type_mismatch_error();
   // Note: Recursion is tested via examples/test_recursion.mpl
   // Unit testing recursion requires full parser integration
 

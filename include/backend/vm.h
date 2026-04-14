@@ -93,6 +93,11 @@ enum VmOpcode {
   /* ── $parent field access ── */
   VM_OP_PLOAD   = 0x62,  // [i32 off]  load i64 from absolute address stored in parent slot + off
   VM_OP_PSTORE  = 0x63,  // [i32 off]  store i64 to absolute address stored in parent slot + off
+
+  /* ── String operations ── */
+  VM_OP_SCONST  = 0x70,  // [u32 idx]  push pointer (as i64) to string table entry <idx>
+  VM_OP_SEQ     = 0x71,  // pop 2 string pointers (i64), push i64 1 if strcmp==0, else 0
+  VM_OP_SNEQ    = 0x72,  // pop 2 string pointers (i64), push i64 0 if strcmp==0, else 1
 };
 
 /*
