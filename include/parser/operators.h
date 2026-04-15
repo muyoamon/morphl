@@ -88,7 +88,8 @@ enum Operator{
   IMPL,
   EXIT,
   I2F,
-  F2I
+  F2I,
+  EXTERN
 };
 
 struct OperatorInfo {

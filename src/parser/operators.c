@@ -64,6 +64,21 @@ static MorphlType* pp_action_syntax(const OperatorInfo* info,
   return NULL;
 }
 
+/* Walk an imported module AST and intern every identifier/literal value so that
+ * the AST remains valid after the source buffer is freed.  Also sets node->op
+ * for AST_IDENT nodes so the emitter can look up names by Sym. */
+static void ast_intern_all_strings(AstNode* node, InternTable* interns) {
+  if (!node) return;
+  if (node->value.ptr && node->value.len > 0) {
+    Sym sym = interns_intern(interns, node->value);
+    node->value = interns_lookup(interns, sym);
+    if (node->kind == AST_IDENT) node->op = sym;
+  }
+  for (size_t i = 0; i < node->child_count; i++) {
+    ast_intern_all_strings(node->children[i], interns);
+  }
+}
+
 // $import: validate single string argument; keep node for downstream handling
 static MorphlType* pp_action_import(const OperatorInfo* info,
                                     void* global_state,
@@ -110,6 +125,9 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   AstNode* module_root = NULL;
   bool ok = scoped_parse_ast(&module_ctx, tokens, token_count, &module_root);
   scoped_parser_free(&module_ctx);
+  /* Intern all identifier/literal strings BEFORE freeing source_buffer and tokens,
+   * so that AST value.ptr fields point to stable intern-table memory afterwards. */
+  if (ok && module_root) ast_intern_all_strings(module_root, ctx->interns);
   free(tokens);
   free(source_buffer);
 
@@ -737,6 +755,9 @@ static OperatorRow kBuiltinOps[] = {
   // Type conversions
   {"$i2f",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, I2F},
   {"$f2i",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, F2I},
+
+  // Native FFI storage specifier: $extern <expr>
+  {"$extern", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, EXTERN},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

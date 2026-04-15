@@ -20,6 +20,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <dlfcn.h>
 
 #include "backend/vm.h"
 #include "interface/abi.h"
@@ -107,6 +108,13 @@ struct MorphlVmProgram {
     char**          str_table;
     uint32_t        str_count;
     uint8_t*        str_data;  /* raw string bytes (owned); str_table[i] points into here */
+    /* native symbol table: resolved function pointers for $extern declarations */
+    MorphlNativeFn* native_fns;         /* indexed by native symbol index */
+    char**          native_sym_names;   /* NUL-terminated names (owned) */
+    uint32_t        native_sym_count;
+    /* dlopen handles loaded during resolution (closed on program_free) */
+    void**          dl_handles;
+    uint32_t        dl_handle_count;
 };
 
 struct MorphlVm {
@@ -248,6 +256,65 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
         }
     }
 
+    /* native symbol table (optional — bytecode without $extern has none) */
+    if (pos < len) {
+        if (!read_u32_le(buf, len, &pos, &prog->native_sym_count)) goto err;
+        if (prog->native_sym_count > 0) {
+            prog->native_sym_names = (char**)calloc(prog->native_sym_count, sizeof(char*));
+            prog->native_fns       = (MorphlNativeFn*)calloc(
+                                         prog->native_sym_count, sizeof(MorphlNativeFn));
+            if (!prog->native_sym_names || !prog->native_fns) goto err;
+            for (uint32_t i = 0; i < prog->native_sym_count; i++) {
+                uint32_t nlen;
+                if (!read_u32_le(buf, len, &pos, &nlen)) goto err;
+                prog->native_sym_names[i] = (char*)malloc(nlen + 1);
+                if (!prog->native_sym_names[i]) goto err;
+                if (!read_bytes(buf, len, &pos, prog->native_sym_names[i], nlen + 1)) goto err;
+            }
+            /* resolve each symbol: static registry first, then dlopen fallback */
+            for (uint32_t i = 0; i < prog->native_sym_count; i++) {
+                prog->native_fns[i] = morphl_native_registry_lookup(
+                                          prog->native_sym_names[i]);
+                if (!prog->native_fns[i]) {
+                    /* dlopen fallback: try <path_stem>.so alongside the bytecode file */
+                    /* Derive stem path: replace .mbc extension (or append .so) */
+                    const char* dot = strrchr(path, '.');
+                    size_t stem_len = dot ? (size_t)(dot - path) : strlen(path);
+                    char* so_path = (char*)malloc(stem_len + 4); /* stem + ".so\0" */
+                    if (so_path) {
+                        memcpy(so_path, path, stem_len);
+                        memcpy(so_path + stem_len, ".so", 4);
+                        void* handle = dlopen(so_path, RTLD_LAZY | RTLD_LOCAL);
+                        free(so_path);
+                        if (handle) {
+                            /* call morphl_module_register to populate the registry */
+                            typedef void (*reg_entry_t)(MorphlRegisterFn);
+                            reg_entry_t entry = (reg_entry_t)dlsym(handle, "morphl_module_register");
+                            if (entry) entry(morphl_register_native);
+                            /* track handle for cleanup */
+                            void** new_handles = (void**)realloc(
+                                prog->dl_handles,
+                                (prog->dl_handle_count + 1) * sizeof(void*));
+                            if (new_handles) {
+                                prog->dl_handles = new_handles;
+                                prog->dl_handles[prog->dl_handle_count++] = handle;
+                            } else {
+                                dlclose(handle);
+                            }
+                            prog->native_fns[i] = morphl_native_registry_lookup(
+                                                      prog->native_sym_names[i]);
+                        }
+                    }
+                }
+                if (!prog->native_fns[i]) {
+                    fprintf(stderr, "morphl: unresolved native symbol: %s\n",
+                            prog->native_sym_names[i]);
+                    goto err;
+                }
+            }
+        }
+    }
+
     free(buf);
     *out = prog;
     return true;
@@ -257,6 +324,17 @@ err:
     free(prog->code);
     free(prog->str_table);
     free(prog->str_data);
+    if (prog->native_sym_names) {
+        for (uint32_t i = 0; i < prog->native_sym_count; i++)
+            free(prog->native_sym_names[i]);
+        free(prog->native_sym_names);
+    }
+    free(prog->native_fns);
+    if (prog->dl_handles) {
+        for (uint32_t i = 0; i < prog->dl_handle_count; i++)
+            dlclose(prog->dl_handles[i]);
+        free(prog->dl_handles);
+    }
     free(prog);
     free(buf);
     return false;
@@ -268,6 +346,17 @@ void morphl_vm_program_free(MorphlVmProgram* prog) {
     free(prog->code);
     free(prog->str_table);
     free(prog->str_data);
+    if (prog->native_sym_names) {
+        for (uint32_t i = 0; i < prog->native_sym_count; i++)
+            free(prog->native_sym_names[i]);
+        free(prog->native_sym_names);
+    }
+    free(prog->native_fns);
+    if (prog->dl_handles) {
+        for (uint32_t i = 0; i < prog->dl_handle_count; i++)
+            dlclose(prog->dl_handles[i]);
+        free(prog->dl_handles);
+    }
     free(prog);
 }
 
@@ -551,6 +640,15 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 return 1;
             }
             VmFunctionMeta* fn = &vm->program->functions[idx];
+            if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
+                size_t fb = vm->stack.top;
+                if (fb < 8) { fprintf(err, "vm: native CALL stack underflow\n"); return 1; }
+                int64_t result = vm->program->native_fns[fn->entry_point](
+                    vm->stack.data, fb, fn->param_size);
+                memcpy(vm->stack.data + fb - 8, &result, 8);
+                /* stack.top unchanged; caller will POP the return value from fb-8 */
+                break;
+            }
             VmCallFrame cf = {
                 .frame_base = vm->stack.top,
                 .return_ip  = vm->ip,
@@ -593,6 +691,14 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 return 1;
             }
             VmFunctionMeta* fn = &vm->program->functions[idx];
+            if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
+                size_t fb = vm->stack.top;
+                if (fb < 8) { fprintf(err, "vm: native CALLF stack underflow\n"); return 1; }
+                int64_t result = vm->program->native_fns[fn->entry_point](
+                    vm->stack.data, fb, fn->param_size);
+                memcpy(vm->stack.data + fb - 8, &result, 8);
+                break;
+            }
             VmCallFrame cf = {
                 .frame_base = vm->stack.top,
                 .return_ip  = vm->ip,
@@ -740,6 +846,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
 morphl_exit_code_t morphl_vm_run_file(const char* path,
                                       int argc, char** argv, char** envp,
                                       FILE* err) {
+    morphl_stdlib_register();
     MorphlVmProgram* prog = NULL;
     if (!morphl_vm_program_load(path, &prog)) return 1;
 

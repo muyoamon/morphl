@@ -175,6 +175,9 @@ typedef struct VmEmitter {
     size_t          global_frame_size;
     ImportSlot*     import_slots;
     size_t          import_slot_count, import_slot_capacity;
+    /* native symbol table: names of $extern declarations, in order of allocation */
+    char**          native_syms;
+    size_t          native_sym_count, native_sym_capacity;
 } VmEmitter;
 
 /* ── opcode helpers ─────────────────────────────────────────────────────── */
@@ -325,6 +328,8 @@ static Str alias_resolve(VmEmitter* e, Str name) {
 
 /* ── type helpers ───────────────────────────────────────────────────────── */
 
+static const MorphlType* unwrap_ref(const MorphlType* t);  /* forward declaration */
+
 static size_t type_frame_size(const MorphlType* t) {
     if (!t) return 0;
     switch (t->kind) {
@@ -338,7 +343,16 @@ static size_t type_frame_size(const MorphlType* t) {
              * $mut/$const/$inline qualifiers are transparent — size comes from target. */
             if (t->data.ref.is_ref) return 8;  /* stored as i64 absolute stack address */
             return t->data.ref.target ? type_frame_size(t->data.ref.target) : 0;
-        case MORPHL_TYPE_BLOCK:  return t->size > 0 ? t->size : 0;
+        case MORPHL_TYPE_BLOCK: {
+            if (t->size > 0) return t->size;
+            /* size field is 0 (set so by morphl_type_block); compute from fields */
+            size_t total = 0;
+            for (size_t i = 0; i < t->data.block.field_count; i++) {
+                if (t->data.block.field_types[i])
+                    total += type_frame_size(unwrap_ref(t->data.block.field_types[i]));
+            }
+            return total;
+        }
         default:                 return 0;
     }
 }
@@ -540,6 +554,48 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
         }
 
+        /* if RHS is $extern <func-expr>, allocate a native function slot */
+        if (rhs && rhs->kind == AST_BUILTIN && e->interns && rhs->op) {
+            Str rhs_op_s = interns_lookup(e->interns, rhs->op);
+            if (rhs_op_s.len == 7 && memcmp(rhs_op_s.ptr, "$extern", 7) == 0) {
+                /* compute param_size from the DECL's function type */
+                const MorphlType* fn_type = unwrap_ref(node->type);
+                uint32_t param_sz = 0;
+                if (fn_type && fn_type->kind == MORPHL_TYPE_FUNC &&
+                    fn_type->data.func.param_count > 0 && fn_type->data.func.param_types[0]) {
+                    param_sz = (uint32_t)type_frame_size(
+                        unwrap_ref(fn_type->data.func.param_types[0]));
+                }
+                /* grow native_syms array and record NUL-terminated copy of symbol name */
+                if (e->native_sym_count >= e->native_sym_capacity) {
+                    if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
+                                 sizeof(char*), e->native_sym_count + 1))
+                        return false;
+                }
+                /* For imported modules, value.ptr is freed (pp_action_import frees
+                 * source_buffer). Fall back to the interned name via name_node->op. */
+                Str sym_str = name;
+                if ((!sym_str.ptr || sym_str.len == 0) && e->interns && name_node->op)
+                    sym_str = interns_lookup(e->interns, name_node->op);
+                char* sym_name = (char*)malloc(sym_str.len + 1);
+                if (!sym_name) return false;
+                memcpy(sym_name, sym_str.ptr, sym_str.len);
+                sym_name[sym_str.len] = '\0';
+                e->native_syms[e->native_sym_count] = sym_name;
+                size_t native_idx = e->native_sym_count++;
+                /* allocate a function table slot */
+                size_t fidx = func_alloc(e);
+                if (fidx == SIZE_MAX) return false;
+                e->functions.items[fidx].entry_point = (uint32_t)native_idx;
+                e->functions.items[fidx].flags       = MORPHL_FUNC_FLAG_NATIVE;
+                e->functions.items[fidx].param_size  = param_sz;
+                e->functions.items[fidx].frame_size  = 0;
+                /* store function table index as i64 in the variable's frame slot */
+                if (!emit_iconst(e, (int64_t)fidx)) return false;
+                return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
+            }
+        }
+
         /* if RHS is a function, defer it and store its future table index */
         if (rhs && rhs->kind == AST_FUNC) {
             size_t fidx = func_alloc(e);
@@ -660,6 +716,54 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
              * loads it and dispatches. For known-at-compile-time callees, we could
              * use CALL, but CALLF is correct and handles dynamic dispatch too. */
             return emit_op_i32(e, VM_OP_CALLF, (int32_t)off);
+        }
+
+        /* $member target field — compute combined frame offset and emit CALLF.
+         * Handles: $call $member io println (args) */
+        if (callee->kind == AST_BUILTIN && callee->op && e->interns &&
+            callee->child_count == 2) {
+            Str callee_op = interns_lookup(e->interns, callee->op);
+            if (callee_op.len == 7 && memcmp(callee_op.ptr, "$member", 7) == 0) {
+                struct AstNode* target   = callee->children[0];
+                struct AstNode* field_nd = callee->children[1];
+
+                Str field_name = field_nd->value;
+                if (!field_name.ptr && e->interns && field_nd->op)
+                    field_name = interns_lookup(e->interns, field_nd->op);
+
+                const MorphlType* target_btype = unwrap_ref(target->type);
+                if (!target_btype || target_btype->kind != MORPHL_TYPE_BLOCK) {
+                    fprintf(stderr, "vm emitter: $call $member: target is not a block\n");
+                    return false;
+                }
+
+                size_t field_offset = 0;
+                bool field_found = false;
+                for (size_t fi = 0; fi < target_btype->data.block.field_count; fi++) {
+                    Str fname = {NULL, 0};
+                    if (e->interns && target_btype->data.block.field_names[fi])
+                        fname = interns_lookup(e->interns, target_btype->data.block.field_names[fi]);
+                    if (str_eq(fname, field_name)) { field_found = true; break; }
+                    field_offset += type_frame_size(unwrap_ref(target_btype->data.block.field_types[fi]));
+                }
+                if (!field_found) {
+                    fprintf(stderr, "vm emitter: $call $member: field not found\n");
+                    return false;
+                }
+
+                if (target->kind != AST_IDENT) {
+                    fprintf(stderr, "vm emitter: $call $member: target must be identifier\n");
+                    return false;
+                }
+                Str target_name = alias_resolve(e, target->value);
+                ptrdiff_t target_off = morphl_backend_find_offset(&e->frameInfo, target_name);
+                if (target_off == PTRDIFF_MAX) {
+                    fprintf(stderr, "vm emitter: $call $member: undefined target '%.*s'\n",
+                            (int)target_name.len, target_name.ptr);
+                    return false;
+                }
+                return emit_op_i32(e, VM_OP_CALLF, (int32_t)(target_off + field_offset));
+            }
         }
 
         fprintf(stderr, "vm emitter: unsupported callee kind %d\n", callee->kind);
@@ -1344,6 +1448,8 @@ static void emitter_free(VmEmitter* e) {
     free(e->import_slots);
     for (size_t i = 0; i < e->str_count; i++) free(e->str_table[i]);
     free(e->str_table);
+    for (size_t i = 0; i < e->native_sym_count; i++) free(e->native_syms[i]);
+    free(e->native_syms);
     morphl_backend_frame_free(&e->frameInfo);
     memset(e, 0, sizeof(*e));
 }
@@ -1470,6 +1576,14 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
         uint32_t slen = (uint32_t)strlen(e.str_table[i]);
         ok = ok && bytes_push_u32_le(&file, slen);
         ok = ok && bytes_push(&file, (const uint8_t*)e.str_table[i], slen + 1); /* +1 for NUL */
+    }
+
+    /* native symbol table: u32 count, then for each entry: u32 len + bytes (null-terminated) */
+    ok = ok && bytes_push_u32_le(&file, (uint32_t)e.native_sym_count);
+    for (size_t i = 0; ok && i < e.native_sym_count; i++) {
+        uint32_t nlen = (uint32_t)strlen(e.native_syms[i]);
+        ok = ok && bytes_push_u32_le(&file, nlen);
+        ok = ok && bytes_push(&file, (const uint8_t*)e.native_syms[i], nlen + 1); /* +1 for NUL */
     }
 
     if (ok) ok = (fwrite(file.data, 1, file.len, out) == file.len);

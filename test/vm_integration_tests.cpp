@@ -660,6 +660,76 @@ static void test_e2e_global_modules_slot() {
     printf("PASS test_e2e_global_modules_slot\n");
 }
 
+// ── $extern / FFI tests ───────────────────────────────────────────────────────
+
+/* Write a temp io-like module and return its path. */
+static std::string write_io_module(const char* extra = "") {
+    std::string src =
+        "$decl print     $extern $func ($decl s \"\") 0;\n"
+        "$decl println   $extern $func ($decl s \"\") 0;\n"
+        "$decl print_int $extern $func ($decl n 0) 0;\n"
+        "$decl eprint    $extern $func ($decl s \"\") 0;\n"
+        "$decl eprintln  $extern $func ($decl s \"\") 0;\n";
+    if (extra && extra[0]) src += extra;
+    return write_temp_source(src.c_str());
+}
+
+/* Call println; verify no crash and exit 0. */
+static void test_e2e_extern_print() {
+    std::string io_path = write_io_module();
+    std::string main_src =
+        std::string("$decl io $import \"") + io_path + "\";\n"
+        "$decl _ $call $member io println (\"hello from morphl\");\n"
+        "$exit 0;\n";
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(io_path.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_extern_print\n");
+}
+
+/* Call print_int; verify no crash and exit 0. */
+static void test_e2e_extern_print_int() {
+    std::string io_path = write_io_module();
+    std::string main_src =
+        std::string("$decl io $import \"") + io_path + "\";\n"
+        "$decl _ $call $member io print_int (42);\n"
+        "$exit 0;\n";
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(io_path.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_extern_print_int\n");
+}
+
+/* Use the return value of a native function in $exit. println returns 0. */
+static void test_e2e_extern_return_value() {
+    std::string io_path = write_io_module();
+    std::string main_src =
+        std::string("$decl io $import \"") + io_path + "\";\n"
+        "$decl r $call $member io println (\"return value test\");\n"
+        "$exit r;\n";
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(io_path.c_str());
+    assert(rc == 0);  // println returns 0
+    printf("PASS test_e2e_extern_return_value\n");
+}
+
+/* Unregistered native symbol must cause load failure (rc != 0). */
+static void test_e2e_extern_unknown_sym() {
+    /* Write a module with a symbol that is not in the static registry. */
+    std::string mod_path = write_temp_source(
+        "$decl no_such_native $extern $func ($decl s \"\") 0;\n"
+        "$decl sentinel 1;\n"
+    );
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$exit 0;\n";
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    /* Compile succeeds, but load must fail because no_such_native is unresolved. */
+    assert(rc != 0);
+    printf("PASS test_e2e_extern_unknown_sym\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -702,6 +772,10 @@ int main(void) {
     test_e2e_global_argc();
     test_e2e_global_entry();
     test_e2e_global_modules_slot();
+    test_e2e_extern_print();
+    test_e2e_extern_print_int();
+    test_e2e_extern_return_value();
+    test_e2e_extern_unknown_sym();
     printf("All integration tests passed.\n");
     return 0;
 }

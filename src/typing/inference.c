@@ -117,6 +117,16 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
   
   // Type inference by operator kind
+  // $extern <expr>: storage specifier for native symbols — type is that of the wrapped expression
+  if (op_sym == interns_intern(ctx->interns, str_from("$extern", 7))) {
+    if (arg_count != 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$extern expects 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return arg_types[0];
+  }
+
   if (op_sym == interns_intern(ctx->interns, str_from("$mut", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$const", 6)) ||
       op_sym == interns_intern(ctx->interns, str_from("$inline", 7))) {

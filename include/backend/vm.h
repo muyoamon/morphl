@@ -105,16 +105,19 @@ enum VmOpcode {
   VM_OP_ASTORE  = 0x66,  // [i32 off]  pop i64 val, pop i64 base, store val to stack.data[base + off]
 };
 
+/* Function flags — stored in VmFunctionMeta.flags */
+#define MORPHL_FUNC_FLAG_NATIVE  0x01u  /* entry_point is a native symbol table index */
+
 /*
  * Function table entry.
  * The binary file's function table is an array of these, ordered by index.
  * Function 0 is always the top-level program body (implicit "main").
  */
 typedef struct {
-  uint32_t entry_point;  // byte offset into the code section where the body starts
+  uint32_t entry_point;  // byte offset into the code section (or native sym index if NATIVE flag set)
   uint32_t frame_size;   // total bytes needed for this function's frame (params + locals)
   uint32_t param_size;   // bytes occupied by parameters at frame[0]
-  uint32_t flags;        // reserved, must be 0
+  uint32_t flags;        // see MORPHL_FUNC_FLAG_* above
 } VmFunctionMeta;
 
 /*

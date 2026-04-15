@@ -22,7 +22,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`.
 
 ---
 
@@ -141,7 +141,68 @@ $decl w $mut   $ref x;   // read-write access (valid because x is $mut)
 
 `$mut $ref x` is only valid when x is itself `$mut`. `$const $ref x` is always valid regardless of x's own mutability.
 
-### 4.5 Storage Expression Summary
+### 4.5 `$extern` — Native Symbol Binding
+
+`$extern` is a storage specifier that binds a name to a native C symbol resolved at load time. Its type is inferred from the wrapped expression, exactly as with other storage specifiers:
+
+```
+$decl <name> $extern <expr>;
+```
+
+The symbol name used for resolution is the `$decl` name itself.
+
+**Native function binding** — the most common form:
+
+```
+$decl println   $extern $func ($decl s "") 0;   // (string) → i64
+$decl print_int $extern $func ($decl n 0) 0;    // (i64)    → i64
+```
+
+The `$func` expression is used only for its type; its body is not emitted. The VM stores a function table index in the declared slot; at call time the dispatcher invokes the native C function pointer instead of interpreting bytecode.
+
+**Native constant binding** (v2 — via `dlsym`):
+
+```
+$decl ERRNO $extern i64;
+```
+
+The value is loaded from the native symbol at program load time.
+
+**Resolution order** at program load:
+
+1. Built-in static registry — populated by `morphl_stdlib_register()`, called automatically before any user code runs.
+2. dlopen fallback — if the symbol is not in the static registry, the runtime looks for a shared library with the same base name as the importing `.mpl` file (`.so` on Linux, `.dylib` on macOS). If found, it calls `morphl_module_register` from that library to register additional symbols.
+3. If the symbol remains unresolved after both steps, loading fails with an error.
+
+**Writing a native module** (user-extensible FFI):
+
+```c
+// my_module.c  →  compile to  my_module.so
+#include "runtime/runtime.h"
+
+static int64_t my_add(uint8_t* stack, size_t frame_base, size_t param_size) {
+    int64_t a, b;
+    memcpy(&b, stack + frame_base - 8,  8);
+    memcpy(&a, stack + frame_base - 16, 8);
+    return a + b;
+}
+
+void morphl_module_register(MorphlRegisterFn reg) {
+    reg("my_add", my_add);
+}
+```
+
+Place `my_module.so` next to `my_module.mpl`. The runtime locates it automatically when that `.mpl` file is imported.
+
+**Native function signature:**
+
+```c
+typedef int64_t (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_size);
+```
+
+Arguments sit below `frame_base` in declaration order, 8 bytes each. The last argument is at `stack[frame_base - 8]`. The return value should be returned as `int64_t`.
+
+### 4.6 Storage Expression Summary
 
 | Expression | Meaning | Writable |
 |---|---|---|
@@ -150,6 +211,7 @@ $decl w $mut   $ref x;   // read-write access (valid because x is $mut)
 | `$ref name` | alias to existing storage | depends on referent |
 | `$new block` | fresh instance via re-execution | depends on fields |
 | `$import "file"` | reference to external file scope | no |
+| `$extern expr` | native C symbol binding | no |
 | bare `expr` | sugar for `$const expr` | no |
 
 ---
@@ -622,6 +684,32 @@ Inline import without binding:
 
 The imported module's type is structurally inferred from its file scope. No separate interface file or explicit export list is required — all top-level declarations are visible.
 
+### 11.3 Standard Library
+
+The built-in IO stdlib is in `stdlib/io.mpl`. Import it to access basic IO functions:
+
+```
+$decl io $import "stdlib/io.mpl";
+$call $member io println ("hello, world");
+$call $member io print_int (42);
+```
+
+Available symbols:
+
+| Name | Signature | Description |
+|---|---|---|
+| `print` | `(string) → i64` | write string to stdout |
+| `println` | `(string) → i64` | write string + newline to stdout |
+| `print_int` | `(i64) → i64` | write integer to stdout |
+| `eprint` | `(string) → i64` | write string to stderr |
+| `eprintln` | `(string) → i64` | write string + newline to stderr |
+
+All IO functions return `0` on success.
+
+### 11.4 Native Modules
+
+Any `.mpl` file can have a companion native library (`.so` / `.dylib`) with the same base name. Symbols declared with `$extern` in the `.mpl` file are resolved from that library at load time via `morphl_module_register`. See §4.5 for the full resolution protocol and the native function signature.
+
 ---
 
 ## 12. Grammar System
@@ -897,6 +985,8 @@ CALL    <index>    — direct call by function table index
 CALLF   <offset>   — indirect call: load function index from frame offset, then dispatch
 RET                — pop pseudo-scope, return to caller
 ```
+
+Each function table entry carries a `flags` field. When `flags & NATIVE` is set, `entry_point` is an index into the program's native function pointer array rather than a bytecode offset. The dispatcher invokes the C function pointer directly; `RET` is not executed — the native function returns via the normal C call stack and its `int64_t` return value is written to `stack[frame_base - 8]`.
 
 ### 13.8 Reference / Indirection
 
