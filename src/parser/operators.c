@@ -130,9 +130,11 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
     ast_free(args[0]);
   }
   args[0] = module_root;
-  // return the block type containing the module's AST
-  TypeContext* type_ctx = (TypeContext*)block_state;
-  return morphl_infer_type_of_ast(type_ctx, module_root);
+  /* Do NOT run type inference here: the return value is always discarded by
+   * apply_preprocessor_if_any, and running inference on the module AST using the
+   * parent file's type context (without push_global/push_file) would corrupt
+   * ctx->global_type / ctx->file_type before the main file's pre-scan runs. */
+  return NULL;
 }
 
 // $prop: validate at least one argument; keep node
@@ -678,7 +680,7 @@ static OperatorRow kBuiltinOps[] = {
   {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, THIS},
   {"$parent", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, PARENT},
   {"$file",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, FILE_},
-  {"$global", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, GLOBAL},
+  {"$global",  AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, GLOBAL},
   {"$ref",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, REF},
   {"$null",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, NULLREF},
   {"$new",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, NEW},
@@ -731,6 +733,10 @@ static OperatorRow kBuiltinOps[] = {
 
   // Exit
   {"$exit",   AST_BUILTIN,false, 0, 1,           NULL,              0, OP_PP_KEEP_NODE, EXIT},
+
+  // Type conversions
+  {"$i2f",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, I2F},
+  {"$f2i",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, F2I},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

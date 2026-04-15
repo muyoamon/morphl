@@ -28,7 +28,10 @@ void morphl_vm_free(MorphlVm* vm);
 morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err_stream);
 
 /// Convenience helper for load + execute + teardown.
-morphl_exit_code_t morphl_vm_run_file(const char* path, FILE* err_stream);
+/// argc/argv/envp are the process arguments forwarded to the program's $global frame.
+morphl_exit_code_t morphl_vm_run_file(const char* path,
+                                      int argc, char** argv, char** envp,
+                                      FILE* err_stream);
 
 /// Read an i64 from the raw byte stack at byte_offset after execution.
 /// Returns false if out-of-bounds or arguments are NULL.

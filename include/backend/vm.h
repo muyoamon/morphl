@@ -98,6 +98,11 @@ enum VmOpcode {
   VM_OP_SCONST  = 0x70,  // [u32 idx]  push pointer (as i64) to string table entry <idx>
   VM_OP_SEQ     = 0x71,  // pop 2 string pointers (i64), push i64 1 if strcmp==0, else 0
   VM_OP_SNEQ    = 0x72,  // pop 2 string pointers (i64), push i64 0 if strcmp==0, else 1
+
+  /* ── Global frame access ── */
+  VM_OP_GLOBAL  = 0x64,  // push i64(0) — absolute stack address of the global frame base
+  VM_OP_ALOAD   = 0x65,  // [i32 off]  pop i64 base, push i64 from stack.data[base + off]
+  VM_OP_ASTORE  = 0x66,  // [i32 off]  pop i64 val, pop i64 base, store val to stack.data[base + off]
 };
 
 /*

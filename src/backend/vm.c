@@ -136,6 +136,11 @@ typedef struct {
     size_t scope_depth_at_entry; /* emitter scope_depth when the loop started */
 } VmLoopCtx;
 
+typedef struct {
+    Str    name;         /* import variable name (e.g. "m") */
+    size_t global_slot;  /* byte offset in the global frame where this slot lives (32, 40, ...) */
+} ImportSlot;
+
 typedef struct VmEmitter {
     VmBytes         code;
     VmFunctionTable functions;
@@ -166,6 +171,10 @@ typedef struct VmEmitter {
     bool            in_function;
     /* function table index of top-level 'main', or SIZE_MAX if not declared */
     size_t          main_func_fidx;
+    /* global frame: 32 bytes fixed ($argc,$argv,$env,$entry) + 8 bytes per $import */
+    size_t          global_frame_size;
+    ImportSlot*     import_slots;
+    size_t          import_slot_count, import_slot_capacity;
 } VmEmitter;
 
 /* ── opcode helpers ─────────────────────────────────────────────────────── */
@@ -511,6 +520,26 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, name);
         if (off == PTRDIFF_MAX) return false;
 
+        /* if RHS is a $import, track slot index so we can write the $modules entry after emission */
+        size_t import_slot_before = SIZE_MAX;
+        if (rhs && rhs->kind == AST_BUILTIN && e->interns && rhs->op) {
+            Str rhs_op = interns_lookup(e->interns, rhs->op);
+            if (rhs_op.len == 7 && memcmp(rhs_op.ptr, "$import", 7) == 0) {
+                /* assign next global slot (32, 40, 48, ...) for this import */
+                if (e->import_slot_count >= e->import_slot_capacity) {
+                    if (!vm_grow((void**)&e->import_slots, &e->import_slot_capacity,
+                                 sizeof(ImportSlot), e->import_slot_count + 1))
+                        return false;
+                }
+                import_slot_before = e->import_slot_count;
+                e->import_slots[import_slot_before] = (ImportSlot){
+                    .name        = name,
+                    .global_slot = 32 + 8 * import_slot_before,
+                };
+                e->import_slot_count++;
+            }
+        }
+
         /* if RHS is a function, defer it and store its future table index */
         if (rhs && rhs->kind == AST_FUNC) {
             size_t fidx = func_alloc(e);
@@ -541,6 +570,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
         /* emit RHS expression */
         if (!emit_node(e, rhs)) return false;
+
+        /* if this was a $import, populate the $modules global slot now that the
+         * module's frame has been pushed (so frame offsets are stable) */
+        if (import_slot_before != SIZE_MAX) {
+            ImportSlot* sl = &e->import_slots[import_slot_before];
+            ptrdiff_t m_off = morphl_backend_find_offset(&e->frameInfo, sl->name);
+            if (m_off != PTRDIFF_MAX) {
+                int64_t mod_frame_base = (int64_t)e->global_frame_size + (int64_t)m_off;
+                if (!emit_op(e, VM_OP_GLOBAL)          ||
+                    !emit_iconst(e, mod_frame_base)     ||
+                    !emit_op_i32(e, VM_OP_ASTORE, (int32_t)sl->global_slot))
+                    return false;
+            }
+        }
 
         /* store result to frame */
         uint8_t sop = store_op(t);
@@ -786,16 +829,37 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 return false;
             }
 
-            /* determine whether target is $parent (use PLOAD) or a local variable (use ILOAD) */
+            /* determine target kind */
             bool is_parent_target = false;
+            bool is_global_target = false;
             if (target->kind == AST_BUILTIN && e->interns && target->op) {
                 Str tname = interns_lookup(e->interns, target->op);
                 is_parent_target = (tname.len == 7 && memcmp(tname.ptr, "$parent", 7) == 0);
+                is_global_target = (tname.len == 7 && memcmp(tname.ptr, "$global", 7) == 0);
             }
 
             if (is_parent_target) {
                 /* PLOAD: load from (parent_base + field_offset) where parent_base is frame[0] */
                 return emit_op_i32(e, VM_OP_PLOAD, (int32_t)field_offset);
+            }
+
+            if (is_global_target) {
+                /* Global frame access: GLOBAL + ALOAD(field_off) for scalar fields,
+                 * or ICONST(field_off) for block sub-fields (address of the sub-section). */
+                const MorphlType* ft = unwrap_ref(field_type);
+                if (ft && ft->kind == MORPHL_TYPE_BLOCK) {
+                    /* Return address of the sub-block section in the global frame */
+                    return emit_iconst(e, (int64_t)field_offset);
+                }
+                /* Scalar: push global base (0) and ALOAD field_off */
+                return emit_op(e, VM_OP_GLOBAL) && emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+            }
+
+            /* computed expression target (e.g. $member $global $modules, or module frame addr):
+             * emit the target expression (pushes an i64 base address), then ALOAD field_off. */
+            if (target->kind == AST_BUILTIN) {
+                if (!emit_node(e, target)) return false;
+                return emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
             }
 
             /* regular local block field access: ILOAD at (target_frame_offset + field_offset) */
@@ -1082,15 +1146,22 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
         }
 
+        /* $global — push absolute stack address 0 (global frame base) */
+        if (OP_IS("$global")) {
+            return emit_op(e, VM_OP_GLOBAL);
+        }
+
         /* $import "file" — the child was already replaced with the parsed AST_FILE
-         * by pp_action_import in operators.c. Emit it inline: the AST_FILE handler
-         * does ENTER/children/LEAVE with its own frame push, matching SPEC §11.1
-         * ("files are blocks"). Functions inside are deferred into the global table.
-         * TODO: cache imported modules to avoid running initialization twice on
-         * duplicate imports (SPEC does not yet specify deduplication semantics). */
+         * by pp_action_import in operators.c. Emit module initialization inline, then
+         * record the module's absolute stack address in the global $modules slot.
+         * The import variable name is already registered in the parent AST_DECL handler;
+         * we find its frame offset and use global_frame_size + m_off as the slot value. */
         if (OP_IS("$import")) {
             if (node->child_count < 1 || !node->children[0]) return false;
-            return emit_node(e, node->children[0]);
+            struct AstNode* module_file = node->children[0];
+            /* emit the module's initialization code; the parent AST_DECL handler
+             * handles writing the $modules global slot after this returns */
+            return emit_node(e, module_file);
         }
 
 #undef OP_IS
@@ -1270,10 +1341,29 @@ static void emitter_free(VmEmitter* e) {
     free(e->ref_aliases);
     free(e->loop_stack);
     free(e->scope_sizes);
+    free(e->import_slots);
     for (size_t i = 0; i < e->str_count; i++) free(e->str_table[i]);
     free(e->str_table);
     morphl_backend_frame_free(&e->frameInfo);
     memset(e, 0, sizeof(*e));
+}
+
+/* ── pre-pass: count $import declarations in the root AST_FILE ─────────── */
+
+static size_t count_imports(InternTable* interns, struct AstNode* root) {
+    if (!root || root->kind != AST_FILE || !interns) return 0;
+    Sym import_sym = interns_intern(interns, str_from("$import", 7));
+    size_t count = 0;
+    for (size_t i = 0; i < root->child_count; i++) {
+        struct AstNode* child = root->children[i];
+        if (child && child->kind == AST_DECL && child->child_count >= 2) {
+            struct AstNode* rhs = child->children[1];
+            if (rhs && rhs->kind == AST_BUILTIN && rhs->op == import_sym) {
+                count++;
+            }
+        }
+    }
+    return count;
 }
 
 /* ── public backend entry point ─────────────────────────────────────────── */
@@ -1289,13 +1379,28 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     e.frameInfo       = morphl_backend_frame_init();
     if (!e.frameInfo.root) { emitter_free(&e); return false; }
 
+    /* pre-pass: compute global_frame_size = 32 + 8 * import_count */
+    {
+        size_t import_count = count_imports(e.interns, context->tree);
+        e.global_frame_size = 32 + 8 * import_count;
+    }
+
     /* function 0 = top-level program (implicit main) */
     size_t main_idx = func_alloc(&e);
     if (main_idx == SIZE_MAX) { emitter_free(&e); return false; }
     e.functions.items[main_idx].entry_point = 0; /* set after emission */
 
-    /* emit top-level code */
+    /* emit global frame initialization: write $entry = global_frame_size to global[24] */
     e.functions.items[main_idx].entry_point = (uint32_t)e.code.len;
+    {
+        /* GLOBAL; ICONST global_frame_size; ASTORE 24 */
+        bool ok = emit_op(&e, VM_OP_GLOBAL)
+               && emit_iconst(&e, (int64_t)e.global_frame_size)
+               && emit_op_i32(&e, VM_OP_ASTORE, 24);
+        if (!ok) { emitter_free(&e); return false; }
+    }
+
+    /* emit top-level code */
     if (!emit_node(&e, context->tree)) {
         emitter_free(&e);
         return false;
@@ -1343,7 +1448,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     ok = ok && bytes_push(&file, MORPHL_VM_MAGIC, 4);
     ok = ok && bytes_push_u16_le(&file, MORPHL_VM_VERSION_MAJOR);
     ok = ok && bytes_push_u16_le(&file, MORPHL_VM_VERSION_MINOR);
-    ok = ok && bytes_push_u32_le(&file, 0); /* flags */
+    ok = ok && bytes_push_u32_le(&file, (uint32_t)e.global_frame_size); /* global_frame_size */
 
     /* function table */
     ok = ok && bytes_push_u32_le(&file, (uint32_t)e.functions.count);

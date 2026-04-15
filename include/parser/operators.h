@@ -86,7 +86,9 @@ enum Operator{
   RSHIFT,
   TRAITS,
   IMPL,
-  EXIT
+  EXIT,
+  I2F,
+  F2I
 };
 
 struct OperatorInfo {

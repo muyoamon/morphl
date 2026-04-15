@@ -151,7 +151,8 @@ int main(int argc, char** argv) {
       printf("backend code generation succeeded, output written to %s\n", backend_ctx.out_file);
       if (run_bytecode) {
         printf("executing VM bytecode from %s...\n", backend_ctx.out_file);
-        int exit_code = (int)morphl_vm_run_file(backend_ctx.out_file, stderr);
+        extern char** environ;
+        int exit_code = (int)morphl_vm_run_file(backend_ctx.out_file, argc, argv, environ, stderr);
         ast_free(root);
         free(tokens);
         free(source_buffer);

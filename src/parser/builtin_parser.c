@@ -79,9 +79,12 @@ static bool parse_builtin_expr(const struct token* tokens,
     if (!op_sym) return false;
     (*cursor)++; // Consume operator
 
-    // Look up operator registry to get arity limit and AST kind
+    // Look up operator registry to get arity limit and AST kind.
+    // Unrecognised $-prefixed tokens default to zero arguments: they are treated as
+    // zero-arg terminals (field names, future keywords, etc.) rather than greedy
+    // variadic operators. Any operator that needs arguments must be registered.
     const OperatorInfo* info = operator_info_lookup(op_sym);
-    size_t max_args = (info) ? info->max_args : SIZE_MAX;
+    size_t max_args = (info) ? info->max_args : 0;
     AstKind op_kind = (info && info->ast_kind != AST_UNKNOWN) ? info->ast_kind : AST_BUILTIN;
 
     // Parse arguments until we hit a delimiter, end, or the operator's max arity.

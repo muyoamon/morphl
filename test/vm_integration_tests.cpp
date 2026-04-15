@@ -104,7 +104,9 @@ static int compile_and_run(const char* source) {
     int result = -1;
     if (morphl_register_backend(MORPHL_BACKEND_TYPE_VM) && morphl_compile(&backend_ctx)) {
         FILE* dev_null = fopen("/dev/null", "w");
-        result = (int)morphl_vm_run_file(out_path.c_str(), dev_null ? dev_null : stderr);
+        /* pass argc=1 (simulate "program" as only arg), no argv/envp for unit tests */
+        result = (int)morphl_vm_run_file(out_path.c_str(), 1, nullptr, nullptr,
+                                         dev_null ? dev_null : stderr);
         if (dev_null) fclose(dev_null);
     }
 
@@ -557,6 +559,107 @@ static void test_e2e_import_basic() {
     printf("PASS test_e2e_import_basic\n");
 }
 
+/* compile_and_run variant that forwards a custom argc to $global.$argc */
+static int compile_and_run_argc(const char* source, int vm_argc) {
+    std::string src_path = write_temp_source(source);
+    std::string out_path = temp_path(".mbc");
+
+    InternTable* interns = interns_new();
+    if (!interns) return -1;
+    if (!operator_registry_init(interns)) { interns_free(interns); return -1; }
+
+    Arena arena;
+    arena_init(&arena, 65536);
+
+    ScopedParserContext parser_ctx;
+    if (!scoped_parser_init(&parser_ctx, interns, &arena, src_path.c_str())) {
+        arena_free(&arena); interns_free(interns); return -1;
+    }
+
+    char* source_buffer = NULL;
+    size_t source_len = 0;
+    if (!morphl_file_read_all(src_path.c_str(), &source_buffer, &source_len)) {
+        scoped_parser_free(&parser_ctx); arena_free(&arena); interns_free(interns); return -1;
+    }
+
+    struct token* tokens = NULL;
+    size_t token_count = 0;
+    if (!lexer_tokenize(src_path.c_str(), str_from(source_buffer, source_len),
+                        interns, &tokens, &token_count)) {
+        free(source_buffer); scoped_parser_free(&parser_ctx);
+        arena_free(&arena); interns_free(interns); return -1;
+    }
+
+    AstNode* root = NULL;
+    bool accepted = scoped_parse_ast(&parser_ctx, tokens, token_count, &root);
+    if (!accepted) {
+        free(tokens); free(source_buffer); scoped_parser_free(&parser_ctx);
+        arena_free(&arena); interns_free(interns); return -1;
+    }
+
+    MorphlBackendContext backend_ctx;
+    backend_ctx.tree         = root;
+    backend_ctx.out_file     = out_path.c_str();
+    backend_ctx.type_context = parser_ctx.type_context;
+
+    int result = -1;
+    if (morphl_register_backend(MORPHL_BACKEND_TYPE_VM) && morphl_compile(&backend_ctx)) {
+        FILE* dev_null = fopen("/dev/null", "w");
+        result = (int)morphl_vm_run_file(out_path.c_str(), vm_argc, nullptr, nullptr,
+                                          dev_null ? dev_null : stderr);
+        if (dev_null) fclose(dev_null);
+    }
+
+    ast_free(root);
+    free(tokens); free(source_buffer);
+    scoped_parser_free(&parser_ctx);
+    arena_free(&arena); interns_free(interns);
+    std::remove(src_path.c_str()); std::remove(out_path.c_str());
+    return result;
+}
+
+/* $global.$argc — program receives argc via the global frame */
+static void test_e2e_global_argc() {
+    /* Pass vm_argc=3; program exits with that value.
+     * Two statements so scoped_parse_ast wraps the root in AST_FILE. */
+    int rc = compile_and_run_argc(
+        "$decl a $member $global $argc;\n"
+        "$exit a;\n",
+        3
+    );
+    assert(rc == 3);
+    printf("PASS test_e2e_global_argc\n");
+}
+
+/* $global.$entry — should be non-zero (valid stack address) */
+static void test_e2e_global_entry() {
+    int rc = compile_and_run(
+        "$decl e $member $global $entry;\n"
+        "$decl result $if $gt e 0 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_global_entry\n");
+}
+
+/* $global.$modules — after $import, slot must be non-zero */
+static void test_e2e_global_modules_slot() {
+    std::string mod_path = write_temp_source(
+        "$decl x 42;\n"
+        "$decl y 1;\n"
+    );
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$decl slot $member $member $global $modules mod;\n"
+        "$decl result $if $gt slot 0 1 0;\n"
+        "$exit result;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 1);
+    printf("PASS test_e2e_global_modules_slot\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -596,6 +699,9 @@ int main(void) {
     test_e2e_string_neq();
     test_e2e_string_mutation();
     test_e2e_import_basic();
+    test_e2e_global_argc();
+    test_e2e_global_entry();
+    test_e2e_global_modules_slot();
     printf("All integration tests passed.\n");
     return 0;
 }

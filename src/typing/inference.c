@@ -789,8 +789,69 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         ctx->file_type = block_type;
       }
       if (!ctx->global_type) {
-        ctx->global_type = block_type;
+        if (node->kind == AST_BLOCK) {
+          /* AST_BLOCK (not a top-level file): use the block itself as $global */
+          ctx->global_type = block_type;
+          goto skip_global;
+        }
       }
+      if (!ctx->global_type && node->kind == AST_FILE) {
+        /* Build synthetic $global type for the top-level file.
+         * Pre-scan children for $import declarations to build the $modules sub-type. */
+        Sym import_sym  = interns_intern(ctx->interns, str_from("$import",  7));
+        Sym modules_sym = interns_intern(ctx->interns, str_from("$modules", 8));
+        Sym argc_sym    = interns_intern(ctx->interns, str_from("$argc",    5));
+        Sym argv_sym    = interns_intern(ctx->interns, str_from("$argv",    5));
+        Sym env_sym     = interns_intern(ctx->interns, str_from("$env",     4));
+        Sym entry_sym   = interns_intern(ctx->interns, str_from("$entry",   6));
+
+        /* count $imports first so we can allocate exactly */
+        size_t mod_count = 0;
+        for (size_t ci = 0; ci < node->child_count; ++ci) {
+          AstNode* ch = node->children[ci];
+          if (!ch || ch->kind != AST_DECL || ch->child_count < 2) continue;
+          AstNode* rhs = ch->children[1];
+          if (rhs && rhs->kind == AST_BUILTIN && rhs->op == import_sym) mod_count++;
+        }
+
+        /* build $modules sub-type */
+        Sym*         mod_names = mod_count ? (Sym*)malloc(mod_count * sizeof(Sym)) : NULL;
+        MorphlType** mod_types = mod_count ? (MorphlType**)malloc(mod_count * sizeof(MorphlType*)) : NULL;
+        if (mod_count && (!mod_names || !mod_types)) {
+          free(mod_names); free(mod_types); goto skip_global;
+        }
+        size_t mi = 0;
+        for (size_t ci = 0; ci < node->child_count && mi < mod_count; ++ci) {
+          AstNode* ch = node->children[ci];
+          if (!ch || ch->kind != AST_DECL || ch->child_count < 2) continue;
+          AstNode* rhs = ch->children[1];
+          if (!rhs || rhs->kind != AST_BUILTIN || rhs->op != import_sym) continue;
+          AstNode* nm = ch->children[0];
+          if (!nm) continue;
+          if (!nm->op && nm->value.ptr)
+            nm->op = interns_intern(ctx->interns, nm->value);
+          if (!nm->op) continue;
+          mod_names[mi] = nm->op;
+          mod_types[mi] = morphl_type_int(ctx->arena);
+          mi++;
+        }
+        MorphlType* modules_type = morphl_type_block(ctx->arena, mod_names, mod_types, mi);
+        free(mod_names); free(mod_types);
+        if (!modules_type) goto skip_global;
+
+        /* build $global type: $argc, $argv, $env, $entry, $modules */
+        Sym         gnames[5] = { argc_sym, argv_sym, env_sym, entry_sym, modules_sym };
+        MorphlType* gtypes[5];
+        gtypes[0] = morphl_type_int(ctx->arena);
+        gtypes[1] = morphl_type_int(ctx->arena);
+        gtypes[2] = morphl_type_int(ctx->arena);
+        gtypes[3] = morphl_type_int(ctx->arena);
+        gtypes[4] = modules_type;
+        if (!gtypes[0] || !gtypes[1] || !gtypes[2] || !gtypes[3]) goto skip_global;
+        MorphlType* synthetic_global = morphl_type_block(ctx->arena, gnames, gtypes, 5);
+        if (synthetic_global) ctx->global_type = synthetic_global;
+      }
+      skip_global:;
       Sym* field_names = NULL;
       MorphlType** field_types = NULL;
       size_t field_count = 0;
@@ -1025,7 +1086,9 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         }
         AstNode* target = node->children[0];
         AstNode* field_node = node->children[1];
-        if (!field_node || field_node->kind != AST_IDENT) {
+        /* field_node can be AST_IDENT (user identifiers) or AST_BUILTIN ($-prefixed names
+         * like $argc, $modules, etc. used in $global field access) */
+        if (!field_node || (field_node->kind != AST_IDENT && field_node->kind != AST_BUILTIN)) {
           MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member expects identifier field");
           morphl_error_emit(NULL, &err);
           return NULL;

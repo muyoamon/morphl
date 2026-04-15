@@ -98,6 +98,7 @@ typedef struct {
 struct MorphlVmProgram {
     uint16_t        version_major;
     uint16_t        version_minor;
+    uint32_t        global_frame_size;  /* bytes reserved for the global frame at stack[0] */
     VmFunctionMeta* functions;
     uint32_t        func_count;
     uint8_t*        code;
@@ -115,6 +116,10 @@ struct MorphlVm {
     VmCallFrame*    call_frames;
     size_t          call_frame_count;
     size_t          call_frame_capacity;
+    /* process arguments forwarded to the $global frame */
+    int             argc;
+    char**          argv;
+    char**          envp;
 };
 
 /* ── low-level file helpers ─────────────────────────────────────────────── */
@@ -188,9 +193,8 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
     prog->version_major = vmaj;
     prog->version_minor = vmin;
 
-    /* flags (reserved) */
-    uint32_t flags;
-    if (!read_u32_le(buf, len, &pos, &flags)) goto err;
+    /* flags field repurposed as global_frame_size */
+    if (!read_u32_le(buf, len, &pos, &prog->global_frame_size)) goto err;
 
     /* function table */
     if (!read_u32_le(buf, len, &pos, &prog->func_count)) goto err;
@@ -365,6 +369,35 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         fprintf(err, "vm: no functions in program\n");
         return 1;
     }
+
+    /* ── global frame setup ── */
+    uint32_t gfsz = vm->program->global_frame_size;
+    if (gfsz > 0) {
+        if (!stack_reserve(&vm->stack, gfsz)) {
+            fprintf(err, "vm: OOM allocating global frame\n");
+            return 1;
+        }
+        /* pre-populate $argc, $argv, $env at global[0], [8], [16] */
+        int64_t i_argc = (int64_t)vm->argc;
+        int64_t i_argv = (int64_t)(uintptr_t)vm->argv;
+        int64_t i_envp = (int64_t)(uintptr_t)vm->envp;
+        memcpy(vm->stack.data + 0,  &i_argc, 8);
+        memcpy(vm->stack.data + 8,  &i_argv, 8);
+        memcpy(vm->stack.data + 16, &i_envp, 8);
+    }
+    /* phantom call frame: shifts frame_base so user vars don't clash with global frame */
+    {
+        VmCallFrame phantom = {
+            .frame_base = (size_t)gfsz,
+            .return_ip  = SIZE_MAX,   /* sentinel: RET from phantom frame → exit program */
+            .func_index = 0,
+        };
+        if (!push_call_frame(vm, phantom)) {
+            fprintf(err, "vm: OOM pushing phantom call frame\n");
+            return 1;
+        }
+    }
+
     vm->ip = vm->program->functions[0].entry_point;
 
     while (vm->ip < (size_t)vm->program->code_len) {
@@ -538,7 +571,11 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             }
             VmCallFrame cf = vm->call_frames[--vm->call_frame_count];
             vm->stack.top = cf.frame_base;
-            vm->ip        = cf.return_ip;
+            if (cf.return_ip == SIZE_MAX) {
+                /* phantom call frame sentinel — program exit */
+                return 0;
+            }
+            vm->ip = cf.return_ip;
             break;
         }
         case VM_OP_EXIT: {
@@ -655,6 +692,40 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             break;
         }
 
+        /* ── global frame access ── */
+        case VM_OP_GLOBAL: {
+            /* push absolute stack address of global frame base (always 0) */
+            PUSH_I64(0);
+            break;
+        }
+        case VM_OP_ALOAD: {
+            /* pop i64 base, push i64 from stack.data[base + off] */
+            int32_t off; READ_I32(off);
+            int64_t base; POP_I64(base);
+            ptrdiff_t abs = (ptrdiff_t)base + (ptrdiff_t)off;
+            if (abs < 0 || (size_t)(abs + 8) > vm->stack.top) {
+                fprintf(err, "vm: ALOAD address %td out of bounds\n", abs);
+                return 1;
+            }
+            int64_t v;
+            memcpy(&v, vm->stack.data + abs, 8);
+            PUSH_I64(v);
+            break;
+        }
+        case VM_OP_ASTORE: {
+            /* pop i64 val, pop i64 base, store val → stack.data[base + off] */
+            int32_t off; READ_I32(off);
+            int64_t v;    POP_I64(v);
+            int64_t base; POP_I64(base);
+            ptrdiff_t abs = (ptrdiff_t)base + (ptrdiff_t)off;
+            if (abs < 0 || (size_t)(abs + 8) > vm->stack.top) {
+                fprintf(err, "vm: ASTORE address %td out of bounds\n", abs);
+                return 1;
+            }
+            memcpy(vm->stack.data + abs, &v, 8);
+            break;
+        }
+
         default:
             fprintf(err, "vm: unknown opcode 0x%02X at ip=%zu\n", op, vm->ip - 1);
             return 1;
@@ -666,12 +737,18 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
 
 /* ── convenience wrapper ─────────────────────────────────────────────────── */
 
-morphl_exit_code_t morphl_vm_run_file(const char* path, FILE* err) {
+morphl_exit_code_t morphl_vm_run_file(const char* path,
+                                      int argc, char** argv, char** envp,
+                                      FILE* err) {
     MorphlVmProgram* prog = NULL;
     if (!morphl_vm_program_load(path, &prog)) return 1;
 
     MorphlVm* vm = morphl_vm_new(prog);
     if (!vm) { morphl_vm_program_free(prog); return 1; }
+
+    vm->argc = argc;
+    vm->argv = argv;
+    vm->envp = envp;
 
     morphl_exit_code_t code = morphl_vm_execute(vm, err);
 
