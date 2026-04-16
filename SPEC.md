@@ -10,6 +10,8 @@ morphl is a statically typed, structurally typed language designed around the fo
 
 **Verbatim execution** — program flow maps directly to written code. There are no implicit allocations, implicit copies, implicit conversions, or hidden control flow. Every runtime action corresponds to something the programmer explicitly wrote.
 
+**Everything is an expression** - morphl has no statements. Every construct produces a value. Control flow, declarations, blocks, and functions calls are expressions terminated by `$$delim` or `;`. The distinction between statement and expression does not exist.
+
 **Everything is a declaration** — all named entities are introduced via `$decl`. There is no syntactic distinction between variables, structs, functions, or modules. Type is implied structurally through the shape of declarations.
 
 **No namespace pollution** — all language keywords are prefixed with `$`, reserving the unprefixed namespace entirely for user-defined identifiers.
@@ -22,13 +24,121 @@ morphl is a statically typed, structurally typed language designed around the fo
 
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`.
+### 2.1 Single-`$` Keywords 
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`.
+
+### 2.2 Double-`$$` Directives
+`$$`-prefixed name are compiler directives - They are as-early-as-possible resolutions. The compiler substitute them at compile time whenever it can determine the value statically. If it cannot, resolution defers to runtime
+
+Reserved directives: `$$syntax`, `$$spread`, `$$maybe`, `$$op`, `$$type`, `$$size`, `$$name`, `$$path`, `$$delim`, `$$version`, `$$line`, `$$col`, `$$tag`
+
+
+### 2.3 Three-Tier Namespace
+| Syntax | Meaning | Example |
+| --------------- | --------------- | --------------- |
+| `$member <block> <fieldname>` | structural field access    | `$member point x` |
+| `$member <expr> $<property>`  | user-defined property      | `$member mod $PI` |
+| `$member <expr> $$<meta>`     | language-injected metadata | `$member $file $$path` |
 
 ---
 
-## 3. Core Construct: `$decl`
+## 3. Type Lattice
 
-### 3.1 Declaration as Shape Definition
+morphl's type system has a well-defined top and bottom
+```
+         ()                   ← universal unit/void — top of value types
+          |
+         {}                   ← top of block hierarchy — empty block
+        /    \
+  blocks   primitives   unions  ← value kinds
+        \    /    /
+           $never              ← bottom — subtype of all types
+```
+
+### 3.1 `$never` - Bottom Type 
+
+`$never` is the type of expressions that **never produce a value** because execution never continues past them. It is a subtype of every type:
+
+```
+$never <: for all types T
+```
+
+All control flow escapes have type `$never`:
+
+| Expression | Type | Reason |
+| --------------- | --------------- | --------------- |
+| `$break` | `$never` | redirect to loop exit |
+| `$continue` | `$never` | redirects to loop condition |
+| `$ret <expr>` | `$never` | redirect to function return |
+| `$exit <code>` | `$never` | redirect to process exit |
+
+Since `$never <: T` for all `T`, control flow escapes unify cleanly with any branch type:
+
+```
+$decl x $if cond 
+    10              // type: int
+    break;          // type: $never
+// x : int
+```
+
+`$never` as a type annotation marks functions that never return:
+
+```
+$decl loop_forever $forward $func () $never; 
+```
+
+`$union T $never` collapses to `T` - `$never` contributes no inhabitants.
+
+Implementing a trait on `$never` is meaningless - no value of type `$never` can ever exist.
+
+### 3.2 `()` - Universal Unit / Void
+
+`()` or `$group` with 0 argument, are the empty group - the universal unit/void type. It arises naturally from the group construct:
+
+- A group `(a, b, c)` packs multiple expressions together
+- A single-element group `$group x` collapses to `x` - no semantic difference
+- Therefore an empty group `()` has zero elements - zero bytes, no meaningful value 
+
+`()` is **universal** - it is not tied to block world. It means "no meaningful value" across all type kinds. It appears as:
+
+- Return type of void functions: `$decl f $func () ()`
+- No-argument function `$decl f () {...}`
+- The absence of any value universally
+
+### 3.3 `{}` Empty Block / Block Supertype
+
+`{}` is the empty block - the top of the block type hierarchy. It is the supertype of all block types via prefix matching - every block has `{}` as a trivial prefix:
+
+```
+{ x: str, y: f64 } <: {} // any block satisfies empty block
+```
+
+`{}` is analogous to C's forward-declared struct - a block shape with no fields. It is the most generic block type: a function accepting `{}` accepts any block.
+
+### 3.4 Relationship Between `()` and `{}`
+
+`()` and `{}` are both zero-byte but distinct:
+
+| Type | Meaning | Scope |
+| --- | --- | ---|
+`()` | universal unit/void | all type kinds |
+`{}` | empty block / block supertype | block world only |
+
+
+`()` is more general — it subsumes `{}`:
+
+```
+() <: {}    // () satisfies empty block — both zero bytes, () is more general
+{} </: ()   // {} is specifically a block — not universal
+```
+
+In practice: use `()` for void returns and no-arg functions. Use `{}` when you mean "any block" as a type constraint.
+
+---
+
+## 4. Core Construct: `$decl`
+
+### 4.1 Declaration as Shape Definition
 
 `$decl` is the single construct for introducing a named entity into a scope. It does not perform allocation or execution — it defines the **shape** of the enclosing block by binding a name to a storage expression.
 
@@ -42,7 +152,7 @@ $decl <name> <storage-expr>;
 - The **type**, inferred from the storage expression
 - The **byte offset** in the block's layout, determined by declaration order with natural alignment
 
-### 3.2 Block as Value
+### 4.2 Block as Value
 
 A block delimited by `{}` is both a struct and a code block — they are the same construct. Statements inside a block are initialization logic. The block's **type** is the structural shape of its surviving `$decl` expressions.
 
@@ -57,7 +167,7 @@ $decl x {
 
 `$decl` **suspends** the expression — the block executes once at declaration site and captures its final state. Referencing `x` later does not re-execute the block.
 
-### 3.3 Re-execution via `$new`
+### 4.3 Re-execution via `$new`
 
 `$new` re-executes a block's initialization logic to produce a fresh, independent instance:
 
@@ -68,7 +178,7 @@ $decl q $new x;    // another fresh instance, independent of p
 
 Mutating `p.a` does not affect `q.a`.
 
-### 3.4 Default Mutability
+### 4.4 Default Mutability
 
 A bare expression used as a storage expression is sugar for `$const`:
 
@@ -78,11 +188,11 @@ $decl foo 10;         // sugar for: $decl foo $const 10
 
 ---
 
-## 4. Storage Expressions
+## 5. Storage Expressions
 
 Storage expressions determine the runtime behavior of a declaration. `$decl` only binds a name — all storage semantics come from the expression.
 
-### 4.1 `$const` — Immutable Storage
+### 5.1 `$const` — Immutable Storage
 
 ```
 $decl foo $const 10;
@@ -90,7 +200,7 @@ $decl foo $const 10;
 
 Allocates immutable storage initialized to the given value. The value cannot be overwritten after initialization.
 
-### 4.2 `$mut` — Mutable Storage
+### 5.2 `$mut` — Mutable Storage
 
 ```
 $decl foo $mut 10;
@@ -98,7 +208,7 @@ $decl foo $mut 10;
 
 Allocates mutable storage. The value can be overwritten via assignment.
 
-### 4.3 `$ref` — Reference (Relative Offset)
+### 5.3 `$ref` — Reference (Relative Offset)
 
 ```
 $decl r $ref x;
@@ -122,7 +232,7 @@ r = 10;     // transparent — writes 10 to x's storage
 
 **Lifetime rule**: a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. The compiler does not enforce this in v1.0 — it is a programmer responsibility. Storing a `$ref` to a local that is subsequently popped results in undefined behavior.
 
-### 4.4 Mutability Subtyping
+### 5.4 Mutability Subtyping
 
 Mutable storage satisfies immutable expectations, but not vice versa:
 
@@ -141,7 +251,7 @@ $decl w $mut   $ref x;   // read-write access (valid because x is $mut)
 
 `$mut $ref x` is only valid when x is itself `$mut`. `$const $ref x` is always valid regardless of x's own mutability.
 
-### 4.5 `$extern` — Native Symbol Binding
+### 5.5 `$extern` — Native Symbol Binding
 
 `$extern` is a storage specifier that binds a name to a native C symbol resolved at load time. Its type is inferred from the wrapped expression, exactly as with other storage specifiers:
 
@@ -202,7 +312,7 @@ typedef int64_t (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t para
 
 Arguments sit below `frame_base` in declaration order, 8 bytes each. The last argument is at `stack[frame_base - 8]`. The return value should be returned as `int64_t`.
 
-### 4.6 Storage Expression Summary
+### 5.6 Storage Expression Summary
 
 | Expression | Meaning | Writable |
 |---|---|---|
@@ -216,9 +326,9 @@ Arguments sit below `frame_base` in declaration order, 8 bytes each. The last ar
 
 ---
 
-## 5. Structural Type System
+## 6. Structural Type System
 
-### 5.1 Types Are Implied by Declaration Shape
+### 6.1 Types Are Implied by Declaration Shape
 
 There are no explicit type annotations for structs. A type is the set of field names and their storage kinds as declared:
 
@@ -230,7 +340,7 @@ $decl point {
 // type: { x: $mut i32, y: $mut i32 }
 ```
 
-### 5.2 Structural Subtyping
+### 6.2 Structural Subtyping
 
 Two types are compatible if one's fields are a prefix match of the other's at identical byte offsets. A type `A` is a structural subtype of `B` if every field in `B` exists in `A` at the same offset with a compatible type.
 
@@ -241,7 +351,7 @@ type Dog    { age: i32, weight: f64, name: $ref u8 }
 Dog <: Animal   // prefix matches, offsets identical
 ```
 
-### 5.3 Struct Layout
+### 6.3 Struct Layout
 
 Fields are laid out in **declaration order with natural alignment**. Padding is inserted to align each field to its own size. This guarantees stable, predictable offsets across all implementations — the foundation of structural subtyping across module boundaries.
 
@@ -258,7 +368,7 @@ $decl Foo {
 
 Fields are **never reordered** by the compiler. Reordering would break the prefix-match subtyping guarantee.
 
-### 5.4 Recursive Types via `$ref`
+### 6.4 Recursive Types via `$ref`
 
 Direct recursive fields are impossible because the type has no finite size:
 
@@ -275,7 +385,7 @@ $decl Node {
 };
 ```
 
-### 5.5 `$null`
+### 6.5 `$null`
 
 `$null` is defined as `$decl $null $ref $null` — a reference that refers to itself, forming an unresolvable indirection chain. It is not a value per se but a sentinel indicating "this reference points to nothing." Dereferencing `$null` is an error.
 
@@ -283,9 +393,127 @@ $decl Node {
 
 ---
 
-## 6. Functions
+## 7. Union Types
 
-### 6.1 `$func` Declaration
+### 7.1 `$union` - Inline Union 
+
+`$union` composes any set of types into a structural union. It is a variadic prefix expression consistent with other compound type builtins:
+
+```
+$union <type-expr>*
+
+$union Cstr Slice       // two-variant union 
+$union i32 f64 string   // three-variant union 
+$union i32 $null        // nullable i32 - option type
+```
+
+`$union` is structural and open - any type structurally compatible with a variant can inhabit the union. This differs from a closed nominal sum.
+
+Naming a union via `$decl`:
+
+```
+$decl StringType $union CStr Slice;
+$decl Option    $union i32 $null;
+$decl Result    $union { $decl value i32; } { $decl err string; }
+```
+
+### 7.2 Memory Layout
+
+Tag first, then data sized to the largest variant:
+
+```
+$union CStr Slice:
+    offset 0 → $$tag: i32              (4 bytes, compiler-injected)
+    offset 4 → [pad]                   (4 bytes)
+    offset 8 → data: max(sizeof CStr, sizeof Slice)
+```
+
+`$$tag` is a language-injected field - readable by user code but invisible to the structural type system (uses `$$` reserved namespace).
+
+### 7.3 Tag Assignment
+
+Tags are assigned by the compiler based on variant order in the `$union` expression:
+
+```
+$union CStr Slice
+// CStr  → $$tag 0
+// Slice → $$tag 1
+```
+
+Tag assignment happens at the call site or assignment site when a concrete value enters a union — the compiler inserts the tag implicitly. If the concrete type matches multiple variants, first-match wins (consistent with grammar rule ordering).
+
+### 7.4 Nested `$union` is Flat
+
+Nested `$union` expressions are flattened:
+
+```
+$union i32 $union f64 string    →   $union i32 f64 string
+```
+
+### 7.5 `$union` with `$never` and `()`
+
+```
+$union T $never   →   T          // $never contributes no inhabitants
+$union T ()       →   T | unit   // T or nothing meaningful
+```
+
+### 7.6 Variant Tag Check 
+
+Reading `$$tag` directly:
+
+```
+$decl Circle    { $decl radius 0.0 }
+$decl Rect      { $decl width 0.0; $decl length 0.0 }
+$decl Shape     $union Circle Rect;
+
+
+$decl s $new Shape {$decl radius 3.0};
+$if $eq 
+    $member s $$tag
+    $member $new Shape Circle $$tag {
+        // s can be safely interpreted as Circle
+        $decl circle $ref $as s Circle;
+        ...
+    }
+```
+
+!> [!NOTE]
+> `$member $new <union> <expr> $$tag` is able to resolve statically even though `$new` keyword exists
+
+---
+
+## 8. Array Types 
+
+### 8.1 `$array` - Fixed-Size Array 
+
+`$array` is a storage expression allocating a contiguous sequence of `N` elements of type `T`:
+
+```
+$decl buf $array i32 4;     // 4 * i32 = 16 bytes, stack allocated
+```
+
+Type signature: `[T * N]` - size is part of the type. Two arrays of different size are different types:
+
+```
+[i32 * 4] != [i32 * 8]
+```
+
+Array subtyping is exact match only - no prefix subtyping for arrays in v1.
+
+### 8.2 Element Access 
+
+```
+$decl buf $array 0 2;
+$index buf 0;
+```
+
+For V1 - only static array is supported
+
+---
+
+## 9. Functions
+
+### 9.1 `$func` Declaration
 
 Functions are first-class values declared with `$func`. The argument list is a **pseudo-scope** pasted before the function body in the scope chain:
 
@@ -296,11 +524,11 @@ $decl f $func ($decl x i32) {
 // type: (i32) => { y: i32 }
 ```
 
-### 6.2 Argument Pseudo-Scope
+### 9.2 Argument Pseudo-Scope
 
 Arguments live in a scope outside the function body. They are readable inside the body via scope resolution but are **not captured** into the body's structural type. Arguments are caller-owned and cleaned up by the caller (cdecl convention).
 
-### 6.3 Return Semantics
+### 9.3 Return Semantics
 
 **Implicit return** — if no `$ret` is used, the entire function body is the return value. Its type is the structural shape of the body's captured declarations:
 
@@ -325,7 +553,7 @@ $decl f $func ($decl x i32) {
 
 **Mixed paths** — if some code paths use `$ret` and others rely on implicit return, the types must unify. A compile error is emitted if they do not.
 
-### 6.4 Encapsulation via `$ret`
+### 9.4 Encapsulation via `$ret`
 
 `$ret` is the sole encapsulation mechanism. Without it, all declarations in the body are exposed in the return type. With it, only the explicitly returned value is exposed:
 
@@ -333,12 +561,12 @@ $decl f $func ($decl x i32) {
 $decl f $func ($decl x i32) {
     $decl result x + 1;
     $decl tmp 999;       // implementation detail
-    $ret { result };     // only result is exposed
+    $ret { $decl result result };     // only result is exposed
 };
 // type: (i32) => { result: i32 }
 ```
 
-### 6.5 `$exit` — Explicit Process Exit
+### 9.5 `$exit` — Explicit Process Exit
 
 `$exit` terminates the process immediately with a given integer exit code:
 
@@ -353,7 +581,7 @@ Rules:
 - `$exit` can appear anywhere in top-level code or inside a function.
 - There is no `$exit` with zero arguments — use `$exit 0` for explicit success exit.
 
-### 6.6 `main` — Program Entry Point
+### 9.6 `main` — Program Entry Point
 
 If a top-level declaration named `main` is present and has the signature `() => i32`, the VM backend automatically calls it after all top-level statements have executed, and uses its return value as the process exit code.
 
@@ -374,7 +602,7 @@ Interaction with `$exit`:
 - `$exit` at top-level (outside `main`) exits before `main` is called.
 - Simple scripts with neither `main` nor `$exit` run to completion and exit 0.
 
-### 6.7 Function Type Signature
+### 9.7 Function Type Signature
 
 ```
 (<arg-types>) => <return-type>
@@ -382,7 +610,7 @@ Interaction with `$exit`:
 
 Functions are contravariant in argument types and covariant in return type for subtyping purposes.
 
-### 6.6 Calling Convention
+### 9.6 Calling Convention
 
 The caller pre-allocates the return slot before the call. The body writes directly into the return slot (sret convention for struct returns). On `$ret` or end of body, the pseudo-scope is discarded — the return value is already in place with no copy needed.
 
@@ -396,7 +624,7 @@ Stack layout at call time:
 | function body              |  ← writes to return slot directly
 ```
 
-### 6.7 Function Table
+### 9.7 Function Table
 
 All functions are entries in a global function table. A function value at runtime is a `u32` index into this table. This makes function pointers relocatable and safe — no absolute addresses, no forgeable indices.
 
@@ -406,9 +634,11 @@ FuncTable[n] = { bytecode_offset, arity, frame_size }
 
 ---
 
-## 7. Control Flow
 
-### 7.1 `$if` — Conditional Expression
+
+## 10. Control Flow
+
+### 10.1 `$if` — Conditional Expression
 
 ```
 $if <cond> <then> [<else>]
@@ -432,7 +662,7 @@ $if $eq x 0 {
 - The two forms accept any expression as branches — including blocks `{}` or bare values.
 - Both branches should produce compatible types when the `$if` result is used as a value.
 
-### 7.2 `$while` — Loop
+### 10.2 `$while` — Loop
 
 ```
 $while <cond> <body>
@@ -458,6 +688,8 @@ $while $lt i 10 {
 `$break` exits the nearest enclosing `$while` immediately.
 
 `$continue` skips the remainder of the current iteration and re-evaluates the loop condition.
+
+Both have type of `$never`
 
 ```
 $decl i $mut 0;
