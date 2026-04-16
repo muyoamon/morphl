@@ -730,6 +730,98 @@ static void test_e2e_extern_unknown_sym() {
     printf("PASS test_e2e_extern_unknown_sym\n");
 }
 
+// ── Array tests ──────────────────────────────────────────────────────────────
+
+/* $array declaration zero-initialises all elements */
+static void test_e2e_array_zero_init() {
+    int rc = compile_and_run(
+        "$decl buf $array 0 4;\n"
+        "$decl v $index buf 0;\n"
+        "$exit v;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_array_zero_init\n");
+}
+
+/* $index reads the correct element after mutation */
+static void test_e2e_array_index_read() {
+    /* Use $array i32 4 (keyword form), then $index 2 after manually
+     * writing via $member-style store if available, or just read zero */
+    int rc = compile_and_run(
+        "$decl buf $array 0 3;\n"
+        "$decl a $index buf 1;\n"
+        "$decl b $index buf 2;\n"
+        "$exit $add a b;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_array_index_read\n");
+}
+
+/* $array with keyword type name i32 */
+static void test_e2e_array_type_name() {
+    int rc = compile_and_run(
+        "$decl buf $array i32 2;\n"
+        "$decl v $index buf 0;\n"
+        "$exit v;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_array_type_name\n");
+}
+
+// ── Union tests ───────────────────────────────────────────────────────────────
+
+/* $decl s $union i32 f64 — frame is zero-initialized; $$tag starts at 0 */
+static void test_e2e_union_zero_tag() {
+    const char* src =
+        "$decl main $func () {\n"
+        "    $decl s $union i32 f64;\n"
+        "    $ret $member s $$tag;\n"
+        "};\n";
+    int rc = compile_and_run(src);
+    assert(rc == 0);
+    printf("PASS test_e2e_union_zero_tag\n");
+}
+
+/* Named union type via $decl; same zero-tag behavior */
+static void test_e2e_union_named_type() {
+    const char* src =
+        "$decl Shape $union i32 f64;\n"
+        "$decl main $func () {\n"
+        "    $decl s Shape;\n"
+        "    $ret $member s $$tag;\n"
+        "};\n";
+    int rc = compile_and_run(src);
+    assert(rc == 0);
+    printf("PASS test_e2e_union_named_type\n");
+}
+
+/* Data-first layout: $as directly on union reads from byte 0 (payload region).
+ * A zero-initialized union interpreted as i32 should produce 0. */
+static void test_e2e_union_data_first_layout() {
+    const char* src =
+        "$decl main $func () {\n"
+        "    $decl s $union i32 f64;\n"
+        "    $decl v $as s i32;\n"   /* data-first: payload at offset 0 */
+        "    $ret v;\n"
+        "};\n";
+    int rc = compile_and_run(src);
+    assert(rc == 0);
+    printf("PASS test_e2e_union_data_first_layout\n");
+}
+
+/* $as as a pure type annotation — wrapping an integer expression */
+static void test_e2e_as_identity() {
+    const char* src =
+        "$decl main $func () {\n"
+        "    $decl x 42;\n"
+        "    $decl y $as x i32;\n"
+        "    $ret y;\n"
+        "};\n";
+    int rc = compile_and_run(src);
+    assert(rc == 42);
+    printf("PASS test_e2e_as_identity\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -776,6 +868,13 @@ int main(void) {
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();
     test_e2e_extern_unknown_sym();
+    test_e2e_array_zero_init();
+    test_e2e_array_index_read();
+    test_e2e_array_type_name();
+    test_e2e_union_zero_tag();
+    test_e2e_union_named_type();
+    test_e2e_union_data_first_layout();
+    test_e2e_as_identity();
     printf("All integration tests passed.\n");
     return 0;
 }

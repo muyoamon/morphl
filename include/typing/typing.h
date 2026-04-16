@@ -20,6 +20,9 @@ typedef enum {
   MORPHL_TYPE_BLOCK,     // Block type (struct-like)
   MORPHL_TYPE_GROUP,     // Group type (tuple-like)
   MORPHL_TYPE_TRAIT,     // Trait type (interface-like)
+  MORPHL_TYPE_ARRAY,     // Fixed-size array type [T * N]
+  MORPHL_TYPE_UNION,     // Tagged union type $union V1 V2 ...
+  MORPHL_TYPE_NEVER,     // Bottom type ($never) — subtype of all types
 } MorphlTypeKind;
 
 // Forward declaration
@@ -57,6 +60,18 @@ typedef struct {
   bool is_ref;     // true for $ref (relative-offset reference); false for $mut/$const/$inline qualifiers
 } MorphlRefType;
 
+// Array type metadata: fixed-size contiguous sequence of N elements of type T
+typedef struct {
+  MorphlType* elem_type;
+  size_t count;       // number of elements
+} MorphlArrayType;
+
+// Union type metadata: tagged union of variant types
+typedef struct {
+  MorphlType** variant_types;
+  size_t variant_count;
+} MorphlUnionType;
+
 // Main type structure
 typedef struct MorphlType {
   MorphlTypeKind kind;
@@ -67,6 +82,8 @@ typedef struct MorphlType {
     MorphlGroupType group;  // kind == MORPHL_TYPE_GROUP
     MorphlBlockType block;  // kind == MORPHL_TYPE_BLOCK
     MorphlRefType ref;       // kind == MORPHL_TYPE_REF
+    MorphlArrayType array;   // kind == MORPHL_TYPE_ARRAY
+    MorphlUnionType union_t; // kind == MORPHL_TYPE_UNION
     Sym sym;                // Used for named types (traits, structs, etc.)
   } data;
   void* details;      // For future extensibility
@@ -101,6 +118,9 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
                                          Sym* prop_names,
                                          MorphlType** prop_types,
                                          size_t prop_count);
+MorphlType* morphl_type_array(Arena* arena, MorphlType* elem_type, size_t count);
+MorphlType* morphl_type_union(Arena* arena, MorphlType** variant_types, size_t variant_count);
+MorphlType* morphl_type_never(Arena* arena);
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type);
 
 // Type utilities

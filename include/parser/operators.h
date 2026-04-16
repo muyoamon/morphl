@@ -89,7 +89,11 @@ enum Operator{
   EXIT,
   I2F,
   F2I,
-  EXTERN
+  EXTERN,
+  ARRAY,
+  INDEX,
+  UNION,
+  AS
 };
 
 struct OperatorInfo {

@@ -353,6 +353,10 @@ static size_t type_frame_size(const MorphlType* t) {
             }
             return total;
         }
+        case MORPHL_TYPE_ARRAY:
+            return t->data.array.count * type_frame_size(t->data.array.elem_type);
+        case MORPHL_TYPE_UNION:
+            return t->size;  /* pre-computed: 8 (tag slot) + max(variant sizes) */
         default:                 return 0;
     }
 }
@@ -624,6 +628,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
         }
 
+        /* For structural types (union, block, array) declared with a type-alias ident RHS,
+         * the frame slot is already zero-initialized by ENTER — nothing to emit or store.
+         * This handles `$decl s Shape` where Shape is a named union/block/array type. */
+        if (t && (t->kind == MORPHL_TYPE_UNION ||
+                  t->kind == MORPHL_TYPE_ARRAY) &&
+            rhs && rhs->kind == AST_IDENT) {
+            /* Check that the RHS ident resolves to the same structural type (not a value copy) */
+            const MorphlType* rhs_t = rhs->type ? unwrap_ref(rhs->type) : NULL;
+            if (rhs_t && (rhs_t->kind == MORPHL_TYPE_UNION || rhs_t->kind == MORPHL_TYPE_ARRAY)) {
+                /* type-alias declaration: frame is zero-initialized, nothing more to do */
+                return true;
+            }
+        }
+
         /* emit RHS expression */
         if (!emit_node(e, rhs)) return false;
 
@@ -644,7 +662,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* store result to frame */
         uint8_t sop = store_op(t);
         if (sop == 0xFF) {
-            /* void / block / unknown — nothing to store */
+            /* void / block / array / union / unknown — nothing to store (frame already reserved
+             * and zeroed by ENTER, or filled by the RHS emitter itself) */
             return true;
         }
         return emit_op_i32(e, sop, (int32_t)off);
@@ -903,11 +922,48 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 field_name = interns_lookup(e->interns, field_nd->op);
             }
 
-            /* get target block type */
+            /* get target type (block or union) */
             const MorphlType* raw_target_type = target->type;
             const MorphlType* target_btype = unwrap_ref(raw_target_type);
-            if (!target_btype || target_btype->kind != MORPHL_TYPE_BLOCK) {
-                fprintf(stderr, "vm emitter: $member: target is not a block type\n");
+            if (!target_btype) {
+                fprintf(stderr, "vm emitter: $member: cannot resolve target type\n");
+                return false;
+            }
+
+            /* --- union $$tag / $$data --- */
+            if (target_btype->kind == MORPHL_TYPE_UNION) {
+                bool is_tag  = (field_name.len == 5 && memcmp(field_name.ptr, "$$tag",  5) == 0);
+                bool is_data = (field_name.len == 6 && memcmp(field_name.ptr, "$$data", 6) == 0);
+                if (!is_tag && !is_data) {
+                    fprintf(stderr, "vm emitter: $member: union only supports $$tag and $$data\n");
+                    return false;
+                }
+                if (target->kind != AST_IDENT) {
+                    fprintf(stderr, "vm emitter: $member: union target must be an identifier\n");
+                    return false;
+                }
+                Str tname = alias_resolve(e, target->value);
+                ptrdiff_t toff = morphl_backend_find_offset(&e->frameInfo, tname);
+                if (toff == PTRDIFF_MAX) {
+                    fprintf(stderr, "vm emitter: $member: undefined union variable '%.*s'\n",
+                            (int)tname.len, tname.ptr);
+                    return false;
+                }
+                /* Data-first layout: $$data at union_offset+0, $$tag at union_offset+max_payload_size.
+                 * max_payload_size = union_size - 8 (the 8 reserved for the tag slot). */
+                ptrdiff_t tag_off  = toff + (ptrdiff_t)(target_btype->size - 8);
+                if (is_tag) {
+                    /* $$tag → ILOAD at union_offset + max_payload_size */
+                    return emit_op_i32(e, VM_OP_ILOAD, (int32_t)tag_off);
+                }
+                /* $$data → address of payload region = union_offset + 0.
+                 * With data-first layout this is the same as the union's own address,
+                 * so $as s Circle works seamlessly via prefix subtyping. */
+                return emit_op_i32(e, VM_OP_ADDREF, (int32_t)toff);
+            }
+
+            if (target_btype->kind != MORPHL_TYPE_BLOCK) {
+                fprintf(stderr, "vm emitter: $member: target is not a block or union type\n");
                 return false;
             }
 
@@ -1006,7 +1062,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return emit_op(e, VM_OP_RNULL);
         }
 
-        /* $new — re-execute a block's init function to produce a fresh instance */
+        /* $new — re-execute a block's init function to produce a fresh instance.
+         * Optional 2nd child is an initializer (group or block); field overrides
+         * for union types are applied by the parent AST_DECL handler, which has
+         * access to the target variable's frame offset. */
         if (OP_IS("$new")) {
             if (node->child_count < 1 || !node->children[0]) return false;
             struct AstNode* block_ref = node->children[0];
@@ -1032,6 +1091,120 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             uint32_t block_sz = (uint32_t)(e->functions.items[fidx].frame_size);
             if (!emit_op_u32(e, VM_OP_RESERVE, block_sz)) return false;
             return emit_op_u32(e, VM_OP_CALL, fidx);
+            /* NOTE: when child_count == 2, the initializer (child[1]) is intentionally
+             * not emitted here.  The parent AST_DECL handler intercepts $new nodes
+             * with an initializer when the target type is MORPHL_TYPE_UNION and emits
+             * the tag + field-override stores directly into the target frame slot. */
+        }
+
+        /* $array elem-type count — declares a fixed-size array.
+         * Storage is already zero-initialised by ENTER; no runtime code needed. */
+        if (OP_IS("$array")) {
+            return true;  /* no-op: frame slot reserved + zeroed by ENTER */
+        }
+
+        /* $union T1 T2 ... — union type declaration.
+         * No runtime code: frame storage is reserved by ENTER (type_frame_size handles it). */
+        if (OP_IS("$union")) {
+            return true;
+        }
+
+        /* $as expr TargetType — reinterpret cast (type annotation only).
+         * Emits arg[0] unchanged; the node's type is already set to the target type
+         * by pp_action_as / morphl_infer_type_for_op.
+         * The parent expression uses node->type for type-directed code generation. */
+        /* $as expr TargetType — reinterpret cast (type annotation only).
+         * The result type is node->type (set by inference to the target type).
+         *
+         * When the source expression is a structural type (union/block/array) and the
+         * target is a scalar, emit a typed load from the source's frame offset.
+         * This implements "interpret the bytes at source_address as TargetType",
+         * which is the core semantics of $as for data-first union access:
+         *   $as s i32  →  ILOAD from s's frame offset (byte 0 = payload region)
+         *
+         * For all other cases (target is structural, or source is already scalar),
+         * emit the source expression unchanged (pure type re-annotation). */
+        if (OP_IS("$as")) {
+            if (node->child_count < 1 || !node->children[0]) return false;
+            struct AstNode* src_node = node->children[0];
+            const MorphlType* src_t  = src_node->type ? unwrap_ref(src_node->type) : NULL;
+            const MorphlType* dst_t  = node->type     ? unwrap_ref(node->type)     : NULL;
+
+            bool src_structural = src_t && (src_t->kind == MORPHL_TYPE_UNION  ||
+                                            src_t->kind == MORPHL_TYPE_BLOCK  ||
+                                            src_t->kind == MORPHL_TYPE_ARRAY);
+            uint8_t dst_lop = dst_t ? load_op(dst_t) : 0xFF;
+
+            if (src_structural && dst_lop != 0xFF && src_node->kind == AST_IDENT) {
+                /* Structural → scalar: emit typed load from source frame slot (offset 0). */
+                Str src_name = alias_resolve(e, src_node->value);
+                ptrdiff_t src_off = morphl_backend_find_offset(&e->frameInfo, src_name);
+                if (src_off == PTRDIFF_MAX) {
+                    fprintf(stderr, "vm emitter: $as: undefined source variable '%.*s'\n",
+                            (int)src_name.len, src_name.ptr);
+                    return false;
+                }
+                return emit_op_i32(e, dst_lop, (int32_t)src_off);
+            }
+            /* Default: pure type annotation — emit source as-is. */
+            return emit_node(e, src_node);
+        }
+
+        /* $index array i — load element at static index i (V1: literal index only) */
+        if (OP_IS("$index")) {
+            if (node->child_count < 2 || !node->children[0] || !node->children[1]) return false;
+            struct AstNode* arr_node = node->children[0];
+            struct AstNode* idx_node = node->children[1];
+
+            /* resolve array identifier → frame offset */
+            if (arr_node->kind != AST_IDENT) {
+                fprintf(stderr, "vm emitter: $index: array operand must be an identifier\n");
+                return false;
+            }
+            Str arr_name = alias_resolve(e, arr_node->value);
+            ptrdiff_t arr_off = morphl_backend_find_offset(&e->frameInfo, arr_name);
+            if (arr_off == PTRDIFF_MAX) {
+                fprintf(stderr, "vm emitter: $index: undefined array '%.*s'\n",
+                        (int)arr_name.len, arr_name.ptr);
+                return false;
+            }
+
+            /* V1: index must be an integer literal */
+            if (idx_node->kind != AST_LITERAL || !idx_node->value.ptr) {
+                fprintf(stderr, "vm emitter: $index: index must be an integer literal (V1)\n");
+                return false;
+            }
+            char ibuf[32];
+            size_t ilen = idx_node->value.len < sizeof(ibuf) - 1 ? idx_node->value.len : sizeof(ibuf) - 1;
+            memcpy(ibuf, idx_node->value.ptr, ilen);
+            ibuf[ilen] = '\0';
+            char* iend = NULL;
+            long long idx_val = strtoll(ibuf, &iend, 10);
+            if (iend == ibuf) {
+                fprintf(stderr, "vm emitter: $index: invalid index literal\n");
+                return false;
+            }
+
+            /* node->type for $index is the elem_type (set by pp_action_index);
+             * we need the array type from arr_node */
+            const MorphlType* arr_btype = arr_node->type
+                ? (arr_node->type->kind == MORPHL_TYPE_REF && !arr_node->type->data.ref.is_ref
+                   ? arr_node->type->data.ref.target : arr_node->type)
+                : NULL;
+            if (!arr_btype || arr_btype->kind != MORPHL_TYPE_ARRAY) {
+                fprintf(stderr, "vm emitter: $index: array node type not resolved\n");
+                return false;
+            }
+            const MorphlType* elem_type = arr_btype->data.array.elem_type;
+            size_t elem_size = type_frame_size(elem_type);
+            ptrdiff_t elem_off = arr_off + (ptrdiff_t)(idx_val * (long long)elem_size);
+
+            uint8_t lop = load_op(elem_type);
+            if (lop == 0xFF) {
+                fprintf(stderr, "vm emitter: $index: unsupported element type for load\n");
+                return false;
+            }
+            return emit_op_i32(e, lop, (int32_t)elem_off);
         }
 
         /* $exit [expr] — exit program with given code (default 0) */

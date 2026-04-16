@@ -1040,6 +1040,76 @@ static void test_impl_type_mismatch_error() {
 // ============================================================================
 // Main Test Runner
 // ============================================================================
+static void test_array_type() {
+  Arena arena = create_test_arena();
+
+  MorphlType* elem = morphl_type_int(&arena);
+  MorphlType* arr3 = morphl_type_array(&arena, elem, 3);
+  assert(arr3 != NULL);
+  assert(arr3->kind == MORPHL_TYPE_ARRAY);
+  assert(arr3->data.array.count == 3);
+  assert(arr3->data.array.elem_type == elem);
+  /* size = 3 * 8 = 24 */
+  assert(arr3->size == 24);
+
+  /* equality: same count+elem */
+  MorphlType* arr3b = morphl_type_array(&arena, morphl_type_int(&arena), 3);
+  assert(morphl_type_equals(arr3, arr3b));
+
+  /* inequality: different count */
+  MorphlType* arr4 = morphl_type_array(&arena, elem, 4);
+  assert(!morphl_type_equals(arr3, arr4));
+
+  /* inequality: different elem */
+  MorphlType* arr3f = morphl_type_array(&arena, morphl_type_float(&arena), 3);
+  assert(!morphl_type_equals(arr3, arr3f));
+
+  /* no prefix subtyping */
+  assert(!morphl_type_is_subtype(arr3, arr4));
+
+  arena_free(&arena);
+  printf("  PASS test_array_type\n");
+}
+
+static void test_union_type() {
+  Arena arena = create_test_arena();
+
+  MorphlType* ti = morphl_type_int(&arena);
+  MorphlType* tf = morphl_type_float(&arena);
+  MorphlType* variants[2] = {ti, tf};
+  MorphlType* u = morphl_type_union(&arena, variants, 2);
+  assert(u != NULL);
+  assert(u->kind == MORPHL_TYPE_UNION);
+  assert(u->data.union_t.variant_count == 2);
+  /* size = 8 (tag) + max(8, 8) = 16 */
+  assert(u->size == 16);
+
+  /* subtyping: int <: union(int, float) */
+  assert(morphl_type_is_subtype(ti, u));
+  assert(morphl_type_is_subtype(tf, u));
+
+  /* $never is subtype of everything */
+  MorphlType* never = morphl_type_never(&arena);
+  assert(morphl_type_is_subtype(never, u));
+  assert(morphl_type_is_subtype(never, ti));
+
+  /* flattening: $union int ($union float bool) → $union int float bool */
+  MorphlType* tb = morphl_type_bool(&arena);
+  MorphlType* inner[2] = {tf, tb};
+  MorphlType* inner_u = morphl_type_union(&arena, inner, 2);
+  MorphlType* outer[2] = {ti, inner_u};
+  MorphlType* flat = morphl_type_union(&arena, outer, 2);
+  assert(flat->data.union_t.variant_count == 3);
+
+  /* collapse: $union int $never → int */
+  MorphlType* with_never[2] = {ti, never};
+  MorphlType* collapsed = morphl_type_union(&arena, with_never, 2);
+  assert(collapsed->kind == MORPHL_TYPE_INT);
+
+  arena_free(&arena);
+  printf("  PASS test_union_type\n");
+}
+
 int main() {
   printf("Running typing system tests...\n\n");
   
@@ -1065,6 +1135,8 @@ int main() {
   test_pp_prop();
   test_prop_not_in_structural_fields();
   test_impl_type_mismatch_error();
+  test_array_type();
+  test_union_type();
   // Note: Recursion is tested via examples/test_recursion.mpl
   // Unit testing recursion requires full parser integration
 

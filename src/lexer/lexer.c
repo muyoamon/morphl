@@ -63,9 +63,31 @@ bool lexer_tokenize(const char* filename,
     if (c == '\n') { row++; col = 1; offset++; continue; }
     if (c == ' ' || c == '\t' || c == '\r') { col++; offset++; continue; }
 
-    // Handle $identifier as a single token (builtin operators)
+    // Handle $$identifier (compiler directives) and $identifier (builtin operators)
     if (c == '$' && offset + 1 < source.len) {
       char next = source.ptr[offset + 1];
+      // $$identifier: double-dollar compiler directive ($$tag, $$data, $$spread, …)
+      if (next == '$' && offset + 2 < source.len &&
+          (isalpha((unsigned char)source.ptr[offset + 2]) || source.ptr[offset + 2] == '_')) {
+        size_t start = offset;
+        offset += 2; col += 2; // Skip $$
+        while (offset < source.len) {
+          char cc = source.ptr[offset];
+          if (!(isalnum((unsigned char)cc) || cc == '_')) break;
+          offset++; col++;
+        }
+        size_t len = offset - start;
+        if (!ensure_token_capacity(out_tokens, &cap, *out_count + 1)) return false;
+        (*out_tokens)[(*out_count)++] = (struct token){
+          .kind = ident_kind,
+          .lexeme = str_from(source.ptr + start, len),
+          .filename = filename,
+          .row = row,
+          .col = col - (int)len,
+        };
+        continue;
+      }
+      // $identifier: single-dollar builtin operator
       if (isalpha((unsigned char)next) || next == '_') {
         size_t start = offset;
         offset++; col++; // Skip $
@@ -81,7 +103,7 @@ bool lexer_tokenize(const char* filename,
           .lexeme = str_from(source.ptr + start, len),
           .filename = filename,
           .row = row,
-          .col = col - len,
+          .col = col - (int)len,
         };
         continue;
       }

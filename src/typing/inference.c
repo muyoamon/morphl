@@ -225,12 +225,14 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$new", 4))) {
-    if (arg_count != 1 || !arg_types[0]) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$new expects 1 argument");
+    if (arg_count < 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$new expects 1 or 2 arguments");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    // $new re-executes a block, returning a fresh instance of the same type
+    // $new re-executes a block, returning a fresh instance of the same type.
+    // Optional 2nd arg is an initializer (group or block) that overrides fields;
+    // the parent AST_DECL/AST_SET handler applies the overrides.
     return unwrap_ref(arg_types[0]);
   }
 
@@ -627,6 +629,162 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
 
   
   
+  // $array elem-type count — fixed-size array
+  if (op_sym == interns_intern(ctx->interns, str_from("$array", 6))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$array: expects 2 arguments");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    AstNode* elem_arg = (node && node->child_count >= 1) ? node->children[0] : NULL;
+    MorphlType* elem_type = arg_types[0];
+    /* If inference gave us NULL or unknown for the element (e.g. bare "i32" ident),
+     * fall back to primitive type-name resolution */
+    if ((!elem_type || elem_type->kind == MORPHL_TYPE_UNKNOWN) && elem_arg &&
+        elem_arg->kind == AST_IDENT) {
+      Str name = elem_arg->value;
+      if (!name.ptr && elem_arg->op)
+        name = interns_lookup(ctx->interns, elem_arg->op);
+      MorphlType* prim = NULL;
+      if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
+          str_eq(name, str_from("int", 3)))
+        prim = morphl_type_int(ctx->arena);
+      else if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
+               str_eq(name, str_from("float", 5)))
+        prim = morphl_type_float(ctx->arena);
+      else if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
+        prim = morphl_type_string(ctx->arena);
+      else if (str_eq(name, str_from("bool", 4)))
+        prim = morphl_type_bool(ctx->arena);
+      if (prim) elem_type = prim;
+    }
+    if (!elem_type) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$array: cannot resolve element type");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    /* Parse count from the literal node */
+    AstNode* cnt_arg = (node && node->child_count >= 2) ? node->children[1] : NULL;
+    if (!cnt_arg || cnt_arg->kind != AST_LITERAL) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$array: count must be an integer literal");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    char cbuf[32];
+    size_t clen = cnt_arg->value.len < sizeof(cbuf) - 1 ? cnt_arg->value.len : sizeof(cbuf) - 1;
+    memcpy(cbuf, cnt_arg->value.ptr, clen); cbuf[clen] = '\0';
+    char* cend = NULL;
+    long long count = strtoll(cbuf, &cend, 10);
+    if (cend == cbuf || count <= 0) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$array: count must be a positive integer");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_array(ctx->arena, elem_type, (size_t)count);
+  }
+
+  // $index array i — element access; returns elem_type
+  if (op_sym == interns_intern(ctx->interns, str_from("$index", 6))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$index: expects 2 arguments");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    const MorphlType* arr_type = arg_types[0];
+    while (arr_type && arr_type->kind == MORPHL_TYPE_REF && !arr_type->data.ref.is_ref)
+      arr_type = arr_type->data.ref.target;
+    if (!arr_type || arr_type->kind != MORPHL_TYPE_ARRAY) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$index: first argument must be an array");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    if (!arg_types[1] || arg_types[1]->kind != MORPHL_TYPE_INT) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$index: index must be integer");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return arr_type->data.array.elem_type;
+  }
+
+  // $union V1 V2 ... — tagged union type
+  if (op_sym == interns_intern(ctx->interns, str_from("$union", 6))) {
+    if (arg_count < 1) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$union: expects at least 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    /* Resolve variant types, falling back to primitive name resolution for bare idents */
+    MorphlType** vtypes = (MorphlType**)arena_push(ctx->arena, NULL, arg_count * sizeof(MorphlType*));
+    if (!vtypes) return NULL;
+    for (size_t i = 0; i < arg_count; ++i) {
+      MorphlType* vt = arg_types[i];
+      if ((!vt || vt->kind == MORPHL_TYPE_UNKNOWN) && node && i < node->child_count &&
+          node->children[i] && node->children[i]->kind == AST_IDENT) {
+        Str name = node->children[i]->value;
+        if (!name.ptr && node->children[i]->op)
+          name = interns_lookup(ctx->interns, node->children[i]->op);
+        if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
+            str_eq(name, str_from("int", 3)))
+          vt = morphl_type_int(ctx->arena);
+        else if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
+                 str_eq(name, str_from("float", 5)))
+          vt = morphl_type_float(ctx->arena);
+        else if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
+          vt = morphl_type_string(ctx->arena);
+        else if (str_eq(name, str_from("bool", 4)))
+          vt = morphl_type_bool(ctx->arena);
+        else if (str_eq(name, str_from("$never", 6)))
+          vt = morphl_type_never(ctx->arena);
+      }
+      if (!vt) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$union: cannot resolve variant type");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+      vtypes[i] = vt;
+    }
+    return morphl_type_union(ctx->arena, vtypes, arg_count);
+  }
+
+  // $as expr TargetType — reinterpret cast; result type is the target type
+  if (op_sym == interns_intern(ctx->interns, str_from("$as", 3))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$as: expects 2 arguments");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* target_type = arg_types[1];
+    /* fall back to primitive name resolution for bare idents */
+    if ((!target_type || target_type->kind == MORPHL_TYPE_UNKNOWN) && node &&
+        node->child_count >= 2 && node->children[1] &&
+        node->children[1]->kind == AST_IDENT) {
+      Str name = node->children[1]->value;
+      if (!name.ptr && node->children[1]->op)
+        name = interns_lookup(ctx->interns, node->children[1]->op);
+      if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
+          str_eq(name, str_from("int", 3)))
+        target_type = morphl_type_int(ctx->arena);
+      else if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
+               str_eq(name, str_from("float", 5)))
+        target_type = morphl_type_float(ctx->arena);
+      else if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
+        target_type = morphl_type_string(ctx->arena);
+      else if (str_eq(name, str_from("bool", 4)))
+        target_type = morphl_type_bool(ctx->arena);
+    }
+    if (!target_type) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$as: cannot resolve target type");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return target_type;
+  }
+
+  // $never — bottom type
+  if (op_sym == interns_intern(ctx->interns, str_from("$never", 6))) {
+    return morphl_type_never(ctx->arena);
+  }
+
   // Unknown or untyped operator
   MorphlError err = MORPHL_WARN_AT(node, MORPHL_E_TYPE, "type inference not implemented for %s", op_name);
   morphl_error_emit(NULL, &err);
@@ -1106,14 +1264,35 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
         if (!target_type) return NULL;
         target_type = unwrap_ref(target_type);
-        if (!target_type || target_type->kind != MORPHL_TYPE_BLOCK) {
-          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member: target must be block");
-          morphl_error_emit(NULL, &err);
-          return NULL;
-        }
+        if (!target_type) return NULL;
+
+        /* resolve field name */
         Sym field_sym = field_node->op;
         if (!field_sym && field_node->value.ptr) {
           field_sym = interns_intern(ctx->interns, field_node->value);
+        }
+        Str field_name = field_sym ? interns_lookup(ctx->interns, field_sym) : (Str){NULL, 0};
+
+        /* compiler-injected $$data / $$tag fields on union types */
+        if (target_type->kind == MORPHL_TYPE_UNION) {
+          if (field_name.len == 6 && memcmp(field_name.ptr, "$$data", 6) == 0) {
+            /* payload region — expose as empty block type (top of block hierarchy);
+             * callers use $as to narrow to a concrete variant */
+            return morphl_type_block(ctx->arena, NULL, NULL, 0);
+          }
+          if (field_name.len == 5 && memcmp(field_name.ptr, "$$tag", 5) == 0) {
+            return morphl_type_int(ctx->arena);
+          }
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+              "$member: union only supports $$data and $$tag fields");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+
+        if (target_type->kind != MORPHL_TYPE_BLOCK) {
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member: target must be block or union");
+          morphl_error_emit(NULL, &err);
+          return NULL;
         }
         for (size_t i = 0; i < target_type->data.block.field_count; ++i) {
           if (target_type->data.block.field_names[i] == field_sym) {
@@ -1186,6 +1365,29 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         sym = interns_intern(ctx->interns, node->value);
       }
       if (!sym) return NULL;
+
+      // Primitive type keywords resolve as type-name sentinels globally
+      {
+        Str name = interns_lookup(ctx->interns, sym);
+        if ((name.len == 3 && memcmp(name.ptr, "i32", 3) == 0) ||
+            (name.len == 3 && memcmp(name.ptr, "i64", 3) == 0) ||
+            (name.len == 3 && memcmp(name.ptr, "int", 3) == 0)) {
+          return morphl_type_int(ctx->arena);
+        }
+        if ((name.len == 3 && memcmp(name.ptr, "f32", 3) == 0) ||
+            (name.len == 3 && memcmp(name.ptr, "f64", 3) == 0) ||
+            (name.len == 5 && memcmp(name.ptr, "float", 5) == 0)) {
+          return morphl_type_float(ctx->arena);
+        }
+        if ((name.len == 4 && memcmp(name.ptr, "bool", 4) == 0)) {
+          return morphl_type_bool(ctx->arena);
+        }
+        if ((name.len == 6 && memcmp(name.ptr, "string", 6) == 0) ||
+            (name.len == 3 && memcmp(name.ptr, "str", 3) == 0)) {
+          return morphl_type_string(ctx->arena);
+        }
+      }
+
       MorphlType* var_type = type_context_lookup_var(ctx, sym);
       if (!var_type) {
         Str name = interns_lookup(ctx->interns, sym);

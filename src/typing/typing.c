@@ -213,6 +213,80 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
   return t;
 }
 
+// Array type constructor: [elem_type * count]
+MorphlType* morphl_type_array(Arena* arena, MorphlType* elem_type, size_t count) {
+  if (!arena || !elem_type) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  t->kind = MORPHL_TYPE_ARRAY;
+  t->size  = count * elem_type->size;
+  t->align = elem_type->align;
+  t->data.array.elem_type = elem_type;
+  t->data.array.count     = count;
+  return t;
+}
+
+// Union type constructor: $union V1 V2 ...
+// Flattens nested unions. Returns elem directly if only 1 variant remains,
+// void if 0 variants remain (all were $never).
+MorphlType* morphl_type_union(Arena* arena, MorphlType** variant_types, size_t variant_count) {
+  if (!arena) return NULL;
+
+  // Collect flattened, non-never variants
+  MorphlType** flat = arena_alloc(arena, variant_count * 2 * sizeof(MorphlType*));
+  if (!flat) return NULL;
+  size_t flat_count = 0;
+
+  for (size_t i = 0; i < variant_count; ++i) {
+    MorphlType* v = variant_types[i];
+    if (!v || v->kind == MORPHL_TYPE_NEVER) continue;
+    if (v->kind == MORPHL_TYPE_UNION) {
+      // Flatten nested union
+      for (size_t j = 0; j < v->data.union_t.variant_count; ++j) {
+        MorphlType* inner = v->data.union_t.variant_types[j];
+        if (inner && inner->kind != MORPHL_TYPE_NEVER)
+          flat[flat_count++] = inner;
+      }
+    } else {
+      flat[flat_count++] = v;
+    }
+  }
+
+  if (flat_count == 0) return morphl_type_void(arena);
+  if (flat_count == 1) return flat[0];
+
+  // Compute layout: slot 0 (8 bytes) = $$tag; slot 1+ = data payload
+  size_t max_payload = 0;
+  for (size_t i = 0; i < flat_count; ++i) {
+    size_t sz = flat[i]->size;
+    if (sz > max_payload) max_payload = sz;
+  }
+
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  t->kind  = MORPHL_TYPE_UNION;
+  t->size  = 8 + max_payload; // 8-byte tag slot + payload
+  t->align = 8;
+
+  MorphlType** stored = arena_alloc(arena, flat_count * sizeof(MorphlType*));
+  if (!stored) return NULL;
+  for (size_t i = 0; i < flat_count; ++i) stored[i] = flat[i];
+  t->data.union_t.variant_types  = stored;
+  t->data.union_t.variant_count  = flat_count;
+  return t;
+}
+
+// $never — bottom type (subtype of all types)
+MorphlType* morphl_type_never(Arena* arena) {
+  if (!arena) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  t->kind  = MORPHL_TYPE_NEVER;
+  t->size  = 0;
+  t->align = 1;
+  return t;
+}
+
 // Clone a type (allocate new copy in arena)
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
   if (!arena || !type) return NULL;
@@ -276,8 +350,23 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
       t->data.ref.target = morphl_type_clone(arena, t->data.ref.target);
       if (!t->data.ref.target) return NULL;
     }
+  } else if (t->kind == MORPHL_TYPE_ARRAY) {
+    if (t->data.array.elem_type) {
+      t->data.array.elem_type = morphl_type_clone(arena, t->data.array.elem_type);
+      if (!t->data.array.elem_type) return NULL;
+    }
+  } else if (t->kind == MORPHL_TYPE_UNION) {
+    if (t->data.union_t.variant_count > 0 && t->data.union_t.variant_types) {
+      MorphlType** variants = arena_alloc(arena, t->data.union_t.variant_count * sizeof(MorphlType*));
+      if (!variants) return NULL;
+      for (size_t i = 0; i < t->data.union_t.variant_count; ++i) {
+        variants[i] = morphl_type_clone(arena, t->data.union_t.variant_types[i]);
+        if (!variants[i]) return NULL;
+      }
+      t->data.union_t.variant_types = variants;
+    }
   }
-  
+
   return t;
 }
 
@@ -335,7 +424,21 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
     if (a->data.ref.is_inline != b->data.ref.is_inline) return false;
     return morphl_type_equals(a->data.ref.target, b->data.ref.target);
   }
-  
+
+  if (a->kind == MORPHL_TYPE_ARRAY) {
+    if (a->data.array.count != b->data.array.count) return false;
+    return morphl_type_equals(a->data.array.elem_type, b->data.array.elem_type);
+  }
+
+  if (a->kind == MORPHL_TYPE_UNION) {
+    if (a->data.union_t.variant_count != b->data.union_t.variant_count) return false;
+    for (size_t i = 0; i < a->data.union_t.variant_count; ++i) {
+      if (!morphl_type_equals(a->data.union_t.variant_types[i],
+                              b->data.union_t.variant_types[i])) return false;
+    }
+    return true;
+  }
+
   return true;
 }
 
@@ -436,6 +539,29 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         result = new_cstr(buf);
         break;
       }
+      case MORPHL_TYPE_ARRAY: {
+        Str elem_str = morphl_type_to_string(type->data.array.elem_type, interns);
+        snprintf(buf, sizeof(buf), "[%.*s * %zu]", (int)elem_str.len, elem_str.ptr,
+                 type->data.array.count);
+        free((void*)elem_str.ptr);
+        result = new_cstr(buf);
+        break;
+      }
+      case MORPHL_TYPE_UNION: {
+        size_t offset = 0;
+        offset += snprintf(buf + offset, sizeof(buf) - offset, "$union");
+        for (size_t i = 0; i < type->data.union_t.variant_count; ++i) {
+          Str v_str = morphl_type_to_string(type->data.union_t.variant_types[i], interns);
+          offset += snprintf(buf + offset, sizeof(buf) - offset, " %.*s",
+                             (int)v_str.len, v_str.ptr);
+          free((void*)v_str.ptr);
+        }
+        result = new_cstr(buf);
+        break;
+      }
+      case MORPHL_TYPE_NEVER:
+        result = new_cstr("$never");
+        break;
       case MORPHL_TYPE_PRIMITIVE:
         result = new_cstr("primitive");
         break;
@@ -458,7 +584,17 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
 // for structural subtyping per SPEC §9.2.
 bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super) {
   if (!sub || !super) return sub == super;
-  if (sub->kind != super->kind) return false;
+  // $never is a subtype of everything
+  if (sub->kind == MORPHL_TYPE_NEVER) return true;
+  if (sub->kind != super->kind) {
+    // A concrete type T is a subtype of $union V1 V2... if it matches any variant
+    if (super->kind == MORPHL_TYPE_UNION) {
+      for (size_t i = 0; i < super->data.union_t.variant_count; ++i) {
+        if (morphl_type_is_subtype(sub, super->data.union_t.variant_types[i])) return true;
+      }
+    }
+    return false;
+  }
   if (sub->kind == MORPHL_TYPE_BLOCK) {
     // super must be a prefix of sub's fields (same names, compatible types)
     if (sub->data.block.field_count < super->data.block.field_count) return false;
@@ -466,6 +602,17 @@ bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super) {
       if (sub->data.block.field_names[i] != super->data.block.field_names[i]) return false;
       if (!morphl_type_is_subtype(sub->data.block.field_types[i],
                                    super->data.block.field_types[i])) return false;
+    }
+    return true;
+  }
+  if (sub->kind == MORPHL_TYPE_ARRAY) {
+    // Arrays are exact-match only (no prefix subtyping)
+    return morphl_type_equals(sub, super);
+  }
+  if (sub->kind == MORPHL_TYPE_UNION) {
+    // Union subtype: every variant in sub must be a subtype of some variant in super
+    for (size_t i = 0; i < sub->data.union_t.variant_count; ++i) {
+      if (!morphl_type_is_subtype(sub->data.union_t.variant_types[i], super)) return false;
     }
     return true;
   }

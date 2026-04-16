@@ -675,6 +675,170 @@ static MorphlType* pp_action_const(const OperatorInfo* info,
   return morphl_type_ref(ctx->arena, target_type, false, false);
 }
 
+/* Helper: resolve a primitive type keyword by name */
+static MorphlType* resolve_primitive_type_name(Arena* arena, Str name) {
+  if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
+      str_eq(name, str_from("int", 3)))
+    return morphl_type_int(arena);
+  if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
+      str_eq(name, str_from("float", 5)))
+    return morphl_type_float(arena);
+  if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
+    return morphl_type_string(arena);
+  if (str_eq(name, str_from("bool", 4)))
+    return morphl_type_bool(arena);
+  return NULL;
+}
+
+/* $array elem-type count — allocate a fixed-size array */
+static MorphlType* pp_action_array(const OperatorInfo* info,
+                                   void* global_state,
+                                   void* block_state,
+                                   AstNode** args,
+                                   size_t arg_count) {
+  (void)info; (void)global_state;
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 2 || !args[0] || !args[1]) return NULL;
+
+  /* Resolve element type: type-name identifier or inferred from value expression */
+  MorphlType* elem_type = NULL;
+  if (args[0]->kind == AST_IDENT) {
+    Str name = args[0]->value;
+    if (!name.ptr && ctx->interns && args[0]->op)
+      name = interns_lookup(ctx->interns, args[0]->op);
+    elem_type = resolve_primitive_type_name(ctx->arena, name);
+  }
+  if (!elem_type) {
+    elem_type = morphl_infer_type_of_ast(ctx, args[0]);
+  }
+  if (!elem_type) {
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_TYPE, "$array: cannot resolve element type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+
+  /* Count must be an integer literal */
+  if (args[1]->kind != AST_LITERAL || !args[1]->value.ptr) {
+    MorphlError err = MORPHL_ERR_NODE(args[1], MORPHL_E_TYPE, "$array: count must be an integer literal");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  char buf[32];
+  size_t n = args[1]->value.len < sizeof(buf) - 1 ? args[1]->value.len : sizeof(buf) - 1;
+  memcpy(buf, args[1]->value.ptr, n);
+  buf[n] = '\0';
+  char* end = NULL;
+  long long count = strtoll(buf, &end, 10);
+  if (end == buf || count <= 0) {
+    MorphlError err = MORPHL_ERR_NODE(args[1], MORPHL_E_TYPE, "$array: count must be a positive integer");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+
+  return morphl_type_array(ctx->arena, elem_type, (size_t)count);
+}
+
+/* $index array index — element access */
+static MorphlType* pp_action_index(const OperatorInfo* info,
+                                   void* global_state,
+                                   void* block_state,
+                                   AstNode** args,
+                                   size_t arg_count) {
+  (void)info; (void)global_state;
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 2 || !args[0] || !args[1]) return NULL;
+
+  MorphlType* arr_type = morphl_infer_type_of_ast(ctx, args[0]);
+  if (!arr_type) {
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_TYPE, "$index: cannot infer array type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  /* Unwrap qualifiers */
+  while (arr_type && arr_type->kind == MORPHL_TYPE_REF && !arr_type->data.ref.is_ref)
+    arr_type = arr_type->data.ref.target;
+  if (!arr_type || arr_type->kind != MORPHL_TYPE_ARRAY) {
+    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_TYPE, "$index: target is not an array type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+
+  MorphlType* idx_type = morphl_infer_type_of_ast(ctx, args[1]);
+  if (!idx_type || idx_type->kind != MORPHL_TYPE_INT) {
+    MorphlError err = MORPHL_ERR_NODE(args[1], MORPHL_E_TYPE, "$index: index must be integer");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+
+  return arr_type->data.array.elem_type;
+}
+
+/* $union V1 V2 ... — tagged union type */
+static MorphlType* pp_action_union(const OperatorInfo* info,
+                                   void* global_state,
+                                   void* block_state,
+                                   AstNode** args,
+                                   size_t arg_count) {
+  (void)info; (void)global_state;
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count < 1) return NULL;
+
+  MorphlType** variant_types = (MorphlType**)arena_push(ctx->arena, NULL, arg_count * sizeof(MorphlType*));
+  if (!variant_types) return NULL;
+  for (size_t i = 0; i < arg_count; ++i) {
+    if (!args[i]) { variant_types[i] = morphl_type_never(ctx->arena); continue; }
+    /* Try type-name resolution first, then value inference */
+    MorphlType* vt = NULL;
+    if (args[i]->kind == AST_IDENT) {
+      Str name = args[i]->value;
+      if (!name.ptr && ctx->interns && args[i]->op)
+        name = interns_lookup(ctx->interns, args[i]->op);
+      vt = resolve_primitive_type_name(ctx->arena, name);
+    }
+    if (!vt) vt = morphl_infer_type_of_ast(ctx, args[i]);
+    if (!vt) {
+      MorphlError err = MORPHL_ERR_NODE(args[i], MORPHL_E_TYPE, "$union: cannot resolve variant type");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    variant_types[i] = vt;
+  }
+  return morphl_type_union(ctx->arena, variant_types, arg_count);
+}
+
+/* $as expr TargetType — reinterpret cast */
+static MorphlType* pp_action_as(const OperatorInfo* info,
+                                void* global_state,
+                                void* block_state,
+                                AstNode** args,
+                                size_t arg_count) {
+  (void)info; (void)global_state;
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 2 || !args[0] || !args[1]) return NULL;
+
+  /* Resolve target type — type-name ident or inferred from value */
+  MorphlType* target_type = NULL;
+  if (args[1]->kind == AST_IDENT) {
+    Str name = args[1]->value;
+    if (!name.ptr && ctx->interns && args[1]->op)
+      name = interns_lookup(ctx->interns, args[1]->op);
+    target_type = resolve_primitive_type_name(ctx->arena, name);
+    if (!target_type) {
+      /* Look up named type in scope */
+      target_type = morphl_infer_type_of_ast(ctx, args[1]);
+    }
+  } else {
+    target_type = morphl_infer_type_of_ast(ctx, args[1]);
+  }
+  if (!target_type) {
+    MorphlError err = MORPHL_ERR_NODE(args[1], MORPHL_E_TYPE, "$as: cannot resolve target type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  /* The source expression is accepted as-is; $as is an unchecked reinterpret cast */
+  return target_type;
+}
+
 static OperatorRow kBuiltinOps[] = {
   // Structural
   {"$group",  AST_GROUP,  false, 0, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE, GROUP},
@@ -701,7 +865,7 @@ static OperatorRow kBuiltinOps[] = {
   {"$global",  AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, GLOBAL},
   {"$ref",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, REF},
   {"$null",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, NULLREF},
-  {"$new",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, NEW},
+  {"$new",    AST_BUILTIN,false, 1, 2,          NULL,              0, OP_PP_KEEP_NODE, NEW},
   {"$idtstr", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, IDTSTR},
   {"$strtid", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, STRTID},
   {"$forward",AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, FORWARD},
@@ -758,6 +922,14 @@ static OperatorRow kBuiltinOps[] = {
 
   // Native FFI storage specifier: $extern <expr>
   {"$extern", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, EXTERN},
+
+  // Array types
+  {"$array",  AST_BUILTIN, true, 2, 2,           pp_action_array,   0, OP_PP_KEEP_NODE, ARRAY},
+  {"$index",  AST_BUILTIN,false, 2, 2,           pp_action_index,   0, OP_PP_KEEP_NODE, INDEX},
+
+  // Union types and reinterpret cast
+  {"$union",  AST_BUILTIN, true, 1, (size_t)-1,  pp_action_union,   0, OP_PP_KEEP_NODE, UNION},
+  {"$as",     AST_BUILTIN,false, 2, 2,           pp_action_as,      0, OP_PP_KEEP_NODE, AS},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

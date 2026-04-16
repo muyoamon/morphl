@@ -30,7 +30,7 @@ Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `
 ### 2.2 Double-`$$` Directives
 `$$`-prefixed name are compiler directives - They are as-early-as-possible resolutions. The compiler substitute them at compile time whenever it can determine the value statically. If it cannot, resolution defers to runtime
 
-Reserved directives: `$$syntax`, `$$spread`, `$$maybe`, `$$op`, `$$type`, `$$size`, `$$name`, `$$path`, `$$delim`, `$$version`, `$$line`, `$$col`, `$$tag`
+Reserved directives: `$$syntax`, `$$spread`, `$$maybe`, `$$op`, `$$type`, `$$size`, `$$name`, `$$path`, `$$delim`, `$$version`, `$$line`, `$$col`, `$$tag`, `$$data`
 
 
 ### 2.3 Three-Tier Namespace
@@ -419,16 +419,23 @@ $decl Result    $union { $decl value i32; } { $decl err string; }
 
 ### 7.2 Memory Layout
 
-Tag first, then data sized to the largest variant:
+Data first, then the tag at the end. This allows `$as` and prefix subtyping to work seamlessly directly on the union variable (no intermediate `$$data` access required):
 
 ```
 $union CStr Slice:
-    offset 0 → $$tag: i32              (4 bytes, compiler-injected)
-    offset 4 → [pad]                   (4 bytes)
-    offset 8 → data: max(sizeof CStr, sizeof Slice)
+    offset 0                        → $$data: max(sizeof CStr, sizeof Slice)
+    offset max(sizeof CStr, sizeof Slice) → $$tag: i64 (8 bytes, compiler-injected)
 ```
 
-`$$tag` is a language-injected field - readable by user code but invisible to the structural type system (uses `$$` reserved namespace).
+Total size: `max_variant_size + 8`.
+
+Because the payload starts at offset 0, a union variable can be directly reinterpreted as any of its variants without an intermediate address computation:
+
+```
+$decl c $ref $as s Circle;   // Circle fields start at s+0 — correct
+```
+
+`$$tag` is a language-injected field — readable by user code but invisible to the structural type system (uses `$$` reserved namespace). Its byte offset is `union_size - 8`, which is statically known from the union type.
 
 ### 7.3 Tag Assignment
 
@@ -480,6 +487,32 @@ $if $eq
 !> [!NOTE]
 > `$member $new <union> <expr> $$tag` is able to resolve statically even though `$new` keyword exists
 
+### 7.7 `$$data` — Payload Access
+
+`$$data` returns the address of the union's payload region. Because the layout is **data-first** (payload at offset 0), `$$data` is equivalent to the union variable's own address. Its type is `{}` (empty block — the structural top of the block hierarchy), which is a prefix supertype of every concrete variant:
+
+```
+$member s $$data          // → type: {}  (address of s, offset 0)
+```
+
+Thanks to data-first layout, `$as` can be applied directly to the union variable without going through `$$data` first:
+
+```
+$decl Circle    { $decl radius 0.0 }
+$decl Shape     $union Circle;
+
+$decl s $new Shape {$decl radius 3.0};
+$if $eq $member s $$tag 0 {
+    // s holds a Circle — both forms are equivalent:
+    $decl c $ref $as s Circle;              // direct — preferred
+    $decl c2 $ref $as $member s $$data Circle;  // explicit $$data — also valid
+};
+```
+
+Both `$as s Circle` and `$as ($member s $$data) Circle` are safe and produce the same result: a reference into the union starting at byte 0, typed as `Circle`.
+
+Accessing the payload without a preceding `$$tag` check is allowed but unsafe — the programmer asserts knowledge of the active variant.
+
 ---
 
 ## 8. Array Types 
@@ -489,29 +522,101 @@ $if $eq
 `$array` is a storage expression allocating a contiguous sequence of `N` elements of type `T`:
 
 ```
-$decl buf $array i32 4;     // 4 * i32 = 16 bytes, stack allocated
+$decl buf $array i32 4;     // 4 * i32 = 32 bytes, stack allocated (8-byte VM slots)
+$decl mat $array f64 9;     // 9 * f64 = 72 bytes
 ```
 
-Type signature: `[T * N]` - size is part of the type. Two arrays of different size are different types:
+The element type argument can be any primitive type keyword (`i32`, `i64`, `int`, `f32`, `f64`, `float`, `bool`, `string`) or a value expression whose type is inferred:
+
+```
+$decl zero 0;
+$decl buf $array zero 4;    // element type inferred as i32 from zero
+```
+
+Type signature: `[T * N]` — size is part of the type. Two arrays of different sizes are different types:
 
 ```
 [i32 * 4] != [i32 * 8]
 ```
 
-Array subtyping is exact match only - no prefix subtyping for arrays in v1.
+Array subtyping is exact match only — no prefix subtyping for arrays in V1. The frame slot is stack-allocated and zero-initialized at scope entry.
 
-### 8.2 Element Access 
+### 8.2 Element Access via `$index`
+
+`$index array i` reads element `i` from the array. In V1 the index must be a compile-time integer literal:
 
 ```
-$decl buf $array 0 2;
-$index buf 0;
+$decl buf $array i32 4;
+$decl first $index buf 0;   // reads buf[0] (type: i32)
+$decl third $index buf 2;   // reads buf[2]
 ```
 
-For V1 - only static array is supported
+The byte offset is computed at compile time: `offset = array_frame_offset + i * element_size`.
+
+Dynamic indexing (non-literal index) is reserved for V2.
+
+### 8.3 Summary Table
+
+| Expression | Meaning | Type |
+|---|---|---|
+| `$decl buf $array T N` | allocate `N` elements of type `T` | `[T * N]` |
+| `$index buf i` | read element `i` (static literal only in V1) | `T` |
 
 ---
 
-## 9. Functions
+## 9. `$as` — Reinterpret Cast
+
+`$as` is a general-purpose reinterpret cast. It changes the compiler's view of a value's type without emitting any runtime code:
+
+```
+$as <expr> <type>
+```
+
+`$as` is the morphl equivalent of C's `reinterpret_cast`. No bits are moved or converted — only the type annotation changes. The programmer is responsible for ensuring the reinterpretation is safe.
+
+### 9.1 Primitive reinterpretation
+
+```
+$decl x 42;
+$decl y $as x f64;    // view the i32 bits as f64 — unsafe, but allowed
+```
+
+### 9.2 Union variant narrowing (safe pattern)
+
+The idiomatic safe use of `$as` is narrowing a union variable to a known variant type after a `$$tag` check. Because unions use **data-first layout** (payload at offset 0), `$as` can be applied directly to the union variable:
+
+```
+$decl Shape $union Circle Rect;
+$decl s $new Shape {$decl radius 3.0};
+
+$if $eq $member s $$tag 0 {
+    // tag 0 = Circle variant
+    $decl circle $ref $as s Circle;
+    // circle is a Circle reference into s, starting at byte 0
+};
+```
+
+This pattern is safe because:
+1. The `$$tag` check guarantees the active variant.
+2. `$as` annotates the type without generating code.
+3. `$ref` creates a reference to `s`'s frame slot (byte 0 = start of Circle data).
+4. Prefix subtyping holds: `Circle <: {}`, so the reinterpretation is layout-compatible.
+
+`$as ($member s $$data) Circle` is also valid and produces the same result.
+
+### 9.3 Unsafe uses
+
+Using `$as` without a preceding `$$tag` check is allowed but unsafe — the programmer asserts knowledge of the active variant.
+
+### 9.4 Type resolution
+
+The second argument to `$as` is a type expression. It resolves as follows (in order):
+1. Primitive type keyword: `i32` / `i64` / `int` → `i32`; `f32` / `f64` / `float` → `f64`; `bool`; `string`.
+2. Named type in scope: any declared variable whose type is the desired block/union.
+
+---
+
+## 10. Functions
 
 ### 9.1 `$func` Declaration
 
@@ -636,9 +741,9 @@ FuncTable[n] = { bytecode_offset, arity, frame_size }
 
 
 
-## 10. Control Flow
+## 11. Control Flow
 
-### 10.1 `$if` — Conditional Expression
+### 11.1 `$if` — Conditional Expression
 
 ```
 $if <cond> <then> [<else>]
@@ -662,7 +767,7 @@ $if $eq x 0 {
 - The two forms accept any expression as branches — including blocks `{}` or bare values.
 - Both branches should produce compatible types when the `$if` result is used as a value.
 
-### 10.2 `$while` — Loop
+### 11.2 `$while` — Loop
 
 ```
 $while <cond> <body>
@@ -738,7 +843,7 @@ $if $and $gt x 0 $lt x 100 {
 
 ---
 
-## 8. Scope Contexts
+## 12. Scope Contexts
 
 Every scope maintains a set of reserved context references. These are `$ref`-based — relative offsets following the same semantics as user-defined references.
 
@@ -767,9 +872,9 @@ The scope chain is a `$ref`-linked structure terminating at `$global.$parent = $
 
 ---
 
-## 9. Properties
+## 13. Properties
 
-### 9.1 `$prop` Declaration
+### 13.1 `$prop` Declaration
 
 Properties are declared with `$prop` and accessed with the `$` prefix:
 
@@ -820,7 +925,7 @@ $decl mod {
 
 ---
 
-## 10. Traits
+## 14. Traits
 
 ### 10.1 Trait Declaration
 
@@ -893,7 +998,7 @@ $call traitVar.$methodB ();
 
 ---
 
-## 11. Modules and Imports
+## 15. Modules and Imports
 
 ### 11.1 Files as Blocks
 
@@ -944,7 +1049,7 @@ Any `.mpl` file can have a companion native library (`.so` / `.dylib`) with the 
 
 ---
 
-## 12. Grammar System
+## 16. Grammar System
 
 morphl has two parsing modes that can coexist in the same program: the **builtin parser** and the **grammar-driven parser**. Both produce the same AST; they differ in how the programmer writes source code.
 
@@ -1157,7 +1262,7 @@ is semantically equivalent to a grammar rule that maps `a * b + c` to `$add ($mu
 
 ---
 
-## 13. VM Opcode Set
+## 17. VM Opcode Set
 
 The VM uses **typed opcodes** — the operand type and size are encoded in the opcode itself, not in the values. Values on the stack are raw bits with no runtime type tags.
 
@@ -1263,7 +1368,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 
 ---
 
-## 14. Type System Summary
+## 18. Type System Summary
 
 | Layer | Mechanism | Participates in subtyping |
 |---|---|---|
@@ -1275,7 +1380,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 
 ---
 
-## 15. Grammar Reference (Informal)
+## 19. Grammar Reference (Informal)
 
 ```
 program     ::= decl*
@@ -1319,7 +1424,7 @@ expr        ::= name
 
 ---
 
-## 16. Resolved Design Decisions
+## 20. Resolved Design Decisions
 
 The following questions were previously open; they are now settled.
 
