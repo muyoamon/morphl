@@ -167,9 +167,16 @@ $decl x {
 
 `$decl` **suspends** the expression — the block executes once at declaration site and captures its final state. Referencing `x` later does not re-execute the block.
 
-### 4.3 Re-execution via `$new`
+### 4.3 Instantiation via `$new`
 
-`$new` re-executes a block's initialization logic to produce a fresh, independent instance:
+`$new` is a universal instantiation operator. It accepts any type expression and an optional initializer:
+
+```
+$new <TypeExpr>                 // 1-arg: re-execute block's init logic (fresh instance)
+$new <TypeExpr> <initializer>   // 2-arg: create instance with field overrides
+```
+
+**1-arg form** — re-executes a block's initialization logic to produce a fresh, independent instance:
 
 ```
 $decl p $new x;    // fresh instance, a = 11, independent of x
@@ -177,6 +184,27 @@ $decl q $new x;    // another fresh instance, independent of p
 ```
 
 Mutating `p.a` does not affect `q.a`.
+
+**2-arg form** — creates an instance of any type and applies an initializer before running the block body. Works for any type including scalars (redundant but valid since morphl is structural):
+
+```
+$decl y $new 0 55;                          // scalar: $new int 55 → y = 55
+
+$decl p $new Point (3, 4);                  // positional group: x=3, y=4
+$decl p2 $new Point { $decl x 3; $decl y 4; }; // named block init
+
+$decl Circle { $decl r 0; };
+$decl Rect   { $decl w 0; $decl h 0; };
+$decl Shape  $union Circle Rect;
+$decl s $new Shape Circle;                  // union init: tag auto-injected
+```
+
+The initializer can be:
+- A **positional group** `(v1, v2, ...)` — values assigned to fields in declaration order
+- A **named block** `{ $decl field val; ... }` — only named fields are overridden; unspecified fields use their declared defaults
+- Any expression whose type is structurally compatible with the base type
+
+**Union instantiation**: when the base type is a union, the compiler determines which variant the initializer belongs to via structural subtype check, and automatically injects the `$$tag` value. The tag is invisible in user code — it is always set by the compiler at construction time.
 
 ### 4.4 Default Mutability
 
@@ -206,17 +234,36 @@ Allocates immutable storage initialized to the given value. The value cannot be 
 $decl foo $mut 10;
 ```
 
-Allocates mutable storage. The value can be overwritten via assignment.
+Allocates mutable storage. The value can be overwritten via `$set`.
+
+**`$set` — Mutable Assignment**
+
+`$set` writes a new value to a mutable storage location. The LHS can be a plain identifier or a compound lvalue:
+
+```
+$set x 10;                      // simple variable
+
+$decl p { $decl x $mut 0; };
+$set $member p x 42;            // block field
+$set $member s $$tag 1;         // union tag (manual, bypasses type safety)
+
+$decl arr $array i32 4;
+$set $index arr 2 99;           // array element (literal index)
+$decl i 2;
+$set $index arr i 77;           // array element (runtime index)
+```
+
+Only `$mut`-declared variables and fields may appear on the LHS of `$set`. Assigning to a `$const` binding is a compile error.
 
 ### 5.3 `$ref` — Reference (Relative Offset)
 
 ```
-$decl r $ref x;
+$decl r $ref <lvalue>
 ```
 
 `$ref` is not a pointer — it is a **relative offset** to an existing storage location. It has fixed size regardless of the referent's type, which enables recursive type definitions.
 
-`$ref` is transparent in expressions — using `r` in an expression reads/writes through to `x`'s storage. The `$ref` keyword is only needed when explicitly bridging to the reference itself.
+`$ref` is transparent in expressions — using `r` in an expression reads/writes through to the target's storage. The `$ref` keyword is only needed when explicitly bridging to the reference itself.
 
 **As a local alias**: compile-time only, no runtime storage allocated.
 
@@ -229,6 +276,20 @@ $decl r $ref x;
 r + 1;      // transparent — reads x, computes 6
 r = 10;     // transparent — writes 10 to x's storage
 ```
+
+**General lvalue operand**: `$ref` accepts any addressable lvalue — not just plain identifiers:
+
+```
+$decl arr $array i32 4;
+$decl elem $ref $index arr 2;     // reference to arr[2]
+
+$decl p { $decl x $mut 0; };
+$decl fx $ref $member p x;        // reference to field x of block p
+
+$decl circ $ref $as s Circle;     // reference reinterpreted as Circle (no extra offset)
+```
+
+Compound lvalue offsets are resolved entirely at **compile time** — no additional address computation is emitted at runtime.
 
 **Lifetime rule**: a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. The compiler does not enforce this in v1.0 — it is a programmer responsibility. Storing a `$ref` to a local that is subsequently popped results in undefined behavior.
 
@@ -318,8 +379,9 @@ Arguments sit below `frame_base` in declaration order, 8 bytes each. The last ar
 |---|---|---|
 | `$const expr` | immutable storage | no |
 | `$mut expr` | mutable storage | yes |
-| `$ref name` | alias to existing storage | depends on referent |
-| `$new block` | fresh instance via re-execution | depends on fields |
+| `$ref lvalue` | alias to any addressable lvalue | depends on referent |
+| `$new T` | fresh instance via re-execution of block T | depends on fields |
+| `$new T init` | instantiate T with initializer (any type) | depends on fields |
 | `$import "file"` | reference to external file scope | no |
 | `$extern expr` | native C symbol binding | no |
 | bare `expr` | sugar for `$const expr` | no |
@@ -449,6 +511,15 @@ $union CStr Slice
 
 Tag assignment happens at the call site or assignment site when a concrete value enters a union — the compiler inserts the tag implicitly. If the concrete type matches multiple variants, first-match wins (consistent with grammar rule ordering).
 
+**Manual tag write via `$set`**: the `$$tag` field can also be set explicitly using `$set` with a `$member` compound LHS:
+
+```
+$decl s Shape;
+$set $member s $$tag 1;    // mark s as Rect (variant 1)
+```
+
+This bypasses type checking — the programmer is responsible for consistency between tag and data. Prefer `$new Shape variant` for safe construction.
+
 ### 7.4 Nested `$union` is Flat
 
 Nested `$union` expressions are flattened:
@@ -543,24 +614,40 @@ Array subtyping is exact match only — no prefix subtyping for arrays in V1. Th
 
 ### 8.2 Element Access via `$index`
 
-`$index array i` reads element `i` from the array. In V1 the index must be a compile-time integer literal:
+`$index array i` reads element `i` from the array. Both literal and runtime indices are supported:
 
 ```
 $decl buf $array i32 4;
-$decl first $index buf 0;   // reads buf[0] (type: i32)
+$decl first $index buf 0;   // reads buf[0] — literal index: offset computed at compile time
 $decl third $index buf 2;   // reads buf[2]
+
+$decl i $mut 1;
+$decl elem $index buf i;    // reads buf[i] — runtime index: offset computed at runtime
 ```
 
-The byte offset is computed at compile time: `offset = array_frame_offset + i * element_size`.
+For **literal indices**, the byte offset is computed entirely at compile time: `offset = array_frame_offset + i * element_size`.
 
-Dynamic indexing (non-literal index) is reserved for V2.
+For **runtime indices**, the VM computes the address at runtime: `base_address + index * element_size`. Out-of-bounds checking is not performed in V1 — the programmer is responsible for ensuring valid indices.
 
-### 8.3 Summary Table
+### 8.3 Element Assignment via `$set $index`
+
+Array elements can be assigned via `$set` with a compound `$index` LHS:
+
+```
+$decl buf $array i32 4;
+$set $index buf 2 99;       // buf[2] = 99 (literal index)
+
+$decl i 1;
+$set $index buf i 77;       // buf[i] = 77 (runtime index)
+```
+
+### 8.4 Summary Table
 
 | Expression | Meaning | Type |
 |---|---|---|
 | `$decl buf $array T N` | allocate `N` elements of type `T` | `[T * N]` |
-| `$index buf i` | read element `i` (static literal only in V1) | `T` |
+| `$index buf i` | read element `i` (literal or runtime) | `T` |
+| `$set $index buf i val` | write `val` to element `i` | — |
 
 ---
 
@@ -765,7 +852,22 @@ $if $eq x 0 {
 
 - Condition must be `bool` (result of a comparison) or `i32` (truthy if non-zero).
 - The two forms accept any expression as branches — including blocks `{}` or bare values.
-- Both branches should produce compatible types when the `$if` result is used as a value.
+
+**Type of `$if`**: the result type is determined by joining the branch types:
+
+| Branches | Result type |
+|---|---|
+| No else branch | `void` — `$if` is used for side effects only |
+| Then = `$never` | Type of the else branch |
+| Else = `$never` | Type of the then branch |
+| Both same type | That type |
+| Different types | `$union(then_type, else_type)` |
+
+```
+$decl x $if cond 10 20;          // int — both branches int
+$decl y $if cond 10 { $break; }; // int — else is $never, y : int
+$if cond { $set x 1; };          // void — no else branch
+```
 
 ### 11.2 `$while` — Loop
 
@@ -785,6 +887,7 @@ $while $lt i 10 {
 - Condition is re-evaluated before every iteration.
 - `<body>` is a block expression `{}` (or any single expression).
 - Variables declared inside the body are re-initialized on each iteration; they are not accessible after the loop exits.
+- **Type of `$while`**: always `void`. `$while` is always used for its side effects; it never produces a meaningful value.
 
 **Known limitation**: `$break`/`$continue` nested inside a sub-block within the body (with its own scope allocation) bypass the sub-block's `LEAVE` instruction. Avoid nesting `$break`/`$continue` inside inner `{}` blocks within a while body until scope unwinding is implemented.
 

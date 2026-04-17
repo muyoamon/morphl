@@ -822,6 +822,121 @@ static void test_e2e_as_identity() {
     printf("PASS test_e2e_as_identity\n");
 }
 
+/* Phase 2: block field initialization via inline block literal
+ * $decl p { $decl x 42; $decl y 7; } stores fields directly into p's frame slot. */
+static void test_e2e_block_field_init() {
+    const char* src =
+        "$decl p { $decl x 42; $decl y 7; };\n"
+        "$exit $member p x;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 42);
+    printf("PASS test_e2e_block_field_init\n");
+}
+
+/* Phase 2: second field of block is also correctly initialized */
+static void test_e2e_block_field_init_second() {
+    const char* src =
+        "$decl p { $decl x 10; $decl y 30; };\n"
+        "$exit $member p y;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 30);
+    printf("PASS test_e2e_block_field_init_second\n");
+}
+
+/* Phase 3: $ref on a $member lvalue — read through the alias */
+static void test_e2e_ref_member() {
+    const char* src =
+        "$decl p { $decl x 99; $decl y 0; };\n"
+        "$decl rx $ref $member p x;\n"
+        "$exit rx;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 99);
+    printf("PASS test_e2e_ref_member\n");
+}
+
+/* Phase 3: $ref on an array element ($index literal) */
+static void test_e2e_ref_index() {
+    const char* src =
+        "$decl arr $array i32 3;\n"
+        "$set $index arr 1 77;\n"
+        "$decl r $ref $index arr 1;\n"
+        "$exit r;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 77);
+    printf("PASS test_e2e_ref_index\n");
+}
+
+/* Phase 4: $set with $member LHS — block named field */
+static void test_e2e_set_member_field() {
+    const char* src =
+        "$decl p { $decl x $mut 0; $decl y $mut 0; };\n"
+        "$set $member p x 42;\n"
+        "$exit $member p x;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 42);
+    printf("PASS test_e2e_set_member_field\n");
+}
+
+/* Phase 4: $set with $member $$tag on a union */
+static void test_e2e_set_union_tag() {
+    const char* src =
+        "$decl Circle { $decl r $mut 0; };\n"
+        "$decl Rect   { $decl w $mut 0; $decl h $mut 0; };\n"
+        "$decl Shape $union Circle Rect;\n"
+        "$decl s Shape;\n"
+        "$set $member s $$tag 1;\n"
+        "$exit $member s $$tag;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 1);
+    printf("PASS test_e2e_set_union_tag\n");
+}
+
+/* Phase 4: $set with $index LHS (literal index) */
+static void test_e2e_set_index() {
+    const char* src =
+        "$decl arr $array i32 4;\n"
+        "$set $index arr 2 77;\n"
+        "$exit $index arr 2;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 77);
+    printf("PASS test_e2e_set_index\n");
+}
+
+/* Phase 5: runtime (variable) $index */
+static void test_e2e_runtime_index() {
+    const char* src =
+        "$decl arr $array i32 4;\n"
+        "$set $index arr 0 10;\n"
+        "$set $index arr 1 20;\n"
+        "$set $index arr 2 30;\n"
+        "$decl i 2;\n"
+        "$exit $index arr i;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 30);
+    printf("PASS test_e2e_runtime_index\n");
+}
+
+/* Phase 6: $new scalar (2-arg form) — $new 0 55 copies 55 into a new int slot */
+static void test_e2e_new_scalar() {
+    const char* src =
+        "$decl x $new 0 55;\n"
+        "$exit x;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 55);
+    printf("PASS test_e2e_new_scalar\n");
+}
+
+/* Phase 6: $new block with positional group initializer — field override */
+static void test_e2e_new_union_tag() {
+    const char* src =
+        "$decl Circle { $decl r 0; };\n"
+        "$decl c $new Circle (7);\n"
+        "$exit $member c r;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 7);
+    printf("PASS test_e2e_new_union_tag\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -875,6 +990,16 @@ int main(void) {
     test_e2e_union_named_type();
     test_e2e_union_data_first_layout();
     test_e2e_as_identity();
+    test_e2e_block_field_init();
+    test_e2e_block_field_init_second();
+    test_e2e_ref_member();
+    test_e2e_ref_index();
+    test_e2e_set_member_field();
+    test_e2e_set_union_tag();
+    test_e2e_set_index();
+    test_e2e_runtime_index();
+    test_e2e_new_scalar();
+    test_e2e_new_union_tag();
     printf("All integration tests passed.\n");
     return 0;
 }

@@ -1110,9 +1110,105 @@ static void test_union_type() {
   printf("  PASS test_union_type\n");
 }
 
+// ============================================================================
+// Test: control-flow type inference ($if, $while, $break, $continue)
+// ============================================================================
+static void test_control_flow_inference() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  // $if with no else → void
+  {
+    Sym if_sym = interns_intern(interns, str_from("$if", 3));
+    MorphlType* bool_t = morphl_type_bool(&arena);
+    MorphlType* int_t  = morphl_type_int(&arena);
+    MorphlType* args[2] = { bool_t, int_t };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 2);
+    assert(result && result->kind == MORPHL_TYPE_VOID);
+  }
+
+  // $if with matching branches → that type
+  {
+    Sym if_sym = interns_intern(interns, str_from("$if", 3));
+    MorphlType* bool_t = morphl_type_bool(&arena);
+    MorphlType* int_t  = morphl_type_int(&arena);
+    MorphlType* args[3] = { bool_t, int_t, morphl_type_int(&arena) };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
+    assert(result && result->kind == MORPHL_TYPE_INT);
+  }
+
+  // $if with $never then-branch → else type
+  {
+    Sym if_sym = interns_intern(interns, str_from("$if", 3));
+    MorphlType* bool_t  = morphl_type_bool(&arena);
+    MorphlType* never_t = morphl_type_never(&arena);
+    MorphlType* float_t = morphl_type_float(&arena);
+    MorphlType* args[3] = { bool_t, never_t, float_t };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
+    assert(result && result->kind == MORPHL_TYPE_FLOAT);
+  }
+
+  // $if with $never else-branch → then type
+  {
+    Sym if_sym = interns_intern(interns, str_from("$if", 3));
+    MorphlType* bool_t  = morphl_type_bool(&arena);
+    MorphlType* int_t   = morphl_type_int(&arena);
+    MorphlType* never_t = morphl_type_never(&arena);
+    MorphlType* args[3] = { bool_t, int_t, never_t };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
+    assert(result && result->kind == MORPHL_TYPE_INT);
+  }
+
+  // $if with divergent branches → union
+  {
+    Sym if_sym = interns_intern(interns, str_from("$if", 3));
+    MorphlType* bool_t  = morphl_type_bool(&arena);
+    MorphlType* int_t   = morphl_type_int(&arena);
+    MorphlType* float_t = morphl_type_float(&arena);
+    MorphlType* args[3] = { bool_t, int_t, float_t };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
+    assert(result && result->kind == MORPHL_TYPE_UNION);
+    assert(result->data.union_t.variant_count == 2);
+  }
+
+  // $while → void
+  {
+    Sym while_sym = interns_intern(interns, str_from("$while", 6));
+    MorphlType* bool_t = morphl_type_bool(&arena);
+    MorphlType* void_t = morphl_type_void(&arena);
+    MorphlType* args[2] = { bool_t, void_t };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, while_sym, args, 2);
+    assert(result && result->kind == MORPHL_TYPE_VOID);
+  }
+
+  // $break → $never
+  {
+    Sym break_sym = interns_intern(interns, str_from("$break", 6));
+    MorphlType* args[0] = {};
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, break_sym, args, 0);
+    assert(result && result->kind == MORPHL_TYPE_NEVER);
+  }
+
+  // $continue → $never
+  {
+    Sym cont_sym = interns_intern(interns, str_from("$continue", 9));
+    MorphlType* args[0] = {};
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, cont_sym, args, 0);
+    assert(result && result->kind == MORPHL_TYPE_NEVER);
+  }
+
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("  PASS test_control_flow_inference\n");
+}
+
 int main() {
   printf("Running typing system tests...\n\n");
-  
+
   test_type_constructors();
   test_type_equality();
   test_type_context_scopes();
@@ -1137,6 +1233,7 @@ int main() {
   test_impl_type_mismatch_error();
   test_array_type();
   test_union_type();
+  test_control_flow_inference();
   // Note: Recursion is tested via examples/test_recursion.mpl
   // Unit testing recursion requires full parser integration
 

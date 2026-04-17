@@ -123,10 +123,13 @@ typedef struct {
     Str             name;    /* name of the variable holding this function */
 } DeferredFunc;
 
-/* Compile-time alias: $decl r $ref x makes 'r' an alias for 'x' (no frame storage) */
+/* Compile-time alias: $decl r $ref x makes 'r' an alias for 'x' (no frame storage).
+ * extra_offset is added to the target's frame offset when resolving; used for $ref
+ * of compound lvalues like $member and $index where the offset is statically known. */
 typedef struct {
-    Str alias;   /* the alias name (e.g. "r") */
-    Str target;  /* the target name (e.g. "x") */
+    Str alias;
+    Str target;
+    ptrdiff_t extra_offset;
 } RefAlias;
 
 /* Loop context: tracks jump targets for $break/$continue inside $while bodies */
@@ -300,13 +303,33 @@ static bool patches_apply(VmEmitter* e) {
 
 /* ── ref alias helpers ──────────────────────────────────────────────────── */
 
-static bool alias_add(VmEmitter* e, Str alias, Str target) {
+static bool alias_add(VmEmitter* e, Str alias, Str target, ptrdiff_t extra_offset) {
     if (e->alias_count >= e->alias_capacity) {
         if (!vm_grow((void**)&e->ref_aliases, &e->alias_capacity,
                      sizeof(RefAlias), e->alias_count + 1)) return false;
     }
-    e->ref_aliases[e->alias_count++] = (RefAlias){ alias, target };
+    e->ref_aliases[e->alias_count++] = (RefAlias){ alias, target, extra_offset };
     return true;
+}
+
+/* Resolve an alias chain; also accumulate any extra byte offsets stored in alias entries.
+ * Returns the final resolved name and sets *out_extra to the total accumulated offset. */
+static Str alias_resolve_full(VmEmitter* e, Str name, ptrdiff_t* out_extra) {
+    *out_extra = 0;
+    for (int depth = 0; depth < 64; depth++) {
+        bool found = false;
+        for (size_t i = e->alias_count; i > 0; i--) {
+            RefAlias* a = &e->ref_aliases[i - 1];
+            if (str_eq(a->alias, name)) {
+                name = a->target;
+                *out_extra += a->extra_offset;
+                found = true;
+                break;
+            }
+        }
+        if (!found) break;
+    }
+    return name;
 }
 
 /* Resolve an alias chain to its final target name (handles chained $ref aliases) */
@@ -474,19 +497,21 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
     /* ── identifiers (as r-values) ── */
     case AST_IDENT: {
-        /* resolve compile-time $ref aliases first */
-        Str resolved = alias_resolve(e, node->value);
-        ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, resolved);
-        if (off == PTRDIFF_MAX) {
+        /* resolve compile-time $ref aliases; accumulate any extra byte offset */
+        ptrdiff_t extra = 0;
+        Str resolved = alias_resolve_full(e, node->value, &extra);
+        ptrdiff_t base_off = morphl_backend_find_offset(&e->frameInfo, resolved);
+        if (base_off == PTRDIFF_MAX) {
             fprintf(stderr, "vm emitter: undefined identifier '%.*s' at %s:%zu:%zu\n",
                     (int)node->value.len, node->value.ptr,
                     node->filename ? node->filename : "?", node->row, node->col);
             return false;
         }
+        ptrdiff_t off = base_off + extra;
         /* For alias refs, fully unwrap through the $ref layer to get the target type.
          * For normal idents (including $ref struct fields), use normal unwrap. */
         const MorphlType* t;
-        if (!str_eq(resolved, node->value)) {
+        if (!str_eq(resolved, node->value) || extra != 0) {
             /* alias: strip ALL ref layers to reach actual stored type */
             t = node->type;
             while (t && t->kind == MORPHL_TYPE_REF) t = t->data.ref.target;
@@ -511,16 +536,78 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
         Str name = name_node->value;
 
-        /* handle compile-time $ref alias BEFORE any frame registration */
+        /* handle compile-time $ref alias BEFORE any frame registration.
+         * Supports any lvalue: identifier, $member, $index (literal), $as. */
         if (rhs && rhs->kind == AST_BUILTIN) {
             Str op_name = (e->interns && rhs->op)
                           ? interns_lookup(e->interns, rhs->op)
                           : rhs->value;
             if (op_name.len == 4 && memcmp(op_name.ptr, "$ref", 4) == 0 &&
-                rhs->child_count > 0 && rhs->children[0] &&
-                rhs->children[0]->kind == AST_IDENT) {
-                /* $decl r $ref x — compile-time alias, no frame storage allocated */
-                return alias_add(e, name, rhs->children[0]->value);
+                rhs->child_count > 0 && rhs->children[0]) {
+                struct AstNode* lval = rhs->children[0];
+
+                /* $ref x — simple ident alias (current behavior) */
+                if (lval->kind == AST_IDENT) {
+                    return alias_add(e, name, lval->value, 0);
+                }
+
+                /* $ref $member s field — alias with compile-time field offset */
+                if (lval->kind == AST_BUILTIN && lval->child_count >= 2) {
+                    Str lop = (e->interns && lval->op)
+                              ? interns_lookup(e->interns, lval->op) : lval->value;
+                    if (lop.len == 7 && memcmp(lop.ptr, "$member", 7) == 0) {
+                        struct AstNode* tgt = lval->children[0];
+                        struct AstNode* fnd = lval->children[1];
+                        if (tgt && tgt->kind == AST_IDENT && fnd) {
+                            Str fname = fnd->value;
+                            if (!fname.ptr && e->interns && fnd->op)
+                                fname = interns_lookup(e->interns, fnd->op);
+                            const MorphlType* ttype = unwrap_ref(tgt->type);
+                            if (ttype && ttype->kind == MORPHL_TYPE_BLOCK) {
+                                size_t foff_bytes = 0;
+                                for (size_t fi = 0; fi < ttype->data.block.field_count; fi++) {
+                                    Str fn2 = {NULL, 0};
+                                    if (e->interns && ttype->data.block.field_names[fi])
+                                        fn2 = interns_lookup(e->interns, ttype->data.block.field_names[fi]);
+                                    if (str_eq(fn2, fname)) break;
+                                    foff_bytes += type_frame_size(unwrap_ref(ttype->data.block.field_types[fi]));
+                                }
+                                return alias_add(e, name, tgt->value, (ptrdiff_t)foff_bytes);
+                            }
+                            /* union $$data or $$tag */
+                            if (ttype && ttype->kind == MORPHL_TYPE_UNION) {
+                                bool is_data = fname.len == 6 && memcmp(fname.ptr, "$$data", 6) == 0;
+                                bool is_tag  = fname.len == 5 && memcmp(fname.ptr, "$$tag",  5) == 0;
+                                ptrdiff_t uoff = 0;
+                                if (is_tag) uoff = (ptrdiff_t)(ttype->size - 8);
+                                if (is_data || is_tag) return alias_add(e, name, tgt->value, uoff);
+                            }
+                        }
+                    }
+                    /* $ref $index arr i (literal) */
+                    if (lop.len == 6 && memcmp(lop.ptr, "$index", 6) == 0) {
+                        struct AstNode* arr = lval->children[0];
+                        struct AstNode* idx = lval->children[1];
+                        if (arr && arr->kind == AST_IDENT && idx && idx->kind == AST_LITERAL) {
+                            const MorphlType* at = unwrap_ref(arr->type);
+                            if (at && at->kind == MORPHL_TYPE_ARRAY) {
+                                char ibuf[32];
+                                size_t ilen = idx->value.len < sizeof(ibuf)-1 ? idx->value.len : sizeof(ibuf)-1;
+                                memcpy(ibuf, idx->value.ptr, ilen); ibuf[ilen] = '\0';
+                                long long iv = strtoll(ibuf, NULL, 10);
+                                ptrdiff_t eoff = (ptrdiff_t)((long long)type_frame_size(at->data.array.elem_type) * iv);
+                                return alias_add(e, name, arr->value, eoff);
+                            }
+                        }
+                    }
+                    /* $ref $as expr TargetType — reinterpret alias, offset 0 */
+                    if (lop.len == 3 && memcmp(lop.ptr, "$as", 3) == 0 && lval->children[0]) {
+                        struct AstNode* src = lval->children[0];
+                        if (src->kind == AST_IDENT) return alias_add(e, name, src->value, 0);
+                    }
+                }
+                fprintf(stderr, "vm emitter: $ref: unsupported lvalue kind\n");
+                return false;
             }
         }
 
@@ -639,6 +726,143 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             if (rhs_t && (rhs_t->kind == MORPHL_TYPE_UNION || rhs_t->kind == MORPHL_TYPE_ARRAY)) {
                 /* type-alias declaration: frame is zero-initialized, nothing more to do */
                 return true;
+            }
+        }
+
+        /* Block field initialization: `$decl p { $decl x 42; $decl y 7; }`
+         * Walk the inline block's $decl children and store each field directly
+         * into the target frame slot, bypassing ENTER/LEAVE sub-scope. */
+        if (t && t->kind == MORPHL_TYPE_BLOCK && rhs && rhs->kind == AST_BLOCK) {
+            for (size_t ci = 0; ci < rhs->child_count; ci++) {
+                struct AstNode* child = rhs->children[ci];
+                if (!child || child->kind != AST_DECL || child->child_count < 2) continue;
+                struct AstNode* fn = child->children[0];
+                struct AstNode* fv = child->children[1];
+                if (!fn || !fv) continue;
+                Str field_name = fn->value;
+                if (!field_name.ptr && e->interns && fn->op)
+                    field_name = interns_lookup(e->interns, fn->op);
+                /* find the field offset within the block type */
+                size_t field_off = 0;
+                bool found = false;
+                const MorphlType* field_type = NULL;
+                for (size_t fi = 0; fi < t->data.block.field_count; fi++) {
+                    Str fname = {NULL, 0};
+                    if (e->interns && t->data.block.field_names[fi])
+                        fname = interns_lookup(e->interns, t->data.block.field_names[fi]);
+                    if (str_eq(fname, field_name)) {
+                        field_type = t->data.block.field_types[fi];
+                        found = true;
+                        break;
+                    }
+                    field_off += type_frame_size(unwrap_ref(t->data.block.field_types[fi]));
+                }
+                if (!found || !field_type) continue;
+                if (!emit_node(e, fv)) return false;
+                uint8_t sop = store_op(unwrap_ref(field_type));
+                if (sop != 0xFF) {
+                    if (!emit_op_i32(e, sop, (int32_t)(off + field_off))) return false;
+                }
+            }
+            return true;
+        }
+
+        /* 2-arg $new: `$decl var ($new TypeExpr init)` — universal instantiation.
+         * Applies init to the variable's frame slot; for scalar types this is a
+         * straightforward store; for block types it is a field override (body
+         * execution is V2); for union types the variant tag is injected by the compiler. */
+        if (rhs && rhs->kind == AST_BUILTIN && rhs->child_count == 2 && e->interns && rhs->op) {
+            Str new_op = interns_lookup(e->interns, rhs->op);
+            if (new_op.len == 4 && memcmp(new_op.ptr, "$new", 4) == 0) {
+                struct AstNode* init_node = rhs->children[1];
+                /* Scalar types: emit init value and store */
+                if (t && (t->kind == MORPHL_TYPE_INT || t->kind == MORPHL_TYPE_FLOAT ||
+                          t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_STRING)) {
+                    if (!emit_node(e, init_node)) return false;
+                    return emit_op_i32(e, store_op(t), (int32_t)off);
+                }
+                /* Block type: apply positional or named field overrides */
+                if (t && t->kind == MORPHL_TYPE_BLOCK) {
+                    if (init_node->kind == AST_GROUP) {
+                        size_t field_byte_off = 0;
+                        for (size_t fi = 0; fi < t->data.block.field_count && fi < init_node->child_count; fi++) {
+                            const MorphlType* ft = unwrap_ref(t->data.block.field_types[fi]);
+                            struct AstNode* gv = init_node->children[fi];
+                            if (gv) {
+                                if (!emit_node(e, gv)) return false;
+                                uint8_t sop = store_op(ft);
+                                if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)(off + field_byte_off))) return false;
+                            }
+                            field_byte_off += type_frame_size(ft);
+                        }
+                    } else if (init_node->kind == AST_BLOCK) {
+                        for (size_t ci = 0; ci < init_node->child_count; ci++) {
+                            struct AstNode* child = init_node->children[ci];
+                            if (!child || child->kind != AST_DECL || child->child_count < 2) continue;
+                            struct AstNode* fn = child->children[0];
+                            struct AstNode* fv = child->children[1];
+                            if (!fn || !fv) continue;
+                            Str fname = fn->value;
+                            if (!fname.ptr && e->interns && fn->op) fname = interns_lookup(e->interns, fn->op);
+                            size_t foff2 = 0;
+                            const MorphlType* ftype2 = NULL;
+                            for (size_t fi = 0; fi < t->data.block.field_count; fi++) {
+                                Str fn2 = {NULL, 0};
+                                if (e->interns && t->data.block.field_names[fi])
+                                    fn2 = interns_lookup(e->interns, t->data.block.field_names[fi]);
+                                if (str_eq(fn2, fname)) { ftype2 = t->data.block.field_types[fi]; break; }
+                                foff2 += type_frame_size(unwrap_ref(t->data.block.field_types[fi]));
+                            }
+                            if (!ftype2) continue;
+                            if (!emit_node(e, fv)) return false;
+                            uint8_t sop = store_op(unwrap_ref(ftype2));
+                            if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)(off + foff2))) return false;
+                        }
+                    }
+                    return true;
+                }
+                /* Union type: find matching variant by structural subtype, inject tag */
+                if (t && t->kind == MORPHL_TYPE_UNION) {
+                    const MorphlType* init_t = init_node->type ? unwrap_ref(init_node->type) : NULL;
+                    int tag = -1;
+                    const MorphlType* variant_t = NULL;
+                    for (size_t vi = 0; vi < t->data.union_t.variant_count; vi++) {
+                        if (morphl_type_is_subtype(init_t, t->data.union_t.variant_types[vi])) {
+                            tag = (int)vi;
+                            variant_t = t->data.union_t.variant_types[vi];
+                            break;
+                        }
+                    }
+                    if (tag < 0) {
+                        fprintf(stderr, "vm emitter: $new union: init type does not match any variant\n");
+                        return false;
+                    }
+                    /* Store variant fields at offset 0 (data-first layout) */
+                    if (variant_t && variant_t->kind == MORPHL_TYPE_BLOCK &&
+                        init_node->kind == AST_GROUP) {
+                        size_t field_byte_off = 0;
+                        for (size_t fi = 0; fi < variant_t->data.block.field_count && fi < init_node->child_count; fi++) {
+                            const MorphlType* ft = unwrap_ref(variant_t->data.block.field_types[fi]);
+                            struct AstNode* gv = init_node->children[fi];
+                            if (gv) {
+                                if (!emit_node(e, gv)) return false;
+                                uint8_t sop = store_op(ft);
+                                if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)(off + field_byte_off))) return false;
+                            }
+                            field_byte_off += type_frame_size(ft);
+                        }
+                    } else if (init_t) {
+                        /* Single-value init (scalar variant) */
+                        if (!emit_node(e, init_node)) return false;
+                        uint8_t sop = store_op(init_t);
+                        if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)off)) return false;
+                    }
+                    /* Inject $$tag at data-first layout: offset = union_size - 8 */
+                    ptrdiff_t tag_off = off + (ptrdiff_t)(t->size - 8);
+                    if (!emit_iconst(e, (int64_t)tag)) return false;
+                    return emit_op_i32(e, VM_OP_ISTORE, (int32_t)tag_off);
+                }
+                /* For unrecognized types, fall through to regular 1-arg $new (emit RHS) */
             }
         }
 
@@ -794,15 +1018,111 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (node->child_count < 2) return false;
         struct AstNode* target = node->children[0];
         struct AstNode* value  = node->children[1];
-        if (!emit_node(e, value)) return false;
+
+        /* compound LHS: $member or $index */
+        if (target->kind == AST_BUILTIN && e->interns && target->op && target->child_count >= 2) {
+            Str tlop = interns_lookup(e->interns, target->op);
+
+            /* $set ($member s field) rhs */
+            if (tlop.len == 7 && memcmp(tlop.ptr, "$member", 7) == 0) {
+                struct AstNode* tgt = target->children[0];
+                struct AstNode* fnd = target->children[1];
+                if (!tgt || !fnd) return false;
+                Str fname = fnd->value;
+                if (!fname.ptr && e->interns && fnd->op) fname = interns_lookup(e->interns, fnd->op);
+                const MorphlType* ttype = unwrap_ref(tgt->type);
+                if (!ttype) { fprintf(stderr, "vm emitter: $set $member: cannot resolve target type\n"); return false; }
+                /* union $$tag / $$data */
+                if (ttype->kind == MORPHL_TYPE_UNION) {
+                    bool is_tag  = fname.len == 5 && memcmp(fname.ptr, "$$tag",  5) == 0;
+                    bool is_data = fname.len == 6 && memcmp(fname.ptr, "$$data", 6) == 0;
+                    if (!is_tag && !is_data) {
+                        fprintf(stderr, "vm emitter: $set $member: union only supports $$tag and $$data\n");
+                        return false;
+                    }
+                    if (tgt->kind != AST_IDENT) return false;
+                    ptrdiff_t extra = 0;
+                    Str tname = alias_resolve_full(e, tgt->value, &extra);
+                    ptrdiff_t toff = morphl_backend_find_offset(&e->frameInfo, tname) + extra;
+                    if (toff == PTRDIFF_MAX + extra) return false;
+                    if (!emit_node(e, value)) return false;
+                    ptrdiff_t foff = is_tag ? toff + (ptrdiff_t)(ttype->size - 8) : toff;
+                    return emit_op_i32(e, VM_OP_ISTORE, (int32_t)foff);
+                }
+                /* block named field */
+                if (ttype->kind == MORPHL_TYPE_BLOCK) {
+                    size_t field_off = 0;
+                    bool found = false;
+                    const MorphlType* field_type = NULL;
+                    for (size_t fi = 0; fi < ttype->data.block.field_count; fi++) {
+                        Str fn2 = {NULL, 0};
+                        if (e->interns && ttype->data.block.field_names[fi])
+                            fn2 = interns_lookup(e->interns, ttype->data.block.field_names[fi]);
+                        if (str_eq(fn2, fname)) { field_type = ttype->data.block.field_types[fi]; found = true; break; }
+                        field_off += type_frame_size(unwrap_ref(ttype->data.block.field_types[fi]));
+                    }
+                    if (!found || !field_type) {
+                        fprintf(stderr, "vm emitter: $set $member: field '%.*s' not found\n",
+                                (int)fname.len, fname.ptr);
+                        return false;
+                    }
+                    if (tgt->kind != AST_IDENT) return false;
+                    ptrdiff_t extra = 0;
+                    Str tname = alias_resolve_full(e, tgt->value, &extra);
+                    ptrdiff_t toff = morphl_backend_find_offset(&e->frameInfo, tname) + extra;
+                    if (!emit_node(e, value)) return false;
+                    uint8_t sop = store_op(unwrap_ref(field_type));
+                    if (sop == 0xFF) return false;
+                    return emit_op_i32(e, sop, (int32_t)(toff + field_off));
+                }
+            }
+
+            /* $set ($index arr i) rhs */
+            if (tlop.len == 6 && memcmp(tlop.ptr, "$index", 6) == 0) {
+                struct AstNode* arr = target->children[0];
+                struct AstNode* idx = target->children[1];
+                if (!arr || arr->kind != AST_IDENT) return false;
+                const MorphlType* at = unwrap_ref(arr->type);
+                if (!at || at->kind != MORPHL_TYPE_ARRAY) return false;
+                const MorphlType* et = at->data.array.elem_type;
+                size_t esz = type_frame_size(et);
+                ptrdiff_t extra = 0;
+                Str aname = alias_resolve_full(e, arr->value, &extra);
+                ptrdiff_t arr_off = morphl_backend_find_offset(&e->frameInfo, aname) + extra;
+                uint8_t sop = store_op(et);
+                if (sop == 0xFF) return false;
+                /* literal index: emit value, then ISTORE/FSTORE at computed offset */
+                if (idx->kind == AST_LITERAL) {
+                    char ibuf[32];
+                    size_t ilen = idx->value.len < sizeof(ibuf)-1 ? idx->value.len : sizeof(ibuf)-1;
+                    memcpy(ibuf, idx->value.ptr, ilen); ibuf[ilen] = '\0';
+                    long long iv = strtoll(ibuf, NULL, 10);
+                    if (!emit_node(e, value)) return false;
+                    return emit_op_i32(e, sop, (int32_t)(arr_off + iv * (long long)esz));
+                }
+                /* runtime index: compute address first (ADDREF+IMUL+IADD), then emit value,
+                 * then ASTORE 0. Stack order for ASTORE: [base, value]; off=0 because base
+                 * already incorporates the full byte offset. */
+                if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)arr_off)) return false;
+                if (!emit_node(e, idx)) return false;
+                if (!emit_iconst(e, (int64_t)esz)) return false;
+                if (!emit_op(e, VM_OP_IMUL)) return false;
+                if (!emit_op(e, VM_OP_IADD)) return false;
+                if (!emit_node(e, value)) return false;
+                return emit_op_i32(e, VM_OP_ASTORE, 0);
+            }
+        }
+
         if (target->kind != AST_IDENT) {
-            fprintf(stderr, "vm emitter: $set target must be identifier\n");
+            fprintf(stderr, "vm emitter: $set target must be identifier or compound lvalue\n");
             return false;
         }
+        if (!emit_node(e, value)) return false;
         /* resolve compile-time $ref aliases for the assignment target */
-        Str target_name = alias_resolve(e, target->value);
-        ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, target_name);
-        if (off == PTRDIFF_MAX) {
+        ptrdiff_t textra = 0;
+        Str target_name = alias_resolve_full(e, target->value, &textra);
+        ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, target_name) + textra;
+        if (off == PTRDIFF_MAX + textra) {
             fprintf(stderr, "vm emitter: undefined target '%.*s' in $set\n",
                     (int)target->value.len, target->value.ptr);
             return false;
@@ -1150,7 +1470,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return emit_node(e, src_node);
         }
 
-        /* $index array i — load element at static index i (V1: literal index only) */
+        /* $index array i — load element; supports literal and runtime (ident) index */
         if (OP_IS("$index")) {
             if (node->child_count < 2 || !node->children[0] || !node->children[1]) return false;
             struct AstNode* arr_node = node->children[0];
@@ -1161,32 +1481,16 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 fprintf(stderr, "vm emitter: $index: array operand must be an identifier\n");
                 return false;
             }
-            Str arr_name = alias_resolve(e, arr_node->value);
-            ptrdiff_t arr_off = morphl_backend_find_offset(&e->frameInfo, arr_name);
-            if (arr_off == PTRDIFF_MAX) {
+            ptrdiff_t arr_extra = 0;
+            Str arr_name = alias_resolve_full(e, arr_node->value, &arr_extra);
+            ptrdiff_t arr_off = morphl_backend_find_offset(&e->frameInfo, arr_name) + arr_extra;
+            if (arr_off == PTRDIFF_MAX + arr_extra) {
                 fprintf(stderr, "vm emitter: $index: undefined array '%.*s'\n",
                         (int)arr_name.len, arr_name.ptr);
                 return false;
             }
 
-            /* V1: index must be an integer literal */
-            if (idx_node->kind != AST_LITERAL || !idx_node->value.ptr) {
-                fprintf(stderr, "vm emitter: $index: index must be an integer literal (V1)\n");
-                return false;
-            }
-            char ibuf[32];
-            size_t ilen = idx_node->value.len < sizeof(ibuf) - 1 ? idx_node->value.len : sizeof(ibuf) - 1;
-            memcpy(ibuf, idx_node->value.ptr, ilen);
-            ibuf[ilen] = '\0';
-            char* iend = NULL;
-            long long idx_val = strtoll(ibuf, &iend, 10);
-            if (iend == ibuf) {
-                fprintf(stderr, "vm emitter: $index: invalid index literal\n");
-                return false;
-            }
-
-            /* node->type for $index is the elem_type (set by pp_action_index);
-             * we need the array type from arr_node */
+            /* get array and element types */
             const MorphlType* arr_btype = arr_node->type
                 ? (arr_node->type->kind == MORPHL_TYPE_REF && !arr_node->type->data.ref.is_ref
                    ? arr_node->type->data.ref.target : arr_node->type)
@@ -1197,14 +1501,35 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
             const MorphlType* elem_type = arr_btype->data.array.elem_type;
             size_t elem_size = type_frame_size(elem_type);
-            ptrdiff_t elem_off = arr_off + (ptrdiff_t)(idx_val * (long long)elem_size);
-
             uint8_t lop = load_op(elem_type);
             if (lop == 0xFF) {
                 fprintf(stderr, "vm emitter: $index: unsupported element type for load\n");
                 return false;
             }
-            return emit_op_i32(e, lop, (int32_t)elem_off);
+
+            /* literal index: compute offset at compile time */
+            if (idx_node->kind == AST_LITERAL && idx_node->value.ptr) {
+                char ibuf[32];
+                size_t ilen = idx_node->value.len < sizeof(ibuf) - 1 ? idx_node->value.len : sizeof(ibuf) - 1;
+                memcpy(ibuf, idx_node->value.ptr, ilen); ibuf[ilen] = '\0';
+                char* iend = NULL;
+                long long idx_val = strtoll(ibuf, &iend, 10);
+                if (iend == ibuf) {
+                    fprintf(stderr, "vm emitter: $index: invalid index literal\n");
+                    return false;
+                }
+                return emit_op_i32(e, lop, (int32_t)(arr_off + idx_val * (long long)elem_size));
+            }
+
+            /* runtime index: ADDREF base; emit index; ICONST elem_size; IMUL; IADD; ALOAD 0.
+             * After IADD the stack holds the absolute address of arr[index]; ALOAD with
+             * offset 0 loads from that exact address (not +elem_size). */
+            if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)arr_off)) return false;
+            if (!emit_node(e, idx_node)) return false;
+            if (!emit_iconst(e, (int64_t)elem_size)) return false;
+            if (!emit_op(e, VM_OP_IMUL)) return false;
+            if (!emit_op(e, VM_OP_IADD)) return false;
+            return emit_op_i32(e, VM_OP_ALOAD, 0);
         }
 
         /* $exit [expr] — exit program with given code (default 0) */

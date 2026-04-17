@@ -616,15 +616,20 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     MorphlType* then_type = arg_types[1];
-    if (arg_count == 3) {
-      MorphlType* else_type = arg_types[2];
-      if (then_type && else_type && !types_comparable(then_type, else_type)) {
-        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: then and else types are not compatible");
-        morphl_error_emit(NULL, &err);
-        return NULL;
-      }
+    MorphlType* else_type = (arg_count == 3) ? arg_types[2] : NULL;
+    /* No else branch → void */
+    if (!else_type) return morphl_type_void(ctx->arena);
+    /* One branch is $never (divergent) → return the other */
+    if (then_type && then_type->kind == MORPHL_TYPE_NEVER) return else_type;
+    if (else_type && else_type->kind == MORPHL_TYPE_NEVER) return then_type;
+    /* Same type on both branches → return it */
+    if (then_type && else_type && morphl_type_equals(then_type, else_type)) return then_type;
+    /* Different types → union */
+    if (then_type && else_type) {
+      MorphlType* variants[2] = { then_type, else_type };
+      return morphl_type_union(ctx->arena, variants, 2);
     }
-    return then_type;
+    return then_type ? then_type : else_type;
   }
 
   
@@ -780,8 +785,55 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return target_type;
   }
 
+  // $new TypeExpr [init] — instantiates any type; returns the type of TypeExpr
+  if (op_sym == interns_intern(ctx->interns, str_from("$new", 4))) {
+    if (arg_count < 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$new: expects at least 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    // The base type is the type of arg[0] (the template/type expression).
+    // For primitive templates: $new 0 55 → base = INT; for named types: $new Shape val → base = Shape's type.
+    MorphlType* base = unwrap_ref(arg_types[0]);
+    if (!base) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$new: cannot resolve base type");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    // For 2-arg form, verify init is compatible with base type
+    if (arg_count == 2 && arg_types[1]) {
+      MorphlType* init_t = unwrap_ref(arg_types[1]);
+      // For union base: init must be a variant subtype
+      if (base->kind == MORPHL_TYPE_UNION) {
+        if (!morphl_type_is_subtype(init_t, base)) {
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$new: init type is not a subtype of union");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+      }
+      // For other types: structural subtype or same type
+      else if (!morphl_type_is_subtype(init_t, base) && !morphl_type_equals(init_t, base)) {
+        // Warn but don't fail — $new is permissive (reinterpret-like)
+        MorphlError err = MORPHL_WARN_AT(node, MORPHL_E_TYPE, "$new: init type may not be compatible with base type");
+        morphl_error_emit(NULL, &err);
+      }
+    }
+    return base;
+  }
+
   // $never — bottom type
   if (op_sym == interns_intern(ctx->interns, str_from("$never", 6))) {
+    return morphl_type_never(ctx->arena);
+  }
+
+  // $while cond body — loop expression; always produces void
+  if (op_sym == interns_intern(ctx->interns, str_from("$while", 6))) {
+    return morphl_type_void(ctx->arena);
+  }
+
+  // $break / $continue — divergent control flow; type is $never (bottom)
+  if (op_sym == interns_intern(ctx->interns, str_from("$break", 6)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$continue", 9))) {
     return morphl_type_never(ctx->arena);
   }
 
