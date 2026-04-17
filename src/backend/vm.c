@@ -12,6 +12,7 @@
  *   [Code Section]   u32 code_len; then code_len bytes
  */
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +24,36 @@
 #include "backend/vm.h"
 #include "typing/inference.h"
 #include "typing/typing.h"
+#include "util/error.h"
 #include "util/util.h"
+
+/* ── diagnostic helpers ──────────────────────────────────────────────────── */
+
+/* Build a MorphlSpan from an AstNode's location fields (NULL-safe). */
+static MorphlSpan vm_span_from_node(const AstNode* node) {
+    if (!node) return morphl_span_unknown();
+    return morphl_span_from_loc(node->filename, node->row, node->col);
+}
+
+/* Emit a compiler diagnostic through the error system with optional source span. */
+static void vm_diag(MorphlSeverity sev, const AstNode* node,
+                    MorphlErrCode code, const char* fmt, ...)
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((format(printf, 4, 5)))
+#endif
+;
+static void vm_diag(MorphlSeverity sev, const AstNode* node,
+                    MorphlErrCode code, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    MorphlError err = morphl_error_makev(code, sev, vm_span_from_node(node),
+                                         __FILE__, __LINE__, fmt, ap);
+    va_end(ap);
+    morphl_error_emit(NULL, &err);
+}
+
+#define VM_ERR(node, fmt, ...)  vm_diag(MORPHL_SEV_ERROR, (node), MORPHL_E_CODEGEN, fmt, ##__VA_ARGS__)
+#define VM_WARN(node, fmt, ...) vm_diag(MORPHL_SEV_WARN,  (node), MORPHL_E_CODEGEN, fmt, ##__VA_ARGS__)
 
 /* ── growable byte buffer ─────────────────────────────────────────────────── */
 
@@ -291,7 +321,7 @@ static bool patches_apply(VmEmitter* e) {
         if (p->label_id >= e->labels.count) return false;
         size_t target = e->labels.offsets[p->label_id];
         if (target == SIZE_MAX) {
-            fprintf(stderr, "vm emitter: unresolved label %zu\n", p->label_id);
+            VM_ERR(NULL, "unresolved label %zu", p->label_id);
             return false;
         }
         /* relative offset = target - (patch_site + 4) */
@@ -465,8 +495,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
     case AST_LITERAL: {
         const MorphlType* t = unwrap_ref(node->type);
         if (!t) {
-            fprintf(stderr, "vm emitter: literal has no type at %s:%zu:%zu\n",
-                    node->filename ? node->filename : "?", node->row, node->col);
+            VM_ERR(node, "literal has no type");
             return false;
         }
         if (t->kind == MORPHL_TYPE_FLOAT) {
@@ -502,9 +531,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         Str resolved = alias_resolve_full(e, node->value, &extra);
         ptrdiff_t base_off = morphl_backend_find_offset(&e->frameInfo, resolved);
         if (base_off == PTRDIFF_MAX) {
-            fprintf(stderr, "vm emitter: undefined identifier '%.*s' at %s:%zu:%zu\n",
-                    (int)node->value.len, node->value.ptr,
-                    node->filename ? node->filename : "?", node->row, node->col);
+            VM_ERR(node, "undefined identifier '%.*s'",
+                   (int)node->value.len, node->value.ptr);
             return false;
         }
         ptrdiff_t off = base_off + extra;
@@ -520,8 +548,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
         uint8_t op = load_op(t);
         if (op == 0xFF) {
-            fprintf(stderr, "vm emitter: cannot load type for '%.*s'\n",
-                    (int)node->value.len, node->value.ptr);
+            VM_ERR(node, "cannot load type for '%.*s'",
+                   (int)node->value.len, node->value.ptr);
             return false;
         }
         return emit_op_i32(e, op, (int32_t)off);
@@ -606,7 +634,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                         if (src->kind == AST_IDENT) return alias_add(e, name, src->value, 0);
                     }
                 }
-                fprintf(stderr, "vm emitter: $ref: unsupported lvalue kind\n");
+                VM_ERR(node, "$ref: unsupported lvalue kind");
                 return false;
             }
         }
@@ -705,7 +733,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (!fn_type || fn_type->kind != MORPHL_TYPE_FUNC ||
                     !fn_type->data.func.return_type ||
                     fn_type->data.func.return_type->kind != MORPHL_TYPE_INT) {
-                    fprintf(stderr, "vm emitter: 'main' must have return type i32, e.g. main := () => { $ret 0; };\n");
+                    VM_ERR(node, "'main' must have return type i32, e.g. main := () => { $ret 0; };");
                     return false;
                 }
                 e->main_func_fidx = fidx;
@@ -834,7 +862,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                         }
                     }
                     if (tag < 0) {
-                        fprintf(stderr, "vm emitter: $new union: init type does not match any variant\n");
+                        VM_ERR(node, "$new union: init type does not match any variant");
                         return false;
                     }
                     /* Store variant fields at offset 0 (data-first layout) */
@@ -949,8 +977,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             Str callee_name = alias_resolve(e, callee->value);
             ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, callee_name);
             if (off == PTRDIFF_MAX) {
-                fprintf(stderr, "vm emitter: undefined callee '%.*s'\n",
-                        (int)callee->value.len, callee->value.ptr);
+                VM_ERR(callee, "undefined callee '%.*s'",
+                       (int)callee->value.len, callee->value.ptr);
                 return false;
             }
             /* Use CALLF (indirect call via function index stored at frame[off]).
@@ -976,7 +1004,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
                 const MorphlType* target_btype = unwrap_ref(target->type);
                 if (!target_btype || target_btype->kind != MORPHL_TYPE_BLOCK) {
-                    fprintf(stderr, "vm emitter: $call $member: target is not a block\n");
+                    VM_ERR(node, "$call $member: target is not a block");
                     return false;
                 }
 
@@ -990,26 +1018,26 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                     field_offset += type_frame_size(unwrap_ref(target_btype->data.block.field_types[fi]));
                 }
                 if (!field_found) {
-                    fprintf(stderr, "vm emitter: $call $member: field not found\n");
+                    VM_ERR(node, "$call $member: field not found");
                     return false;
                 }
 
                 if (target->kind != AST_IDENT) {
-                    fprintf(stderr, "vm emitter: $call $member: target must be identifier\n");
+                    VM_ERR(target, "$call $member: target must be identifier");
                     return false;
                 }
                 Str target_name = alias_resolve(e, target->value);
                 ptrdiff_t target_off = morphl_backend_find_offset(&e->frameInfo, target_name);
                 if (target_off == PTRDIFF_MAX) {
-                    fprintf(stderr, "vm emitter: $call $member: undefined target '%.*s'\n",
-                            (int)target_name.len, target_name.ptr);
+                    VM_ERR(target, "$call $member: undefined target '%.*s'",
+                           (int)target_name.len, target_name.ptr);
                     return false;
                 }
                 return emit_op_i32(e, VM_OP_CALLF, (int32_t)(target_off + field_offset));
             }
         }
 
-        fprintf(stderr, "vm emitter: unsupported callee kind %d\n", callee->kind);
+        VM_ERR(callee, "unsupported callee kind %d", callee->kind);
         return false;
     }
 
@@ -1031,13 +1059,13 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 Str fname = fnd->value;
                 if (!fname.ptr && e->interns && fnd->op) fname = interns_lookup(e->interns, fnd->op);
                 const MorphlType* ttype = unwrap_ref(tgt->type);
-                if (!ttype) { fprintf(stderr, "vm emitter: $set $member: cannot resolve target type\n"); return false; }
+                if (!ttype) { VM_ERR(tgt, "$set $member: cannot resolve target type"); return false; }
                 /* union $$tag / $$data */
                 if (ttype->kind == MORPHL_TYPE_UNION) {
                     bool is_tag  = fname.len == 5 && memcmp(fname.ptr, "$$tag",  5) == 0;
                     bool is_data = fname.len == 6 && memcmp(fname.ptr, "$$data", 6) == 0;
                     if (!is_tag && !is_data) {
-                        fprintf(stderr, "vm emitter: $set $member: union only supports $$tag and $$data\n");
+                        VM_ERR(fnd, "$set $member: union only supports $$tag and $$data");
                         return false;
                     }
                     if (tgt->kind != AST_IDENT) return false;
@@ -1062,8 +1090,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                         field_off += type_frame_size(unwrap_ref(ttype->data.block.field_types[fi]));
                     }
                     if (!found || !field_type) {
-                        fprintf(stderr, "vm emitter: $set $member: field '%.*s' not found\n",
-                                (int)fname.len, fname.ptr);
+                        VM_ERR(fnd, "$set $member: field '%.*s' not found",
+                               (int)fname.len, fname.ptr);
                         return false;
                     }
                     if (tgt->kind != AST_IDENT) return false;
@@ -1114,7 +1142,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
 
         if (target->kind != AST_IDENT) {
-            fprintf(stderr, "vm emitter: $set target must be identifier or compound lvalue\n");
+            VM_ERR(target, "$set target must be identifier or compound lvalue");
             return false;
         }
         if (!emit_node(e, value)) return false;
@@ -1123,8 +1151,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         Str target_name = alias_resolve_full(e, target->value, &textra);
         ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, target_name) + textra;
         if (off == PTRDIFF_MAX + textra) {
-            fprintf(stderr, "vm emitter: undefined target '%.*s' in $set\n",
-                    (int)target->value.len, target->value.ptr);
+            VM_ERR(target, "undefined target '%.*s' in $set",
+                   (int)target->value.len, target->value.ptr);
             return false;
         }
         const MorphlType* t = unwrap_ref(value->type ? value->type : node->type);
@@ -1246,7 +1274,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             const MorphlType* raw_target_type = target->type;
             const MorphlType* target_btype = unwrap_ref(raw_target_type);
             if (!target_btype) {
-                fprintf(stderr, "vm emitter: $member: cannot resolve target type\n");
+                VM_ERR(target, "$member: cannot resolve target type");
                 return false;
             }
 
@@ -1255,18 +1283,18 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 bool is_tag  = (field_name.len == 5 && memcmp(field_name.ptr, "$$tag",  5) == 0);
                 bool is_data = (field_name.len == 6 && memcmp(field_name.ptr, "$$data", 6) == 0);
                 if (!is_tag && !is_data) {
-                    fprintf(stderr, "vm emitter: $member: union only supports $$tag and $$data\n");
+                    VM_ERR(field_nd, "$member: union only supports $$tag and $$data");
                     return false;
                 }
                 if (target->kind != AST_IDENT) {
-                    fprintf(stderr, "vm emitter: $member: union target must be an identifier\n");
+                    VM_ERR(target, "$member: union target must be an identifier");
                     return false;
                 }
                 Str tname = alias_resolve(e, target->value);
                 ptrdiff_t toff = morphl_backend_find_offset(&e->frameInfo, tname);
                 if (toff == PTRDIFF_MAX) {
-                    fprintf(stderr, "vm emitter: $member: undefined union variable '%.*s'\n",
-                            (int)tname.len, tname.ptr);
+                    VM_ERR(target, "$member: undefined union variable '%.*s'",
+                           (int)tname.len, tname.ptr);
                     return false;
                 }
                 /* Data-first layout: $$data at union_offset+0, $$tag at union_offset+max_payload_size.
@@ -1283,7 +1311,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
 
             if (target_btype->kind != MORPHL_TYPE_BLOCK) {
-                fprintf(stderr, "vm emitter: $member: target is not a block or union type\n");
+                VM_ERR(target, "$member: target is not a block or union type");
                 return false;
             }
 
@@ -1304,8 +1332,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 field_offset += type_frame_size(unwrap_ref(target_btype->data.block.field_types[fi]));
             }
             if (!field_found) {
-                fprintf(stderr, "vm emitter: $member: field '%.*s' not found\n",
-                        (int)field_name.len, field_name.ptr);
+                VM_ERR(field_nd, "$member: field '%.*s' not found",
+                       (int)field_name.len, field_name.ptr);
                 return false;
             }
 
@@ -1344,19 +1372,19 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
             /* regular local block field access: ILOAD at (target_frame_offset + field_offset) */
             if (target->kind != AST_IDENT) {
-                fprintf(stderr, "vm emitter: $member: non-$parent target must be identifier\n");
+                VM_ERR(target, "$member: non-$parent target must be identifier");
                 return false;
             }
             Str target_name = alias_resolve(e, target->value);
             ptrdiff_t target_off = morphl_backend_find_offset(&e->frameInfo, target_name);
             if (target_off == PTRDIFF_MAX) {
-                fprintf(stderr, "vm emitter: $member: undefined variable '%.*s'\n",
-                        (int)target_name.len, target_name.ptr);
+                VM_ERR(target, "$member: undefined variable '%.*s'",
+                       (int)target_name.len, target_name.ptr);
                 return false;
             }
             uint8_t lop = load_op(unwrap_ref(field_type));
             if (lop == 0xFF) {
-                fprintf(stderr, "vm emitter: $member: unsupported field type for load\n");
+                VM_ERR(field_nd, "$member: unsupported field type for load");
                 return false;
             }
             return emit_op_i32(e, lop, (int32_t)(target_off + field_offset));
@@ -1392,7 +1420,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             /* resolve the block name to its deferred function index */
             Str block_name = block_ref->kind == AST_IDENT ? block_ref->value : (Str){NULL, 0};
             if (!block_name.ptr) {
-                fprintf(stderr, "vm emitter: $new requires an identifier\n");
+                VM_ERR(block_ref, "$new requires an identifier");
                 return false;
             }
             uint32_t fidx = UINT32_MAX;
@@ -1403,8 +1431,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 }
             }
             if (fidx == UINT32_MAX) {
-                fprintf(stderr, "vm emitter: $new: unknown block '%.*s'\n",
-                        (int)block_name.len, block_name.ptr);
+                VM_ERR(block_ref, "$new: unknown block '%.*s'",
+                       (int)block_name.len, block_name.ptr);
                 return false;
             }
             /* determine block size from the function's frame */
@@ -1460,8 +1488,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 Str src_name = alias_resolve(e, src_node->value);
                 ptrdiff_t src_off = morphl_backend_find_offset(&e->frameInfo, src_name);
                 if (src_off == PTRDIFF_MAX) {
-                    fprintf(stderr, "vm emitter: $as: undefined source variable '%.*s'\n",
-                            (int)src_name.len, src_name.ptr);
+                    VM_ERR(src_node, "$as: undefined source variable '%.*s'",
+                           (int)src_name.len, src_name.ptr);
                     return false;
                 }
                 return emit_op_i32(e, dst_lop, (int32_t)src_off);
@@ -1478,15 +1506,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
             /* resolve array identifier → frame offset */
             if (arr_node->kind != AST_IDENT) {
-                fprintf(stderr, "vm emitter: $index: array operand must be an identifier\n");
+                VM_ERR(arr_node, "$index: array operand must be an identifier");
                 return false;
             }
             ptrdiff_t arr_extra = 0;
             Str arr_name = alias_resolve_full(e, arr_node->value, &arr_extra);
             ptrdiff_t arr_off = morphl_backend_find_offset(&e->frameInfo, arr_name) + arr_extra;
             if (arr_off == PTRDIFF_MAX + arr_extra) {
-                fprintf(stderr, "vm emitter: $index: undefined array '%.*s'\n",
-                        (int)arr_name.len, arr_name.ptr);
+                VM_ERR(arr_node, "$index: undefined array '%.*s'",
+                       (int)arr_name.len, arr_name.ptr);
                 return false;
             }
 
@@ -1496,14 +1524,14 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                    ? arr_node->type->data.ref.target : arr_node->type)
                 : NULL;
             if (!arr_btype || arr_btype->kind != MORPHL_TYPE_ARRAY) {
-                fprintf(stderr, "vm emitter: $index: array node type not resolved\n");
+                VM_ERR(arr_node, "$index: array node type not resolved");
                 return false;
             }
             const MorphlType* elem_type = arr_btype->data.array.elem_type;
             size_t elem_size = type_frame_size(elem_type);
             uint8_t lop = load_op(elem_type);
             if (lop == 0xFF) {
-                fprintf(stderr, "vm emitter: $index: unsupported element type for load\n");
+                VM_ERR(arr_node, "$index: unsupported element type for load");
                 return false;
             }
 
@@ -1515,7 +1543,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 char* iend = NULL;
                 long long idx_val = strtoll(ibuf, &iend, 10);
                 if (iend == ibuf) {
-                    fprintf(stderr, "vm emitter: $index: invalid index literal\n");
+                    VM_ERR(idx_node, "$index: invalid index literal");
                     return false;
                 }
                 return emit_op_i32(e, lop, (int32_t)(arr_off + idx_val * (long long)elem_size));
@@ -1657,8 +1685,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
          * then jump to the loop's exit label. */
         if (OP_IS("$break")) {
             if (e->loop_stack_count == 0) {
-                fprintf(stderr, "vm emitter: $break outside loop at %s:%zu:%zu\n",
-                        node->filename ? node->filename : "?", node->row, node->col);
+                VM_ERR(node, "$break outside loop");
                 return false;
             }
             size_t loop_depth = e->loop_stack[e->loop_stack_count - 1].scope_depth_at_entry;
@@ -1672,8 +1699,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* $continue — emit LEAVE for nested scopes, then jump to loop condition. */
         if (OP_IS("$continue")) {
             if (e->loop_stack_count == 0) {
-                fprintf(stderr, "vm emitter: $continue outside loop at %s:%zu:%zu\n",
-                        node->filename ? node->filename : "?", node->row, node->col);
+                VM_ERR(node, "$continue outside loop");
                 return false;
             }
             size_t loop_depth = e->loop_stack[e->loop_stack_count - 1].scope_depth_at_entry;
@@ -1740,8 +1766,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 bool is_float = lhs_t && lhs_t->kind == MORPHL_TYPE_FLOAT;
                 uint8_t op_byte = is_float ? binops[i].fop : binops[i].iop;
                 if (op_byte == 0xFF) {
-                    fprintf(stderr, "vm emitter: operator '%.*s' not supported for float\n",
-                            (int)op_name.len, op_name.ptr);
+                    VM_ERR(node, "operator '%.*s' not supported for float",
+                           (int)op_name.len, op_name.ptr);
                     return false;
                 }
                 return emit_op(e, op_byte);
@@ -1768,9 +1794,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
 #undef OP_IS
 
-        fprintf(stderr, "vm emitter: unhandled builtin '%.*s' at %s:%zu:%zu\n",
-                (int)op_name.len, op_name.ptr,
-                node->filename ? node->filename : "?", node->row, node->col);
+        VM_ERR(node, "unhandled builtin '%.*s'",
+               (int)op_name.len, op_name.ptr);
         return false;
     }
 
@@ -1790,8 +1815,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
 
     default:
-        fprintf(stderr, "vm emitter: unsupported AST kind %d at %s:%zu:%zu\n",
-                node->kind, node->filename ? node->filename : "?", node->row, node->col);
+        VM_ERR(node, "unsupported AST kind %d", node->kind);
         return false;
     }
 }

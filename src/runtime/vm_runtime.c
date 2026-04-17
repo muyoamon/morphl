@@ -20,11 +20,41 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <dlfcn.h>
 
 #include "backend/vm.h"
 #include "interface/abi.h"
 #include "runtime/runtime.h"
+#include "util/error.h"
+
+/* ── diagnostics helper ─────────────────────────────────────────────────── */
+
+static void rt_diag(FILE* err_file, MorphlSeverity sev,
+                    MorphlErrCode code, const char* fmt, ...)
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((format(printf, 4, 5)))
+#endif
+;
+static void rt_diag(FILE* err_file, MorphlSeverity sev,
+                    MorphlErrCode code, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    MorphlError e = morphl_error_makev(code, sev, morphl_span_unknown(),
+                                       __FILE__, __LINE__, fmt, ap);
+    va_end(ap);
+    MorphlErrorSink sink = morphl_error_get_global_sink();
+    if (sink.fn) {
+        morphl_error_emit(&sink, &e);
+    } else {
+        char buf[512];
+        morphl_error_format(&e, buf, sizeof(buf));
+        fputs(buf, err_file ? err_file : stderr);
+        fputc('\n', err_file ? err_file : stderr);
+    }
+}
+
+#define RT_ERR(file, fmt, ...) rt_diag((file), MORPHL_SEV_ERROR, MORPHL_E_RUNTIME, fmt, ##__VA_ARGS__)
 
 /* ── flat byte stack ─────────────────────────────────────────────────────── */
 
@@ -161,7 +191,7 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
     if (!path || !out) return false;
 
     FILE* f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "vm: cannot open '%s'\n", path); return false; }
+    if (!f) { RT_ERR(stderr, "vm: cannot open '%s'", path); return false; }
 
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
@@ -182,7 +212,7 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
     uint8_t magic[4];
     if (!read_bytes(buf, len, &pos, magic, 4) ||
         memcmp(magic, MORPHL_VM_MAGIC, 4) != 0) {
-        fprintf(stderr, "vm: bad magic in '%s'\n", path);
+        RT_ERR(stderr, "vm: bad magic in '%s'", path);
         free(buf); return false;
     }
 
@@ -194,8 +224,8 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
     if (!read_u16_le(buf, len, &pos, &vmaj) ||
         !read_u16_le(buf, len, &pos, &vmin)) goto err;
     if (vmaj != MORPHL_VM_VERSION_MAJOR) {
-        fprintf(stderr, "vm: unsupported bytecode version %u.%u (expected %u.x)\n",
-                vmaj, vmin, MORPHL_VM_VERSION_MAJOR);
+        RT_ERR(stderr, "vm: unsupported bytecode version %u.%u (expected %u.x)",
+               vmaj, vmin, MORPHL_VM_VERSION_MAJOR);
         goto err;
     }
     prog->version_major = vmaj;
@@ -307,8 +337,8 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
                     }
                 }
                 if (!prog->native_fns[i]) {
-                    fprintf(stderr, "morphl: unresolved native symbol: %s\n",
-                            prog->native_sym_names[i]);
+                    RT_ERR(stderr, "morphl: unresolved native symbol: %s",
+                           prog->native_sym_names[i]);
                     goto err;
                 }
             }
@@ -407,7 +437,7 @@ static bool push_call_frame(MorphlVm* vm, VmCallFrame cf) {
 
 #define CHECK_IP(n) do { \
     if (vm->ip + (n) > (size_t)vm->program->code_len) { \
-        fprintf(err, "vm: ip overrun at %zu\n", vm->ip); return 1; \
+        RT_ERR(err, "vm: ip overrun at %zu", vm->ip); return 1; \
     } } while(0)
 
 #define READ_U8(v) do { \
@@ -443,10 +473,10 @@ static bool push_call_frame(MorphlVm* vm, VmCallFrame cf) {
     memcpy(&(v), &_u, 8); \
 } while(0)
 
-#define PUSH_I64(v) do { if (!stack_push_i64(&vm->stack, (v))) { fprintf(err, "vm: stack overflow\n"); return 1; } } while(0)
-#define PUSH_F64(v) do { if (!stack_push_f64(&vm->stack, (v))) { fprintf(err, "vm: stack overflow\n"); return 1; } } while(0)
-#define POP_I64(v)  do { if (!stack_pop_i64(&vm->stack,  &(v))) { fprintf(err, "vm: stack underflow\n"); return 1; } } while(0)
-#define POP_F64(v)  do { if (!stack_pop_f64(&vm->stack,  &(v))) { fprintf(err, "vm: stack underflow\n"); return 1; } } while(0)
+#define PUSH_I64(v) do { if (!stack_push_i64(&vm->stack, (v))) { RT_ERR(err, "vm: stack overflow"); return 1; } } while(0)
+#define PUSH_F64(v) do { if (!stack_push_f64(&vm->stack, (v))) { RT_ERR(err, "vm: stack overflow"); return 1; } } while(0)
+#define POP_I64(v)  do { if (!stack_pop_i64(&vm->stack,  &(v))) { RT_ERR(err, "vm: stack underflow"); return 1; } } while(0)
+#define POP_F64(v)  do { if (!stack_pop_f64(&vm->stack,  &(v))) { RT_ERR(err, "vm: stack underflow"); return 1; } } while(0)
 
 /* ── main execute loop ──────────────────────────────────────────────────── */
 
@@ -455,7 +485,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
     if (!err) err = stderr;
 
     if (vm->program->func_count == 0) {
-        fprintf(err, "vm: no functions in program\n");
+        RT_ERR(err, "vm: no functions in program");
         return 1;
     }
 
@@ -463,7 +493,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
     uint32_t gfsz = vm->program->global_frame_size;
     if (gfsz > 0) {
         if (!stack_reserve(&vm->stack, gfsz)) {
-            fprintf(err, "vm: OOM allocating global frame\n");
+            RT_ERR(err, "vm: OOM allocating global frame");
             return 1;
         }
         /* pre-populate $argc, $argv, $env at global[0], [8], [16] */
@@ -482,7 +512,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             .func_index = 0,
         };
         if (!push_call_frame(vm, phantom)) {
-            fprintf(err, "vm: OOM pushing phantom call frame\n");
+            RT_ERR(err, "vm: OOM pushing phantom call frame");
             return 1;
         }
     }
@@ -510,12 +540,12 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_IMUL: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a * b); break; }
         case VM_OP_IDIV: {
             int64_t b, a; POP_I64(b); POP_I64(a);
-            if (b == 0) { fprintf(err, "vm: integer division by zero\n"); return 1; }
+            if (b == 0) { RT_ERR(err, "vm: integer division by zero"); return 1; }
             PUSH_I64(a / b); break;
         }
         case VM_OP_IMOD: {
             int64_t b, a; POP_I64(b); POP_I64(a);
-            if (b == 0) { fprintf(err, "vm: integer modulo by zero\n"); return 1; }
+            if (b == 0) { RT_ERR(err, "vm: integer modulo by zero"); return 1; }
             PUSH_I64(a % b); break;
         }
 
@@ -549,14 +579,14 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_ENTER: {
             uint32_t sz; READ_U32(sz);
             if (!stack_reserve(&vm->stack, sz)) {
-                fprintf(err, "vm: OOM on ENTER\n"); return 1;
+                RT_ERR(err, "vm: OOM on ENTER"); return 1;
             }
             break;
         }
         case VM_OP_LEAVE: {
             uint32_t sz; READ_U32(sz);
             if (sz > vm->stack.top) {
-                fprintf(err, "vm: LEAVE underflow\n"); return 1;
+                RT_ERR(err, "vm: LEAVE underflow"); return 1;
             }
             vm->stack.top -= sz;
             break;
@@ -629,20 +659,20 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_RESERVE: {
             uint32_t sz; READ_U32(sz);
             if (!stack_reserve(&vm->stack, sz)) {
-                fprintf(err, "vm: OOM on RESERVE\n"); return 1;
+                RT_ERR(err, "vm: OOM on RESERVE"); return 1;
             }
             break;
         }
         case VM_OP_CALL: {
             uint32_t idx; READ_U32(idx);
             if (idx >= vm->program->func_count) {
-                fprintf(err, "vm: CALL index %u out of range\n", idx);
+                RT_ERR(err, "vm: CALL index %u out of range", idx);
                 return 1;
             }
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
                 size_t fb = vm->stack.top;
-                if (fb < 8) { fprintf(err, "vm: native CALL stack underflow\n"); return 1; }
+                if (fb < 8) { RT_ERR(err, "vm: native CALL stack underflow"); return 1; }
                 int64_t result = vm->program->native_fns[fn->entry_point](
                     vm->stack.data, fb, fn->param_size);
                 memcpy(vm->stack.data + fb - 8, &result, 8);
@@ -655,10 +685,10 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 .func_index = idx,
             };
             if (!push_call_frame(vm, cf)) {
-                fprintf(err, "vm: call frame OOM\n"); return 1;
+                RT_ERR(err, "vm: call frame OOM"); return 1;
             }
             if (!stack_reserve(&vm->stack, fn->frame_size)) {
-                fprintf(err, "vm: OOM on CALL frame\n"); return 1;
+                RT_ERR(err, "vm: OOM on CALL frame"); return 1;
             }
             vm->ip = fn->entry_point;
             break;
@@ -687,13 +717,13 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             memcpy(&raw, frame_ptr(vm, off), 8);
             uint32_t idx = (uint32_t)raw;
             if (idx >= vm->program->func_count) {
-                fprintf(err, "vm: CALLF index %u out of range\n", idx);
+                RT_ERR(err, "vm: CALLF index %u out of range", idx);
                 return 1;
             }
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
                 size_t fb = vm->stack.top;
-                if (fb < 8) { fprintf(err, "vm: native CALLF stack underflow\n"); return 1; }
+                if (fb < 8) { RT_ERR(err, "vm: native CALLF stack underflow"); return 1; }
                 int64_t result = vm->program->native_fns[fn->entry_point](
                     vm->stack.data, fb, fn->param_size);
                 memcpy(vm->stack.data + fb - 8, &result, 8);
@@ -705,10 +735,10 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 .func_index = idx,
             };
             if (!push_call_frame(vm, cf)) {
-                fprintf(err, "vm: call frame OOM\n"); return 1;
+                RT_ERR(err, "vm: call frame OOM"); return 1;
             }
             if (!stack_reserve(&vm->stack, fn->frame_size)) {
-                fprintf(err, "vm: OOM on CALLF frame\n"); return 1;
+                RT_ERR(err, "vm: OOM on CALLF frame"); return 1;
             }
             vm->ip = fn->entry_point;
             break;
@@ -726,7 +756,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             /* pop absolute stack address, push i64 at that address */
             int64_t addr; POP_I64(addr);
             if (addr < 0 || (size_t)addr + 8 > vm->stack.top) {
-                fprintf(err, "vm: DEREF address %lld out of bounds\n", (long long)addr);
+                RT_ERR(err, "vm: DEREF address %lld out of bounds", (long long)addr);
                 return 1;
             }
             int64_t v;
@@ -743,7 +773,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             memcpy(&parent_addr, frame_ptr(vm, 0), 8);  /* $parent slot at frame offset 0 */
             int64_t field_addr = parent_addr + off;
             if (field_addr < 0 || (size_t)field_addr + 8 > vm->stack.top) {
-                fprintf(err, "vm: PLOAD address %lld out of bounds\n", (long long)field_addr);
+                RT_ERR(err, "vm: PLOAD address %lld out of bounds", (long long)field_addr);
                 return 1;
             }
             int64_t v;
@@ -759,7 +789,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             memcpy(&parent_addr, frame_ptr(vm, 0), 8);
             int64_t field_addr = parent_addr + off;
             if (field_addr < 0 || (size_t)field_addr + 8 > vm->stack.top) {
-                fprintf(err, "vm: PSTORE address %lld out of bounds\n", (long long)field_addr);
+                RT_ERR(err, "vm: PSTORE address %lld out of bounds", (long long)field_addr);
                 return 1;
             }
             memcpy(vm->stack.data + (size_t)field_addr, &v, 8);
@@ -771,8 +801,8 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             /* push pointer to string table entry as i64 */
             uint32_t idx; READ_U32(idx);
             if (idx >= vm->program->str_count) {
-                fprintf(err, "vm: SCONST index %u out of range (table size %u)\n",
-                        idx, vm->program->str_count);
+                RT_ERR(err, "vm: SCONST index %u out of range (table size %u)",
+                       idx, vm->program->str_count);
                 return 1;
             }
             int64_t ptr = (int64_t)(uintptr_t)vm->program->str_table[idx];
@@ -810,7 +840,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int64_t base; POP_I64(base);
             ptrdiff_t abs = (ptrdiff_t)base + (ptrdiff_t)off;
             if (abs < 0 || (size_t)(abs + 8) > vm->stack.top) {
-                fprintf(err, "vm: ALOAD address %td out of bounds\n", abs);
+                RT_ERR(err, "vm: ALOAD address %td out of bounds", abs);
                 return 1;
             }
             int64_t v;
@@ -825,7 +855,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int64_t base; POP_I64(base);
             ptrdiff_t abs = (ptrdiff_t)base + (ptrdiff_t)off;
             if (abs < 0 || (size_t)(abs + 8) > vm->stack.top) {
-                fprintf(err, "vm: ASTORE address %td out of bounds\n", abs);
+                RT_ERR(err, "vm: ASTORE address %td out of bounds", abs);
                 return 1;
             }
             memcpy(vm->stack.data + abs, &v, 8);
@@ -833,7 +863,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         }
 
         default:
-            fprintf(err, "vm: unknown opcode 0x%02X at ip=%zu\n", op, vm->ip - 1);
+            RT_ERR(err, "vm: unknown opcode 0x%02X at ip=%zu", op, vm->ip - 1);
             return 1;
         }
     }

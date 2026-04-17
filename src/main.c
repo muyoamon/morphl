@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "util/error.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 #include "parser/builtin_parser.h"
@@ -27,7 +28,8 @@ int main(int argc, char** argv) {
   while (argc > arg_index && strncmp(argv[arg_index], "--", 2) == 0) {
     if (strcmp(argv[arg_index], "--backend") == 0) {
       if (argc <= arg_index + 1) {
-        fprintf(stderr, "missing backend value after --backend\n");
+        MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "missing backend value after --backend");
+        morphl_error_emit(NULL, &e);
         return 1;
       }
 
@@ -37,7 +39,8 @@ int main(int argc, char** argv) {
       } else if (strcmp(backend_name, "vm") == 0) {
         backend_type = MORPHL_BACKEND_TYPE_VM;
       } else {
-        fprintf(stderr, "unknown backend '%s' (expected 'c' or 'vm')\n", backend_name);
+        MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "unknown backend '%s' (expected 'c' or 'vm')", backend_name);
+        morphl_error_emit(NULL, &e);
         return 1;
       }
       arg_index += 2;
@@ -50,7 +53,8 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    fprintf(stderr, "unknown option '%s'\n", argv[arg_index]);
+    MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "unknown option '%s'", argv[arg_index]);
+    morphl_error_emit(NULL, &e);
     return 1;
   }
 
@@ -61,7 +65,8 @@ int main(int argc, char** argv) {
   }
 
   if (run_bytecode && backend_type != MORPHL_BACKEND_TYPE_VM) {
-    fprintf(stderr, "--run is only supported with --backend vm\n");
+    MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "--run is only supported with --backend vm");
+    morphl_error_emit(NULL, &e);
     return 1;
   }
 
@@ -76,12 +81,14 @@ int main(int argc, char** argv) {
 
   InternTable* interns = interns_new();
   if (!interns) {
-    fprintf(stderr, "failed to initialize intern table\n");
+    MorphlError e = MORPHL_ERR(MORPHL_E_INTERNAL, "failed to initialize intern table");
+    morphl_error_emit(NULL, &e);
     return 1;
   }
 
   if (!operator_registry_init(interns)) {
-    fprintf(stderr, "failed to initialize operator registry\n");
+    MorphlError e = MORPHL_ERR(MORPHL_E_INTERNAL, "failed to initialize operator registry");
+    morphl_error_emit(NULL, &e);
     interns_free(interns);
     return 1;
   }
@@ -91,7 +98,8 @@ int main(int argc, char** argv) {
 
   ScopedParserContext parser_ctx;
   if (!scoped_parser_init(&parser_ctx, interns, &arena, source_path)) {
-    fprintf(stderr, "failed to initialize parser context\n");
+    MorphlError e = MORPHL_ERR(MORPHL_E_INTERNAL, "failed to initialize parser context");
+    morphl_error_emit(NULL, &e);
     arena_free(&arena);
     interns_free(interns);
     return 1;
@@ -99,7 +107,8 @@ int main(int argc, char** argv) {
 
   if (grammar_path) {
     if (!scoped_parser_replace_grammar(&parser_ctx, grammar_path)) {
-      fprintf(stderr, "failed to load initial grammar from %s\n", grammar_path);
+      MorphlError e = MORPHL_ERR(MORPHL_E_IO, "failed to load initial grammar from %s", grammar_path);
+      morphl_error_emit(NULL, &e);
       scoped_parser_free(&parser_ctx);
       arena_free(&arena);
       interns_free(interns);
@@ -110,7 +119,8 @@ int main(int argc, char** argv) {
   char* source_buffer = NULL;
   size_t source_len = 0;
   if (!morphl_file_read_all(source_path, &source_buffer, &source_len)) {
-    fprintf(stderr, "failed to read source from %s\n", source_path);
+    MorphlError e = MORPHL_ERR(MORPHL_E_IO, "failed to read source from %s", source_path);
+    morphl_error_emit(NULL, &e);
     scoped_parser_free(&parser_ctx);
     arena_free(&arena);
     interns_free(interns);
@@ -120,7 +130,8 @@ int main(int argc, char** argv) {
   struct token* tokens = NULL;
   size_t token_count = 0;
   if (!lexer_tokenize(source_path, str_from(source_buffer, source_len), interns, &tokens, &token_count)) {
-    fprintf(stderr, "tokenization failed\n");
+    MorphlError e = MORPHL_ERR(MORPHL_E_LEX, "tokenization failed");
+    morphl_error_emit(NULL, &e);
     free(source_buffer);
     scoped_parser_free(&parser_ctx);
     arena_free(&arena);

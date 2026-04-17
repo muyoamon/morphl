@@ -32,7 +32,12 @@ typedef enum MorphlErrCode {
     MORPHL_E_LEX             = 1000,
     MORPHL_E_PARSE           = 2000,
     MORPHL_E_TYPE            = 3000,
-    MORPHL_E_SEMA            = 4000
+    MORPHL_E_SEMA            = 4000,
+
+    // Backend / runtime
+    MORPHL_E_CODEGEN         = 5000,   // VM bytecode emitter errors
+    MORPHL_E_RUNTIME         = 6000,   // VM execution errors
+    MORPHL_E_CLI             = 7000,   // Command-line / invocation errors
 } MorphlErrCode;
 
 // ----------------------------
@@ -158,6 +163,19 @@ size_t morphl_error_format(const MorphlError *err, char *out, size_t out_cap);
 #define MORPHL_WARN_FROM(code, fmt, span, ...)  MORPHL_ERR_SPAN((code), MORPHL_SEV_WARN,  (span), (fmt), ##__VA_ARGS__)
 #define MORPHL_NOTE_FROM(code, fmt, span, ...)  MORPHL_ERR_SPAN((code), MORPHL_SEV_NOTE,  (span), (fmt), ##__VA_ARGS__)
 #define MORPHL_FATAL_FROM(code, fmt, span, ...) MORPHL_ERR_SPAN((code), MORPHL_SEV_FATAL, (span), (fmt), ##__VA_ARGS__)
+
+/* Location-aware variants: supply (path, line, col) explicitly.
+ * Useful in translation units that have direct access to source location but
+ * do not want to depend on AstNode. */
+#define MORPHL_ERR_AT_LOC(path, line, col, code, fmt, ...) \
+    MORPHL_ERR_SPAN((code), MORPHL_SEV_ERROR, \
+        morphl_span_from_loc((path),(line),(col)), (fmt), ##__VA_ARGS__)
+#define MORPHL_WARN_AT_LOC(path, line, col, code, fmt, ...) \
+    MORPHL_ERR_SPAN((code), MORPHL_SEV_WARN, \
+        morphl_span_from_loc((path),(line),(col)), (fmt), ##__VA_ARGS__)
+#define MORPHL_NOTE_AT_LOC(path, line, col, code, fmt, ...) \
+    MORPHL_ERR_SPAN((code), MORPHL_SEV_NOTE, \
+        morphl_span_from_loc((path),(line),(col)), (fmt), ##__VA_ARGS__)
 
 // Early-return helper macro
 #define MORPHL_RETURN_IF_ERR(err_expr) do { \

@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // Global sink
 static MorphlErrorSink g_global_sink = { NULL, NULL };
@@ -27,7 +28,7 @@ void morphl_error_emit(const MorphlErrorSink *sink, const MorphlError *err) {
         return;
     }
     // Fallback: print to stderr
-    char buf[512];
+    char buf[1024];
     (void)morphl_error_format(err, buf, sizeof(buf));
     fputs(buf, stderr);
     fputc('\n', stderr);
@@ -84,9 +85,7 @@ MorphlError morphl_error_make(MorphlErrCode code,
 
 size_t morphl_error_format(const MorphlError *err, char *out, size_t out_cap) {
     if (!err || err->code == MORPHL_EOK || !out || out_cap == 0) {
-        if (out && out_cap > 0) {
-            out[0] = '\0';
-        }
+        if (out && out_cap > 0) out[0] = '\0';
         return 0;
     }
 
@@ -94,37 +93,72 @@ size_t morphl_error_format(const MorphlError *err, char *out, size_t out_cap) {
     uint32_t line = err->span.line;
     uint32_t col  = err->span.col;
 
-    // Format: file:line:col: severity[code]: message
-    // If line/col unknown, omit.
-    int n = 0;
+    /* Unknown location: simple one-liner, no source snippet. */
     if (line == 0 || col == 0) {
-        n = snprintf(out, out_cap, "%s: %s[%d]: %s",
-                     path,
-                     sev_str(err->sev),
-                     (int)err->code,
-                     err->msg);
-    } else {
-        // get error line
-        const char *error_line = morphl_file_get_line(path, line);
-        n = snprintf(out, out_cap, "%s:%u:%u: %s[%d]: %s\n\t%s",
-                     path,
-                     (unsigned)line,
-                     (unsigned)col,
-                     sev_str(err->sev),
-                     (int)err->code,
-                     err->msg,
-                     error_line ? error_line : ""
-                    );
-        free((void*)error_line);
+        int n = snprintf(out, out_cap, "%s: %s[%d]: %s",
+                         path, sev_str(err->sev), (int)err->code, err->msg);
+        if (n < 0) { out[0] = '\0'; return 0; }
+        out[out_cap - 1] = '\0';
+        return (size_t)(n >= (int)out_cap ? (int)out_cap - 1 : n);
     }
 
-    if (n < 0) {
-        out[0] = '\0';
-        return 0;
+    /* Known location: Rust/clang-style multi-line output.
+     *
+     *   path:line:col: severity[code]: message
+     *      N | source text here
+     *        |         ^~~~
+     */
+
+    /* Compute gutter width (number of digits in line number). */
+    int gutter = 0;
+    { unsigned tmp = (unsigned)line; do { gutter++; tmp /= 10; } while (tmp); }
+    if (gutter < 2) gutter = 2; /* minimum 2-char gutter for readability */
+
+    /* Fetch source line (may be NULL if file is unavailable). */
+    const char *src_line = morphl_file_get_line(path, line);
+
+    /* Build header: path:line:col: sev[code]: msg */
+    char header[512];
+    snprintf(header, sizeof(header), "%s:%u:%u: %s[%d]: %s",
+             path, (unsigned)line, (unsigned)col,
+             sev_str(err->sev), (int)err->code, err->msg);
+
+    size_t written = 0;
+
+    /* Helper to append to out[written..out_cap]. */
+#define APPEND(fmt, ...) do { \
+    int _n = snprintf(out + written, out_cap - written, fmt, ##__VA_ARGS__); \
+    if (_n > 0) written += (size_t)(_n < (int)(out_cap - written) ? _n : (int)(out_cap - written) - 1); \
+} while (0)
+
+    APPEND("%s", header);
+
+    if (src_line) {
+        /* Source line with gutter:  "   N | text" */
+        APPEND("\n%*u | %s", gutter, (unsigned)line, src_line);
+
+        /* Underline line:  "     |         ^~~~" */
+        APPEND("\n%*s | ", gutter, "");
+
+        /* Spaces up to (col - 1), then caret, then tildes for span width. */
+        uint32_t underline_start = (col > 0) ? col - 1 : 0;
+        uint32_t span_len = (err->span.end > err->span.start && err->span.start > 0)
+                            ? (err->span.end - err->span.start)
+                            : 1;
+
+        for (uint32_t i = 0; i < underline_start && written + 1 < out_cap; i++)
+            out[written++] = ' ';
+        if (written + 1 < out_cap) out[written++] = '^';
+        for (uint32_t i = 1; i < span_len && written + 1 < out_cap; i++)
+            out[written++] = '~';
+
+        free((void*)src_line);
     }
 
-    // Ensure null-termination
-    out[out_cap - 1] = '\0';
-    return (size_t)((n >= (int)out_cap) ? (int)out_cap - 1 : n);
+#undef APPEND
+
+    if (written < out_cap) out[written] = '\0';
+    else out[out_cap - 1] = '\0';
+    return written;
 }
 
