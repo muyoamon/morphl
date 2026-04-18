@@ -1174,14 +1174,14 @@ static void test_control_flow_inference() {
     assert(result->data.union_t.variant_count == 2);
   }
 
-  // $while → void
+  // $while → {} (empty block, not void)
   {
     Sym while_sym = interns_intern(interns, str_from("$while", 6));
     MorphlType* bool_t = morphl_type_bool(&arena);
     MorphlType* void_t = morphl_type_void(&arena);
     MorphlType* args[2] = { bool_t, void_t };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, while_sym, args, 2);
-    assert(result && result->kind == MORPHL_TYPE_VOID);
+    assert(result && result->kind == MORPHL_TYPE_BLOCK && result->data.block.field_count == 0);
   }
 
   // $break → $never

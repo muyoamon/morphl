@@ -27,6 +27,7 @@ typedef enum {
 
 // Forward declaration
 typedef struct MorphlType MorphlType;
+typedef struct AstNode AstNode;
 
 // Function type metadata: stores parameter and return types
 typedef struct {
@@ -46,9 +47,11 @@ typedef struct {
   Sym* field_names;
   MorphlType** field_types;
   size_t field_count;
-  // Properties ($prop) — do not participate in structural subtyping
+  // Properties ($prop) — do not participate in structural subtyping;
+  // resolved at compile time via $member (static substitution)
   Sym* prop_names;
   MorphlType** prop_types;
+  AstNode** prop_values;  // value AST nodes for compile-time substitution
   size_t prop_count;
 } MorphlBlockType;
 
@@ -57,7 +60,7 @@ typedef struct {
   MorphlType* target;
   bool is_mutable;
   bool is_inline;
-  bool is_ref;     // true for $ref (relative-offset reference); false for $mut/$const/$inline qualifiers
+  bool is_ref;     // true for $ref (absolute-address reference, 8 bytes); false for $mut/$const/$inline qualifiers
 } MorphlRefType;
 
 // Array type metadata: fixed-size contiguous sequence of N elements of type T
@@ -117,10 +120,14 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
                                          size_t field_count,
                                          Sym* prop_names,
                                          MorphlType** prop_types,
+                                         AstNode** prop_values,
                                          size_t prop_count);
 MorphlType* morphl_type_array(Arena* arena, MorphlType* elem_type, size_t count);
 MorphlType* morphl_type_union(Arena* arena, MorphlType** variant_types, size_t variant_count);
 MorphlType* morphl_type_never(Arena* arena);
+/* {} — empty block type; distinct from () (void). Used as the result of $while loops
+ * and as the implicit return type of functions that do not return a value. */
+MorphlType* morphl_type_empty_block(Arena* arena);
 MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type);
 
 // Type utilities

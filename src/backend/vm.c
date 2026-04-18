@@ -383,6 +383,41 @@ static Str alias_resolve(VmEmitter* e, Str name) {
 
 static const MorphlType* unwrap_ref(const MorphlType* t);  /* forward declaration */
 
+/* Round up offset to the nearest multiple of align (align must be power of 2). */
+static size_t align_up(size_t offset, size_t align) {
+    if (align <= 1) return offset;
+    return (offset + align - 1) & ~(align - 1);
+}
+
+/* Natural alignment requirement for a type (power of 2). */
+static size_t type_frame_align(const MorphlType* t) {
+    if (!t) return 1;
+    switch (t->kind) {
+        case MORPHL_TYPE_INT:
+        case MORPHL_TYPE_FLOAT:
+        case MORPHL_TYPE_BOOL:
+        case MORPHL_TYPE_STRING:
+        case MORPHL_TYPE_FUNC:   return 8;
+        case MORPHL_TYPE_REF:
+            if (t->data.ref.is_ref) return 8;
+            return t->data.ref.target ? type_frame_align(t->data.ref.target) : 1;
+        case MORPHL_TYPE_BLOCK: {
+            size_t max_align = 1;
+            for (size_t i = 0; i < t->data.block.field_count; i++) {
+                if (t->data.block.field_types[i]) {
+                    size_t fa = type_frame_align(t->data.block.field_types[i]);
+                    if (fa > max_align) max_align = fa;
+                }
+            }
+            return max_align;
+        }
+        case MORPHL_TYPE_ARRAY:
+            return t->data.array.elem_type ? type_frame_align(t->data.array.elem_type) : 1;
+        case MORPHL_TYPE_UNION: return 8;  /* tag slot is i64 */
+        default:                return 1;
+    }
+}
+
 static size_t type_frame_size(const MorphlType* t) {
     if (!t) return 0;
     switch (t->kind) {
@@ -392,19 +427,26 @@ static size_t type_frame_size(const MorphlType* t) {
         case MORPHL_TYPE_STRING: return 8;   /* stored as i64 or f64 or string pointer */
         case MORPHL_TYPE_FUNC:   return 8;   /* stored as i64 (function table index) */
         case MORPHL_TYPE_REF:
-            /* $ref (is_ref=true) stores a 4-byte absolute stack address.
+            /* $ref (is_ref=true) stores an 8-byte absolute stack address (i64).
              * $mut/$const/$inline qualifiers are transparent — size comes from target. */
             if (t->data.ref.is_ref) return 8;  /* stored as i64 absolute stack address */
             return t->data.ref.target ? type_frame_size(t->data.ref.target) : 0;
         case MORPHL_TYPE_BLOCK: {
             if (t->size > 0) return t->size;
-            /* size field is 0 (set so by morphl_type_block); compute from fields */
-            size_t total = 0;
+            /* size field is 0 (set so by morphl_type_block); compute from fields
+             * using natural alignment: each field is aligned to its own alignment. */
+            size_t offset = 0;
             for (size_t i = 0; i < t->data.block.field_count; i++) {
-                if (t->data.block.field_types[i])
-                    total += type_frame_size(unwrap_ref(t->data.block.field_types[i]));
+                const MorphlType* ft = t->data.block.field_types[i];
+                if (!ft) continue;
+                const MorphlType* uft = unwrap_ref(ft);
+                size_t fa = type_frame_align(uft);
+                offset = align_up(offset, fa);
+                offset += type_frame_size(uft);
             }
-            return total;
+            /* pad total size to struct's own alignment */
+            size_t sa = type_frame_align(t);
+            return align_up(offset, sa);
         }
         case MORPHL_TYPE_ARRAY:
             return t->data.array.count * type_frame_size(t->data.array.elem_type);
@@ -454,6 +496,30 @@ static const MorphlType* unwrap_ref(const MorphlType* t) {
     return t;
 }
 
+/* ── frame alignment helper ─────────────────────────────────────────────── */
+
+/* Sum of all entry sizes in the current frame (= byte position of next entry). */
+static size_t frame_current_size(MorphlBackendFrameInfo* fi) {
+    struct MorphlBackendFrame* f = fi->current;
+    size_t total = 0;
+    for (size_t i = 0; i < f->offset_count; i++)
+        total += f->offsets[i].size;
+    return total;
+}
+
+/* Insert alignment padding before registering a variable of the given type.
+ * Padding is recorded as an anonymous entry so offset arithmetic stays correct. */
+static bool frame_align_for_type(VmEmitter* e, const MorphlType* t) {
+    size_t fa = type_frame_align(t);
+    if (fa <= 1) return true;
+    size_t cur = frame_current_size(&e->frameInfo);
+    size_t aligned = align_up(cur, fa);
+    size_t pad = aligned - cur;
+    if (pad == 0) return true;
+    struct MorphlBackendFrameOffset poff = { .name = str_from("", 0), .size = pad };
+    return morphl_backend_append_offset(&e->frameInfo, poff);
+}
+
 /* ── function table helpers ─────────────────────────────────────────────── */
 
 static size_t func_alloc(VmEmitter* e) {
@@ -470,18 +536,22 @@ static size_t func_alloc(VmEmitter* e) {
 static bool emit_node(VmEmitter* e, struct AstNode* node);
 
 /* ── pre-scan block to compute its total $decl byte size ─────────────────── */
+/* Local variables on the frame are laid out in declaration order with natural alignment,
+ * matching the same padding rules used for struct fields. */
 static size_t block_scope_size(struct AstNode* block) {
     if (!block) return 0;
-    size_t sz = 0;
+    size_t offset = 0;
     for (size_t i = 0; i < block->child_count; i++) {
         struct AstNode* ch = block->children[i];
         if (!ch) continue;
         if (ch->kind == AST_DECL && ch->type) {
             const MorphlType* t = unwrap_ref(ch->type);
-            sz += type_frame_size(t);
+            size_t fa = type_frame_align(t);
+            offset = align_up(offset, fa);
+            offset += type_frame_size(t);
         }
     }
-    return sz;
+    return offset;
 }
 
 /* ── emit a single AST node ─────────────────────────────────────────────── */
@@ -642,7 +712,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         const MorphlType* raw_type = node->type;
         const MorphlType* t = unwrap_ref(raw_type);
 
-        /* register in frame tracker */
+        /* insert alignment padding before the variable, then register in frame tracker */
+        if (t && !frame_align_for_type(e, t)) return false;
         struct MorphlBackendFrameOffset foff = {
             .name = name,
             .size = t ? type_frame_size(t) : 0
@@ -814,12 +885,35 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                     if (init_node->kind == AST_GROUP) {
                         size_t field_byte_off = 0;
                         for (size_t fi = 0; fi < t->data.block.field_count && fi < init_node->child_count; fi++) {
-                            const MorphlType* ft = unwrap_ref(t->data.block.field_types[fi]);
+                            const MorphlType* raw_ft = t->data.block.field_types[fi];
+                            const MorphlType* ft = unwrap_ref(raw_ft);
                             struct AstNode* gv = init_node->children[fi];
                             if (gv) {
-                                if (!emit_node(e, gv)) return false;
-                                uint8_t sop = store_op(ft);
-                                if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)(off + field_byte_off))) return false;
+                                /* Sibling block ident injected by the flatten pre-pass:
+                                 * $ref field + block-typed ident → ADDREF + RSTORE */
+                                bool handled = false;
+                                if (ft && ft->kind == MORPHL_TYPE_REF && ft->data.ref.is_ref &&
+                                    gv->kind == AST_IDENT) {
+                                    const MorphlType* gv_t = gv->type ? unwrap_ref(gv->type) : NULL;
+                                    if (gv_t && gv_t->kind == MORPHL_TYPE_BLOCK) {
+                                        ptrdiff_t sib_off = morphl_backend_find_offset(&e->frameInfo, gv->value);
+                                        if (sib_off == PTRDIFF_MAX) {
+                                            VM_ERR(gv, "$new: sibling block not found: '%.*s'",
+                                                   (int)gv->value.len, gv->value.ptr);
+                                            return false;
+                                        }
+                                        if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)sib_off) ||
+                                            !emit_op_i32(e, VM_OP_RSTORE,
+                                                         (int32_t)(off + (ptrdiff_t)field_byte_off)))
+                                            return false;
+                                        handled = true;
+                                    }
+                                }
+                                if (!handled) {
+                                    if (!emit_node(e, gv)) return false;
+                                    uint8_t sop = store_op(ft);
+                                    if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)(off + field_byte_off))) return false;
+                                }
                             }
                             field_byte_off += type_frame_size(ft);
                         }
@@ -1270,12 +1364,67 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 field_name = interns_lookup(e->interns, field_nd->op);
             }
 
+            /* ── compile-time intrinsic properties: $$name, $$size, $$type ──
+             * These resolve entirely at compile time; the target expression is
+             * NOT emitted (pure compile-time, analogous to C's sizeof). */
+            {
+                bool is_cname = field_name.len == 6 && memcmp(field_name.ptr, "$$name", 6) == 0;
+                bool is_csize = field_name.len == 6 && memcmp(field_name.ptr, "$$size", 6) == 0;
+                bool is_ctype = field_name.len == 6 && memcmp(field_name.ptr, "$$type", 6) == 0;
+
+                if (is_cname) {
+                    /* Bound name of the expression, or "" for non-identifiers. */
+                    Str name = (target->kind == AST_IDENT) ? target->value : str_from("", 0);
+                    return emit_sconst(e, name);
+                }
+                if (is_csize) {
+                    /* Size in bytes of the target's type. */
+                    const MorphlType* t = unwrap_ref(target->type);
+                    size_t sz = t ? type_frame_size(t) : 0;
+                    return emit_iconst(e, (int64_t)sz);
+                }
+                if (is_ctype) {
+                    /* Type signature as a string. morphl_type_to_string heap-allocates;
+                     * the string table copies it, so we free after interning. */
+                    const MorphlType* t = target->type;
+                    Str ts = t ? morphl_type_to_string(t, e->interns) : str_from("unknown", 7);
+                    bool ok = emit_sconst(e, ts);
+                    if (t && ts.ptr) free((void*)ts.ptr);
+                    return ok;
+                }
+            }
+
             /* get target type (block or union) */
             const MorphlType* raw_target_type = target->type;
             const MorphlType* target_btype = unwrap_ref(raw_target_type);
             if (!target_btype) {
                 VM_ERR(target, "$member: cannot resolve target type");
                 return false;
+            }
+
+            /* ── compile-time property substitution ──
+             * If the field name matches a $prop on the target block, emit the
+             * property's value expression directly without emitting the target.
+             * This is pure compile-time substitution (analogous to $$size). */
+            if (target_btype->kind == MORPHL_TYPE_BLOCK &&
+                target_btype->data.block.prop_count > 0 &&
+                target_btype->data.block.prop_names &&
+                target_btype->data.block.prop_values) {
+                for (size_t pi = 0; pi < target_btype->data.block.prop_count; pi++) {
+                    Str pname = {NULL, 0};
+                    if (e->interns && target_btype->data.block.prop_names[pi]) {
+                        pname = interns_lookup(e->interns, target_btype->data.block.prop_names[pi]);
+                    }
+                    if (str_eq(pname, field_name)) {
+                        struct AstNode* val = target_btype->data.block.prop_values[pi];
+                        if (!val) {
+                            VM_ERR(field_nd, "$member: property '%.*s' has no value",
+                                   (int)field_name.len, field_name.ptr);
+                            return false;
+                        }
+                        return emit_node(e, val);
+                    }
+                }
             }
 
             /* --- union $$tag / $$data --- */
@@ -1315,7 +1464,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 return false;
             }
 
-            /* compute field offset within the block (fields are packed in declaration order) */
+            /* compute field offset within the block (natural alignment, declaration order) */
             size_t field_offset = 0;
             bool field_found = false;
             const MorphlType* field_type = NULL;
@@ -1324,12 +1473,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (e->interns && target_btype->data.block.field_names[fi]) {
                     fname = interns_lookup(e->interns, target_btype->data.block.field_names[fi]);
                 }
+                const MorphlType* uft = unwrap_ref(target_btype->data.block.field_types[fi]);
+                size_t fa = type_frame_align(uft);
+                field_offset = align_up(field_offset, fa);
                 if (str_eq(fname, field_name)) {
                     field_found = true;
                     field_type = target_btype->data.block.field_types[fi];
                     break;
                 }
-                field_offset += type_frame_size(unwrap_ref(target_btype->data.block.field_types[fi]));
+                field_offset += type_frame_size(uft);
             }
             if (!field_found) {
                 VM_ERR(field_nd, "$member: field '%.*s' not found",
@@ -1560,13 +1712,13 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return emit_op_i32(e, VM_OP_ALOAD, 0);
         }
 
-        /* $exit [expr] — exit program with given code (default 0) */
+        /* $exit expr — exit program with given exit code. Explicit operand required. */
         if (OP_IS("$exit")) {
-            if (node->child_count > 0 && node->children[0]) {
-                if (!emit_node(e, node->children[0])) return false;
-            } else {
-                if (!emit_iconst(e, 0)) return false;
+            if (node->child_count < 1 || !node->children[0]) {
+                VM_ERR(node, "$exit requires an explicit exit code (e.g. $exit 0)");
+                return false;
             }
+            if (!emit_node(e, node->children[0])) return false;
             return emit_op(e, VM_OP_EXIT);
         }
 
@@ -1976,6 +2128,165 @@ static void emitter_free(VmEmitter* e) {
     memset(e, 0, sizeof(*e));
 }
 
+/* ── pre-pass: flatten nested $new in $ref fields into sibling $decl nodes ── */
+/*
+ * Transforms `$decl node $new Node (0, $new Node (1, $null))` in-place by
+ * inserting synthetic sibling declarations before the outer $decl:
+ *
+ *   $decl $anon$0  $new Node (1, $null)       <- inserted sibling
+ *   $decl node     $new Node (0, <ident $anon$0>)  <- original, group element replaced
+ *
+ * After flattening, block_scope_size naturally counts all $decl children, and
+ * each Node struct keeps its static size.  The codegen handles block-typed idents
+ * in $ref fields via ADDREF + RSTORE.
+ */
+
+/* Insert `child` at position `pos` in `block`'s children, shifting right. */
+static bool block_insert_child(struct AstNode* block, size_t pos, struct AstNode* child) {
+    if (block->child_count >= block->child_capacity) {
+        size_t new_cap = block->child_capacity ? block->child_capacity * 2 : 4;
+        struct AstNode** p = (struct AstNode**)realloc(block->children,
+                                                        new_cap * sizeof(struct AstNode*));
+        if (!p) return false;
+        block->children      = p;
+        block->child_capacity = new_cap;
+    }
+    for (size_t i = block->child_count; i > pos; i--)
+        block->children[i] = block->children[i - 1];
+    block->children[pos] = child;
+    block->child_count++;
+    return true;
+}
+
+typedef struct { size_t count; } FlattenCtx;
+
+/* Forward declaration */
+static void flatten_block(FlattenCtx* ctx, InternTable* interns, struct AstNode* block);
+
+/*
+ * Walk a positional group init of `block_type`, find fields where a $ref field is
+ * initialised with a nested $new expression, hoist each into a sibling $decl inserted
+ * at `insert_pos` in `block`, and replace the group element with a plain ident.
+ * Returns the number of siblings inserted.
+ */
+static size_t flatten_new_group(FlattenCtx* ctx, InternTable* interns,
+                                 struct AstNode* block, size_t insert_pos,
+                                 const MorphlType* block_type, struct AstNode* group) {
+    if (!block_type || block_type->kind != MORPHL_TYPE_BLOCK ||
+        !group || group->kind != AST_GROUP) return 0;
+    size_t inserted = 0;
+    for (size_t fi = 0;
+         fi < block_type->data.block.field_count && fi < group->child_count; fi++) {
+        const MorphlType* raw_ft = block_type->data.block.field_types[fi];
+        /* Strip $mut/$const qualifiers to reach the actual $ref (is_ref=true) layer */
+        const MorphlType* ft = unwrap_ref(raw_ft);
+        if (!ft || ft->kind != MORPHL_TYPE_REF || !ft->data.ref.is_ref) continue;
+        struct AstNode* gv = group->children[fi];
+        if (!gv || gv->kind != AST_BUILTIN || !gv->op || gv->child_count < 2) continue;
+        Str gv_op = interns_lookup(interns, gv->op);
+        if (gv_op.len != 4 || memcmp(gv_op.ptr, "$new", 4) != 0) continue;
+        const MorphlType* nested_t = gv->type ? unwrap_ref(gv->type) : NULL;
+        if (!nested_t || nested_t->kind != MORPHL_TYPE_BLOCK) continue;
+
+        /* Recursively flatten the nested $new's own init group first (depth-first),
+         * so innermost siblings land before outer ones in the block. */
+        struct AstNode* nested_group = (gv->child_count >= 2) ? gv->children[1] : NULL;
+        if (nested_group && nested_group->kind == AST_GROUP) {
+            size_t deep = flatten_new_group(ctx, interns, block,
+                                            insert_pos + inserted, nested_t, nested_group);
+            inserted += deep;
+        }
+
+        /* Synthesise a unique name "$anon$N" interned for stable pointer lifetime. */
+        char name_buf[48];
+        int name_len = snprintf(name_buf, sizeof(name_buf), "$anon$%zu", ctx->count++);
+        if (name_len <= 0) continue;
+        Sym  anon_sym  = interns_intern(interns, str_from(name_buf, (size_t)name_len));
+        Str  anon_name = interns_lookup(interns, anon_sym);
+
+        /* Build: $decl $anon$N $new BlockType2 init2
+         * We move the existing $new node (gv) as the RHS — its children are already typed. */
+        struct AstNode* name_node = ast_make_leaf(AST_IDENT, anon_name,
+                                                   gv->filename, gv->row, gv->col);
+        if (!name_node) continue;
+        name_node->type = (MorphlType*)nested_t;
+
+        struct AstNode* sibling = ast_new(AST_DECL);
+        if (!sibling) { ast_free(name_node); continue; }
+        sibling->type     = (MorphlType*)nested_t;
+        sibling->filename = gv->filename;
+        sibling->row      = gv->row;
+        sibling->col      = gv->col;
+        if (!ast_append_child(sibling, name_node) ||
+            !ast_append_child(sibling, gv)) {
+            /* Roll back: detach gv so it isn't freed with sibling */
+            sibling->child_count = 1;
+            ast_free(sibling);
+            continue;
+        }
+
+        /* Insert the sibling before insert_pos + inserted */
+        if (!block_insert_child(block, insert_pos + inserted, sibling)) {
+            sibling->child_count = 1;  /* detach gv */
+            ast_free(sibling);
+            continue;
+        }
+        inserted++;
+
+        /* Replace group[fi] with a plain ident node pointing to the sibling. */
+        struct AstNode* ident = ast_make_leaf(AST_IDENT, anon_name,
+                                               gv->filename, gv->row, gv->col);
+        if (!ident) continue;  /* gv is now owned by sibling; group[fi] left stale but not freed */
+        ident->type      = (MorphlType*)nested_t;
+        group->children[fi] = ident;   /* gv is now owned by sibling_decl */
+    }
+    return inserted;
+}
+
+/*
+ * Recursively flatten all blocks in the AST.
+ * Handles AST_FILE, AST_BLOCK, and function bodies (via their AST_BLOCK children).
+ */
+static void flatten_block(FlattenCtx* ctx, InternTable* interns, struct AstNode* block) {
+    if (!block || !interns) return;
+    size_t i = 0;
+    while (i < block->child_count) {
+        struct AstNode* child = block->children[i];
+        if (!child) { i++; continue; }
+        /* Recurse into nested blocks / function bodies */
+        if (child->kind == AST_BLOCK || child->kind == AST_FILE) {
+            flatten_block(ctx, interns, child);
+            i++;
+            continue;
+        }
+        if (child->kind == AST_FUNC) {
+            for (size_t ci = 0; ci < child->child_count; ci++) {
+                if (child->children[ci] && child->children[ci]->kind == AST_BLOCK)
+                    flatten_block(ctx, interns, child->children[ci]);
+            }
+            i++;
+            continue;
+        }
+        /* Look for: $decl var ($new BlockType group_init) */
+        if (child->kind != AST_DECL || child->child_count < 2 || !child->children[1]) {
+            i++;
+            continue;
+        }
+        struct AstNode* rhs = child->children[1];
+        if (rhs->kind != AST_BUILTIN || !rhs->op ||
+            rhs->child_count < 2 || !rhs->children[1]) { i++; continue; }
+        Str rhs_op = interns_lookup(interns, rhs->op);
+        if (rhs_op.len != 4 || memcmp(rhs_op.ptr, "$new", 4) != 0) { i++; continue; }
+        struct AstNode* group = rhs->children[1];
+        if (!group || group->kind != AST_GROUP) { i++; continue; }
+        const MorphlType* block_type = rhs->type ? unwrap_ref(rhs->type) : NULL;
+        if (!block_type || block_type->kind != MORPHL_TYPE_BLOCK) { i++; continue; }
+
+        size_t inserted = flatten_new_group(ctx, interns, block, i, block_type, group);
+        i += inserted + 1;   /* skip over the inserted siblings + the original $decl */
+    }
+}
+
 /* ── pre-pass: count $import declarations in the root AST_FILE ─────────── */
 
 static size_t count_imports(InternTable* interns, struct AstNode* root) {
@@ -2026,6 +2337,12 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
                && emit_iconst(&e, (int64_t)e.global_frame_size)
                && emit_op_i32(&e, VM_OP_ASTORE, 24);
         if (!ok) { emitter_free(&e); return false; }
+    }
+
+    /* pre-pass: flatten nested $new in $ref fields into sibling $decl nodes */
+    {
+        FlattenCtx fctx = {0};
+        flatten_block(&fctx, e.interns, context->tree);
     }
 
     /* emit top-level code */

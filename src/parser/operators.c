@@ -913,8 +913,8 @@ static OperatorRow kBuiltinOps[] = {
   {"$traits", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, TRAITS},
   {"$impl",   AST_BUILTIN,false, 2, 3,           NULL,              0, OP_PP_KEEP_NODE, IMPL},
 
-  // Exit
-  {"$exit",   AST_BUILTIN,false, 0, 1,           NULL,              0, OP_PP_KEEP_NODE, EXIT},
+  // Exit — explicit exit code required: $exit 0;
+  {"$exit",   AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, EXIT},
 
   // Type conversions
   {"$i2f",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, I2F},

@@ -207,8 +207,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     MorphlType* ref_type = morphl_type_ref(ctx->arena, inner_type, inherited_mutable, false);
     if (ref_type) {
       ref_type->data.ref.is_ref = true;
-      ref_type->size = 4;
-      ref_type->align = 4;
+      /* $ref stores an 8-byte absolute stack address (i64). size/align=8 from morphl_type_ref(). */
     }
     return ref_type;
   }
@@ -218,8 +217,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     MorphlType* ref_type = void_t ? morphl_type_ref(ctx->arena, void_t, false, false) : NULL;
     if (ref_type) {
       ref_type->data.ref.is_ref = true;
-      ref_type->size = 4;
-      ref_type->align = 4;
+      /* $null is address 0; stored as 8-byte absolute address. */
     }
     return ref_type;
   }
@@ -522,7 +520,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_names : NULL,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_types : NULL,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_count : 0,
-        merged_names, merged_types, total_props);
+        merged_names, merged_types, NULL, total_props);
     free(merged_names);
     free(merged_types);
     return result;
@@ -826,9 +824,9 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return morphl_type_never(ctx->arena);
   }
 
-  // $while cond body — loop expression; always produces void
+  // $while cond body — loop expression; always produces {} (empty block, not void)
   if (op_sym == interns_intern(ctx->interns, str_from("$while", 6))) {
-    return morphl_type_void(ctx->arena);
+    return morphl_type_empty_block(ctx->arena);
   }
 
   // $break / $continue — divergent control flow; type is $never (bottom)
@@ -1078,6 +1076,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       size_t field_cap = 0;
       Sym* prop_names = NULL;
       MorphlType** prop_types = NULL;
+      AstNode** prop_values = NULL;  /* value AST nodes for compile-time substitution */
       size_t prop_count = 0;
       size_t prop_cap = 0;
       bool ok = true;
@@ -1122,26 +1121,35 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           block_type->data.block.field_count = field_count;
         } else {
           // Property — does NOT participate in structural subtyping (SPEC §9.2)
+          // Resolved at compile time via $member (static substitution).
           if (prop_count >= prop_cap) {
             size_t new_cap = prop_cap ? prop_cap * 2 : 4;
             Sym* new_names = (Sym*)realloc(prop_names, new_cap * sizeof(Sym));
             MorphlType** new_types = (MorphlType**)realloc(prop_types, new_cap * sizeof(MorphlType*));
-            if (!new_names || !new_types) { ok = false; break; }
+            AstNode** new_values = (AstNode**)realloc(prop_values, new_cap * sizeof(AstNode*));
+            if (!new_names || !new_types || !new_values) { ok = false; break; }
             prop_names = new_names;
             prop_types = new_types;
+            prop_values = new_values;
             prop_cap = new_cap;
           }
+          // The value node is the second child of the $prop AST node (stmt->children[1]).
+          AstNode* val_node = (stmt->child_count >= 2) ? stmt->children[1] : NULL;
           prop_names[prop_count] = name_node->op;
           prop_types[prop_count] = stmt_type;
+          prop_values[prop_count] = val_node;
           prop_count++;
           Sym* pnames = (Sym*)arena_push(ctx->arena, NULL, prop_count * sizeof(Sym));
           MorphlType** ptypes = (MorphlType**)arena_push(ctx->arena, NULL, prop_count * sizeof(MorphlType*));
-          if (!pnames || !ptypes) { ok = false; break; }
+          AstNode** pvals  = (AstNode**)arena_push(ctx->arena, NULL, prop_count * sizeof(AstNode*));
+          if (!pnames || !ptypes || !pvals) { ok = false; break; }
           memcpy(pnames, prop_names, prop_count * sizeof(Sym));
           memcpy(ptypes, prop_types, prop_count * sizeof(MorphlType*));
-          block_type->data.block.prop_names = pnames;
-          block_type->data.block.prop_types = ptypes;
-          block_type->data.block.prop_count = prop_count;
+          memcpy(pvals,  prop_values, prop_count * sizeof(AstNode*));
+          block_type->data.block.prop_names  = pnames;
+          block_type->data.block.prop_types  = ptypes;
+          block_type->data.block.prop_values = pvals;
+          block_type->data.block.prop_count  = prop_count;
         }
       }
       type_context_pop_this(ctx);
@@ -1150,6 +1158,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       free(field_types);
       free(prop_names);
       free(prop_types);
+      free(prop_values);
       return ok ? block_type : NULL;
     }
     case AST_FUNC: {
@@ -1324,6 +1333,19 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           field_sym = interns_intern(ctx->interns, field_node->value);
         }
         Str field_name = field_sym ? interns_lookup(ctx->interns, field_sym) : (Str){NULL, 0};
+
+        /* compiler-injected compile-time intrinsics: $$name, $$size, $$type
+         * Valid for any expression type; do NOT require block/union target.
+         * The target expression is NOT evaluated at runtime (pure compile-time). */
+        bool _is_cname = field_name.len == 6 && memcmp(field_name.ptr, "$$name", 6) == 0;
+        bool _is_csize = field_name.len == 6 && memcmp(field_name.ptr, "$$size", 6) == 0;
+        bool _is_ctype = field_name.len == 6 && memcmp(field_name.ptr, "$$type", 6) == 0;
+        if (_is_cname || _is_csize || _is_ctype) {
+            /* Infer target type so target->type is populated for vm.c code emission. */
+            morphl_infer_type_of_ast(ctx, target);
+            return _is_csize ? morphl_type_int(ctx->arena)
+                             : morphl_type_string(ctx->arena);
+        }
 
         /* compiler-injected $$data / $$tag fields on union types */
         if (target_type->kind == MORPHL_TYPE_UNION) {

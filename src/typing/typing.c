@@ -1,4 +1,5 @@
 #include "typing/typing.h"
+#include "ast/ast.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,7 +170,7 @@ MorphlType* morphl_type_block(Arena* arena,
                               MorphlType** field_types,
                               size_t field_count) {
   return morphl_type_block_with_props(arena, field_names, field_types, field_count,
-                                      NULL, NULL, 0);
+                                      NULL, NULL, NULL, 0);
 }
 
 MorphlType* morphl_type_block_with_props(Arena* arena,
@@ -178,6 +179,7 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
                                          size_t field_count,
                                          Sym* prop_names,
                                          MorphlType** prop_types,
+                                         AstNode** prop_values,
                                          size_t prop_count) {
   if (!arena) return NULL;
   MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
@@ -201,14 +203,17 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
   if (prop_count > 0 && prop_names && prop_types) {
     Sym* pnames = arena_alloc(arena, prop_count * sizeof(Sym));
     MorphlType** ptypes = arena_alloc(arena, prop_count * sizeof(MorphlType*));
-    if (!pnames || !ptypes) return NULL;
+    AstNode** pvals = arena_alloc(arena, prop_count * sizeof(AstNode*));
+    if (!pnames || !ptypes || !pvals) return NULL;
     for (size_t i = 0; i < prop_count; ++i) {
       pnames[i] = prop_names[i];
       ptypes[i] = prop_types[i];
+      pvals[i]  = prop_values ? prop_values[i] : NULL;
     }
-    t->data.block.prop_names = pnames;
-    t->data.block.prop_types = ptypes;
-    t->data.block.prop_count = prop_count;
+    t->data.block.prop_names  = pnames;
+    t->data.block.prop_types  = ptypes;
+    t->data.block.prop_values = pvals;
+    t->data.block.prop_count  = prop_count;
   }
   return t;
 }
@@ -285,6 +290,12 @@ MorphlType* morphl_type_never(Arena* arena) {
   t->size  = 0;
   t->align = 1;
   return t;
+}
+
+/* {} — empty block type, distinct from () (void).
+ * Used as the result type of loops and implicit return of void functions. */
+MorphlType* morphl_type_empty_block(Arena* arena) {
+  return morphl_type_block(arena, NULL, NULL, 0);
 }
 
 // Clone a type (allocate new copy in arena)

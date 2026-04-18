@@ -937,6 +937,86 @@ static void test_e2e_new_union_tag() {
     printf("PASS test_e2e_new_union_tag\n");
 }
 
+// ── Compiler-injected intrinsic properties ────────────────────────────────────
+
+static void test_e2e_intrinsic_size_int() {
+    /* $$size of an int variable: i64 is 8 bytes */
+    int rc = compile_and_run(
+        "$decl x 42;\n"
+        "$exit $member x $$size;\n"
+    );
+    assert(rc == 8);
+    printf("PASS test_e2e_intrinsic_size_int\n");
+}
+
+static void test_e2e_intrinsic_size_block() {
+    /* $$size of a two-field block: 2 × 8 = 16 bytes */
+    int rc = compile_and_run(
+        "$decl Point { $decl px 0; $decl py 0; };\n"
+        "$decl p $new Point ();\n"
+        "$exit $member p $$size;\n"
+    );
+    assert(rc == 16);
+    printf("PASS test_e2e_intrinsic_size_block\n");
+}
+
+static void test_e2e_intrinsic_name_ident() {
+    /* $$name of an identifier returns the identifier's name */
+    int rc = compile_and_run(
+        "$decl myvar 99;\n"
+        "$decl result $if $eq $member myvar $$name \"myvar\" 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_intrinsic_name_ident\n");
+}
+
+static void test_e2e_intrinsic_type_int() {
+    /* $$type of an int variable returns "int" */
+    int rc = compile_and_run(
+        "$decl x 7;\n"
+        "$decl result $if $eq $member x $$type \"int\" 1 0;\n"
+        "$exit result;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_intrinsic_type_int\n");
+}
+
+// ── Recursive $new with $ref $this fields ─────────────────────────────────────
+
+static void test_e2e_recursive_new_head_val() {
+    /* $new Node (head_val, ...) — head field is correctly initialised */
+    int rc = compile_and_run(
+        "$decl Node { $decl val $mut 0; $decl next $mut $ref $this; };\n"
+        "$decl node $new Node (7, $null);\n"
+        "$exit $member node val;\n"
+    );
+    assert(rc == 7);
+    printf("PASS test_e2e_recursive_new_head_val\n");
+}
+
+static void test_e2e_recursive_new_two_nodes() {
+    /* Two-node list: flatten pre-pass creates a sibling; head.val initialised. */
+    int rc = compile_and_run(
+        "$decl Node { $decl val $mut 0; $decl next $mut $ref $this; };\n"
+        "$decl node $new Node (3, $new Node (9, $null));\n"
+        "$exit $member node val;\n"
+    );
+    assert(rc == 3);
+    printf("PASS test_e2e_recursive_new_two_nodes\n");
+}
+
+static void test_e2e_recursive_new_three_nodes() {
+    /* Three-node list: two siblings inserted; head.val initialised. */
+    int rc = compile_and_run(
+        "$decl Node { $decl val $mut 0; $decl next $mut $ref $this; };\n"
+        "$decl node $new Node (5, $new Node (6, $new Node (7, $null)));\n"
+        "$exit $member node val;\n"
+    );
+    assert(rc == 5);
+    printf("PASS test_e2e_recursive_new_three_nodes\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -1000,6 +1080,13 @@ int main(void) {
     test_e2e_runtime_index();
     test_e2e_new_scalar();
     test_e2e_new_union_tag();
+    test_e2e_intrinsic_size_int();
+    test_e2e_intrinsic_size_block();
+    test_e2e_intrinsic_name_ident();
+    test_e2e_intrinsic_type_int();
+    test_e2e_recursive_new_head_val();
+    test_e2e_recursive_new_two_nodes();
+    test_e2e_recursive_new_three_nodes();
     printf("All integration tests passed.\n");
     return 0;
 }

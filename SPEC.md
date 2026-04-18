@@ -255,19 +255,19 @@ $set $index arr i 77;           // array element (runtime index)
 
 Only `$mut`-declared variables and fields may appear on the LHS of `$set`. Assigning to a `$const` binding is a compile error.
 
-### 5.3 `$ref` — Reference (Relative Offset)
+### 5.3 `$ref` — Reference (Absolute Stack Address)
 
 ```
 $decl r $ref <lvalue>
 ```
 
-`$ref` is not a pointer — it is a **relative offset** to an existing storage location. It has fixed size regardless of the referent's type, which enables recursive type definitions.
+`$ref` is not a pointer — it is an **absolute stack address** to an existing storage location. It has fixed size regardless of the referent's type (always 8 bytes), which enables recursive type definitions.
 
 `$ref` is transparent in expressions — using `r` in an expression reads/writes through to the target's storage. The `$ref` keyword is only needed when explicitly bridging to the reference itself.
 
 **As a local alias**: compile-time only, no runtime storage allocated.
 
-**As a struct field**: runtime storage (a signed integer relative offset).
+**As a struct field**: runtime storage (an 8-byte absolute stack address).
 
 ```
 $decl x $mut 5;
@@ -419,14 +419,14 @@ Fields are laid out in **declaration order with natural alignment**. Padding is 
 
 ```
 $decl Foo {
-    $decl a i32;    // offset 0  (4 bytes)
-                    // offset 4  (4 bytes padding)
-    $decl b f64;    // offset 8  (8 bytes)
-    $decl c i32;    // offset 16 (4 bytes)
-                    // offset 20 (4 bytes padding)
+    $decl a 0;      // offset 0  (8 bytes — all integers are i64)
+    $decl b 0.0;    // offset 8  (8 bytes — f64)
+    $decl c 0;      // offset 16 (8 bytes — i64)
 };
 // total: 24 bytes
 ```
+
+> **Note**: In the current implementation all scalar types (integers, floats, booleans, strings, references) occupy 8 bytes on the frame stack. The alignment of each is 8, so no padding is inserted between scalars of the same size. Padding is inserted before a field whose alignment exceeds the current offset — for example a `$ref` (8-byte aligned) following a hypothetical 1-byte field.
 
 Fields are **never reordered** by the compiler. Reordering would break the prefix-match subtyping guarantee.
 
@@ -438,12 +438,12 @@ Direct recursive fields are impossible because the type has no finite size:
 $decl Node { $decl value i32; $decl next Node; };  // error — infinite size
 ```
 
-`$ref` breaks the cycle by storing a fixed-size relative offset regardless of the referent's size:
+`$ref` breaks the cycle by storing a fixed-size absolute address regardless of the referent's size:
 
 ```
 $decl Node {
-    $decl value i32;
-    $decl next $ref Node;   // fixed size: sizeof(relative_offset)
+    $decl value 0;
+    $decl next $ref Node;   // fixed size: 8 bytes (absolute stack address)
 };
 ```
 
@@ -451,7 +451,7 @@ $decl Node {
 
 `$null` is defined as `$decl $null $ref $null` — a reference that refers to itself, forming an unresolvable indirection chain. It is not a value per se but a sentinel indicating "this reference points to nothing." Dereferencing `$null` is an error.
 
-**Concrete representation**: `$null` is stored as the relative offset `INT32_MIN` (0x80000000). The `RNULL` opcode pushes this value. `DEREF` traps at runtime if it encounters `INT32_MIN`. `JNULL` branches when the top of stack equals `INT32_MIN`.
+**Concrete representation**: `$null` is stored as the absolute address `0`. The `RNULL` opcode pushes `0`. `DEREF` traps at runtime if it encounters `0` (address 0 is never a valid frame address — frame slot 0 is reserved for `$parent`). `JNULL` branches when the top of stack equals `0`.
 
 ---
 
@@ -651,6 +651,44 @@ $set $index buf i 77;       // buf[i] = 77 (runtime index)
 
 ---
 
+## 8.5 Compiler-Injected Intrinsic Properties
+
+Three universal `$$`-prefixed pseudo-fields are available on any expression via `$member`. They resolve entirely at **compile time** — the target expression is **not evaluated at runtime** (analogous to C's `sizeof`).
+
+| Syntax | Return type | Value |
+|---|---|---|
+| `$member <expr> $$name` | `string` | Identifier name of `<expr>`, or `""` if not a plain identifier |
+| `$member <expr> $$size` | `int`    | Size in bytes of `<expr>`'s type |
+| `$member <expr> $$type` | `string` | Type signature of `<expr>` as a string |
+
+### Examples
+
+```
+$decl x 42;
+$member x $$name          ; → "x"
+$member x $$size          ; → 8       (i64 is 8 bytes)
+$member x $$type          ; → "int"
+
+$decl Point { $decl px 0; $decl py 0; };
+$decl p $new Point ();
+$member p $$name          ; → "p"
+$member p $$size          ; → 16      (two i64 fields)
+$member p $$type          ; → "{px:int, py:int}"
+
+$member (42) $$name       ; → ""      (literal, not an identifier)
+$member (42) $$size       ; → 8
+$member (42) $$type       ; → "int"
+```
+
+### Notes
+
+- These intrinsics work on any type: primitives, blocks, unions, arrays, functions, references.
+- Because the target is not evaluated, `$member ($call sideEffect ()) $$size` does **not** call `sideEffect` — only its return type is inspected.
+- `$$name` returns `""` for any non-identifier expression (calls, arithmetic, literals, etc.).
+- The type string format from `$$type` matches the internal type signature format (same as used in error messages).
+
+---
+
 ## 9. `$as` — Reinterpret Cast
 
 `$as` is a general-purpose reinterpret cast. It changes the compiler's view of a value's type without emitting any runtime code:
@@ -732,13 +770,18 @@ $decl make_point $func ($decl x i32, $decl y i32) {
 // type: (i32, i32) => { px: i32, py: i32 }
 ```
 
-**Explicit return** — `$ret expr` returns a specific value and exits the function early:
+**Explicit return** — `$ret expr` returns a specific value and exits the function early. An explicit operand is always required:
 
 ```
 $decl f $func ($decl x i32) {
-    $ret x + 1;
+    $ret x + 1;   // return i64
 };
-// type: (i32) => i32
+// type: (i64) => i64
+
+$decl g $func () {
+    $ret ();      // explicit void return — $ret () is the canonical form
+};
+// type: () => ()
 ```
 
 `$ret` is scoped to the nearest enclosing `$func`. It does not propagate through nested blocks.
@@ -769,9 +812,9 @@ $exit code;   // exit with value of 'code' (must be i32)
 ```
 
 Rules:
-- The argument must be of type `i32`. Any other type is a compile error.
+- An explicit exit code is always required. `$exit 0;` is the canonical success exit.
+- The argument must be of type `i64` (integer). Any other type is a compile error.
 - `$exit` can appear anywhere in top-level code or inside a function.
-- There is no `$exit` with zero arguments — use `$exit 0` for explicit success exit.
 
 ### 9.6 `main` — Program Entry Point
 
@@ -993,6 +1036,8 @@ mod.$PI;    // property access
 
 Properties are extra context attached to a block. They are constant once declared — they cannot be reassigned.
 
+**Compile-time substitution**: property access via `$member mod $PI` is resolved entirely at compile time. The compiler substitutes the property's value expression directly — no runtime load is emitted. Property values must be constant expressions (literals, arithmetic on literals, etc.).
+
 ### 9.2 Properties Are Not Structurally Fixed
 
 Properties do not have fixed byte offsets and do not participate in structural subtyping. Two blocks with different field declaration order but identical `$decl` fields and identical properties have the same type:
@@ -1029,6 +1074,8 @@ $decl mod {
 ---
 
 ## 14. Traits
+
+> **Not yet implemented**: Trait fat-block representation and dynamic dispatch. The `$traits`/`$impl` syntax is parsed and type-checked, but trait-typed variables cannot be used for dynamic dispatch at runtime. The fat-block layout (`$impl` property table pointer + `$data` concrete instance pointer) is not yet generated.
 
 ### 10.1 Trait Declaration
 
@@ -1372,42 +1419,42 @@ The VM uses **typed opcodes** — the operand type and size are encoded in the o
 ### 13.1 Load / Store
 
 ```
-ILOAD  <offset>    — load i32 from frame offset
+ILOAD  <offset>    — load i64 from frame offset
 FLOAD  <offset>    — load f64 from frame offset
-RLOAD  <offset>    — load relative offset ($ref) from frame offset
-ISTORE <offset>    — store i32 to frame offset
+RLOAD  <offset>    — load i64 absolute stack address ($ref) from frame offset
+ISTORE <offset>    — store i64 to frame offset
 FSTORE <offset>    — store f64 to frame offset
-RSTORE <offset>    — store relative offset to frame offset
+RSTORE <offset>    — store i64 absolute stack address to frame offset
 ```
 
 ### 13.2 Constants
 
 ```
-ICONST <imm>       — push i32 literal
+ICONST <imm>       — push i64 literal
 FCONST <imm>       — push f64 literal
-RNULL              — push $null reference
+RNULL              — push $null reference (absolute address 0)
 ```
 
 ### 13.3 Arithmetic
 
 ```
-IADD  ISUB  IMUL  IDIV  IMOD   — i32 arithmetic
+IADD  ISUB  IMUL  IDIV  IMOD   — i64 arithmetic
 FADD  FSUB  FMUL  FDIV         — f64 arithmetic
 ```
 
 ### 13.4 Comparison
 
 ```
-IEQ  INEQ  ILT  IGT  ILTE  IGTE   — i32 comparisons, push bool
+IEQ  INEQ  ILT  IGT  ILTE  IGTE   — i64 comparisons, push bool
 FEQ  FNEQ  FLT  FGT  FLTE  FGTE   — f64 comparisons, push bool
-REQ  RNEQ                          — reference equality
+REQ  RNEQ                          — reference equality (not yet implemented)
 ```
 
 ### 13.5 Type Conversion
 
 ```
-I2F    — convert i32 → f64
-F2I    — convert f64 → i32 (truncate)
+I2F    — convert i64 → f64
+F2I    — convert f64 → i64 (truncate)
 ```
 
 ### 13.6 Scope / Block
@@ -1431,10 +1478,12 @@ Each function table entry carries a `flags` field. When `flags & NATIVE` is set,
 ### 13.8 Reference / Indirection
 
 ```
-ADDREF  <offset>   — compute relative offset to a frame location
-DEREF              — resolve a relative offset to its target location
-PLOAD   <offset>   — load field from $parent via its $ref
-PSTORE  <offset>   — store field to $parent via its $ref
+ADDREF  <offset>   — push absolute stack address of frame[offset] as i64
+DEREF              — resolve an absolute stack address to its target location (traps on 0)
+RNULL              — push $null (absolute address 0) as i64
+JNULL   <label>    — jump if top of stack is 0 ($null reference)
+PLOAD   <offset>   — load field from $parent frame at (parent_base + offset)
+PSTORE  <offset>   — store field to $parent frame at (parent_base + offset)
 ```
 
 ### 13.9 Block Instantiation
@@ -1444,6 +1493,8 @@ NEW <offset> <size>   — re-execute block at <offset>, write result into <size>
 ```
 
 `NEW` is the only opcode that re-executes logic. It corresponds directly to `$new` in source.
+
+> **Not yet implemented**: `NEW` opcode. `$new` currently emits `RESERVE` + `CALL` against a named deferred function; arbitrary block re-execution via offset is not yet supported.
 
 ### 13.10 Control Flow
 
@@ -1479,7 +1530,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 | Properties | `$prop`, no fixed offset | no |
 | Traits | `$traits` + `$impl` | via property table |
 | Mutability | `$mut` / `$const` in field type | yes — `$mut <: $const` |
-| References | `$ref`, relative offset | yes — same as referent type |
+| References | `$ref`, absolute stack address (8 bytes) | yes — same as referent type |
 
 ---
 
@@ -1501,7 +1552,7 @@ storage-expr::= '$mut' expr
 block       ::= '{' stmt* '}'
 stmt        ::= decl
              |  expr ';'
-             |  '$ret' expr? ';'
+             |  '$ret' expr ';'
              |  '$exit' expr ';'
              |  '$set' name expr ';'
              |  '$call' expr expr ';'
@@ -1533,13 +1584,102 @@ The following questions were previously open; they are now settled.
 
 **Implicit `$parent` in method calls** — when emitting `$call obj.method args`, the caller pushes `$parent = &obj` as a hidden argument before the normal arguments, matching the existing calling convention (caller-owned, cleaned up after CALL). The VM emitter is responsible for inserting this push. This is consistent with the existing `$parent` slot at `frame[0]` inside every function body.
 
-**`$null` representation** — `RNULL` pushes `INT32_MIN` (0x80000000) as the null sentinel. `DEREF` traps at runtime if it encounters this value. `JNULL` branches when the top of stack equals `INT32_MIN`. The self-referential definition `$decl $null $ref $null` in §5.5 maps to this concrete value.
+**`$null` representation** — `RNULL` pushes `0` (absolute address 0) as the null sentinel. Address 0 is never a valid frame address since `frame[0]` is reserved for `$parent`. `DEREF` traps at runtime if it encounters `0`. `JNULL` branches when the top of stack equals `0`. The self-referential definition `$decl $null $ref $null` in §5.5 maps to this concrete value.
 
 **Cross-frame `$ref` lifetime** — a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. This rule is not enforced by the compiler in v1.0; it is a programmer responsibility documented here. Violating it (e.g. storing a `$ref` to a local that is then popped) results in undefined behavior.
 
 **`$mut` / `$const` on `$ref` fields** — the mutability qualifier on a `$ref` describes access through the reference, not storage of the reference itself:
 - `$const $ref x` — read-only access through the ref, regardless of x's own mutability.
 - `$mut $ref x` — read-write access through the ref, but only valid if x is itself `$mut`.
-The ref's own storage (the signed relative-offset integer) is always fixed-size and always writable as a slot (it is the access semantics that are controlled, not the ref slot).
+The ref's own storage (the 8-byte absolute address) is always fixed-size and always writable as a slot (it is the access semantics that are controlled, not the ref slot).
 
 **Property table dispatch for `$parent`** — when a trait method is called through a fat trait variable (`traitVar.$impl.$methodB`), the calling sequence is: (1) load `traitVar.$impl` to get the property table ref, (2) load the method's function-table index from the property table, (3) load `traitVar.$data` and push it as `$parent`, (4) CALLF. The `$parent` slot at the callee's `frame[0]` then points to the concrete data instance, not the fat variable itself.
+
+---
+
+## 21. Operator Table
+
+All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "Args" shows the min–max argument count; `∞` means unlimited.
+
+| Operator | Args | Description |
+|---|---|---|
+| **Structural** | | |
+| `$group` | 0–∞ | Tuple / unit group. 0 args = `()` (void unit). |
+| `$block` | 0–∞ | Explicit block literal. |
+| **Core Constructs** | | |
+| `$decl` | 2 | Declare a named binding. Preprocessor action. |
+| `$prop` | 2 | Declare a compile-time constant property on a block. Preprocessor action. |
+| `$set` | 2 | Assign a value to a mutable binding. |
+| `$call` | 2 | Call a function: `$call func args`. |
+| `$func` | 2 | Function literal: `$func params body`. |
+| `$if` | 2–3 | Conditional: `$if cond then [else]`. |
+| `$while` | 2 | Loop: `$while cond body`. Result type is `{}`. |
+| `$ret` | 1 | Return from function. `$ret ()` for void return. Explicit operand required. |
+| `$exit` | 1 | Exit process. `$exit 0;` required (no bare `$exit`). |
+| `$break` | 0 | Break out of nearest loop. Type is `$never`. |
+| `$continue` | 0 | Continue to next loop iteration. Type is `$never`. |
+| **Member Access** | | |
+| `$member` | 2 | Field or property access: `$member obj field`. Properties resolved at compile time. |
+| **Storage Qualifiers** | | |
+| `$mut` | 1 | Mark storage as mutable. |
+| `$const` | 1 | Mark storage as immutable (default). |
+| `$inline` | 1 | Inline storage qualifier (implementation extension). |
+| **Reference** | | |
+| `$ref` | 1 | Create a reference (8-byte absolute stack address). |
+| `$null` | 0 | Null reference (absolute address 0). |
+| `$new` | 1–2 | Re-instantiate a block: `$new Type [overrides]`. |
+| **Scope / Context** | | |
+| `$this` | 0 | Address of the current block. |
+| `$parent` | 0 | Reference to the enclosing block. |
+| `$file` | 0 | Current file's block. |
+| `$global` | 0 | Global frame reference. |
+| **Modules** | | |
+| `$import` | 1 | Import a module by file path string. Preprocessor action. |
+| `$syntax` | 1 | Switch grammar for the current block. Preprocessor action. |
+| **Type System** | | |
+| `$array` | 2 | Array type: `$array ElemType count`. |
+| `$index` | 2 | Array element access: `$index arr i`. |
+| `$union` | 1–∞ | Tagged union type: `$union V1 V2 ...`. |
+| `$as` | 2 | Reinterpret cast: `$as expr TargetType`. |
+| **Arithmetic** | | |
+| `$add` | 2 | Integer addition. |
+| `$sub` | 2 | Integer subtraction. |
+| `$mul` | 2 | Integer multiplication. |
+| `$div` | 2 | Integer division. |
+| `$mod` | 2 | Integer modulo (truncated). |
+| `$rem` | 2 | Integer remainder (implementation extension; alias of `$mod`). |
+| `$fadd` | 2 | Float addition. |
+| `$fsub` | 2 | Float subtraction. |
+| `$fmul` | 2 | Float multiplication. |
+| `$fdiv` | 2 | Float division. |
+| **Comparison** | | |
+| `$eq` | 2 | Integer equality. |
+| `$neq` | 2 | Integer inequality. |
+| `$lt` | 2 | Integer less-than. |
+| `$gt` | 2 | Integer greater-than. |
+| `$lte` | 2 | Integer less-than-or-equal. |
+| `$gte` | 2 | Integer greater-than-or-equal. |
+| **Logic** | | |
+| `$and` | 2 | Logical AND. |
+| `$or` | 2 | Logical OR. |
+| `$not` | 1 | Logical NOT. |
+| **Bitwise** (not yet implemented) | | |
+| `$band` | 2 | Bitwise AND. |
+| `$bor` | 2 | Bitwise OR. |
+| `$bxor` | 2 | Bitwise XOR. |
+| `$bnot` | 1 | Bitwise NOT. |
+| `$lshift` | 2 | Left shift. |
+| `$rshift` | 2 | Right shift. |
+| **Type Conversion** | | |
+| `$i2f` | 1 | Convert i64 → f64. |
+| `$f2i` | 1 | Convert f64 → i64 (truncate). |
+| **Traits** (partially implemented) | | |
+| `$traits` | 1 | Declare a trait (set of properties). |
+| `$impl` | 2–3 | Implement a trait for a type. |
+| **FFI** | | |
+| `$extern` | 1 | Bind to a native C symbol. |
+| **Implementation Extensions** (not in type lattice / grammar) | | |
+| `$inline` | 1 | Inline storage hint (not in spec grammar). |
+| `$forward` | 1 | Forward-declare a function body (implementation only). |
+| `$idtstr` | 1 | Convert intern ID to string (implementation only). |
+| `$strtid` | 1 | Convert string to intern ID (implementation only). |
