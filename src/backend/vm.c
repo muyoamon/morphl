@@ -5,7 +5,7 @@
  * SPEC.md Section 11.  Only the "core" opcode subset is emitted; reference
  * and block-instantiation opcodes are stubbed (see vm.h TODO list).
  *
- * Binary file layout (format version 2.0):
+ * Binary file layout (format version 0.2):
  *   [Header]         4 bytes magic + u16 major + u16 minor + u32 flags
  *   [Function Table] u32 count; then per-function: entry_point, frame_size,
  *                    param_size, flags (all u32 LE)

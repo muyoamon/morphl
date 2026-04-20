@@ -6,8 +6,8 @@
 #include <stdint.h>
 
 #define MORPHL_VM_MAGIC        "MVMB"
-#define MORPHL_VM_VERSION_MAJOR 2
-#define MORPHL_VM_VERSION_MINOR 0
+#define MORPHL_VM_VERSION_MAJOR 0         // Major Version 0 never guarantee backward compatibility
+#define MORPHL_VM_VERSION_MINOR 2
 
 /*
  * Opcode encoding
