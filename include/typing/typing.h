@@ -61,6 +61,8 @@ typedef struct {
   bool is_mutable;
   bool is_inline;
   bool is_ref;     // true for $ref (absolute-address reference, 8 bytes); false for $mut/$const/$inline qualifiers
+  bool is_recursive;
+  Sym recursive_sym; // only check when is recursive
 } MorphlRefType;
 
 // Array type metadata: fixed-size contiguous sequence of N elements of type T

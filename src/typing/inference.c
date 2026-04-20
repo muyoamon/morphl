@@ -209,6 +209,14 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       ref_type->data.ref.is_ref = true;
       /* $ref stores an 8-byte absolute stack address (i64). size/align=8 from morphl_type_ref(). */
     }
+    // check if refernce is recursive
+    if (node->children[0]->op == interns_intern(ctx->interns, str_from("$parent", 7))
+        || node->children[0]->op == interns_intern(ctx->interns, str_from("$file", 5)) 
+        || node->children[0]->op == interns_intern(ctx->interns, str_from("$this", 5))
+        || node->children[0]->op == interns_intern(ctx->interns, str_from("$global", 7))) {
+      ref_type->data.ref.is_recursive = true;
+      ref_type->data.ref.recursive_sym = node->children[0]->op;
+    }
     return ref_type;
   }
 

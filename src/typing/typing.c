@@ -546,10 +546,12 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
       case MORPHL_TYPE_REF: {
         const char* mut = type->data.ref.is_mutable ? "mut" : "const";
         // const char* inl = type->data.ref.is_inline ? "inline" : "";
-        // Str underlying = morphl_type_to_string(type->data.ref.target, interns);
-        // snprintf(buf, sizeof(buf), "%s&%.*s", mut, (int)underlying.len, underlying.ptr);
-        snprintf(buf, sizeof(buf), "%s&", mut);
-        // free((void*)underlying.ptr);
+        Str underlying = (type->data.ref.is_recursive) ? 
+          interns_lookup(interns, type->data.ref.recursive_sym) 
+          : morphl_type_to_string(type->data.ref.target, interns);
+        printf("%.*s", (int)underlying.len, underlying.ptr);
+        snprintf(buf, sizeof(buf), "%s&%.*s", mut, (int)underlying.len, underlying.ptr);
+        if (!type->data.ref.is_recursive) free((void*)underlying.ptr);
         result = new_cstr(buf);
         break;
       }
