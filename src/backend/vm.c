@@ -174,6 +174,13 @@ typedef struct {
     size_t global_slot;  /* byte offset in the global frame where this slot lives (32, 40, ...) */
 } ImportSlot;
 
+/* Trait implementation entry: maps impl type name → property table offset in global frame */
+typedef struct {
+    Str    impl_name;       /* name of the implementing type (e.g., "typeE") */
+    size_t prop_table_off;  /* byte offset in global frame where this impl's prop table starts */
+    size_t prop_count;      /* number of prop slots in the property table */
+} ImplEntry;
+
 typedef struct VmEmitter {
     VmBytes         code;
     VmFunctionTable functions;
@@ -211,6 +218,11 @@ typedef struct VmEmitter {
     /* native symbol table: names of $extern declarations, in order of allocation */
     char**          native_syms;
     size_t          native_sym_count, native_sym_capacity;
+    /* trait implementation property tables: stored in global frame after import slots */
+    ImplEntry*      impl_entries;
+    size_t          impl_count, impl_capacity;
+    size_t          impl_prop_table_base; /* byte offset in global frame where prop tables start */
+    size_t          impl_prop_table_ptr;  /* current alloc pointer for next prop table */
 } VmEmitter;
 
 /* ── opcode helpers ─────────────────────────────────────────────────────── */
@@ -546,9 +558,17 @@ static size_t block_scope_size(struct AstNode* block) {
         if (!ch) continue;
         if (ch->kind == AST_DECL && ch->type) {
             const MorphlType* t = unwrap_ref(ch->type);
-            size_t fa = type_frame_align(t);
-            offset = align_up(offset, fa);
-            offset += type_frame_size(t);
+            /* Trait variable: RHS is ident with a trait-only-prop BLOCK type → fat-block = 16 bytes */
+            if (t && t->kind == MORPHL_TYPE_BLOCK && t->data.block.field_count == 0 &&
+                t->data.block.prop_count > 0 && ch->child_count >= 2 &&
+                ch->children[1] && ch->children[1]->kind == AST_IDENT) {
+                offset = align_up(offset, 8);
+                offset += 16;
+            } else {
+                size_t fa = type_frame_align(t);
+                offset = align_up(offset, fa);
+                offset += type_frame_size(t);
+            }
         }
     }
     return offset;
@@ -709,14 +729,42 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
         }
 
+        /* If this $decl foo $func... is the real body resolving a prior $forward stub,
+         * find the matching deferred entry by name and replace its AST node in-place.
+         * The frame slot and fidx were already allocated by the $forward declaration. */
+        if (rhs && rhs->kind == AST_FUNC &&
+            morphl_backend_find_offset(&e->frameInfo, name) != PTRDIFF_MAX) {
+            for (size_t i = 0; i < e->deferred_count; i++) {
+                if (str_eq(e->deferred[i].name, name)) {
+                    e->deferred[i].node = rhs;
+                    return true;
+                }
+            }
+        }
+
         const MorphlType* raw_type = node->type;
         const MorphlType* t = unwrap_ref(raw_type);
 
         /* insert alignment padding before the variable, then register in frame tracker */
-        if (t && !frame_align_for_type(e, t)) return false;
+        /* Trait variable (no fields, only props, RHS is an ident): fat-block = 2 refs = 16 bytes */
+        bool is_trait_var = (t && t->kind == MORPHL_TYPE_BLOCK &&
+                             t->data.block.field_count == 0 &&
+                             t->data.block.prop_count > 0 &&
+                             rhs && rhs->kind == AST_IDENT);
+        if (is_trait_var) {
+            /* 8-byte align for the two ref slots */
+            size_t cur = frame_current_size(&e->frameInfo);
+            size_t aligned = align_up(cur, 8);
+            if (aligned > cur) {
+                struct MorphlBackendFrameOffset pad = { .name = str_from("", 0), .size = aligned - cur };
+                if (!morphl_backend_append_offset(&e->frameInfo, pad)) return false;
+            }
+        } else {
+            if (t && !frame_align_for_type(e, t)) return false;
+        }
         struct MorphlBackendFrameOffset foff = {
             .name = name,
-            .size = t ? type_frame_size(t) : 0
+            .size = is_trait_var ? 16 : (t ? type_frame_size(t) : 0)
         };
         if (!morphl_backend_append_offset(&e->frameInfo, foff)) return false;
 
@@ -781,6 +829,31 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 e->functions.items[fidx].param_size  = param_sz;
                 e->functions.items[fidx].frame_size  = 0;
                 /* store function table index as i64 in the variable's frame slot */
+                if (!emit_iconst(e, (int64_t)fidx)) return false;
+                return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
+            }
+        }
+
+        /* $forward func-stub — pre-allocate a fidx for the stub and defer it so that
+         * recursive calls made before the real body is defined can resolve the index.
+         * When the real $decl foo $func... arrives, the early-return above replaces the
+         * stub node in the deferred table without allocating another frame slot. */
+        if (rhs && rhs->kind == AST_BUILTIN && e->interns && rhs->op) {
+            Str fwd_op = interns_lookup(e->interns, rhs->op);
+            if (fwd_op.len == 8 && memcmp(fwd_op.ptr, "$forward", 8) == 0) {
+                if (rhs->child_count < 1 || !rhs->children[0] ||
+                    rhs->children[0]->kind != AST_FUNC) {
+                    VM_ERR(node, "$forward: expected a function stub as argument");
+                    return false;
+                }
+                struct AstNode* stub = rhs->children[0];
+                size_t fidx = func_alloc(e);
+                if (fidx == SIZE_MAX) return false;
+                if (e->deferred_count >= e->deferred_capacity) {
+                    if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
+                                 sizeof(DeferredFunc), e->deferred_count + 1)) return false;
+                }
+                e->deferred[e->deferred_count++] = (DeferredFunc){ stub, fidx, name };
                 if (!emit_iconst(e, (int64_t)fidx)) return false;
                 return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
             }
@@ -988,6 +1061,110 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
         }
 
+        /* Special case: $decl x $if cond A B where the result type is a union.
+         * The standard path (emit rhs → stack value → ISTORE) doesn't work because:
+         *   a) union types have sop==0xFF (no single-slot store), and
+         *   b) the two branches may have different types (int vs float).
+         * Instead, emit each branch with inline data+tag stores directly into x's frame. */
+        if (t && t->kind == MORPHL_TYPE_UNION && rhs && rhs->kind == AST_IF &&
+            rhs->child_count >= 3) {
+            ptrdiff_t tag_off = off + (ptrdiff_t)(t->size - 8);
+            struct AstNode* cond_nd = rhs->children[0];
+            struct AstNode* then_nd = rhs->children[1];
+            struct AstNode* else_nd = rhs->children[2];
+            /* emit condition + negate */
+            if (!emit_node(e, cond_nd)) return false;
+            if (!emit_iconst(e, 0)) return false;
+            if (!emit_op(e, VM_OP_IEQ)) return false;
+            size_t else_lbl = label_new(e);
+            size_t end_lbl  = label_new(e);
+            if (else_lbl == SIZE_MAX || end_lbl == SIZE_MAX) return false;
+            if (!emit_jump(e, VM_OP_JIF, else_lbl)) return false;
+            /* then branch: emit value, store data, store tag=0 */
+            if (!emit_node(e, then_nd)) return false;
+            {
+                const MorphlType* branch_t = unwrap_ref(then_nd->type);
+                uint8_t sop2 = branch_t ? store_op(branch_t) : 0xFF;
+                if (sop2 == 0xFF) { VM_ERR(then_nd, "$if: unsupported then-branch type for union"); return false; }
+                if (!emit_op_i32(e, sop2, (int32_t)off)) return false;
+            }
+            if (!emit_iconst(e, 0)) return false;
+            if (!emit_op_i32(e, VM_OP_ISTORE, (int32_t)tag_off)) return false;
+            if (!emit_jump(e, VM_OP_JMP, end_lbl)) return false;
+            /* else branch: emit value, store data, store tag=1 */
+            if (!label_bind(e, else_lbl)) return false;
+            if (!emit_node(e, else_nd)) return false;
+            {
+                const MorphlType* branch_t = unwrap_ref(else_nd->type);
+                uint8_t sop2 = branch_t ? store_op(branch_t) : 0xFF;
+                if (sop2 == 0xFF) { VM_ERR(else_nd, "$if: unsupported else-branch type for union"); return false; }
+                if (!emit_op_i32(e, sop2, (int32_t)off)) return false;
+            }
+            if (!emit_iconst(e, 1)) return false;
+            if (!emit_op_i32(e, VM_OP_ISTORE, (int32_t)tag_off)) return false;
+            return label_bind(e, end_lbl);
+        }
+
+        /* Trait variable declaration: $decl traitVar TraitA
+         * Frame is zero-initialized (both fat-block ref slots = null) — nothing to emit. */
+        if (is_trait_var) {
+            return true;
+        }
+
+        /* $impl declaration: $decl typeE $impl TraitA typeD { overrides }
+         * Emit the override block to register deferred prop functions, then write
+         * function indices into the property table in the global frame. */
+        if (rhs && rhs->kind == AST_BUILTIN && e->interns && rhs->op) {
+            Str rhs_op_s = interns_lookup(e->interns, rhs->op);
+            if (rhs_op_s.len == 5 && memcmp(rhs_op_s.ptr, "$impl", 5) == 0) {
+                const MorphlType* impl_t = rhs->type ? unwrap_ref(rhs->type) : NULL;
+                if (impl_t && impl_t->kind == MORPHL_TYPE_BLOCK && impl_t->data.block.prop_count > 0) {
+                    /* Allocate prop table space in the global frame */
+                    size_t entry_prop_off = e->impl_prop_table_ptr;
+                    e->impl_prop_table_ptr += impl_t->data.block.prop_count * 8;
+
+                    /* Emit the override block — this defers the prop functions */
+                    size_t dc_before = e->deferred_count;
+                    if (rhs->child_count >= 3 && rhs->children[2]) {
+                        if (!emit_node(e, rhs->children[2])) return false;
+                    }
+                    size_t dc_after = e->deferred_count;
+
+                    /* For each newly deferred prop function, ASTORE its index into the prop table */
+                    for (size_t di = dc_before; di < dc_after; di++) {
+                        Str prop_name_d = e->deferred[di].name;
+                        size_t fidx_d   = e->deferred[di].func_idx;
+                        for (size_t pi = 0; pi < impl_t->data.block.prop_count; pi++) {
+                            if (!impl_t->data.block.prop_names) continue;
+                            Str pn = e->interns
+                                     ? interns_lookup(e->interns, impl_t->data.block.prop_names[pi])
+                                     : (Str){NULL, 0};
+                            if (str_eq(pn, prop_name_d)) {
+                                /* GLOBAL; ICONST fidx; ASTORE (entry_prop_off + pi*8) */
+                                if (!emit_op(e, VM_OP_GLOBAL)) return false;
+                                if (!emit_iconst(e, (int64_t)fidx_d)) return false;
+                                if (!emit_op_i32(e, VM_OP_ASTORE,
+                                                  (int32_t)(entry_prop_off + pi * 8))) return false;
+                                break;
+                            }
+                        }
+                    }
+
+                    /* Register ImplEntry so $set and $call can look it up */
+                    if (e->impl_count >= e->impl_capacity) {
+                        if (!vm_grow((void**)&e->impl_entries, &e->impl_capacity,
+                                     sizeof(ImplEntry), e->impl_count + 1)) return false;
+                    }
+                    e->impl_entries[e->impl_count++] = (ImplEntry){
+                        .impl_name      = name,
+                        .prop_table_off = entry_prop_off,
+                        .prop_count     = impl_t->data.block.prop_count,
+                    };
+                    return true;
+                }
+            }
+        }
+
         /* emit RHS expression */
         if (!emit_node(e, rhs)) return false;
 
@@ -1047,6 +1224,83 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* determine return type and its size */
         const MorphlType* ret_t = unwrap_ref(node->type);
         uint32_t ret_sz = (uint32_t)type_frame_size(ret_t);
+
+        /* Pre-detect trait dispatch: $call ($member traitVar method) args
+         * Must be done before RESERVE/ADDREF since $parent differs (= traitVar.$data).
+         * The callee may be wrapped in a group: ($member v method) → unwrap first. */
+        {
+            struct AstNode* callee_eff = callee;
+            /* Unwrap single-element group around callee (e.g. ($member v greet)) */
+            if (callee_eff->kind == AST_GROUP && callee_eff->child_count == 1 &&
+                callee_eff->children[0])
+                callee_eff = callee_eff->children[0];
+            if (callee_eff->kind == AST_BUILTIN && e->interns && callee_eff->op &&
+                callee_eff->child_count >= 2) {
+                Str callee_op_s = interns_lookup(e->interns, callee_eff->op);
+                if (callee_op_s.len == 7 && memcmp(callee_op_s.ptr, "$member", 7) == 0) {
+                    struct AstNode* trait_tgt = callee_eff->children[0];
+                    const MorphlType* trait_btype = trait_tgt ? unwrap_ref(trait_tgt->type) : NULL;
+                    if (trait_btype && trait_btype->kind == MORPHL_TYPE_BLOCK &&
+                        trait_btype->data.block.field_count == 0 &&
+                        trait_btype->data.block.prop_count > 0) {
+                        /* TRAIT DISPATCH */
+                        struct AstNode* field_nd2 = callee_eff->children[1];
+                        Str field_name2 = field_nd2 ? field_nd2->value : (Str){NULL, 0};
+                        if (!field_name2.ptr && e->interns && field_nd2 && field_nd2->op)
+                            field_name2 = interns_lookup(e->interns, field_nd2->op);
+
+                        /* Find prop index in the trait type */
+                        size_t prop_idx = SIZE_MAX;
+                        for (size_t pi = 0; pi < trait_btype->data.block.prop_count; pi++) {
+                            Str pn = {NULL, 0};
+                            if (e->interns && trait_btype->data.block.prop_names &&
+                                trait_btype->data.block.prop_names[pi])
+                                pn = interns_lookup(e->interns, trait_btype->data.block.prop_names[pi]);
+                            if (str_eq(pn, field_name2)) { prop_idx = pi; break; }
+                        }
+                        if (prop_idx == SIZE_MAX) {
+                            VM_ERR(callee_eff, "trait method '%.*s' not found in trait type",
+                                   (int)field_name2.len, field_name2.ptr);
+                            return false;
+                        }
+
+                        /* Find traitVar frame offset */
+                        if (!trait_tgt || trait_tgt->kind != AST_IDENT) {
+                            VM_ERR(callee_eff, "trait dispatch: target must be an identifier");
+                            return false;
+                        }
+                        Str traitvar_nm = alias_resolve(e, trait_tgt->value);
+                        ptrdiff_t traitvar_off = morphl_backend_find_offset(&e->frameInfo, traitvar_nm);
+                        if (traitvar_off == PTRDIFF_MAX) {
+                            VM_ERR(trait_tgt, "trait dispatch: undefined '%.*s'",
+                                   (int)traitvar_nm.len, traitvar_nm.ptr);
+                            return false;
+                        }
+
+                        /* Emit trait dispatch sequence:
+                         * RESERVE ret_sz
+                         * RLOAD traitvar+8   → $data ref = $parent (concrete instance abs addr)
+                         * [args]
+                         * RLOAD traitvar     → $impl ref (abs addr of property table)
+                         * ALOAD prop_idx*8   → function index from prop table
+                         * CALLX              → pop func index, dispatch */
+                        if (!emit_op_u32(e, VM_OP_RESERVE, ret_sz)) return false;
+                        if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)(traitvar_off + 8))) return false;
+                        if (args) {
+                            if (args->kind == AST_GROUP) {
+                                for (size_t i = 0; i < args->child_count; i++)
+                                    if (!emit_node(e, args->children[i])) return false;
+                            } else {
+                                if (!emit_node(e, args)) return false;
+                            }
+                        }
+                        if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)traitvar_off)) return false;
+                        if (!emit_op_i32(e, VM_OP_ALOAD, (int32_t)(prop_idx * 8))) return false;
+                        return emit_op(e, VM_OP_CALLX);
+                    }
+                }
+            }
+        }
 
         /* RESERVE return slot */
         if (!emit_op_u32(e, VM_OP_RESERVE, ret_sz)) return false;
@@ -1239,6 +1493,55 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             VM_ERR(target, "$set target must be identifier or compound lvalue");
             return false;
         }
+
+        /* Trait variable assignment: $set traitVar someImpl
+         * Store prop-table ref ($impl) and concrete-instance ref ($data) into the fat-block. */
+        {
+            const MorphlType* tgt_t = target->type ? unwrap_ref(target->type) : NULL;
+            if (tgt_t && tgt_t->kind == MORPHL_TYPE_BLOCK &&
+                tgt_t->data.block.field_count == 0 && tgt_t->data.block.prop_count > 0) {
+                /* Resolve trait variable's frame offset */
+                ptrdiff_t tv_extra = 0;
+                Str tv_name = alias_resolve_full(e, target->value, &tv_extra);
+                ptrdiff_t tv_off = morphl_backend_find_offset(&e->frameInfo, tv_name) + tv_extra;
+                if (tv_off == PTRDIFF_MAX + tv_extra) {
+                    VM_ERR(target, "undefined trait variable '%.*s'",
+                           (int)target->value.len, target->value.ptr);
+                    return false;
+                }
+                /* value must be an identifier (impl type name) */
+                if (value->kind != AST_IDENT) {
+                    VM_ERR(value, "$set: trait assignment requires an identifier on the right-hand side");
+                    return false;
+                }
+                Str val_name = value->value;
+                /* Look up the ImplEntry for this impl type */
+                const ImplEntry* entry = NULL;
+                for (size_t ie = 0; ie < e->impl_count; ie++) {
+                    if (str_eq(e->impl_entries[ie].impl_name, val_name)) {
+                        entry = &e->impl_entries[ie];
+                        break;
+                    }
+                }
+                if (!entry) {
+                    VM_ERR(value, "$set: '%.*s' has no trait impl registered",
+                           (int)val_name.len, val_name.ptr);
+                    return false;
+                }
+                /* Find the frame offset of the impl instance */
+                ptrdiff_t val_extra = 0;
+                Str val_resolved = alias_resolve_full(e, val_name, &val_extra);
+                ptrdiff_t val_off = morphl_backend_find_offset(&e->frameInfo, val_resolved) + val_extra;
+                /* Store $impl ref = absolute address of prop table (global frame offset IS abs addr) */
+                if (!emit_iconst(e, (int64_t)entry->prop_table_off)) return false;
+                if (!emit_op_i32(e, VM_OP_RSTORE, (int32_t)tv_off)) return false;
+                /* Store $data ref = absolute address of the impl instance */
+                if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)val_off)) return false;
+                if (!emit_op_i32(e, VM_OP_RSTORE, (int32_t)(tv_off + 8))) return false;
+                return true;
+            }
+        }
+
         if (!emit_node(e, value)) return false;
         /* resolve compile-time $ref aliases for the assignment target */
         ptrdiff_t textra = 0;
@@ -1539,7 +1842,25 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 VM_ERR(field_nd, "$member: unsupported field type for load");
                 return false;
             }
-            return emit_op_i32(e, lop, (int32_t)(target_off + field_offset));
+            if (!emit_op_i32(e, lop, (int32_t)(target_off + field_offset))) return false;
+            /* For true $ref fields (is_ref==true) with a scalar target, RLOAD pushes the
+             * stored address; emit DEREF to follow through to the actual scalar value.
+             * Block-typed $ref fields keep the address on the stack — it is used as the
+             * base for subsequent ALOAD-based nested $member access. */
+            {
+                const MorphlType* ft = field_type;
+                while (ft && ft->kind == MORPHL_TYPE_REF && !ft->data.ref.is_ref)
+                    ft = ft->data.ref.target;
+                if (ft && ft->kind == MORPHL_TYPE_REF && ft->data.ref.is_ref &&
+                    ft->data.ref.target) {
+                    MorphlTypeKind tk = ft->data.ref.target->kind;
+                    if (tk == MORPHL_TYPE_INT || tk == MORPHL_TYPE_FLOAT ||
+                        tk == MORPHL_TYPE_BOOL || tk == MORPHL_TYPE_STRING) {
+                        if (!emit_op(e, VM_OP_DEREF)) return false;
+                    }
+                }
+            }
+            return true;
         }
 
         /* $traits { $prop... } — trait type declaration; emit the block's init code */
@@ -1905,6 +2226,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             {"$fsub", 0xFF, VM_OP_FSUB},
             {"$fmul", 0xFF, VM_OP_FMUL},
             {"$fdiv", 0xFF, VM_OP_FDIV},
+            /* bitwise (int-only) */
+            {"$band",   VM_OP_IBAND,   0xFF},
+            {"$bor",    VM_OP_IBOR,    0xFF},
+            {"$bxor",   VM_OP_IBXOR,   0xFF},
+            {"$lshift", VM_OP_ILSHIFT, 0xFF},
+            {"$rshift", VM_OP_IRSHIFT, 0xFF},
+            /* reference equality (treat operands as i64 addresses, not typed) */
+            {"$req",  VM_OP_REQ,  0xFF},
+            {"$rneq", VM_OP_RNEQ, 0xFF},
         };
         for (size_t i = 0; i < sizeof(binops)/sizeof(binops[0]); i++) {
             size_t nlen = strlen(binops[i].name);
@@ -1924,6 +2254,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 }
                 return emit_op(e, op_byte);
             }
+        }
+
+        /* $bnot — unary bitwise NOT */
+        if (OP_IS("$bnot")) {
+            if (node->child_count < 1) return false;
+            if (!emit_node(e, node->children[0])) return false;
+            return emit_op(e, VM_OP_IBNOT);
+        }
+
+        /* $file — push reference to the current file's top-level scope.
+         * In this VM all top-level declarations live in the global frame, so
+         * $file and $global are the same address (0). */
+        if (OP_IS("$file")) {
+            return emit_op(e, VM_OP_GLOBAL);
         }
 
         /* $global — push absolute stack address 0 (global frame base) */
@@ -2124,6 +2468,7 @@ static void emitter_free(VmEmitter* e) {
     free(e->str_table);
     for (size_t i = 0; i < e->native_sym_count; i++) free(e->native_syms[i]);
     free(e->native_syms);
+    free(e->impl_entries);
     morphl_backend_frame_free(&e->frameInfo);
     memset(e, 0, sizeof(*e));
 }
@@ -2287,6 +2632,24 @@ static void flatten_block(FlattenCtx* ctx, InternTable* interns, struct AstNode*
     }
 }
 
+/* ── pre-pass: count total property table space for $impl declarations ───── */
+
+static size_t count_impl_prop_space(InternTable* interns, struct AstNode* root) {
+    if (!root || !interns) return 0;
+    Sym impl_sym = interns_intern(interns, str_from("$impl", 5));
+    size_t total = 0;
+    for (size_t i = 0; i < root->child_count; i++) {
+        struct AstNode* ch = root->children[i];
+        if (!ch || ch->kind != AST_DECL || ch->child_count < 2) continue;
+        struct AstNode* rhs = ch->children[1];
+        if (!rhs || rhs->kind != AST_BUILTIN || rhs->op != impl_sym) continue;
+        const MorphlType* rt = rhs->type ? unwrap_ref(rhs->type) : NULL;
+        if (rt && rt->kind == MORPHL_TYPE_BLOCK && rt->data.block.prop_count > 0)
+            total += rt->data.block.prop_count * 8;
+    }
+    return total;
+}
+
 /* ── pre-pass: count $import declarations in the root AST_FILE ─────────── */
 
 static size_t count_imports(InternTable* interns, struct AstNode* root) {
@@ -2318,10 +2681,13 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     e.frameInfo       = morphl_backend_frame_init();
     if (!e.frameInfo.root) { emitter_free(&e); return false; }
 
-    /* pre-pass: compute global_frame_size = 32 + 8 * import_count */
+    /* pre-pass: compute global_frame_size = 32 + 8*import_count + impl_prop_space */
     {
-        size_t import_count = count_imports(e.interns, context->tree);
-        e.global_frame_size = 32 + 8 * import_count;
+        size_t import_count    = count_imports(e.interns, context->tree);
+        size_t impl_prop_space = count_impl_prop_space(e.interns, context->tree);
+        e.global_frame_size    = 32 + 8 * import_count + impl_prop_space;
+        e.impl_prop_table_base = 32 + 8 * import_count;
+        e.impl_prop_table_ptr  = e.impl_prop_table_base;
     }
 
     /* function 0 = top-level program (implicit main) */

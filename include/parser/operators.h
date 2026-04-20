@@ -84,6 +84,8 @@ enum Operator{
   BNOT,
   LSHIFT,
   RSHIFT,
+  REQ,
+  RNEQ,
   TRAITS,
   IMPL,
   EXIT,

@@ -545,8 +545,11 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
       }
       case MORPHL_TYPE_REF: {
         const char* mut = type->data.ref.is_mutable ? "mut" : "const";
-        const char* inl = type->data.ref.is_inline ? " inline" : "";
-        snprintf(buf, sizeof(buf), "ref[%s%s]", mut, inl);
+        // const char* inl = type->data.ref.is_inline ? "inline" : "";
+        // Str underlying = morphl_type_to_string(type->data.ref.target, interns);
+        // snprintf(buf, sizeof(buf), "%s&%.*s", mut, (int)underlying.len, underlying.ptr);
+        snprintf(buf, sizeof(buf), "%s&", mut);
+        // free((void*)underlying.ptr);
         result = new_cstr(buf);
         break;
       }
@@ -626,6 +629,14 @@ bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super) {
       if (!morphl_type_is_subtype(sub->data.union_t.variant_types[i], super)) return false;
     }
     return true;
+  }
+  if (sub->kind == MORPHL_TYPE_REF) {
+    // $mut ref <: $const ref (mutable is a subtype of const, not the reverse)
+    if (!sub->data.ref.is_mutable && super->data.ref.is_mutable) return false;
+    // is_ref and is_inline qualifiers must match exactly
+    if (sub->data.ref.is_ref != super->data.ref.is_ref) return false;
+    if (sub->data.ref.is_inline != super->data.ref.is_inline) return false;
+    return morphl_type_is_subtype(sub->data.ref.target, super->data.ref.target);
   }
   // For all other types, fall back to exact equality
   return morphl_type_equals(sub, super);

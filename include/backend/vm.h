@@ -85,6 +85,7 @@ enum VmOpcode {
   VM_OP_RET     = 0x52,  // no operand  return to caller
   VM_OP_CALLF   = 0x53,  // [i32 off]   indirect call: load func index from frame[off], dispatch
   VM_OP_EXIT    = 0x54,  //             pop i64 from stack, exit program with that value as exit code
+  VM_OP_CALLX   = 0x55,  //             pop i64 function index from stack, dispatch (dynamic trait dispatch)
 
   /* ── Reference / indirection ── */
   VM_OP_ADDREF  = 0x60,  // [i32 off]  push absolute stack address of frame[off] as i64
@@ -93,6 +94,18 @@ enum VmOpcode {
   /* ── $parent field access ── */
   VM_OP_PLOAD   = 0x62,  // [i32 off]  load i64 from absolute address stored in parent slot + off
   VM_OP_PSTORE  = 0x63,  // [i32 off]  store i64 to absolute address stored in parent slot + off
+
+  /* ── Integer bitwise  (pop 2 i64, push 1 i64) ── */
+  VM_OP_IBAND   = 0x80,
+  VM_OP_IBOR    = 0x81,
+  VM_OP_IBXOR   = 0x82,
+  VM_OP_IBNOT   = 0x83,  // unary: pop 1 i64, push ~a
+  VM_OP_ILSHIFT = 0x84,
+  VM_OP_IRSHIFT = 0x85,
+
+  /* ── Reference equality  (pop 2 i64 addresses, push i64 0 or 1) ── */
+  VM_OP_REQ     = 0x86,
+  VM_OP_RNEQ    = 0x87,
 
   /* ── String operations ── */
   VM_OP_SCONST  = 0x70,  // [u32 idx]  push pointer (as i64) to string table entry <idx>

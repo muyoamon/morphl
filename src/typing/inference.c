@@ -368,6 +368,25 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return morphl_type_float(ctx->arena);
   }
   
+  // Reference equality: ($ref T, $ref T) → bool
+  if (op_sym == interns_intern(ctx->interns, str_from("$req", 4)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$rneq", 5))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* left  = arg_types[0];
+    MorphlType* right = arg_types[1];
+    if (!left || left->kind != MORPHL_TYPE_REF ||
+        !right || right->kind != MORPHL_TYPE_REF) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be $ref types", op_name);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_bool(ctx->arena);
+  }
+
   // Bitwise operators: (int, int) → int
   if (op_sym == interns_intern(ctx->interns, str_from("$band", 5)) ||
       op_sym == interns_intern(ctx->interns, str_from("$bor", 4)) ||
@@ -592,6 +611,11 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     }
     // Function call: first arg is function type
     MorphlType* func_type = unwrap_ref(arg_types[0]);
+    // Unwrap a single-element GROUP (e.g. callee wrapped in parentheses: ($member v $greet))
+    if (func_type && func_type->kind == MORPHL_TYPE_GROUP &&
+        func_type->data.group.elem_count == 1) {
+      func_type = unwrap_ref(func_type->data.group.elem_types[0]);
+    }
     if (!func_type || func_type->kind != MORPHL_TYPE_FUNC) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$call: first argument must be a function");
       morphl_error_emit(NULL, &err);
@@ -981,6 +1005,10 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
 
     case AST_GROUP: {
       size_t count = node->child_count;
+      /* A single-element group is a parenthesized expression — transparent. */
+      if (count == 1) {
+        return morphl_infer_type_of_ast(ctx, node->children[0]);
+      }
       MorphlType** elems = NULL;
       if (count > 0) {
         elems = (MorphlType**)malloc(count * sizeof(MorphlType*));
@@ -1373,6 +1401,13 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
             return target_type->data.block.field_types[i];
           }
         }
+        /* Also check props (trait methods accessible via $member on trait-typed variables) */
+        for (size_t i = 0; i < target_type->data.block.prop_count; ++i) {
+          if (target_type->data.block.prop_names &&
+              target_type->data.block.prop_names[i] == field_sym) {
+            return target_type->data.block.prop_types ? target_type->data.block.prop_types[i] : NULL;
+          }
+        }
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$member: field not found");
         morphl_error_emit(NULL, &err);
         return NULL;
@@ -1400,9 +1435,18 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           return value_type;
         }
         if (!morphl_type_equals(target_type, value_type)) {
-          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");
-          morphl_error_emit(NULL, &err);
-          return NULL;
+          /* Allow trait assignment: an impl type (BLOCK with fields+props) may be assigned
+           * to a trait-typed variable (BLOCK with only props, field_count==0). */
+          MorphlType* tgt_uw = unwrap_ref(target_type);
+          bool is_trait_assign = tgt_uw && tgt_uw->kind == MORPHL_TYPE_BLOCK &&
+                                 tgt_uw->data.block.field_count == 0 &&
+                                 tgt_uw->data.block.prop_count > 0 &&
+                                 morphl_type_is_subtype(value_type, tgt_uw);
+          if (!is_trait_assign) {
+            MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");
+            morphl_error_emit(NULL, &err);
+            return NULL;
+          }
         }
         return value_type;
       }

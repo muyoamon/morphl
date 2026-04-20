@@ -905,6 +905,10 @@ static OperatorRow kBuiltinOps[] = {
   {"$lshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, LSHIFT},
   {"$rshift", AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, RSHIFT},
 
+  // Reference equality
+  {"$req",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, REQ},
+  {"$rneq",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, RNEQ},
+
   // Preprocessor
   {"$syntax", AST_BUILTIN,true,  1, 1,           pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
   {"$import", AST_BUILTIN,true,  1, 1,           pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},

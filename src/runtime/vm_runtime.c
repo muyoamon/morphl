@@ -549,6 +549,18 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             PUSH_I64(a % b); break;
         }
 
+        /* ── integer bitwise ── */
+        case VM_OP_IBAND:   { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a & b);  break; }
+        case VM_OP_IBOR:    { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a | b);  break; }
+        case VM_OP_IBXOR:   { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a ^ b);  break; }
+        case VM_OP_IBNOT:   { int64_t a;    POP_I64(a);              PUSH_I64(~a);     break; }
+        case VM_OP_ILSHIFT: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a << b); break; }
+        case VM_OP_IRSHIFT: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a >> b); break; }
+
+        /* ── reference equality ── */
+        case VM_OP_REQ:  { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a == b ? 1 : 0); break; }
+        case VM_OP_RNEQ: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a != b ? 1 : 0); break; }
+
         /* ── float arithmetic ── */
         case VM_OP_FADD: { double b, a; POP_F64(b); POP_F64(a); PUSH_F64(a + b); break; }
         case VM_OP_FSUB: { double b, a; POP_F64(b); POP_F64(a); PUSH_F64(a - b); break; }
@@ -739,6 +751,38 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             }
             if (!stack_reserve(&vm->stack, fn->frame_size)) {
                 RT_ERR(err, "vm: OOM on CALLF frame"); return 1;
+            }
+            vm->ip = fn->entry_point;
+            break;
+        }
+
+        case VM_OP_CALLX: {
+            /* pop i64 function index from stack, dispatch (dynamic trait dispatch) */
+            int64_t raw; POP_I64(raw);
+            uint32_t idx = (uint32_t)raw;
+            if (idx >= vm->program->func_count) {
+                RT_ERR(err, "vm: CALLX index %u out of range", idx);
+                return 1;
+            }
+            VmFunctionMeta* fn = &vm->program->functions[idx];
+            if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
+                size_t fb = vm->stack.top;
+                if (fb < 8) { RT_ERR(err, "vm: native CALLX stack underflow"); return 1; }
+                int64_t result = vm->program->native_fns[fn->entry_point](
+                    vm->stack.data, fb, fn->param_size);
+                memcpy(vm->stack.data + fb - 8, &result, 8);
+                break;
+            }
+            VmCallFrame cf = {
+                .frame_base = vm->stack.top,
+                .return_ip  = vm->ip,
+                .func_index = idx,
+            };
+            if (!push_call_frame(vm, cf)) {
+                RT_ERR(err, "vm: call frame OOM"); return 1;
+            }
+            if (!stack_reserve(&vm->stack, fn->frame_size)) {
+                RT_ERR(err, "vm: OOM on CALLX frame"); return 1;
             }
             vm->ip = fn->entry_point;
             break;
