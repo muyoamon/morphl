@@ -675,20 +675,6 @@ static MorphlType* pp_action_const(const OperatorInfo* info,
   return morphl_type_ref(ctx->arena, target_type, false, false);
 }
 
-/* Helper: resolve a primitive type keyword by name */
-static MorphlType* resolve_primitive_type_name(Arena* arena, Str name) {
-  if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
-      str_eq(name, str_from("int", 3)))
-    return morphl_type_int(arena);
-  if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
-      str_eq(name, str_from("float", 5)))
-    return morphl_type_float(arena);
-  if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
-    return morphl_type_string(arena);
-  if (str_eq(name, str_from("bool", 4)))
-    return morphl_type_bool(arena);
-  return NULL;
-}
 
 /* $array elem-type count — allocate a fixed-size array */
 static MorphlType* pp_action_array(const OperatorInfo* info,
@@ -700,17 +686,8 @@ static MorphlType* pp_action_array(const OperatorInfo* info,
   TypeContext* ctx = (TypeContext*)block_state;
   if (!ctx || arg_count != 2 || !args[0] || !args[1]) return NULL;
 
-  /* Resolve element type: type-name identifier or inferred from value expression */
-  MorphlType* elem_type = NULL;
-  if (args[0]->kind == AST_IDENT) {
-    Str name = args[0]->value;
-    if (!name.ptr && ctx->interns && args[0]->op)
-      name = interns_lookup(ctx->interns, args[0]->op);
-    elem_type = resolve_primitive_type_name(ctx->arena, name);
-  }
-  if (!elem_type) {
-    elem_type = morphl_infer_type_of_ast(ctx, args[0]);
-  }
+  /* Resolve element type structurally from the expression */
+  MorphlType* elem_type = morphl_infer_type_of_ast(ctx, args[0]);
   if (!elem_type) {
     MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_TYPE, "$array: cannot resolve element type");
     morphl_error_emit(NULL, &err);
@@ -787,15 +764,8 @@ static MorphlType* pp_action_union(const OperatorInfo* info,
   if (!variant_types) return NULL;
   for (size_t i = 0; i < arg_count; ++i) {
     if (!args[i]) { variant_types[i] = morphl_type_never(ctx->arena); continue; }
-    /* Try type-name resolution first, then value inference */
-    MorphlType* vt = NULL;
-    if (args[i]->kind == AST_IDENT) {
-      Str name = args[i]->value;
-      if (!name.ptr && ctx->interns && args[i]->op)
-        name = interns_lookup(ctx->interns, args[i]->op);
-      vt = resolve_primitive_type_name(ctx->arena, name);
-    }
-    if (!vt) vt = morphl_infer_type_of_ast(ctx, args[i]);
+    /* Resolve variant type structurally from the expression */
+    MorphlType* vt = morphl_infer_type_of_ast(ctx, args[i]);
     if (!vt) {
       MorphlError err = MORPHL_ERR_NODE(args[i], MORPHL_E_TYPE, "$union: cannot resolve variant type");
       morphl_error_emit(NULL, &err);
@@ -816,20 +786,8 @@ static MorphlType* pp_action_as(const OperatorInfo* info,
   TypeContext* ctx = (TypeContext*)block_state;
   if (!ctx || arg_count != 2 || !args[0] || !args[1]) return NULL;
 
-  /* Resolve target type — type-name ident or inferred from value */
-  MorphlType* target_type = NULL;
-  if (args[1]->kind == AST_IDENT) {
-    Str name = args[1]->value;
-    if (!name.ptr && ctx->interns && args[1]->op)
-      name = interns_lookup(ctx->interns, args[1]->op);
-    target_type = resolve_primitive_type_name(ctx->arena, name);
-    if (!target_type) {
-      /* Look up named type in scope */
-      target_type = morphl_infer_type_of_ast(ctx, args[1]);
-    }
-  } else {
-    target_type = morphl_infer_type_of_ast(ctx, args[1]);
-  }
+  /* Resolve target type structurally from the expression */
+  MorphlType* target_type = morphl_infer_type_of_ast(ctx, args[1]);
   if (!target_type) {
     MorphlError err = MORPHL_ERR_NODE(args[1], MORPHL_E_TYPE, "$as: cannot resolve target type");
     morphl_error_emit(NULL, &err);

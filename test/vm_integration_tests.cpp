@@ -745,8 +745,7 @@ static void test_e2e_array_zero_init() {
 
 /* $index reads the correct element after mutation */
 static void test_e2e_array_index_read() {
-    /* Use $array i32 4 (keyword form), then $index 2 after manually
-     * writing via $member-style store if available, or just read zero */
+    /* Use $array 0 3 (structural form), then $index after init, or just read zero */
     int rc = compile_and_run(
         "$decl buf $array 0 3;\n"
         "$decl a $index buf 1;\n"
@@ -757,10 +756,10 @@ static void test_e2e_array_index_read() {
     printf("PASS test_e2e_array_index_read\n");
 }
 
-/* $array with keyword type name i32 */
+/* $array with structural element type from integer literal */
 static void test_e2e_array_type_name() {
     int rc = compile_and_run(
-        "$decl buf $array i32 2;\n"
+        "$decl buf $array 0 2;\n"
         "$decl v $index buf 0;\n"
         "$exit v;\n"
     );
@@ -770,11 +769,11 @@ static void test_e2e_array_type_name() {
 
 // ── Union tests ───────────────────────────────────────────────────────────────
 
-/* $decl s $union i32 f64 — frame is zero-initialized; $$tag starts at 0 */
+/* $decl s $union 0 0.0 — frame is zero-initialized; $$tag starts at 0 */
 static void test_e2e_union_zero_tag() {
     const char* src =
         "$decl main $func () {\n"
-        "    $decl s $union i32 f64;\n"
+        "    $decl s $union 0 0.0;\n"
         "    $ret $member s $$tag;\n"
         "};\n";
     int rc = compile_and_run(src);
@@ -785,7 +784,7 @@ static void test_e2e_union_zero_tag() {
 /* Named union type via $decl; same zero-tag behavior */
 static void test_e2e_union_named_type() {
     const char* src =
-        "$decl Shape $union i32 f64;\n"
+        "$decl Shape $union 0 0.0;\n"
         "$decl main $func () {\n"
         "    $decl s Shape;\n"
         "    $ret $member s $$tag;\n"
@@ -796,12 +795,12 @@ static void test_e2e_union_named_type() {
 }
 
 /* Data-first layout: $as directly on union reads from byte 0 (payload region).
- * A zero-initialized union interpreted as i32 should produce 0. */
+ * A zero-initialized union reinterpreted as int should produce 0. */
 static void test_e2e_union_data_first_layout() {
     const char* src =
         "$decl main $func () {\n"
-        "    $decl s $union i32 f64;\n"
-        "    $decl v $as s i32;\n"   /* data-first: payload at offset 0 */
+        "    $decl s $union 0 0.0;\n"
+        "    $decl v $as s 0;\n"   /* data-first: payload at offset 0 */
         "    $ret v;\n"
         "};\n";
     int rc = compile_and_run(src);
@@ -814,7 +813,7 @@ static void test_e2e_as_identity() {
     const char* src =
         "$decl main $func () {\n"
         "    $decl x 42;\n"
-        "    $decl y $as x i32;\n"
+        "    $decl y $as x 0;\n"
         "    $ret y;\n"
         "};\n";
     int rc = compile_and_run(src);
@@ -857,7 +856,7 @@ static void test_e2e_ref_member() {
 /* Phase 3: $ref on an array element ($index literal) */
 static void test_e2e_ref_index() {
     const char* src =
-        "$decl arr $array i32 3;\n"
+        "$decl arr $array 0 3;\n"
         "$set $index arr 1 77;\n"
         "$decl r $ref $index arr 1;\n"
         "$exit r;\n";
@@ -894,7 +893,7 @@ static void test_e2e_set_union_tag() {
 /* Phase 4: $set with $index LHS (literal index) */
 static void test_e2e_set_index() {
     const char* src =
-        "$decl arr $array i32 4;\n"
+        "$decl arr $array 0 4;\n"
         "$set $index arr 2 77;\n"
         "$exit $index arr 2;\n";
     int rc = compile_and_run(src);
@@ -905,7 +904,7 @@ static void test_e2e_set_index() {
 /* Phase 5: runtime (variable) $index */
 static void test_e2e_runtime_index() {
     const char* src =
-        "$decl arr $array i32 4;\n"
+        "$decl arr $array 0 4;\n"
         "$set $index arr 0 10;\n"
         "$set $index arr 1 20;\n"
         "$set $index arr 2 30;\n"

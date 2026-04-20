@@ -671,28 +671,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    AstNode* elem_arg = (node && node->child_count >= 1) ? node->children[0] : NULL;
     MorphlType* elem_type = arg_types[0];
-    /* If inference gave us NULL or unknown for the element (e.g. bare "i32" ident),
-     * fall back to primitive type-name resolution */
-    if ((!elem_type || elem_type->kind == MORPHL_TYPE_UNKNOWN) && elem_arg &&
-        elem_arg->kind == AST_IDENT) {
-      Str name = elem_arg->value;
-      if (!name.ptr && elem_arg->op)
-        name = interns_lookup(ctx->interns, elem_arg->op);
-      MorphlType* prim = NULL;
-      if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
-          str_eq(name, str_from("int", 3)))
-        prim = morphl_type_int(ctx->arena);
-      else if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
-               str_eq(name, str_from("float", 5)))
-        prim = morphl_type_float(ctx->arena);
-      else if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
-        prim = morphl_type_string(ctx->arena);
-      else if (str_eq(name, str_from("bool", 4)))
-        prim = morphl_type_bool(ctx->arena);
-      if (prim) elem_type = prim;
-    }
     if (!elem_type) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$array: cannot resolve element type");
       morphl_error_emit(NULL, &err);
@@ -748,29 +727,11 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    /* Resolve variant types, falling back to primitive name resolution for bare idents */
+    /* Resolve variant types structurally from the inferred arg types */
     MorphlType** vtypes = (MorphlType**)arena_push(ctx->arena, NULL, arg_count * sizeof(MorphlType*));
     if (!vtypes) return NULL;
     for (size_t i = 0; i < arg_count; ++i) {
       MorphlType* vt = arg_types[i];
-      if ((!vt || vt->kind == MORPHL_TYPE_UNKNOWN) && node && i < node->child_count &&
-          node->children[i] && node->children[i]->kind == AST_IDENT) {
-        Str name = node->children[i]->value;
-        if (!name.ptr && node->children[i]->op)
-          name = interns_lookup(ctx->interns, node->children[i]->op);
-        if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
-            str_eq(name, str_from("int", 3)))
-          vt = morphl_type_int(ctx->arena);
-        else if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
-                 str_eq(name, str_from("float", 5)))
-          vt = morphl_type_float(ctx->arena);
-        else if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
-          vt = morphl_type_string(ctx->arena);
-        else if (str_eq(name, str_from("bool", 4)))
-          vt = morphl_type_bool(ctx->arena);
-        else if (str_eq(name, str_from("$never", 6)))
-          vt = morphl_type_never(ctx->arena);
-      }
       if (!vt) {
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$union: cannot resolve variant type");
         morphl_error_emit(NULL, &err);
@@ -789,24 +750,6 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     MorphlType* target_type = arg_types[1];
-    /* fall back to primitive name resolution for bare idents */
-    if ((!target_type || target_type->kind == MORPHL_TYPE_UNKNOWN) && node &&
-        node->child_count >= 2 && node->children[1] &&
-        node->children[1]->kind == AST_IDENT) {
-      Str name = node->children[1]->value;
-      if (!name.ptr && node->children[1]->op)
-        name = interns_lookup(ctx->interns, node->children[1]->op);
-      if (str_eq(name, str_from("i32", 3)) || str_eq(name, str_from("i64", 3)) ||
-          str_eq(name, str_from("int", 3)))
-        target_type = morphl_type_int(ctx->arena);
-      else if (str_eq(name, str_from("f32", 3)) || str_eq(name, str_from("f64", 3)) ||
-               str_eq(name, str_from("float", 5)))
-        target_type = morphl_type_float(ctx->arena);
-      else if (str_eq(name, str_from("string", 6)) || str_eq(name, str_from("str", 3)))
-        target_type = morphl_type_string(ctx->arena);
-      else if (str_eq(name, str_from("bool", 4)))
-        target_type = morphl_type_bool(ctx->arena);
-    }
     if (!target_type) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$as: cannot resolve target type");
       morphl_error_emit(NULL, &err);

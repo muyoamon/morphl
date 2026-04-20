@@ -5,4 +5,5 @@ $decl x {
 
 $set $member x a 100;
 $call $member x f 900;
+$decl str $member x $$type;
 $exit $member x a;

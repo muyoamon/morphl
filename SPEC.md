@@ -247,7 +247,7 @@ $decl p { $decl x $mut 0; };
 $set $member p x 42;            // block field
 $set $member s $$tag 1;         // union tag (manual, bypasses type safety)
 
-$decl arr $array i32 4;
+$decl arr $array 0 4;
 $set $index arr 2 99;           // array element (literal index)
 $decl i 2;
 $set $index arr i 77;           // array element (runtime index)
@@ -280,7 +280,7 @@ r = 10;     // transparent — writes 10 to x's storage
 **General lvalue operand**: `$ref` accepts any addressable lvalue — not just plain identifiers:
 
 ```
-$decl arr $array i32 4;
+$decl arr $array 0 4;
 $decl elem $ref $index arr 2;     // reference to arr[2]
 
 $decl p { $decl x $mut 0; };
@@ -465,8 +465,8 @@ $decl Node {
 $union <type-expr>*
 
 $union Cstr Slice       // two-variant union 
-$union i32 f64 string   // three-variant union 
-$union i32 $null        // nullable i32 - option type
+$union 0 0.0 ""         // three-variant union (int, float, string)
+$union 0 $null          // nullable int - option type
 ```
 
 `$union` is structural and open - any type structurally compatible with a variant can inhabit the union. This differs from a closed nominal sum.
@@ -475,7 +475,7 @@ Naming a union via `$decl`:
 
 ```
 $decl StringType $union CStr Slice;
-$decl Option    $union i32 $null;
+$decl Option    $union 0 $null;
 $decl Result    $union { $decl value i32; } { $decl err string; }
 ```
 
@@ -525,7 +525,7 @@ This bypasses type checking — the programmer is responsible for consistency be
 Nested `$union` expressions are flattened:
 
 ```
-$union i32 $union f64 string    →   $union i32 f64 string
+$union 0 $union 0.0 ""    →   $union 0 0.0 ""
 ```
 
 ### 7.5 `$union` with `$never` and `()`
@@ -593,15 +593,15 @@ Accessing the payload without a preceding `$$tag` check is allowed but unsafe �
 `$array` is a storage expression allocating a contiguous sequence of `N` elements of type `T`:
 
 ```
-$decl buf $array i32 4;     // 4 * i32 = 32 bytes, stack allocated (8-byte VM slots)
-$decl mat $array f64 9;     // 9 * f64 = 72 bytes
+$decl buf $array 0 4;       // 4 * i32 = 32 bytes, stack allocated (8-byte VM slots)
+$decl mat $array 0.0 9;     // 9 * f64 = 72 bytes
 ```
 
-The element type argument can be any primitive type keyword (`i32`, `i64`, `int`, `f32`, `f64`, `float`, `bool`, `string`) or a value expression whose type is inferred:
+The element type is inferred structurally from the first argument expression:
 
 ```
 $decl zero 0;
-$decl buf $array zero 4;    // element type inferred as i32 from zero
+$decl buf $array zero 4;    // element type inferred as int from zero
 ```
 
 Type signature: `[T * N]` — size is part of the type. Two arrays of different sizes are different types:
@@ -617,7 +617,7 @@ Array subtyping is exact match only — no prefix subtyping for arrays in V1. Th
 `$index array i` reads element `i` from the array. Both literal and runtime indices are supported:
 
 ```
-$decl buf $array i32 4;
+$decl buf $array 0 4;
 $decl first $index buf 0;   // reads buf[0] — literal index: offset computed at compile time
 $decl third $index buf 2;   // reads buf[2]
 
@@ -634,7 +634,7 @@ For **runtime indices**, the VM computes the address at runtime: `base_address +
 Array elements can be assigned via `$set` with a compound `$index` LHS:
 
 ```
-$decl buf $array i32 4;
+$decl buf $array 0 4;
 $set $index buf 2 99;       // buf[2] = 99 (literal index)
 
 $decl i 1;
@@ -703,7 +703,7 @@ $as <expr> <type>
 
 ```
 $decl x 42;
-$decl y $as x f64;    // view the i32 bits as f64 — unsafe, but allowed
+$decl y $as x 0.0;    // view the int bits as float — unsafe, but allowed
 ```
 
 ### 9.2 Union variant narrowing (safe pattern)
@@ -735,9 +735,7 @@ Using `$as` without a preceding `$$tag` check is allowed but unsafe — the prog
 
 ### 9.4 Type resolution
 
-The second argument to `$as` is a type expression. It resolves as follows (in order):
-1. Primitive type keyword: `i32` / `i64` / `int` → `i32`; `f32` / `f64` / `float` → `f64`; `bool`; `string`.
-2. Named type in scope: any declared variable whose type is the desired block/union.
+The second argument to `$as` is any expression. Its inferred type becomes the cast target — the same structural inference used by `$decl` and all other keywords. No special type-keyword names are recognised; use a literal or variable of the desired type.
 
 ---
 

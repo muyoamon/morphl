@@ -1949,7 +1949,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
          * target is a scalar, emit a typed load from the source's frame offset.
          * This implements "interpret the bytes at source_address as TargetType",
          * which is the core semantics of $as for data-first union access:
-         *   $as s i32  →  ILOAD from s's frame offset (byte 0 = payload region)
+         *   $as s 0  →  ILOAD from s's frame offset (byte 0 = payload region)
          *
          * For all other cases (target is structural, or source is already scalar),
          * emit the source expression unchanged (pure type re-annotation). */
