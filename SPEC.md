@@ -77,7 +77,7 @@ Since `$never <: T` for all `T`, control flow escapes unify cleanly with any bra
 ```
 $decl x $if cond 
     10              // type: int
-    break;          // type: $never
+    $break;         // type: $never
 // x : int
 ```
 
@@ -158,10 +158,10 @@ A block delimited by `{}` is both a struct and a code block — they are the sam
 
 ```
 $decl x {
-    $decl a 10;
-    a = a + 1;
+    $decl a $mut 10;
+    $set a $add a 1;
 };
-// type of x: { a: i32 }
+// type of x: { a: i64 }
 // a = 11 at capture time
 ```
 
@@ -273,8 +273,8 @@ $decl r $ref <lvalue>
 $decl x $mut 5;
 $decl r $ref x;
 
-r + 1;      // transparent — reads x, computes 6
-r = 10;     // transparent — writes 10 to x's storage
+$add r 1;   // transparent — reads x, computes 6
+$set r 10;  // transparent — writes 10 to x's storage
 ```
 
 **General lvalue operand**: `$ref` accepts any addressable lvalue — not just plain identifiers:
@@ -343,7 +343,7 @@ The `$func` expression is used only for its type; its body is not emitted. The V
 **Native constant binding** (v2 — via `dlsym`):
 
 ```
-$decl ERRNO $extern i64;
+$decl ERRNO $extern 0;
 ```
 
 The value is loaded from the native symbol at program load time.
@@ -416,10 +416,16 @@ $decl point {
 Two types are compatible if one's fields are a prefix match of the other's at identical byte offsets. A type `A` is a structural subtype of `B` if every field in `B` exists in `A` at the same offset with a compatible type.
 
 ```
-type Animal { age: i32, weight: f64 }
-type Dog    { age: i32, weight: f64, name: $ref u8 }
-
-Dog <: Animal   // prefix matches, offsets identical
+$decl Animal {
+    $decl age 0;
+    $decl weight 0.0;
+};
+$decl Dog {
+    $decl age 0;
+    $decl weight 0.0;
+    $decl name $ref age;  // $ref — fixed 8 bytes regardless of referent size
+};
+// Dog <: Animal — prefix matches, offsets identical
 ```
 
 ### 6.3 Struct Layout
@@ -444,7 +450,7 @@ Fields are **never reordered** by the compiler. Reordering would break the prefi
 Direct recursive fields are impossible because the type has no finite size:
 
 ```
-$decl Node { $decl value i32; $decl next Node; };  // error — infinite size
+$decl Node { $decl value 0; $decl next Node; };  // error — infinite size
 ```
 
 `$ref` breaks the cycle by storing a fixed-size absolute address regardless of the referent's size:
@@ -485,7 +491,7 @@ Naming a union via `$decl`:
 ```
 $decl StringType $union CStr Slice;
 $decl Option    $union 0 $null;
-$decl Result    $union { $decl value i32; } { $decl err string; }
+$decl Result    $union { $decl value 0; } { $decl err ""; }
 ```
 
 ### 7.2 Memory Layout
@@ -755,10 +761,10 @@ The second argument to `$as` is any expression. Its inferred type becomes the ca
 Functions are first-class values declared with `$func`. The argument list is a **pseudo-scope** pasted before the function body in the scope chain:
 
 ```
-$decl f $func ($decl x i32) {
-    $decl y x + 1;
+$decl f $func ($decl x 0) {
+    $decl y $add x 1;
 };
-// type: (i32) => { y: i32 }
+// type: (i64) => { y: i64 }
 ```
 
 ### 9.2 Argument Pseudo-Scope
@@ -770,18 +776,18 @@ Arguments live in a scope outside the function body. They are readable inside th
 **Implicit return** — if no `$ret` is used, the entire function body is the return value. Its type is the structural shape of the body's captured declarations:
 
 ```
-$decl make_point $func ($decl x i32, $decl y i32) {
+$decl make_point $func ($decl x 0, $decl y 0) {
     $decl px x;
     $decl py y;
 };
-// type: (i32, i32) => { px: i32, py: i32 }
+// type: (i64, i64) => { px: i64, py: i64 }
 ```
 
 **Explicit return** — `$ret expr` returns a specific value and exits the function early. An explicit operand is always required:
 
 ```
-$decl f $func ($decl x i32) {
-    $ret x + 1;   // return i64
+$decl f $func ($decl x 0) {
+    $ret $add x 1;   // return i64
 };
 // type: (i64) => i64
 
@@ -800,12 +806,12 @@ $decl g $func () {
 `$ret` is the sole encapsulation mechanism. Without it, all declarations in the body are exposed in the return type. With it, only the explicitly returned value is exposed:
 
 ```
-$decl f $func ($decl x i32) {
-    $decl result x + 1;
+$decl f $func ($decl x 0) {
+    $decl result $add x 1;
     $decl tmp 999;       // implementation detail
     $ret { $decl result result };     // only result is exposed
 };
-// type: (i32) => { result: i32 }
+// type: (i64) => { result: i64 }
 ```
 
 ### 9.5 `$exit` — Explicit Process Exit
@@ -1006,7 +1012,7 @@ Every scope maintains a set of reserved context references. These are `$ref`-bas
 | `$parent` | the enclosing block instance |
 | `$file` | the current file's scope |
 | `$global` | the root/global scope |
-| `$global.$parent` | `$null` — root has no parent |
+| `$member $global $parent` | `$null` — root has no parent |
 
 `$this` refers to the immediate scope, not any outer scope. Inside a function body, `$this` is the function's own block, not the enclosing module.
 
@@ -1014,14 +1020,14 @@ Every scope maintains a set of reserved context references. These are `$ref`-bas
 $decl mod {
     $decl x 0;
     $decl f $func () {
-        $this;      // f's own body — { }
-        $parent;    // mod's instance
-        $parent.x;  // mod's x field
+        $this;               // f's own body — { }
+        $parent;             // mod's instance
+        $member $parent x;  // mod's x field
     };
 };
 ```
 
-The scope chain is a `$ref`-linked structure terminating at `$global.$parent = $null`. Traversal is uniform — the same machinery as user-defined `$ref` chains.
+The scope chain is a `$ref`-linked structure terminating at `$member $global $parent = $null`. Traversal is uniform — the same machinery as user-defined `$ref` chains.
 
 ---
 
@@ -1037,8 +1043,8 @@ $decl mod {
     $prop PI 3.14;
 };
 
-mod.x;      // field access
-mod.$PI;    // property access
+$member mod x;    // field access
+$member mod $PI;  // property access
 ```
 
 Properties are extra context attached to a block. They are constant once declared — they cannot be reassigned.
@@ -1073,7 +1079,7 @@ Properties can hold function values, making them constant method-like members:
 $decl mod {
     $decl x $mut 0;
     $prop describe $func () {
-        $ret $parent.x;
+        $ret $member $parent x;
     };
 };
 ```
@@ -1107,7 +1113,7 @@ $decl typeD {
 
 $decl typeE $impl TraitA typeD {
     $prop propA 99;
-    $prop methodB $func () { $ret $parent.x; };
+    $prop methodB $func () { $ret $member $parent x; };
 };
 ```
 
@@ -1172,13 +1178,13 @@ A file is a block. Its type is the structural shape of its top-level `$decl` exp
 
 ```
 $decl module $import "some_module";
-module.some_var;
+$member module some_var;
 ```
 
 Inline import without binding:
 
 ```
-($import "some_module").some_var;
+$member ($import "some_module") some_var;
 ```
 
 The imported module's type is structurally inferred from its file scope. No separate interface file or explicit export list is required — all top-level declarations are visible.
@@ -1603,7 +1609,7 @@ expr        ::= name
 
 The following questions were previously open; they are now settled.
 
-**Implicit `$parent` in method calls** — when emitting `$call obj.method args`, the caller pushes `$parent = &obj` as a hidden argument before the normal arguments, matching the existing calling convention (caller-owned, cleaned up after CALL). The VM emitter is responsible for inserting this push. This is consistent with the existing `$parent` slot at `frame[0]` inside every function body.
+**Implicit `$parent` in method calls** — when emitting `$call $member obj method args`, the caller pushes `$parent = &obj` as a hidden argument before the normal arguments, matching the existing calling convention (caller-owned, cleaned up after CALL). The VM emitter is responsible for inserting this push. This is consistent with the existing `$parent` slot at `frame[0]` inside every function body.
 
 **`$null` representation** — `RNULL` pushes `0` (absolute address 0) as the null sentinel. Address 0 is never a valid frame address since `frame[0]` is reserved for `$parent`. `DEREF` traps at runtime if it encounters `0`. `JNULL` branches when the top of stack equals `0`. The self-referential definition `$decl $null $ref $null` in §5.5 maps to this concrete value.
 
