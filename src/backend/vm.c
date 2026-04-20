@@ -2382,13 +2382,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
             return false;
         }
     }
-
-    /* emit ENTER for params */
-    if (!emit_enter(e, (uint32_t)param_sz)) {
-        morphl_backend_pop_frame(&e->frameInfo);
-        return false;
-    }
-
+    
     /* emit body block without its own ENTER/LEAVE wrapping —
        we emit it as a sequence of statements directly.
        The first 8 bytes of the body frame are reserved for the hidden $parent slot,
