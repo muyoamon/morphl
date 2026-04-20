@@ -1442,6 +1442,14 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                                (int)fname.len, fname.ptr);
                         return false;
                     }
+                    /* $parent target: emit value, then PSTORE(field_off) */
+                    if (tgt->kind == AST_BUILTIN && e->interns && tgt->op) {
+                        Str tname2 = interns_lookup(e->interns, tgt->op);
+                        if (tname2.len == 7 && memcmp(tname2.ptr, "$parent", 7) == 0) {
+                            if (!emit_node(e, value)) return false;
+                            return emit_op_i32(e, VM_OP_PSTORE, (int32_t)field_off);
+                        }
+                    }
                     if (tgt->kind != AST_IDENT) return false;
                     ptrdiff_t extra = 0;
                     Str tname = alias_resolve_full(e, tgt->value, &extra);
@@ -2423,8 +2431,16 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     }
 
     if (body) {
-        for (size_t i = 0; i < body->child_count; i++) {
-            if (!emit_node(e, body->children[i])) {
+        if (body->kind == AST_BLOCK) {
+            for (size_t i = 0; i < body->child_count; i++) {
+                if (!emit_node(e, body->children[i])) {
+                    if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
+                    morphl_backend_pop_frame(&e->frameInfo);
+                    return false;
+                }
+            }
+        } else {
+            if (!emit_node(e, body)) {
                 if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
                 morphl_backend_pop_frame(&e->frameInfo);
                 return false;

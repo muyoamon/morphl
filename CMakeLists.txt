@@ -15,6 +15,7 @@ add_compile_options(
 )
 
 add_subdirectory(src/)
+add_subdirectory(tools/)
 
 if (BUILD_TESTING)
   add_subdirectory(test/)
