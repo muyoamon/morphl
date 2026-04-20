@@ -312,6 +312,15 @@ $decl w $mut   $ref x;   // read-write access (valid because x is $mut)
 
 `$mut $ref x` is only valid when x is itself `$mut`. `$const $ref x` is always valid regardless of x's own mutability.
 
+**`$mut` ref is a subtype of `$const` ref** — a mutable reference may be passed wherever a read-only reference is expected:
+
+```
+$mut $ref T <: $const $ref T     // safe — restricts write access at the call site
+$const $ref T </: $mut $ref T    // unsafe — would grant write access to immutable storage
+```
+
+This rule is enforced by the type checker for function arguments, `$set` targets, and `$decl` initializers.
+
 ### 5.5 `$extern` — Native Symbol Binding
 
 `$extern` is a storage specifier that binds a name to a native C symbol resolved at load time. Its type is inferred from the wrapped expression, exactly as with other storage specifiers:
@@ -1073,7 +1082,7 @@ $decl mod {
 
 ## 14. Traits
 
-> **Not yet implemented**: Trait fat-block representation and dynamic dispatch. The `$traits`/`$impl` syntax is parsed and type-checked, but trait-typed variables cannot be used for dynamic dispatch at runtime. The fat-block layout (`$impl` property table pointer + `$data` concrete instance pointer) is not yet generated.
+Trait fat-block representation and dynamic dispatch are fully implemented. The `$traits`/`$impl` syntax is parsed, type-checked, and compiled to bytecode. Trait-typed variables use a 16-byte fat-block layout in the stack frame. Dynamic dispatch is performed via the `CALLX` opcode.
 
 ### 10.1 Trait Declaration
 
@@ -1137,12 +1146,17 @@ This is a regular block using existing `$ref` machinery — no special VM suppor
 Calling a trait method:
 
 ```
-$call traitVar.$methodB ();
-// 1. load traitVar.$impl
-// 2. load $impl.$methodB  (function table index)
-// 3. set $parent = traitVar.$data
-// 4. CALLF
+$call ($member traitVar $methodB) ();
+// Emitted sequence:
+// 1. RESERVE  — allocate return slot
+// 2. RLOAD traitVar+8  — push $parent = traitVar.$data (concrete instance)
+// 3. [push arguments]
+// 4. RLOAD traitVar    — load property table absolute address (traitVar.$impl)
+// 5. ALOAD prop_idx*8  — load method function-table index from property table
+// 6. CALLX             — dispatch by popping the function index from the stack
 ```
+
+The property table is a singleton allocated in the global frame once per `$impl` declaration. Each slot holds a `u32` function-table index (stored as `i64`) for one trait property, ordered by property declaration index in the trait.
 
 ---
 
@@ -1445,7 +1459,15 @@ FADD  FSUB  FMUL  FDIV         — f64 arithmetic
 ```
 IEQ  INEQ  ILT  IGT  ILTE  IGTE   — i64 comparisons, push bool
 FEQ  FNEQ  FLT  FGT  FLTE  FGTE   — f64 comparisons, push bool
-REQ  RNEQ                          — reference equality (not yet implemented)
+REQ  RNEQ                          — reference equality (compare two i64 absolute addresses)
+```
+
+### 13.4a Bitwise
+
+```
+IBAND  IBOR  IBXOR          — i64 bitwise AND / OR / XOR  (binary)
+IBNOT                       — i64 bitwise NOT  (unary)
+ILSHIFT  IRSHIFT            — i64 left / right shift
 ```
 
 ### 13.5 Type Conversion
@@ -1468,6 +1490,7 @@ LEAVE  <size>      — pop scope region
 RESERVE <size>     — pre-allocate return slot in caller frame
 CALL    <index>    — direct call by function table index
 CALLF   <offset>   — indirect call: load function index from frame offset, then dispatch
+CALLX              — dynamic dispatch: pop i64 function index from stack, then dispatch
 RET                — pop pseudo-scope, return to caller
 ```
 
@@ -1514,7 +1537,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 
 - No GC opcodes — memory is stack-managed and explicit
 - No type tag opcodes — types are encoded in instructions, not values
-- No dynamic dispatch opcodes — structural subtyping resolves to field offsets at compile time
+- `CALLX` enables dynamic dispatch for trait method calls — all other dispatch resolves statically
 - No implicit copy opcodes — copies are explicit load/store pairs
 - Function pointers are `u32` indices into the global function table
 
@@ -1591,7 +1614,7 @@ The following questions were previously open; they are now settled.
 - `$mut $ref x` — read-write access through the ref, but only valid if x is itself `$mut`.
 The ref's own storage (the 8-byte absolute address) is always fixed-size and always writable as a slot (it is the access semantics that are controlled, not the ref slot).
 
-**Property table dispatch for `$parent`** — when a trait method is called through a fat trait variable (`traitVar.$impl.$methodB`), the calling sequence is: (1) load `traitVar.$impl` to get the property table ref, (2) load the method's function-table index from the property table, (3) load `traitVar.$data` and push it as `$parent`, (4) CALLF. The `$parent` slot at the callee's `frame[0]` then points to the concrete data instance, not the fat variable itself.
+**Property table dispatch for `$parent`** — when a trait method is called through a fat trait variable, the emitted sequence is: (1) `RESERVE` the return slot, (2) `RLOAD traitVar+8` to push `$parent = traitVar.$data` (the concrete instance address), (3) push any call arguments, (4) `RLOAD traitVar` to load the `$impl` property table absolute address, (5) `ALOAD prop_idx*8` to load the method's function-table index from the property table, (6) `CALLX` to dispatch. The `$parent` slot at the callee's `frame[0]` then points to the concrete data instance, not the fat variable itself. `CALLX` pops the function index from the stack rather than reading it from a fixed frame offset, enabling runtime-resolved dispatch.
 
 ---
 
@@ -1657,11 +1680,13 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$gt` | 2 | Integer greater-than. |
 | `$lte` | 2 | Integer less-than-or-equal. |
 | `$gte` | 2 | Integer greater-than-or-equal. |
+| `$req` | 2 | Reference equality (compare absolute stack addresses). |
+| `$rneq` | 2 | Reference inequality (compare absolute stack addresses). |
 | **Logic** | | |
 | `$and` | 2 | Logical AND. |
 | `$or` | 2 | Logical OR. |
 | `$not` | 1 | Logical NOT. |
-| **Bitwise** (not yet implemented) | | |
+| **Bitwise** | | |
 | `$band` | 2 | Bitwise AND. |
 | `$bor` | 2 | Bitwise OR. |
 | `$bxor` | 2 | Bitwise XOR. |
@@ -1671,13 +1696,13 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | **Type Conversion** | | |
 | `$i2f` | 1 | Convert i64 → f64. |
 | `$f2i` | 1 | Convert f64 → i64 (truncate). |
-| **Traits** (partially implemented) | | |
+| **Traits** | | |
 | `$traits` | 1 | Declare a trait (set of properties). |
 | `$impl` | 2–3 | Implement a trait for a type. |
 | **FFI** | | |
 | `$extern` | 1 | Bind to a native C symbol. |
 | **Implementation Extensions** (not in type lattice / grammar) | | |
 | `$inline` | 1 | Inline storage hint (not in spec grammar). |
-| `$forward` | 1 | Forward-declare a function body (implementation only). |
+| `$forward` | 1 | Forward-declare a function body. Allocates a function table slot at the declaration site; the real body fills it when the full `$decl` is processed. Supports mutual recursion. |
 | `$idtstr` | 1 | Convert intern ID to string (implementation only). |
 | `$strtid` | 1 | Convert string to intern ID (implementation only). |
