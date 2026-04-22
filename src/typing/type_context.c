@@ -149,8 +149,29 @@ bool type_context_define_var(TypeContext* ctx, Sym name, MorphlType* type) {
   // Add variable
   current->vars[current->var_count].name = name;
   current->vars[current->var_count].type = type;
+  current->vars[current->var_count].is_const = false;
   current->var_count++;
   return true;
+}
+
+bool type_context_define_const_var(TypeContext* ctx, Sym name, MorphlType* type) {
+  if (!type_context_define_var(ctx, name, type)) return false;
+  Scope* current = &ctx->scopes[ctx->scope_count - 1];
+  current->vars[current->var_count - 1].is_const = true;
+  return true;
+}
+
+bool type_context_is_const_var(TypeContext* ctx, Sym name) {
+  if (!ctx || !name) return false;
+  for (int i = (int)ctx->scope_count - 1; i >= 0; --i) {
+    Scope* scope = &ctx->scopes[i];
+    for (size_t j = 0; j < scope->var_count; ++j) {
+      if (scope->vars[j].name == name) {
+        return scope->vars[j].is_const;
+      }
+    }
+  }
+  return false;
 }
 
 bool type_context_update_var(TypeContext* ctx, Sym name, MorphlType* type) {

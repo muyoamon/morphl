@@ -214,6 +214,12 @@ A bare expression used as a storage expression is sugar for `$const`:
 $decl foo 10;         // sugar for: $decl foo $const 10
 ```
 
+This is also the case for mutable reference expression without explicit storage specifier:
+
+```
+$decl foo $mut 0;
+$decl bar foo;      // sugar for: $decl bar $const foo;
+```
 ---
 
 ## 5. Storage Expressions

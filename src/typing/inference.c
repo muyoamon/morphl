@@ -483,8 +483,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    MorphlType* trait_type = arg_types[0];
-    MorphlType* base_type  = arg_types[1];
+    MorphlType* trait_type = unwrap_ref(arg_types[0]);
+    MorphlType* base_type  = unwrap_ref(arg_types[1]);
     MorphlType* override_type = (arg_count >= 3) ? arg_types[2] : NULL;
 
     if (!trait_type || trait_type->kind != MORPHL_TYPE_BLOCK) {
@@ -596,9 +596,10 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     if (ret_type && ret_type->kind != MORPHL_TYPE_UNKNOWN) {
       MorphlType* current_func = type_context_get_current_func(ctx);
       if (ctx->expected_return_type->kind == MORPHL_TYPE_UNKNOWN) {
-        type_context_set_return_type(ctx, ret_type);
+        MorphlType* concrete_ret = unwrap_ref(ret_type);
+        type_context_set_return_type(ctx, concrete_ret);
         if (current_func && current_func->kind == MORPHL_TYPE_FUNC) {
-          current_func->data.func.return_type = ret_type;
+          current_func->data.func.return_type = concrete_ret;
         }
       } else if (!morphl_type_equals(unwrap_ref(ret_type), unwrap_ref(ctx->expected_return_type))) {
         MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "return type mismatch: expected different type");
@@ -930,27 +931,23 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         }
         return existing;
       }
-      // if initial value is mutable reference but doesn't explicitly declare mutability,
-      // throw warning of implicit mutability.
-      // Allow `$decl <name> $mut <init>` to explicitly create new mutable reference. 
-      // Or `$decl <name> $inline <init>` to explicitly declare as alias.
-      if (init_type->kind == MORPHL_TYPE_REF && init_type->data.ref.is_mutable) {
-        bool has_explicit_mut = false;
-        if (init_node->kind == AST_BUILTIN &&
+      // Default to const: $decl without explicit qualifier marks the binding const.
+      // The stored type is always init_type as-is; constness is tracked via is_const flag.
+      // This keeps ref types transparent unless explicitly captured via $ref.
+      if (node->kind == AST_DECL) {
+        bool has_explicit_qualifier = (init_node->kind == AST_BUILTIN &&
             (init_node->op == interns_intern(ctx->interns, str_from("$mut", 4)) ||
-             init_node->op == interns_intern(ctx->interns, str_from("$inline", 7)))) {
-          has_explicit_mut = true;
+             init_node->op == interns_intern(ctx->interns, str_from("$inline", 7)) ||
+             init_node->op == interns_intern(ctx->interns, str_from("$const", 6)) ||
+             init_node->op == interns_intern(ctx->interns, str_from("$ref", 4))));
+        if (!has_explicit_qualifier) {
+          type_context_define_const_var(ctx, var_sym, init_type);
+        } else {
+          type_context_define_var(ctx, var_sym, init_type);
         }
-        if (!has_explicit_mut) {
-          MorphlError err = MORPHL_WARN_AT(name_node, MORPHL_E_PARSE, 
-            "$decl: variable '%s' is implicitly mutable; use '$mut' to create new mutable reference"
-            "or '$inline' to create an alias", interns_lookup(ctx->interns, var_sym).ptr);
-          morphl_error_emit(NULL, &err);
-        }
+      } else {
+        type_context_define_var(ctx, var_sym, init_type);
       }
- 
-
-      type_context_define_var(ctx, var_sym, init_type);
       return init_type;
     }
 
@@ -1372,6 +1369,17 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         MorphlType* target_type = morphl_infer_type_of_ast(ctx, node->children[0]);
         MorphlType* value_type = morphl_infer_type_of_ast(ctx, node->children[1]);
         if (!target_type || !value_type) return NULL;
+        // Check const-declared ident targets (non-ref path)
+        if (node->children[0]->kind == AST_IDENT && target_type->kind != MORPHL_TYPE_REF) {
+          Sym target_sym = node->children[0]->op;
+          if (!target_sym && node->children[0]->value.ptr)
+            target_sym = interns_intern(ctx->interns, node->children[0]->value);
+          if (target_sym && type_context_is_const_var(ctx, target_sym)) {
+            MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: target is not mutable");
+            morphl_error_emit(NULL, &err);
+            return NULL;
+          }
+        }
         if (target_type->kind == MORPHL_TYPE_REF) {
           if (!target_type->data.ref.is_mutable) {
             MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: target is not mutable");
@@ -1434,28 +1442,6 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         sym = interns_intern(ctx->interns, node->value);
       }
       if (!sym) return NULL;
-
-      // Primitive type keywords resolve as type-name sentinels globally
-      {
-        Str name = interns_lookup(ctx->interns, sym);
-        if ((name.len == 3 && memcmp(name.ptr, "i32", 3) == 0) ||
-            (name.len == 3 && memcmp(name.ptr, "i64", 3) == 0) ||
-            (name.len == 3 && memcmp(name.ptr, "int", 3) == 0)) {
-          return morphl_type_int(ctx->arena);
-        }
-        if ((name.len == 3 && memcmp(name.ptr, "f32", 3) == 0) ||
-            (name.len == 3 && memcmp(name.ptr, "f64", 3) == 0) ||
-            (name.len == 5 && memcmp(name.ptr, "float", 5) == 0)) {
-          return morphl_type_float(ctx->arena);
-        }
-        if ((name.len == 4 && memcmp(name.ptr, "bool", 4) == 0)) {
-          return morphl_type_bool(ctx->arena);
-        }
-        if ((name.len == 6 && memcmp(name.ptr, "string", 6) == 0) ||
-            (name.len == 3 && memcmp(name.ptr, "str", 3) == 0)) {
-          return morphl_type_string(ctx->arena);
-        }
-      }
 
       MorphlType* var_type = type_context_lookup_var(ctx, sym);
       if (!var_type) {

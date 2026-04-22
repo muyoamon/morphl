@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  enum MorphlBackendType backend_type = MORPHL_BACKEND_TYPE_C;
+  enum MorphlBackendType backend_type = MORPHL_BACKEND_TYPE_VM;
   bool run_bytecode = false;
   int arg_index = 1;
 
@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  printf("parsing with scoped grammar support...\n");
+  // printf("parsing with scoped grammar support...\n");
   AstNode* root = NULL;
   bool accepted = scoped_parse_ast(&parser_ctx, tokens, token_count, &root);
 

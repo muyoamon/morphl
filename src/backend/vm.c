@@ -1697,7 +1697,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (is_ctype) {
                     /* Type signature as a string. morphl_type_to_string heap-allocates;
                      * the string table copies it, so we free after interning. */
-                    const MorphlType* t = target->type;
+                    const MorphlType* t = unwrap_ref(target->type);
                     Str ts = t ? morphl_type_to_string(t, e->interns) : str_from("unknown", 7);
                     bool ok = emit_sconst(e, ts);
                     if (t && ts.ptr) free((void*)ts.ptr);

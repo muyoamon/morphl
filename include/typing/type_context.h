@@ -23,6 +23,7 @@ typedef struct {
 typedef struct {
   Sym name;
   MorphlType* type;
+  bool is_const;
 } VarEntry;
 
 // Scope frame containing variable definitions
@@ -84,6 +85,8 @@ bool type_context_pop_scope(TypeContext* ctx);
 
 // Variable tracking
 bool type_context_define_var(TypeContext* ctx, Sym name, MorphlType* type);
+bool type_context_define_const_var(TypeContext* ctx, Sym name, MorphlType* type);
+bool type_context_is_const_var(TypeContext* ctx, Sym name);
 bool type_context_update_var(TypeContext* ctx, Sym name, MorphlType* type);
 MorphlType* type_context_lookup_var(TypeContext* ctx, Sym name);
 bool type_context_check_duplicate_var(TypeContext* ctx, Sym name);
