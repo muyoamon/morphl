@@ -698,14 +698,52 @@ static void test_e2e_global_modules_slot() {
     );
     std::string main_src =
         std::string("$decl mod $import \"") + mod_path + "\";\n"
-        "$decl slot $member $member $global $modules mod;\n"
-        "$decl result $if $gt slot 0 1 0;\n"
-        "$exit result;\n";
+        "$decl value $member $member $member $global $modules mod x;\n"
+        "$exit value;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 42);
+    printf("PASS test_e2e_global_modules_slot\n");
+}
+
+static void test_e2e_file_statics_access() {
+    int rc = compile_and_run(
+        "$decl counter $static $mut 41;\n"
+        "$set $member $member $file $$statics counter 42;\n"
+        "$exit $member $member $file $$statics counter;\n"
+    );
+    assert(rc == 42);
+    printf("PASS test_e2e_file_statics_access\n");
+}
+
+static void test_e2e_global_source_statics_access() {
+    int rc = compile_and_run(
+        "$decl counter $static $mut 5;\n"
+        "$set $member $member $member $global $source $$statics counter 9;\n"
+        "$exit $member $member $member $global $source $$statics counter;\n"
+    );
+    assert(rc == 9);
+    printf("PASS test_e2e_global_source_statics_access\n");
+}
+
+static void test_e2e_module_statics_access() {
+    std::string mod_path = write_temp_source(
+        "$decl cached $static $mut 7;\n"
+        "$decl value 1;\n"
+    );
+
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$decl before $member $member mod $$statics cached;\n"
+        "$set $member $member mod $$statics cached $add before 1;\n"
+        "$decl after $member $member mod $$statics cached;\n"
+        "$exit $sub after before;\n";
 
     int rc = compile_and_run(main_src.c_str());
     std::remove(mod_path.c_str());
     assert(rc == 1);
-    printf("PASS test_e2e_global_modules_slot\n");
+    printf("PASS test_e2e_module_statics_access\n");
 }
 
 // ── $extern / FFI tests ───────────────────────────────────────────────────────
@@ -1145,6 +1183,9 @@ int main(void) {
     test_e2e_global_argc();
     test_e2e_global_entry();
     test_e2e_global_modules_slot();
+    test_e2e_file_statics_access();
+    test_e2e_global_source_statics_access();
+    test_e2e_module_statics_access();
     test_e2e_extern_print();
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();

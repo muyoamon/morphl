@@ -60,6 +60,252 @@ static Str default_extern_symbol(const AstNode* node) {
   return node->value;
 }
 
+static bool append_member_entry(Sym** names,
+                                MorphlType*** types,
+                                MorphlMemberStorage** storage,
+                                size_t* count,
+                                size_t* capacity,
+                                Sym name,
+                                MorphlType* type,
+                                MorphlMemberStorage member_storage) {
+  if (!names || !types || !storage || !count || !capacity || !type || !name) return false;
+  if (*count >= *capacity) {
+    size_t new_cap = *capacity ? *capacity * 2 : 4;
+    Sym* new_names = (Sym*)realloc(*names, new_cap * sizeof(Sym));
+    MorphlType** new_types = (MorphlType**)realloc(*types, new_cap * sizeof(MorphlType*));
+    MorphlMemberStorage* new_storage =
+      (MorphlMemberStorage*)realloc(*storage, new_cap * sizeof(MorphlMemberStorage));
+    if (!new_names || !new_types || !new_storage) return false;
+    *names = new_names;
+    *types = new_types;
+    *storage = new_storage;
+    *capacity = new_cap;
+  }
+  (*names)[*count] = name;
+  (*types)[*count] = type;
+  (*storage)[*count] = member_storage;
+  (*count)++;
+  return true;
+}
+
+static bool type_is_nonempty_block(const MorphlType* type) {
+  return type && type->kind == MORPHL_TYPE_BLOCK && type->data.block.field_count > 0;
+}
+
+static MorphlType* build_static_scope_type(TypeContext* ctx, AstNode* node, size_t limit);
+
+static MorphlType* build_static_function_type(TypeContext* ctx, AstNode* node) {
+  if (!ctx || !node || node->kind != AST_FUNC || node->child_count < 2) return NULL;
+  AstNode* body = node->children[1];
+  if (!body || body->kind != AST_BLOCK) return morphl_type_block(ctx->arena, NULL, NULL, 0);
+  MorphlType* body_tree = build_static_scope_type(ctx, body, body->child_count);
+  if (!type_is_nonempty_block(body_tree)) return morphl_type_block(ctx->arena, NULL, NULL, 0);
+  Sym anon0_sym = interns_intern(ctx->interns, str_from("$anon$0", 7));
+  Sym names[1] = { anon0_sym };
+  MorphlType* types[1] = { body_tree };
+  return morphl_type_block(ctx->arena, names, types, 1);
+}
+
+static MorphlType* build_static_scope_type(TypeContext* ctx, AstNode* node, size_t limit) {
+  if (!ctx || !node || (node->kind != AST_FILE && node->kind != AST_BLOCK)) return NULL;
+  if (limit > node->child_count) limit = node->child_count;
+
+  Sym* field_names = NULL;
+  MorphlType** field_types = NULL;
+  MorphlMemberStorage* field_storage = NULL;
+  size_t field_count = 0;
+  size_t field_cap = 0;
+  size_t anon_count = 0;
+  bool ok = true;
+  MorphlMemberStorage storage =
+    morphl_member_storage_make(true, true, false, MORPHL_STORAGE_INSTANCE);
+
+  for (size_t i = 0; i < limit; ++i) {
+    AstNode* child = node->children[i];
+    if (!child) continue;
+
+    if (child->kind == AST_DECL && child->child_count >= 2) {
+      AstNode* name_node = child->children[0];
+      AstNode* rhs = child->children[1];
+      if (child->storage_residence == MORPHL_STORAGE_STATIC && name_node && name_node->op && child->type) {
+        if (!append_member_entry(&field_names, &field_types, &field_storage,
+                                 &field_count, &field_cap,
+                                 name_node->op, child->type, storage)) {
+          ok = false;
+          break;
+        }
+      }
+      if (rhs && rhs->kind == AST_FUNC && name_node && name_node->op) {
+        MorphlType* func_tree = build_static_function_type(ctx, rhs);
+        if (type_is_nonempty_block(func_tree)) {
+          if (!append_member_entry(&field_names, &field_types, &field_storage,
+                                   &field_count, &field_cap,
+                                   name_node->op, func_tree, storage)) {
+            ok = false;
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    if (child->kind == AST_BLOCK) {
+      MorphlType* block_tree = build_static_scope_type(ctx, child, child->child_count);
+      if (type_is_nonempty_block(block_tree)) {
+        char anon_buf[32];
+        int anon_len = snprintf(anon_buf, sizeof(anon_buf), "$anon$%zu", anon_count++);
+        if (anon_len <= 0) { ok = false; break; }
+        Sym anon_sym = interns_intern(ctx->interns, str_from(anon_buf, (size_t)anon_len));
+        if (!append_member_entry(&field_names, &field_types, &field_storage,
+                                 &field_count, &field_cap,
+                                 anon_sym, block_tree, storage)) {
+          ok = false;
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (child->kind == AST_FUNC) {
+      MorphlType* func_tree = build_static_function_type(ctx, child);
+      if (type_is_nonempty_block(func_tree)) {
+        char anon_buf[32];
+        int anon_len = snprintf(anon_buf, sizeof(anon_buf), "$anon$%zu", anon_count++);
+        if (anon_len <= 0) { ok = false; break; }
+        Sym anon_sym = interns_intern(ctx->interns, str_from(anon_buf, (size_t)anon_len));
+        if (!append_member_entry(&field_names, &field_types, &field_storage,
+                                 &field_count, &field_cap,
+                                 anon_sym, func_tree, storage)) {
+          ok = false;
+          break;
+        }
+      }
+      continue;
+    }
+  }
+
+  MorphlType* result = ok
+    ? morphl_type_block_with_props(ctx->arena,
+                                   field_names, field_types, field_count, field_storage,
+                                   field_names, field_types, field_count, field_storage,
+                                   NULL, NULL, NULL, 0)
+    : NULL;
+  free(field_names);
+  free(field_types);
+  free(field_storage);
+  if (!result) return morphl_type_block(ctx->arena, NULL, NULL, 0);
+  return result;
+}
+
+static void refresh_file_intrinsics(TypeContext* ctx,
+                                    AstNode* file_node,
+                                    MorphlType* file_type,
+                                    Sym* user_field_names,
+                                    MorphlType** user_field_types,
+                                    MorphlMemberStorage* user_field_storage,
+                                    size_t user_field_count,
+                                    Sym* user_layout_names,
+                                    MorphlType** user_layout_types,
+                                    MorphlMemberStorage* user_layout_storage,
+                                    size_t user_layout_count,
+                                    size_t prefix_limit) {
+  if (!ctx || !file_node || !file_type || file_node->kind != AST_FILE) return;
+  Sym statics_sym = interns_intern(ctx->interns, str_from("$$statics", 9));
+  MorphlType* statics_type = build_static_scope_type(ctx, file_node, prefix_limit);
+  size_t total_fields = user_field_count + 1;
+  size_t total_layout = user_layout_count + 1;
+  Sym* names = total_fields ? (Sym*)arena_push(ctx->arena, NULL, total_fields * sizeof(Sym)) : NULL;
+  MorphlType** types = total_fields
+    ? (MorphlType**)arena_push(ctx->arena, NULL, total_fields * sizeof(MorphlType*)) : NULL;
+  MorphlMemberStorage* storage = total_fields
+    ? (MorphlMemberStorage*)arena_push(ctx->arena, NULL, total_fields * sizeof(MorphlMemberStorage)) : NULL;
+  Sym* layout_names = total_layout
+    ? (Sym*)arena_push(ctx->arena, NULL, total_layout * sizeof(Sym)) : NULL;
+  MorphlType** layout_types = total_layout
+    ? (MorphlType**)arena_push(ctx->arena, NULL, total_layout * sizeof(MorphlType*)) : NULL;
+  MorphlMemberStorage* layout_storage = total_layout
+    ? (MorphlMemberStorage*)arena_push(ctx->arena, NULL, total_layout * sizeof(MorphlMemberStorage)) : NULL;
+  if (!names || !types || !storage || !layout_names || !layout_types || !layout_storage) return;
+  if (user_field_count) {
+    memcpy(names, user_field_names, user_field_count * sizeof(Sym));
+    memcpy(types, user_field_types, user_field_count * sizeof(MorphlType*));
+    memcpy(storage, user_field_storage, user_field_count * sizeof(MorphlMemberStorage));
+  }
+  names[user_field_count] = statics_sym;
+  types[user_field_count] = statics_type;
+  storage[user_field_count] = morphl_member_storage_make(true, true, false, MORPHL_STORAGE_INSTANCE);
+  if (user_layout_count) {
+    memcpy(layout_names, user_layout_names, user_layout_count * sizeof(Sym));
+    memcpy(layout_types, user_layout_types, user_layout_count * sizeof(MorphlType*));
+    memcpy(layout_storage, user_layout_storage, user_layout_count * sizeof(MorphlMemberStorage));
+  }
+  layout_names[user_layout_count] = statics_sym;
+  layout_types[user_layout_count] = statics_type;
+  layout_storage[user_layout_count] = morphl_member_storage_make(true, true, false, MORPHL_STORAGE_INSTANCE);
+  file_type->data.block.field_names = names;
+  file_type->data.block.field_types = types;
+  file_type->data.block.field_storage = storage;
+  file_type->data.block.field_count = total_fields;
+  file_type->data.block.layout_field_names = layout_names;
+  file_type->data.block.layout_field_types = layout_types;
+  file_type->data.block.layout_field_storage = layout_storage;
+  file_type->data.block.layout_field_count = total_layout;
+}
+
+static void refresh_global_type(TypeContext* ctx,
+                                AstNode* file_node,
+                                MorphlType* file_type,
+                                size_t prefix_limit) {
+  if (!ctx || !file_node || !file_type || file_node->kind != AST_FILE) return;
+  Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
+  Sym modules_sym = interns_intern(ctx->interns, str_from("$modules", 8));
+  Sym source_sym  = interns_intern(ctx->interns, str_from("$source", 7));
+  Sym argc_sym    = interns_intern(ctx->interns, str_from("$argc", 5));
+  Sym argv_sym    = interns_intern(ctx->interns, str_from("$argv", 5));
+  Sym env_sym     = interns_intern(ctx->interns, str_from("$env", 4));
+  Sym entry_sym   = interns_intern(ctx->interns, str_from("$entry", 6));
+
+  size_t mod_count = 0;
+  for (size_t i = 0; i < prefix_limit && i < file_node->child_count; ++i) {
+    AstNode* ch = file_node->children[i];
+    if (!ch || ch->kind != AST_DECL || ch->child_count < 2) continue;
+    AstNode* rhs = ch->children[1];
+    if (rhs && rhs->kind == AST_BUILTIN && rhs->op == import_sym) mod_count++;
+  }
+  Sym* mod_names = mod_count ? (Sym*)malloc(mod_count * sizeof(Sym)) : NULL;
+  MorphlType** mod_types = mod_count ? (MorphlType**)malloc(mod_count * sizeof(MorphlType*)) : NULL;
+  if (mod_count && (!mod_names || !mod_types)) {
+    free(mod_names);
+    free(mod_types);
+    return;
+  }
+  size_t mi = 0;
+  for (size_t i = 0; i < prefix_limit && i < file_node->child_count && mi < mod_count; ++i) {
+    AstNode* ch = file_node->children[i];
+    if (!ch || ch->kind != AST_DECL || ch->child_count < 2) continue;
+    AstNode* rhs = ch->children[1];
+    AstNode* nm = ch->children[0];
+    if (!rhs || rhs->kind != AST_BUILTIN || rhs->op != import_sym || !nm || !nm->op || !ch->type) continue;
+    mod_names[mi] = nm->op;
+    mod_types[mi] = ch->type;
+    mi++;
+  }
+  MorphlType* modules_type = morphl_type_block(ctx->arena, mod_names, mod_types, mi);
+  free(mod_names);
+  free(mod_types);
+  if (!modules_type) return;
+  Sym gnames[6] = { argc_sym, argv_sym, env_sym, entry_sym, modules_sym, source_sym };
+  MorphlType* gtypes[6];
+  gtypes[0] = morphl_type_int(ctx->arena);
+  gtypes[1] = morphl_type_int(ctx->arena);
+  gtypes[2] = morphl_type_int(ctx->arena);
+  gtypes[3] = morphl_type_int(ctx->arena);
+  gtypes[4] = modules_type;
+  gtypes[5] = file_type;
+  MorphlType* synthetic_global = morphl_type_block(ctx->arena, gnames, gtypes, 6);
+  if (synthetic_global) ctx->global_type = synthetic_global;
+}
+
 static void set_storage_defaults(AstNode* node) {
   if (!node) return;
   node->contributes_to_shape = true;
@@ -1158,7 +1404,26 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         type_context_pop_scope(ctx);
         return NULL;
       }
-      if (!ctx->file_type) {
+      bool pushed_file = false;
+      if (node->kind == AST_FILE) {
+        if (ctx->file_type) {
+          if (!type_context_push_file(ctx, block_type)) {
+            type_context_pop_this(ctx);
+            type_context_pop_scope(ctx);
+            return NULL;
+          }
+          pushed_file = true;
+        } else {
+          ctx->file_type = block_type;
+        }
+        if (!ctx->global_type) {
+          refresh_file_intrinsics(ctx, node, block_type,
+                                  NULL, NULL, NULL, 0,
+                                  NULL, NULL, NULL, 0,
+                                  0);
+          refresh_global_type(ctx, node, block_type, 0);
+        }
+      } else if (!ctx->file_type) {
         ctx->file_type = block_type;
       }
       if (!ctx->global_type) {
@@ -1167,62 +1432,6 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           ctx->global_type = block_type;
           goto skip_global;
         }
-      }
-      if (!ctx->global_type && node->kind == AST_FILE) {
-        /* Build synthetic $global type for the top-level file.
-         * Pre-scan children for $import declarations to build the $modules sub-type. */
-        Sym import_sym  = interns_intern(ctx->interns, str_from("$import",  7));
-        Sym modules_sym = interns_intern(ctx->interns, str_from("$modules", 8));
-        Sym argc_sym    = interns_intern(ctx->interns, str_from("$argc",    5));
-        Sym argv_sym    = interns_intern(ctx->interns, str_from("$argv",    5));
-        Sym env_sym     = interns_intern(ctx->interns, str_from("$env",     4));
-        Sym entry_sym   = interns_intern(ctx->interns, str_from("$entry",   6));
-
-        /* count $imports first so we can allocate exactly */
-        size_t mod_count = 0;
-        for (size_t ci = 0; ci < node->child_count; ++ci) {
-          AstNode* ch = node->children[ci];
-          if (!ch || ch->kind != AST_DECL || ch->child_count < 2) continue;
-          AstNode* rhs = ch->children[1];
-          if (rhs && rhs->kind == AST_BUILTIN && rhs->op == import_sym) mod_count++;
-        }
-
-        /* build $modules sub-type */
-        Sym*         mod_names = mod_count ? (Sym*)malloc(mod_count * sizeof(Sym)) : NULL;
-        MorphlType** mod_types = mod_count ? (MorphlType**)malloc(mod_count * sizeof(MorphlType*)) : NULL;
-        if (mod_count && (!mod_names || !mod_types)) {
-          free(mod_names); free(mod_types); goto skip_global;
-        }
-        size_t mi = 0;
-        for (size_t ci = 0; ci < node->child_count && mi < mod_count; ++ci) {
-          AstNode* ch = node->children[ci];
-          if (!ch || ch->kind != AST_DECL || ch->child_count < 2) continue;
-          AstNode* rhs = ch->children[1];
-          if (!rhs || rhs->kind != AST_BUILTIN || rhs->op != import_sym) continue;
-          AstNode* nm = ch->children[0];
-          if (!nm) continue;
-          if (!nm->op && nm->value.ptr)
-            nm->op = interns_intern(ctx->interns, nm->value);
-          if (!nm->op) continue;
-          mod_names[mi] = nm->op;
-          mod_types[mi] = morphl_type_int(ctx->arena);
-          mi++;
-        }
-        MorphlType* modules_type = morphl_type_block(ctx->arena, mod_names, mod_types, mi);
-        free(mod_names); free(mod_types);
-        if (!modules_type) goto skip_global;
-
-        /* build $global type: $argc, $argv, $env, $entry, $modules */
-        Sym         gnames[5] = { argc_sym, argv_sym, env_sym, entry_sym, modules_sym };
-        MorphlType* gtypes[5];
-        gtypes[0] = morphl_type_int(ctx->arena);
-        gtypes[1] = morphl_type_int(ctx->arena);
-        gtypes[2] = morphl_type_int(ctx->arena);
-        gtypes[3] = morphl_type_int(ctx->arena);
-        gtypes[4] = modules_type;
-        if (!gtypes[0] || !gtypes[1] || !gtypes[2] || !gtypes[3]) goto skip_global;
-        MorphlType* synthetic_global = morphl_type_block(ctx->arena, gnames, gtypes, 5);
-        if (synthetic_global) ctx->global_type = synthetic_global;
       }
       skip_global:;
       Sym* field_names = NULL;
@@ -1339,6 +1548,13 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           block_type->data.block.layout_field_types = layout_types;
           block_type->data.block.layout_field_storage = layout_storage;
           block_type->data.block.layout_field_count = layout_field_count;
+          if (node->kind == AST_FILE) {
+            refresh_file_intrinsics(ctx, node, block_type,
+                                    names, types, storage, field_count,
+                                    layout_names, layout_types, layout_storage, layout_field_count,
+                                    i + 1);
+            refresh_global_type(ctx, node, block_type, i + 1);
+          }
         } else {
           // Property — does NOT participate in structural subtyping (SPEC §9.2)
           // Resolved at compile time via $member (static substitution).
@@ -1373,6 +1589,9 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         }
       }
       type_context_pop_this(ctx);
+      if (pushed_file) {
+        type_context_pop_file(ctx);
+      }
       type_context_pop_scope(ctx);
       free(field_names);
       free(field_types);

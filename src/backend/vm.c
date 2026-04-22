@@ -151,6 +151,7 @@ typedef struct {
     struct AstNode* node;
     size_t          func_idx;
     Str             name;    /* name of the variable holding this function */
+    Str             file_root;
 } DeferredFunc;
 
 /* Compile-time alias: $decl r $ref x makes 'r' an alias for 'x' (no frame storage).
@@ -176,10 +177,17 @@ typedef struct {
 
 typedef struct {
     Str    name;
+    const MorphlType* type;
     size_t global_slot;
     size_t size;
     size_t guard_slot;
 } StaticSlot;
+
+typedef struct {
+    const StaticSlot* slot;
+    ptrdiff_t         byte_offset;
+    const MorphlType* value_type;
+} StaticAccess;
 
 typedef struct {
     char* full_path;
@@ -508,9 +516,228 @@ static const StaticSlot* static_slot_register(VmEmitter* e, Str name, const Morp
     size_t guard_off = align_up(e->static_slot_ptr, 8);
     size_t slot_off = align_up(guard_off + 8, static_slot_align(t));
     size_t slot_size = static_slot_size(t);
-    e->static_slots[e->static_slot_count++] = (StaticSlot){ name, slot_off, slot_size, guard_off };
+    e->static_slots[e->static_slot_count++] = (StaticSlot){ name, t, slot_off, slot_size, guard_off };
     e->static_slot_ptr = slot_off + slot_size;
     return &e->static_slots[e->static_slot_count - 1];
+}
+
+static const MorphlType* unwrap_ref(const MorphlType* t);  /* forward declaration */
+static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
+                                           InternTable* interns,
+                                           Str field_name,
+                                           const MorphlType** out_field_type);
+static bool emit_node(VmEmitter* e, struct AstNode* node);
+
+static bool builtin_is_name(const VmEmitter* e, const AstNode* node, const char* name) {
+    if (!e || !node || node->kind != AST_BUILTIN || !node->op) return false;
+    Str op = interns_lookup(e->interns, node->op);
+    size_t len = strlen(name);
+    return op.len == len && memcmp(op.ptr, name, len) == 0;
+}
+
+static bool ast_node_name(const VmEmitter* e, const AstNode* node, Str* out) {
+    if (!e || !node || !out) return false;
+    if ((node->kind != AST_IDENT && node->kind != AST_BUILTIN) || (!node->value.ptr && !node->op)) {
+        return false;
+    }
+    *out = node->value;
+    if (!out->ptr && node->op) *out = interns_lookup(e->interns, node->op);
+    return out->ptr != NULL;
+}
+
+static bool collect_member_chain(const VmEmitter* e,
+                                 const AstNode* node,
+                                 const AstNode** out_root,
+                                 Str* segments,
+                                 size_t* segment_count,
+                                 size_t segment_capacity) {
+    if (!e || !node || !out_root || !segments || !segment_count) return false;
+    if (builtin_is_name(e, node, "$member") && node->child_count >= 2 && node->children[1]) {
+        if (!collect_member_chain(e, node->children[0], out_root,
+                                  segments, segment_count, segment_capacity)) {
+            return false;
+        }
+        if (*segment_count >= segment_capacity) return false;
+        if (!ast_node_name(e, node->children[1], &segments[*segment_count])) return false;
+        (*segment_count)++;
+        return true;
+    }
+    *out_root = node;
+    return true;
+}
+
+static bool emitter_has_import_slot(const VmEmitter* e, Str name) {
+    if (!e) return false;
+    for (size_t i = 0; i < e->import_slot_count; ++i) {
+        if (str_eq(e->import_slots[i].name, name)) return true;
+    }
+    return false;
+}
+
+static Str current_file_root_prefix(const VmEmitter* e) {
+    Str empty = { NULL, 0 };
+    if (!e) return empty;
+    const char* cur = lexical_current_path(e);
+    if (!cur || !cur[0]) return empty;
+    const char* dot = strchr(cur, '.');
+    size_t len = dot ? (size_t)(dot - cur) : strlen(cur);
+    for (size_t i = 0; i < e->import_slot_count; ++i) {
+        Str candidate = e->import_slots[i].name;
+        if (candidate.len == len && memcmp(candidate.ptr, cur, len) == 0) {
+            return candidate;
+        }
+    }
+    return empty;
+}
+
+static char* join_static_path(Str root, const Str* segments, size_t start, size_t end) {
+    size_t len = root.len;
+    if (end <= start) {
+        char* empty = (char*)malloc(len + 1);
+        if (!empty) return NULL;
+        if (root.len) memcpy(empty, root.ptr, root.len);
+        empty[len] = '\0';
+        return empty;
+    }
+    for (size_t i = start; i < end; ++i) {
+        if (len) len++;
+        len += segments[i].len;
+    }
+    char* out = (char*)malloc(len + 1);
+    if (!out) return NULL;
+    size_t pos = 0;
+    if (root.len) {
+        memcpy(out + pos, root.ptr, root.len);
+        pos += root.len;
+    }
+    for (size_t i = start; i < end; ++i) {
+        if (pos) out[pos++] = '.';
+        memcpy(out + pos, segments[i].ptr, segments[i].len);
+        pos += segments[i].len;
+    }
+    out[pos] = '\0';
+    return out;
+}
+
+static bool resolve_static_access_chain(const VmEmitter* e, const AstNode* node, StaticAccess* out) {
+    if (!e || !node || !out) return false;
+    Str segments[64];
+    size_t segment_count = 0;
+    const AstNode* root = NULL;
+    if (!collect_member_chain(e, node, &root, segments, &segment_count, 64)) return false;
+    if (!root) return false;
+
+    size_t path_start = 0;
+    Str root_prefix = { NULL, 0 };
+    if (builtin_is_name(e, root, "$file")) {
+        if (segment_count < 1 ||
+            !(segments[0].len == 9 && memcmp(segments[0].ptr, "$$statics", 9) == 0)) {
+            return false;
+        }
+        root_prefix = current_file_root_prefix(e);
+        path_start = 1;
+    } else if (builtin_is_name(e, root, "$global")) {
+        if (segment_count >= 2 &&
+            segments[0].len == 7 && memcmp(segments[0].ptr, "$source", 7) == 0 &&
+            segments[1].len == 9 && memcmp(segments[1].ptr, "$$statics", 9) == 0) {
+            path_start = 2;
+        } else if (segment_count >= 3 &&
+                   segments[0].len == 8 && memcmp(segments[0].ptr, "$modules", 8) == 0 &&
+                   segments[2].len == 9 && memcmp(segments[2].ptr, "$$statics", 9) == 0) {
+            root_prefix = segments[1];
+            path_start = 3;
+        } else {
+            return false;
+        }
+    } else if (root->kind == AST_IDENT) {
+        Str root_name = { NULL, 0 };
+        if (!ast_node_name(e, root, &root_name)) return false;
+        if (!emitter_has_import_slot(e, root_name)) return false;
+        if (segment_count < 1 ||
+            !(segments[0].len == 9 && memcmp(segments[0].ptr, "$$statics", 9) == 0)) {
+            return false;
+        }
+        root_prefix = root_name;
+        path_start = 1;
+    } else {
+        return false;
+    }
+
+    if (segment_count <= path_start) return false;
+
+    const StaticSlot* slot = NULL;
+    size_t matched_end = path_start;
+    for (size_t end = segment_count; end > path_start; --end) {
+        char* full_name = join_static_path(root_prefix, segments, path_start, end);
+        if (!full_name) return false;
+        slot = static_slot_lookup(e, str_from(full_name, strlen(full_name)));
+        free(full_name);
+        if (slot) {
+            matched_end = end;
+            break;
+        }
+    }
+    if (!slot) return false;
+
+    ptrdiff_t extra_off = 0;
+    const MorphlType* cur_type = unwrap_ref(slot->type);
+
+    for (size_t i = matched_end; i < segment_count; ++i) {
+        if (!cur_type) return false;
+        if (cur_type->kind == MORPHL_TYPE_UNION) {
+            bool is_tag = segments[i].len == 5 && memcmp(segments[i].ptr, "$$tag", 5) == 0;
+            bool is_data = segments[i].len == 6 && memcmp(segments[i].ptr, "$$data", 6) == 0;
+            if (is_tag) {
+                extra_off += (ptrdiff_t)(cur_type->size - 8);
+                cur_type = morphl_type_int(e->type_ctx->arena);
+                continue;
+            }
+            if (is_data) {
+                cur_type = morphl_type_block(e->type_ctx->arena, NULL, NULL, 0);
+                continue;
+            }
+            return false;
+        }
+        if (cur_type->kind != MORPHL_TYPE_BLOCK) return false;
+        const MorphlType* field_type = NULL;
+        ptrdiff_t field_off = block_layout_field_offset(cur_type, e->interns, segments[i], &field_type);
+        if (field_off == PTRDIFF_MAX || !field_type) return false;
+        extra_off += field_off;
+        cur_type = unwrap_ref(field_type);
+    }
+
+    out->slot = slot;
+    out->byte_offset = extra_off;
+    out->value_type = cur_type;
+    return true;
+}
+
+static bool emit_static_access_load(VmEmitter* e, const AstNode* node, const StaticAccess* access) {
+    if (!e || !node || !access || !access->slot || !access->value_type) return false;
+    const MorphlType* t = unwrap_ref(access->value_type);
+    size_t abs_off = access->slot->global_slot + (size_t)access->byte_offset;
+    if (t && (t->kind == MORPHL_TYPE_BLOCK ||
+              t->kind == MORPHL_TYPE_ARRAY ||
+              t->kind == MORPHL_TYPE_UNION)) {
+        return emit_iconst(e, (int64_t)abs_off);
+    }
+    return emit_op(e, VM_OP_GLOBAL) &&
+           emit_op_i32(e, VM_OP_ALOAD, (int32_t)abs_off);
+}
+
+static bool emit_static_access_store(VmEmitter* e,
+                                     const AstNode* target,
+                                     const StaticAccess* access,
+                                     AstNode* value) {
+    if (!e || !target || !access || !access->slot || !value) return false;
+    if (access->byte_offset < 0) {
+        VM_ERR(target, "negative offset into static storage is not supported");
+        return false;
+    }
+    return emit_op(e, VM_OP_GLOBAL) &&
+           emit_node(e, value) &&
+           emit_op_i32(e, VM_OP_ASTORE,
+                       (int32_t)(access->slot->global_slot + (size_t)access->byte_offset));
 }
 
 /* ── type helpers ───────────────────────────────────────────────────────── */
@@ -963,8 +1190,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             char* full_name = lexical_make_binding_path(e, name);
             if (!full_name) return false;
             const StaticSlot* slot = static_slot_lookup(e, str_from(full_name, strlen(full_name)));
+            if (!slot) {
+                VM_ERR(node, "internal error: static slot not preallocated for '%s'", full_name);
+                free(full_name);
+                return false;
+            }
             free(full_name);
-            if (!slot) return false;
             size_t done_lbl = label_new(e);
             if (done_lbl == SIZE_MAX) return false;
             if (!emit_op(e, VM_OP_GLOBAL)) return false;
@@ -1096,7 +1327,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                         if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
                                      sizeof(DeferredFunc), e->deferred_count + 1)) return false;
                     }
-                    e->deferred[e->deferred_count++] = (DeferredFunc){ stub, fidx, name };
+                    e->deferred[e->deferred_count++] =
+                        (DeferredFunc){ stub, fidx, name, current_file_root_prefix(e) };
                 }
                 if (!node->contributes_to_layout) return true;
                 if (!emit_iconst(e, (int64_t)fidx)) return false;
@@ -1113,7 +1345,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
                              sizeof(DeferredFunc), e->deferred_count + 1)) return false;
             }
-            e->deferred[e->deferred_count++] = (DeferredFunc){ rhs, fidx, name };
+            e->deferred[e->deferred_count++] =
+                (DeferredFunc){ rhs, fidx, name, current_file_root_prefix(e) };
             /* record 'main' for auto-call injection (top-level only) */
             if (!e->in_function &&
                 name.len == 4 && memcmp(name.ptr, "main", 4) == 0) {
@@ -1395,7 +1628,18 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
 
         /* emit RHS expression */
-        if (!emit_node(e, rhs)) return false;
+        bool rhs_is_import = builtin_is_name(e, rhs, "$import") &&
+                             rhs->child_count >= 1 &&
+                             rhs->children[0] &&
+                             rhs->children[0]->kind == AST_FILE;
+        if (rhs_is_import) {
+            if (!lexical_scope_push_named(e, name)) return false;
+            bool ok = emit_node(e, rhs);
+            lexical_scope_pop(e);
+            if (!ok) return false;
+        } else {
+            if (!emit_node(e, rhs)) return false;
+        }
 
         /* if this was a $import, populate the $modules global slot now that the
          * module's frame has been pushed (so frame offsets are stable) */
@@ -1570,7 +1814,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
                              sizeof(DeferredFunc), e->deferred_count + 1)) return false;
             }
-            e->deferred[e->deferred_count++] = (DeferredFunc){ callee, fidx, str_from("", 0) };
+            e->deferred[e->deferred_count++] =
+                (DeferredFunc){ callee, fidx, str_from("", 0), current_file_root_prefix(e) };
             return emit_op_u32(e, VM_OP_CALL, (uint32_t)fidx);
         }
 
@@ -1646,6 +1891,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
             /* $set ($member s field) rhs */
             if (tlop.len == 7 && memcmp(tlop.ptr, "$member", 7) == 0) {
+                StaticAccess access;
+                if (resolve_static_access_chain(e, target, &access)) {
+                    return emit_static_access_store(e, target, &access, value);
+                }
                 struct AstNode* tgt = target->children[0];
                 struct AstNode* fnd = target->children[1];
                 if (!tgt || !fnd) return false;
@@ -1909,7 +2158,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             Str prop_name = {NULL, 0};
             if (node->children[0] && node->children[0]->kind == AST_IDENT)
                 prop_name = node->children[0]->value;
-            e->deferred[e->deferred_count++] = (DeferredFunc){ rhs, fidx, prop_name };
+            e->deferred[e->deferred_count++] =
+                (DeferredFunc){ rhs, fidx, prop_name, current_file_root_prefix(e) };
         }
         /* props produce no runtime value — nothing stored in frame */
         return true;
@@ -1994,6 +2244,13 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                     bool ok = emit_sconst(e, ts);
                     if (t && ts.ptr) free((void*)ts.ptr);
                     return ok;
+                }
+            }
+
+            {
+                StaticAccess access;
+                if (resolve_static_access_chain(e, node, &access)) {
+                    return emit_static_access_load(e, node, &access);
                 }
             }
 
@@ -2091,6 +2348,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
 
             if (is_global_target) {
+                if (field_name.len == 7 && memcmp(field_name.ptr, "$source", 7) == 0) {
+                    return emit_op(e, VM_OP_GLOBAL);
+                }
                 /* Global frame access: GLOBAL + ALOAD(field_off) for scalar fields,
                  * or ICONST(field_off) for block sub-fields (address of the sub-section). */
                 const MorphlType* ft = unwrap_ref(field_type);
@@ -2592,7 +2852,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
                              sizeof(DeferredFunc), e->deferred_count + 1)) return false;
             }
-            e->deferred[e->deferred_count++] = (DeferredFunc){ node, fidx, {NULL, 0} };
+            e->deferred[e->deferred_count++] =
+                (DeferredFunc){ node, fidx, {NULL, 0}, current_file_root_prefix(e) };
             return emit_iconst(e, (int64_t)fidx);
         }
 
@@ -2604,7 +2865,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
 /* ── emit a deferred function body ──────────────────────────────────────── */
 
-static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t func_idx, Str func_name) {
+static bool emit_function_body(VmEmitter* e,
+                               struct AstNode* func_node,
+                               size_t func_idx,
+                               Str func_name,
+                               Str file_root) {
     if (!func_node || func_node->kind != AST_FUNC) return false;
     if (func_node->child_count < 2) return false;
     bool saved_in_function = e->in_function;
@@ -2612,10 +2877,21 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     int32_t saved_return_slot_offset = e->return_slot_offset;
     e->in_function = true;
     e->scope_depth = 0; /* reset scope tracking for this function body */
+    bool pushed_file_root = false;
+    if (file_root.ptr && file_root.len > 0) {
+        if (!lexical_scope_push_named(e, file_root)) return false;
+        pushed_file_root = true;
+    }
     if (func_name.ptr && func_name.len > 0) {
-        if (!lexical_scope_push_named(e, func_name)) return false;
+        if (!lexical_scope_push_named(e, func_name)) {
+            if (pushed_file_root) lexical_scope_pop(e);
+            return false;
+        }
     } else {
-        if (!lexical_scope_push_anon(e)) return false;
+        if (!lexical_scope_push_anon(e)) {
+            if (pushed_file_root) lexical_scope_pop(e);
+            return false;
+        }
     }
 
     struct AstNode* params = func_node->children[0]; /* AST_GROUP of AST_DECL */
@@ -2764,6 +3040,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
 
     morphl_backend_pop_frame(&e->frameInfo);
     lexical_scope_pop(e);
+    if (pushed_file_root) lexical_scope_pop(e);
     e->in_function = saved_in_function;
     e->scope_depth = saved_scope_depth;
     e->return_slot_offset = saved_return_slot_offset;
@@ -3012,6 +3289,17 @@ static bool collect_static_slots(VmEmitter* e, struct AstNode* node) {
             lexical_scope_pop(e);
             return true;
         case AST_DECL: {
+            if (node->child_count >= 2 &&
+                node->children[0] && node->children[0]->kind == AST_IDENT &&
+                builtin_is_name(e, node->children[1], "$import") &&
+                node->children[1]->child_count >= 1 &&
+                node->children[1]->children[0] &&
+                node->children[1]->children[0]->kind == AST_FILE) {
+                if (!lexical_scope_push_named(e, node->children[0]->value)) return false;
+                bool ok = collect_static_slots(e, node->children[1]->children[0]);
+                lexical_scope_pop(e);
+                return ok;
+            }
             if (node->child_count >= 2 && node->storage_residence == MORPHL_STORAGE_STATIC) {
                 AstNode* name_node = node->children[0];
                 const MorphlType* t = node->type ? unwrap_ref(node->type) : NULL;
@@ -3031,7 +3319,13 @@ static bool collect_static_slots(VmEmitter* e, struct AstNode* node) {
                 node->children[1]->kind == AST_FUNC &&
                 node->children[0] && node->children[0]->kind == AST_IDENT) {
                 if (!lexical_scope_push_named(e, node->children[0]->value)) return false;
-                bool ok = collect_static_slots(e, node->children[1]);
+                bool ok = true;
+                for (size_t i = 0; i < node->children[1]->child_count; ++i) {
+                    if (!collect_static_slots(e, node->children[1]->children[i])) {
+                        ok = false;
+                        break;
+                    }
+                }
                 lexical_scope_pop(e);
                 return ok;
             }
@@ -3181,7 +3475,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     /* emit all deferred function bodies */
     for (size_t i = 0; i < e.deferred_count; i++) {
         if (!emit_function_body(&e, e.deferred[i].node, e.deferred[i].func_idx,
-                                e.deferred[i].name)) {
+                                e.deferred[i].name, e.deferred[i].file_root)) {
             emitter_free(&e);
             if (wrapper_root) {
                 wrapper_root->child_count = 0;

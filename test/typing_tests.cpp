@@ -923,6 +923,92 @@ static void test_storage_shape_and_extern_metadata() {
   printf("\u2713 test_storage_shape_and_extern_metadata passed\n");
 }
 
+static void test_file_and_global_statics_intrinsics() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  const char* module_src =
+    "$decl cached $static $mut 7;\n"
+    "$decl value 1;\n";
+  std::string module_path = write_temp_file(module_src);
+
+  std::string source =
+    std::string("$decl local $static $mut 1;\n") +
+    "$decl mod $import \"" + module_path + "\";\n" +
+    "$decl x $member $member $file $$statics local;\n";
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(interns, &arena, source.c_str(), &parser_ctx);
+  assert(root != NULL);
+  MorphlType* root_type = morphl_infer_type_of_ast(parser_ctx.type_context, root);
+  assert(root_type != NULL && root_type->kind == MORPHL_TYPE_BLOCK);
+
+  Sym statics_sym = interns_intern(interns, str_from("$$statics", 9));
+  Sym source_sym = interns_intern(interns, str_from("$source", 7));
+  Sym modules_sym = interns_intern(interns, str_from("$modules", 8));
+  Sym mod_sym = interns_intern(interns, str_from("mod", 3));
+  Sym local_sym = interns_intern(interns, str_from("local", 5));
+
+  MorphlType* file_statics = NULL;
+  for (size_t i = 0; i < root_type->data.block.field_count; ++i) {
+    if (root_type->data.block.field_names[i] == statics_sym) {
+      file_statics = root_type->data.block.field_types[i];
+      break;
+    }
+  }
+  assert(file_statics != NULL && file_statics->kind == MORPHL_TYPE_BLOCK);
+  assert(file_statics->data.block.field_count == 1);
+  assert(file_statics->data.block.field_names[0] == local_sym);
+
+  MorphlType* global_type = type_context_get_global(parser_ctx.type_context);
+  assert(global_type != NULL && global_type->kind == MORPHL_TYPE_BLOCK);
+  MorphlType* source_type = NULL;
+  MorphlType* modules_type = NULL;
+  for (size_t i = 0; i < global_type->data.block.field_count; ++i) {
+    if (global_type->data.block.field_names[i] == source_sym) source_type = global_type->data.block.field_types[i];
+    if (global_type->data.block.field_names[i] == modules_sym) modules_type = global_type->data.block.field_types[i];
+  }
+  assert(source_type != NULL && source_type->kind == MORPHL_TYPE_BLOCK);
+  assert(modules_type != NULL && modules_type->kind == MORPHL_TYPE_BLOCK);
+
+  MorphlType* source_statics = NULL;
+  for (size_t i = 0; i < source_type->data.block.field_count; ++i) {
+    if (source_type->data.block.field_names[i] == statics_sym) {
+      source_statics = source_type->data.block.field_types[i];
+      break;
+    }
+  }
+  assert(source_statics == file_statics);
+
+  MorphlType* mod_type = NULL;
+  for (size_t i = 0; i < modules_type->data.block.field_count; ++i) {
+    if (modules_type->data.block.field_names[i] == mod_sym) {
+      mod_type = modules_type->data.block.field_types[i];
+      break;
+    }
+  }
+  assert(mod_type != NULL && mod_type->kind == MORPHL_TYPE_BLOCK);
+  MorphlType* mod_statics = NULL;
+  for (size_t i = 0; i < mod_type->data.block.field_count; ++i) {
+    if (mod_type->data.block.field_names[i] == statics_sym) {
+      mod_statics = mod_type->data.block.field_types[i];
+      break;
+    }
+  }
+  assert(mod_statics != NULL && mod_statics->kind == MORPHL_TYPE_BLOCK);
+  assert(mod_statics->data.block.field_count == 1);
+  assert(mod_statics->data.block.field_names[0] ==
+         interns_intern(interns, str_from("cached", 6)));
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  std::remove(module_path.c_str());
+  printf("\u2713 test_file_and_global_statics_intrinsics passed\n");
+}
+
 // ============================================================================
 // Test: Preprocessor action for $call with group parameter
 // ============================================================================
@@ -1386,6 +1472,7 @@ int main() {
   test_import_block_fields();
   test_alias_substitution_parse();
   test_storage_shape_and_extern_metadata();
+  test_file_and_global_statics_intrinsics();
   test_pp_call_group_param();
   test_pp_while();
   test_overload_resolution();

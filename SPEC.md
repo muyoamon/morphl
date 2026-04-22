@@ -561,13 +561,13 @@ $decl counter $static $mut 0;   // a static mutable counter
 | Property | Description |
 | --- | --- |
 | Lifetime | program lifetime (static storage) |
-| Storage Location | `$global.$statics` region |
+| Storage Location | owning file scope's `$$statics` namespace |
 | Shape Contribution | none — does not affect block's structural type |
 | `$new` inheritance | no — static fields are not inherited by new instances |
 
 #### 5.7.1 Lexical Static Identity
 
-Each `$static` declaration is keyed by its **lexical path** under `$global.$statics`.
+Each `$static` declaration is keyed by its **lexical path** under the owning file scope's intrinsic `$$statics` block.
 
 - Named scopes contribute their declared name
 - Unnamed scopes contribute `$anon$N`, in lexical order within the parent scope
@@ -577,15 +577,18 @@ Examples:
 
 ```
 $decl x $static $mut 0;
-// binds to: $global.$statics.x
+// binds to: $file.$$statics.x
+// and, in the source file: $global.$source.$$statics.x
 
 $decl f1 $func () {
     $decl x $static $mut 0;
 };
-// binds to: $global.$statics.f1.$anon$0.x
+// binds to: $file.$$statics.f1.$anon$0.x
 ```
 
 This rule prevents collisions between same-named local statics in different scopes and gives unnamed runtime sites a stable canonical name for diagnostics/debugging.
+
+For imported modules, the same rule is rooted in the imported file scope, so a static declared in module binding `mod` is inspectable through `$global.$modules.mod.$$statics...`.
 
 #### 5.7.2 Initialization
 
@@ -599,17 +602,18 @@ This rule prevents collisions between same-named local statics in different scop
 ```
 $decl counter $static $mut 0;   // a static mutable counter
 
-// in $file scope
-$decl x {
-    $decl y $static 42;         // a static constant field in a block
-    $decl a {
-        $decl b $static 100;    // a static constant field in a nested block
+$decl y $static 42;
+$decl direct $member $member $file $$statics y;
 
-        // Access via normal field access:
-        $decl val1 $member x y;     // → 42
-    };
+$decl f $func () {
+    $decl b $static $mut 100;
+    $set $member $member $file $$statics b
+         $add $member $member $file $$statics b 1;
+    $ret $member $member $file $$statics b;
 };
 ```
+
+`$file.$$statics...` is the ergonomic authoring path inside a file. `$global.$source.$$statics...` and `$global.$modules.<name>.$$statics...` are the corresponding global inspection paths.
 
 Since `$static` fields contribute no shape to the block, they are not inheritable via `$new`:
 
@@ -1442,11 +1446,39 @@ The property table is a singleton allocated in the global frame once per `$impl`
 
 ### 11.1 Files as Blocks
 
-A file is a block. Its type is the structural shape of its top-level `$decl` expressions. `$file` is the reserved reference to the current file's scope.
+A file is a block. Its type is the structural shape of its top-level `$decl` expressions, augmented with compiler-provided intrinsics. `$file` is the reserved reference to the current file's scope.
+
+Every `$file` scope has an intrinsic member:
+
+```
+$$statics
+```
+
+`$$statics` is compiler-owned and contains that file's static storage, keyed by lexical path. It is accessible from within the file as:
+
+```
+$member $file $$statics
+```
+
+and then by further `$member` access to specific static bindings.
+
+The current source file is also exposed through:
+
+```
+$global.$source
+```
+
+so its statics are inspectable as:
+
+```
+$global.$source.$$statics...
+```
 
 ### 11.2 `$import`
 
 `$import` is a module-loading expression. Evaluating it ensures the target file is loaded and registered in `$global.$modules`, and the expression evaluates to the loaded module binding.
+
+Imported module bindings expose the imported file's intrinsic members as well, including `$$statics`. This makes the module's static storage inspectable through `$global.$modules.<name>.$$statics...`.
 
 Pinned with `$decl`, the resulting module binding becomes a real field:
 
