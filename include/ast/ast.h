@@ -44,11 +44,17 @@ typedef struct AstNode {
   size_t row;               /**< 1-based line. */
   size_t col;               /**< 1-based column. */
   MorphlType* type;         /**< Resolved type, set by typing pass. NULL until then. */
+  bool contributes_to_shape;
+  bool contributes_to_layout;
+  bool storage_is_mutable;
+  MorphlStorageResidence storage_residence;
+  Str extern_symbol;
 } AstNode;
 
 AstNode* ast_new(AstKind kind);
 AstNode* ast_make_leaf(AstKind kind, Str value, const char* filename, size_t row, size_t col);
 bool ast_append_child(AstNode* node, AstNode* child);
+AstNode* ast_clone(const AstNode* node);
 void ast_free(AstNode* node);
 void ast_print(const AstNode* node, InternTable* interns);
 

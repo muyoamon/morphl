@@ -174,6 +174,18 @@ typedef struct {
     size_t global_slot;  /* byte offset in the global frame where this slot lives (32, 40, ...) */
 } ImportSlot;
 
+typedef struct {
+    Str    name;
+    size_t global_slot;
+    size_t size;
+    size_t guard_slot;
+} StaticSlot;
+
+typedef struct {
+    char* full_path;
+    size_t next_anon;
+} LexicalScope;
+
 /* Trait implementation entry: maps impl type name → property table offset in global frame */
 typedef struct {
     Str    impl_name;       /* name of the implementing type (e.g., "typeE") */
@@ -215,6 +227,12 @@ typedef struct VmEmitter {
     size_t          global_frame_size;
     ImportSlot*     import_slots;
     size_t          import_slot_count, import_slot_capacity;
+    StaticSlot*     static_slots;
+    size_t          static_slot_count, static_slot_capacity;
+    size_t          static_slot_base;
+    size_t          static_slot_ptr;
+    LexicalScope*   lexical_scopes;
+    size_t          lexical_scope_count, lexical_scope_capacity;
     /* native symbol table: names of $extern declarations, in order of allocation */
     char**          native_syms;
     size_t          native_sym_count, native_sym_capacity;
@@ -391,6 +409,110 @@ static Str alias_resolve(VmEmitter* e, Str name) {
     return name;
 }
 
+static size_t align_up(size_t offset, size_t align);
+static size_t type_frame_align(const MorphlType* t);
+static size_t type_frame_size(const MorphlType* t);
+
+static const char* lexical_current_path(const VmEmitter* e) {
+    if (!e || e->lexical_scope_count == 0) return "";
+    return e->lexical_scopes[e->lexical_scope_count - 1].full_path;
+}
+
+static bool lexical_scope_push_full(VmEmitter* e, char* full_path) {
+    if (e->lexical_scope_count >= e->lexical_scope_capacity) {
+        if (!vm_grow((void**)&e->lexical_scopes, &e->lexical_scope_capacity,
+                     sizeof(LexicalScope), e->lexical_scope_count + 1)) {
+            free(full_path);
+            return false;
+        }
+    }
+    e->lexical_scopes[e->lexical_scope_count++] = (LexicalScope){ full_path, 0 };
+    return true;
+}
+
+static bool lexical_scope_push_named(VmEmitter* e, Str name) {
+    const char* cur = lexical_current_path(e);
+    size_t cur_len = strlen(cur);
+    size_t len = cur_len ? (cur_len + 1 + name.len) : name.len;
+    char* full = (char*)malloc(len + 1);
+    if (!full) return false;
+    if (cur_len) {
+        memcpy(full, cur, cur_len);
+        full[cur_len] = '.';
+        memcpy(full + cur_len + 1, name.ptr, name.len);
+    } else if (name.len) {
+        memcpy(full, name.ptr, name.len);
+    }
+    full[len] = '\0';
+    return lexical_scope_push_full(e, full);
+}
+
+static bool lexical_scope_push_anon(VmEmitter* e) {
+    size_t anon_idx = 0;
+    if (e && e->lexical_scope_count > 0) {
+        anon_idx = e->lexical_scopes[e->lexical_scope_count - 1].next_anon++;
+    }
+    char label[32];
+    snprintf(label, sizeof(label), "$anon$%zu", anon_idx);
+    return lexical_scope_push_named(e, str_from(label, strlen(label)));
+}
+
+static void lexical_scope_pop(VmEmitter* e) {
+    if (!e || e->lexical_scope_count == 0) return;
+    free(e->lexical_scopes[e->lexical_scope_count - 1].full_path);
+    e->lexical_scope_count--;
+}
+
+static char* lexical_make_binding_path(const VmEmitter* e, Str name) {
+    const char* cur = lexical_current_path(e);
+    size_t cur_len = strlen(cur);
+    size_t len = cur_len ? (cur_len + 1 + name.len) : name.len;
+    char* full = (char*)malloc(len + 1);
+    if (!full) return NULL;
+    if (cur_len) {
+        memcpy(full, cur, cur_len);
+        full[cur_len] = '.';
+        memcpy(full + cur_len + 1, name.ptr, name.len);
+    } else if (name.len) {
+        memcpy(full, name.ptr, name.len);
+    }
+    full[len] = '\0';
+    return full;
+}
+
+static const StaticSlot* static_slot_lookup(const VmEmitter* e, Str name) {
+    if (!e) return NULL;
+    for (size_t i = e->static_slot_count; i > 0; --i) {
+        if (str_eq(e->static_slots[i - 1].name, name)) return &e->static_slots[i - 1];
+    }
+    return NULL;
+}
+
+static size_t static_slot_align(const MorphlType* t) {
+    size_t align = type_frame_align(t);
+    return align < 8 ? 8 : align;
+}
+
+static size_t static_slot_size(const MorphlType* t) {
+    size_t size = type_frame_size(t);
+    return size < 8 ? 8 : size;
+}
+
+static const StaticSlot* static_slot_register(VmEmitter* e, Str name, const MorphlType* t) {
+    const StaticSlot* existing = static_slot_lookup(e, name);
+    if (existing) return existing;
+    if (e->static_slot_count >= e->static_slot_capacity) {
+        if (!vm_grow((void**)&e->static_slots, &e->static_slot_capacity,
+                     sizeof(StaticSlot), e->static_slot_count + 1)) return NULL;
+    }
+    size_t guard_off = align_up(e->static_slot_ptr, 8);
+    size_t slot_off = align_up(guard_off + 8, static_slot_align(t));
+    size_t slot_size = static_slot_size(t);
+    e->static_slots[e->static_slot_count++] = (StaticSlot){ name, slot_off, slot_size, guard_off };
+    e->static_slot_ptr = slot_off + slot_size;
+    return &e->static_slots[e->static_slot_count - 1];
+}
+
 /* ── type helpers ───────────────────────────────────────────────────────── */
 
 static const MorphlType* unwrap_ref(const MorphlType* t);  /* forward declaration */
@@ -415,9 +537,9 @@ static size_t type_frame_align(const MorphlType* t) {
             return t->data.ref.target ? type_frame_align(t->data.ref.target) : 1;
         case MORPHL_TYPE_BLOCK: {
             size_t max_align = 1;
-            for (size_t i = 0; i < t->data.block.field_count; i++) {
-                if (t->data.block.field_types[i]) {
-                    size_t fa = type_frame_align(t->data.block.field_types[i]);
+            for (size_t i = 0; i < t->data.block.layout_field_count; i++) {
+                if (t->data.block.layout_field_types[i]) {
+                    size_t fa = type_frame_align(t->data.block.layout_field_types[i]);
                     if (fa > max_align) max_align = fa;
                 }
             }
@@ -448,8 +570,8 @@ static size_t type_frame_size(const MorphlType* t) {
             /* size field is 0 (set so by morphl_type_block); compute from fields
              * using natural alignment: each field is aligned to its own alignment. */
             size_t offset = 0;
-            for (size_t i = 0; i < t->data.block.field_count; i++) {
-                const MorphlType* ft = t->data.block.field_types[i];
+            for (size_t i = 0; i < t->data.block.layout_field_count; i++) {
+                const MorphlType* ft = t->data.block.layout_field_types[i];
                 if (!ft) continue;
                 const MorphlType* uft = unwrap_ref(ft);
                 size_t fa = type_frame_align(uft);
@@ -508,6 +630,46 @@ static const MorphlType* unwrap_ref(const MorphlType* t) {
     return t;
 }
 
+static struct AstNode* unwrap_extern_expr(struct AstNode* node, InternTable* interns) {
+    while (node && node->kind == AST_BUILTIN && node->op && node->child_count == 1) {
+        Str op = interns_lookup(interns, node->op);
+        if (op.len == 7 && memcmp(op.ptr, "$extern", 7) == 0) return node;
+        if ((op.len == 4 && memcmp(op.ptr, "$mut", 4) == 0) ||
+            (op.len == 6 && memcmp(op.ptr, "$const", 6) == 0) ||
+            (op.len == 7 && memcmp(op.ptr, "$inline", 7) == 0) ||
+            (op.len == 7 && memcmp(op.ptr, "$static", 7) == 0)) {
+            node = node->children[0];
+            continue;
+        }
+        break;
+    }
+    if (node && node->kind == AST_BUILTIN && node->op) {
+        Str op = interns_lookup(interns, node->op);
+        if (op.len == 7 && memcmp(op.ptr, "$extern", 7) == 0) return node;
+    }
+    return NULL;
+}
+
+static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
+                                           InternTable* interns,
+                                           Str field_name,
+                                           const MorphlType** out_field_type) {
+    if (!block_type || block_type->kind != MORPHL_TYPE_BLOCK) return PTRDIFF_MAX;
+    ptrdiff_t offset = 0;
+    for (size_t i = 0; i < block_type->data.block.layout_field_count; ++i) {
+        Str name = {NULL, 0};
+        if (interns && block_type->data.block.layout_field_names[i]) {
+            name = interns_lookup(interns, block_type->data.block.layout_field_names[i]);
+        }
+        if (str_eq(name, field_name)) {
+            if (out_field_type) *out_field_type = block_type->data.block.layout_field_types[i];
+            return offset;
+        }
+        offset += (ptrdiff_t)type_frame_size(unwrap_ref(block_type->data.block.layout_field_types[i]));
+    }
+    return PTRDIFF_MAX;
+}
+
 /* ── frame alignment helper ─────────────────────────────────────────────── */
 
 /* Sum of all entry sizes in the current frame (= byte position of next entry). */
@@ -556,7 +718,7 @@ static size_t block_scope_size(struct AstNode* block) {
     for (size_t i = 0; i < block->child_count; i++) {
         struct AstNode* ch = block->children[i];
         if (!ch) continue;
-        if (ch->kind == AST_DECL && ch->type) {
+        if (ch->kind == AST_DECL && ch->type && ch->contributes_to_layout) {
             const MorphlType* t = unwrap_ref(ch->type);
             /* Trait variable: RHS is ident with a trait-only-prop BLOCK type → fat-block = 16 bytes */
             if (t && t->kind == MORPHL_TYPE_BLOCK && t->data.block.field_count == 0 &&
@@ -621,6 +783,25 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         Str resolved = alias_resolve_full(e, node->value, &extra);
         ptrdiff_t base_off = morphl_backend_find_offset(&e->frameInfo, resolved);
         if (base_off == PTRDIFF_MAX) {
+            char* full_name = lexical_make_binding_path(e, resolved);
+            const StaticSlot* slot = full_name
+                ? static_slot_lookup(e, str_from(full_name, strlen(full_name)))
+                : NULL;
+            free(full_name);
+            if (slot) {
+                const MorphlType* t = unwrap_ref(node->type);
+                if (t && (t->kind == MORPHL_TYPE_BLOCK ||
+                          t->kind == MORPHL_TYPE_ARRAY ||
+                          t->kind == MORPHL_TYPE_UNION)) {
+                    VM_ERR(node, "plain access to static aggregate '%.*s' is not supported",
+                           (int)node->value.len, node->value.ptr);
+                    return false;
+                }
+                return emit_op(e, VM_OP_GLOBAL) &&
+                       emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)extra));
+            }
+        }
+        if (base_off == PTRDIFF_MAX) {
             VM_ERR(node, "undefined identifier '%.*s'",
                    (int)node->value.len, node->value.ptr);
             return false;
@@ -650,6 +831,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (node->child_count < 2) return true; /* empty decl, skip */
         struct AstNode* name_node = node->children[0];
         struct AstNode* rhs       = node->children[1];
+        struct AstNode* extern_rhs = unwrap_extern_expr(rhs, e->interns);
         if (!name_node || name_node->kind != AST_IDENT) return false;
 
         Str name = name_node->value;
@@ -682,15 +864,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                                 fname = interns_lookup(e->interns, fnd->op);
                             const MorphlType* ttype = unwrap_ref(tgt->type);
                             if (ttype && ttype->kind == MORPHL_TYPE_BLOCK) {
-                                size_t foff_bytes = 0;
-                                for (size_t fi = 0; fi < ttype->data.block.field_count; fi++) {
-                                    Str fn2 = {NULL, 0};
-                                    if (e->interns && ttype->data.block.field_names[fi])
-                                        fn2 = interns_lookup(e->interns, ttype->data.block.field_names[fi]);
-                                    if (str_eq(fn2, fname)) break;
-                                    foff_bytes += type_frame_size(unwrap_ref(ttype->data.block.field_types[fi]));
+                                ptrdiff_t foff_bytes = block_layout_field_offset(ttype, e->interns, fname, NULL);
+                                if (foff_bytes == PTRDIFF_MAX) {
+                                    VM_ERR(fnd, "$ref $member: field not found");
+                                    return false;
                                 }
-                                return alias_add(e, name, tgt->value, (ptrdiff_t)foff_bytes);
+                                return alias_add(e, name, tgt->value, foff_bytes);
                             }
                             /* union $$data or $$tag */
                             if (ttype && ttype->kind == MORPHL_TYPE_UNION) {
@@ -741,36 +920,94 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 }
             }
         }
+        /* Forward extern completion reuses the already allocated frame slot. */
+        if (extern_rhs &&
+            morphl_backend_find_offset(&e->frameInfo, name) != PTRDIFF_MAX) {
+            ptrdiff_t existing_off = morphl_backend_find_offset(&e->frameInfo, name);
+            const MorphlType* fn_type = unwrap_ref(node->type);
+            uint32_t param_sz = 0;
+            if (fn_type && fn_type->kind == MORPHL_TYPE_FUNC &&
+                fn_type->data.func.param_count > 0 && fn_type->data.func.param_types[0]) {
+                param_sz = (uint32_t)type_frame_size(
+                    unwrap_ref(fn_type->data.func.param_types[0]));
+            }
+            if (e->native_sym_count >= e->native_sym_capacity) {
+                if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
+                             sizeof(char*), e->native_sym_count + 1))
+                    return false;
+            }
+            Str sym_str = node->extern_symbol.ptr ? node->extern_symbol : name;
+            char* sym_name = (char*)malloc(sym_str.len + 1);
+            if (!sym_name) return false;
+            memcpy(sym_name, sym_str.ptr, sym_str.len);
+            sym_name[sym_str.len] = '\0';
+            e->native_syms[e->native_sym_count] = sym_name;
+            size_t native_idx = e->native_sym_count++;
+            size_t fidx = func_alloc(e);
+            if (fidx == SIZE_MAX) return false;
+            e->functions.items[fidx].entry_point = (uint32_t)native_idx;
+            e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
+            e->functions.items[fidx].param_size = param_sz;
+            e->functions.items[fidx].frame_size = 0;
+            if (!emit_iconst(e, (int64_t)fidx)) return false;
+            return emit_op_i32(e, VM_OP_ISTORE, (int32_t)existing_off);
+        }
 
         const MorphlType* raw_type = node->type;
         const MorphlType* t = unwrap_ref(raw_type);
-
-        /* insert alignment padding before the variable, then register in frame tracker */
-        /* Trait variable (no fields, only props, RHS is an ident): fat-block = 2 refs = 16 bytes */
+        if (node->storage_residence == MORPHL_STORAGE_STATIC) {
+            if (rhs && (rhs->kind == AST_FUNC || extern_rhs)) {
+                VM_ERR(node, "$static function and extern bindings are not implemented in the VM backend");
+                return false;
+            }
+            char* full_name = lexical_make_binding_path(e, name);
+            if (!full_name) return false;
+            const StaticSlot* slot = static_slot_lookup(e, str_from(full_name, strlen(full_name)));
+            free(full_name);
+            if (!slot) return false;
+            size_t done_lbl = label_new(e);
+            if (done_lbl == SIZE_MAX) return false;
+            if (!emit_op(e, VM_OP_GLOBAL)) return false;
+            if (!emit_op_i32(e, VM_OP_ALOAD, (int32_t)slot->guard_slot)) return false;
+            if (!emit_jump(e, VM_OP_JIF, done_lbl)) return false;
+            if (!emit_op(e, VM_OP_GLOBAL)) return false;
+            if (!emit_node(e, rhs)) return false;
+            if (!emit_op_i32(e, VM_OP_ASTORE, (int32_t)slot->global_slot)) return false;
+            if (!emit_op(e, VM_OP_GLOBAL)) return false;
+            if (!emit_iconst(e, 1)) return false;
+            if (!emit_op_i32(e, VM_OP_ASTORE, (int32_t)slot->guard_slot)) return false;
+            return label_bind(e, done_lbl);
+        }
         bool is_trait_var = (t && t->kind == MORPHL_TYPE_BLOCK &&
                              t->data.block.field_count == 0 &&
                              t->data.block.prop_count > 0 &&
                              rhs && rhs->kind == AST_IDENT);
-        if (is_trait_var) {
-            /* 8-byte align for the two ref slots */
-            size_t cur = frame_current_size(&e->frameInfo);
-            size_t aligned = align_up(cur, 8);
-            if (aligned > cur) {
-                struct MorphlBackendFrameOffset pad = { .name = str_from("", 0), .size = aligned - cur };
-                if (!morphl_backend_append_offset(&e->frameInfo, pad)) return false;
-            }
-        } else {
-            if (t && !frame_align_for_type(e, t)) return false;
-        }
-        struct MorphlBackendFrameOffset foff = {
-            .name = name,
-            .size = is_trait_var ? 16 : (t ? type_frame_size(t) : 0)
-        };
-        if (!morphl_backend_append_offset(&e->frameInfo, foff)) return false;
 
-        /* find the offset we just registered */
-        ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, name);
-        if (off == PTRDIFF_MAX) return false;
+        ptrdiff_t off = PTRDIFF_MAX;
+        if (node->contributes_to_layout) {
+            /* insert alignment padding before the variable, then register in frame tracker */
+            /* Trait variable (no fields, only props, RHS is an ident): fat-block = 2 refs = 16 bytes */
+            if (is_trait_var) {
+                /* 8-byte align for the two ref slots */
+                size_t cur = frame_current_size(&e->frameInfo);
+                size_t aligned = align_up(cur, 8);
+                if (aligned > cur) {
+                    struct MorphlBackendFrameOffset pad = { .name = str_from("", 0), .size = aligned - cur };
+                    if (!morphl_backend_append_offset(&e->frameInfo, pad)) return false;
+                }
+            } else {
+                if (t && !frame_align_for_type(e, t)) return false;
+            }
+            struct MorphlBackendFrameOffset foff = {
+                .name = name,
+                .size = is_trait_var ? 16 : (t ? type_frame_size(t) : 0)
+            };
+            if (!morphl_backend_append_offset(&e->frameInfo, foff)) return false;
+
+            /* find the offset we just registered */
+            off = morphl_backend_find_offset(&e->frameInfo, name);
+            if (off == PTRDIFF_MAX) return false;
+        }
 
         /* if RHS is a $import, track slot index so we can write the $modules entry after emission */
         size_t import_slot_before = SIZE_MAX;
@@ -793,9 +1030,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
 
         /* if RHS is $extern <func-expr>, allocate a native function slot */
-        if (rhs && rhs->kind == AST_BUILTIN && e->interns && rhs->op) {
-            Str rhs_op_s = interns_lookup(e->interns, rhs->op);
-            if (rhs_op_s.len == 7 && memcmp(rhs_op_s.ptr, "$extern", 7) == 0) {
+        if (extern_rhs) {
                 /* compute param_size from the DECL's function type */
                 const MorphlType* fn_type = unwrap_ref(node->type);
                 uint32_t param_sz = 0;
@@ -812,7 +1047,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 }
                 /* For imported modules, value.ptr is freed (pp_action_import frees
                  * source_buffer). Fall back to the interned name via name_node->op. */
-                Str sym_str = name;
+                Str sym_str = node->extern_symbol.ptr ? node->extern_symbol : name;
                 if ((!sym_str.ptr || sym_str.len == 0) && e->interns && name_node->op)
                     sym_str = interns_lookup(e->interns, name_node->op);
                 char* sym_name = (char*)malloc(sym_str.len + 1);
@@ -829,9 +1064,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 e->functions.items[fidx].param_size  = param_sz;
                 e->functions.items[fidx].frame_size  = 0;
                 /* store function table index as i64 in the variable's frame slot */
+                if (!node->contributes_to_layout) return true;
                 if (!emit_iconst(e, (int64_t)fidx)) return false;
                 return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
-            }
         }
 
         /* $forward func-stub — pre-allocate a fidx for the stub and defer it so that
@@ -841,19 +1076,29 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (rhs && rhs->kind == AST_BUILTIN && e->interns && rhs->op) {
             Str fwd_op = interns_lookup(e->interns, rhs->op);
             if (fwd_op.len == 8 && memcmp(fwd_op.ptr, "$forward", 8) == 0) {
-                if (rhs->child_count < 1 || !rhs->children[0] ||
-                    rhs->children[0]->kind != AST_FUNC) {
-                    VM_ERR(node, "$forward: expected a function stub as argument");
+            if (rhs->child_count < 1 || !rhs->children[0]) {
+                    VM_ERR(node, "$forward: expected a stub expression as argument");
                     return false;
                 }
                 struct AstNode* stub = rhs->children[0];
+                bool is_extern_stub = (stub->kind == AST_BUILTIN && stub->op &&
+                                       interns_lookup(e->interns, stub->op).len == 7 &&
+                                       memcmp(interns_lookup(e->interns, stub->op).ptr, "$extern", 7) == 0);
+                if (stub->kind != AST_FUNC &&
+                    !is_extern_stub) {
+                    VM_ERR(node, "$forward: expected a function or extern stub");
+                    return false;
+                }
                 size_t fidx = func_alloc(e);
                 if (fidx == SIZE_MAX) return false;
-                if (e->deferred_count >= e->deferred_capacity) {
-                    if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
-                                 sizeof(DeferredFunc), e->deferred_count + 1)) return false;
+                if (!is_extern_stub) {
+                    if (e->deferred_count >= e->deferred_capacity) {
+                        if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
+                                     sizeof(DeferredFunc), e->deferred_count + 1)) return false;
+                    }
+                    e->deferred[e->deferred_count++] = (DeferredFunc){ stub, fidx, name };
                 }
-                e->deferred[e->deferred_count++] = (DeferredFunc){ stub, fidx, name };
+                if (!node->contributes_to_layout) return true;
                 if (!emit_iconst(e, (int64_t)fidx)) return false;
                 return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
             }
@@ -883,6 +1128,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 e->main_func_fidx = fidx;
             }
             /* store function table index as i64 in frame */
+            if (!node->contributes_to_layout) return true;
             if (!emit_iconst(e, (int64_t)fidx)) return false;
             return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
         }
@@ -915,21 +1161,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (!field_name.ptr && e->interns && fn->op)
                     field_name = interns_lookup(e->interns, fn->op);
                 /* find the field offset within the block type */
-                size_t field_off = 0;
-                bool found = false;
                 const MorphlType* field_type = NULL;
-                for (size_t fi = 0; fi < t->data.block.field_count; fi++) {
-                    Str fname = {NULL, 0};
-                    if (e->interns && t->data.block.field_names[fi])
-                        fname = interns_lookup(e->interns, t->data.block.field_names[fi]);
-                    if (str_eq(fname, field_name)) {
-                        field_type = t->data.block.field_types[fi];
-                        found = true;
-                        break;
-                    }
-                    field_off += type_frame_size(unwrap_ref(t->data.block.field_types[fi]));
-                }
-                if (!found || !field_type) continue;
+                ptrdiff_t field_off = block_layout_field_offset(t, e->interns, field_name, &field_type);
+                if (field_off == PTRDIFF_MAX || !field_type) continue;
                 if (!emit_node(e, fv)) return false;
                 uint8_t sop = store_op(unwrap_ref(field_type));
                 if (sop != 0xFF) {
@@ -957,8 +1191,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (t && t->kind == MORPHL_TYPE_BLOCK) {
                     if (init_node->kind == AST_GROUP) {
                         size_t field_byte_off = 0;
-                        for (size_t fi = 0; fi < t->data.block.field_count && fi < init_node->child_count; fi++) {
-                            const MorphlType* raw_ft = t->data.block.field_types[fi];
+                        for (size_t fi = 0; fi < t->data.block.layout_field_count && fi < init_node->child_count; fi++) {
+                            const MorphlType* raw_ft = t->data.block.layout_field_types[fi];
                             const MorphlType* ft = unwrap_ref(raw_ft);
                             struct AstNode* gv = init_node->children[fi];
                             if (gv) {
@@ -1001,13 +1235,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                             if (!fname.ptr && e->interns && fn->op) fname = interns_lookup(e->interns, fn->op);
                             size_t foff2 = 0;
                             const MorphlType* ftype2 = NULL;
-                            for (size_t fi = 0; fi < t->data.block.field_count; fi++) {
-                                Str fn2 = {NULL, 0};
-                                if (e->interns && t->data.block.field_names[fi])
-                                    fn2 = interns_lookup(e->interns, t->data.block.field_names[fi]);
-                                if (str_eq(fn2, fname)) { ftype2 = t->data.block.field_types[fi]; break; }
-                                foff2 += type_frame_size(unwrap_ref(t->data.block.field_types[fi]));
-                            }
+                            ptrdiff_t layout_off = block_layout_field_offset(t, e->interns, fname, &ftype2);
+                            if (layout_off != PTRDIFF_MAX) foff2 = (size_t)layout_off;
                             if (!ftype2) continue;
                             if (!emit_node(e, fv)) return false;
                             uint8_t sop = store_op(unwrap_ref(ftype2));
@@ -1036,8 +1265,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                     if (variant_t && variant_t->kind == MORPHL_TYPE_BLOCK &&
                         init_node->kind == AST_GROUP) {
                         size_t field_byte_off = 0;
-                        for (size_t fi = 0; fi < variant_t->data.block.field_count && fi < init_node->child_count; fi++) {
-                            const MorphlType* ft = unwrap_ref(variant_t->data.block.field_types[fi]);
+                        for (size_t fi = 0; fi < variant_t->data.block.layout_field_count && fi < init_node->child_count; fi++) {
+                            const MorphlType* ft = unwrap_ref(variant_t->data.block.layout_field_types[fi]);
                             struct AstNode* gv = init_node->children[fi];
                             if (gv) {
                                 if (!emit_node(e, gv)) return false;
@@ -1182,6 +1411,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
         }
 
+        if (!node->contributes_to_layout) {
+            return true;
+        }
+
         /* store result to frame */
         uint8_t sop = store_op(t);
         if (sop == 0xFF) {
@@ -1195,23 +1428,32 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
     /* ── blocks and file root ── */
     case AST_FILE:
     case AST_BLOCK: {
+        bool pushed_lexical = false;
+        if (node->kind == AST_BLOCK) {
+            if (!lexical_scope_push_anon(e)) return false;
+            pushed_lexical = true;
+        }
         size_t scope_sz = block_scope_size(node);
         if (!morphl_backend_push_frame(&e->frameInfo)) return false;
         if (!emit_enter(e, (uint32_t)scope_sz)) {
+            if (pushed_lexical) lexical_scope_pop(e);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
         for (size_t i = 0; i < node->child_count; i++) {
             if (!emit_node(e, node->children[i])) {
+                if (pushed_lexical) lexical_scope_pop(e);
                 morphl_backend_pop_frame(&e->frameInfo);
                 return false;
             }
         }
         if (!emit_leave(e, (uint32_t)scope_sz)) {
+            if (pushed_lexical) lexical_scope_pop(e);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
         morphl_backend_pop_frame(&e->frameInfo);
+        if (pushed_lexical) lexical_scope_pop(e);
         return true;
     }
 
@@ -1321,6 +1563,17 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
 
         /* resolve callee to a function call */
+        if (callee->kind == AST_FUNC) {
+            size_t fidx = func_alloc(e);
+            if (fidx == SIZE_MAX) return false;
+            if (e->deferred_count >= e->deferred_capacity) {
+                if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
+                             sizeof(DeferredFunc), e->deferred_count + 1)) return false;
+            }
+            e->deferred[e->deferred_count++] = (DeferredFunc){ callee, fidx, str_from("", 0) };
+            return emit_op_u32(e, VM_OP_CALL, (uint32_t)fidx);
+        }
+
         if (callee->kind == AST_IDENT) {
             Str callee_name = alias_resolve(e, callee->value);
             ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, callee_name);
@@ -1356,16 +1609,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                     return false;
                 }
 
-                size_t field_offset = 0;
-                bool field_found = false;
-                for (size_t fi = 0; fi < target_btype->data.block.field_count; fi++) {
-                    Str fname = {NULL, 0};
-                    if (e->interns && target_btype->data.block.field_names[fi])
-                        fname = interns_lookup(e->interns, target_btype->data.block.field_names[fi]);
-                    if (str_eq(fname, field_name)) { field_found = true; break; }
-                    field_offset += type_frame_size(unwrap_ref(target_btype->data.block.field_types[fi]));
-                }
-                if (!field_found) {
+                ptrdiff_t field_offset = block_layout_field_offset(target_btype, e->interns, field_name, NULL);
+                if (field_offset == PTRDIFF_MAX) {
                     VM_ERR(node, "$call $member: field not found");
                     return false;
                 }
@@ -1427,17 +1672,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 }
                 /* block named field */
                 if (ttype->kind == MORPHL_TYPE_BLOCK) {
-                    size_t field_off = 0;
-                    bool found = false;
                     const MorphlType* field_type = NULL;
-                    for (size_t fi = 0; fi < ttype->data.block.field_count; fi++) {
-                        Str fn2 = {NULL, 0};
-                        if (e->interns && ttype->data.block.field_names[fi])
-                            fn2 = interns_lookup(e->interns, ttype->data.block.field_names[fi]);
-                        if (str_eq(fn2, fname)) { field_type = ttype->data.block.field_types[fi]; found = true; break; }
-                        field_off += type_frame_size(unwrap_ref(ttype->data.block.field_types[fi]));
-                    }
-                    if (!found || !field_type) {
+                    ptrdiff_t field_off = block_layout_field_offset(ttype, e->interns, fname, &field_type);
+                    if (field_off == PTRDIFF_MAX || !field_type) {
                         VM_ERR(fnd, "$set $member: field '%.*s' not found",
                                (int)fname.len, fname.ptr);
                         return false;
@@ -1550,11 +1787,68 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
         }
 
-        if (!emit_node(e, value)) return false;
+        if (value->kind == AST_BUILTIN && value->op) {
+            Str value_op = interns_lookup(e->interns, value->op);
+            if (value_op.len == 7 && memcmp(value_op.ptr, "$extern", 7) == 0) {
+                ptrdiff_t textra = 0;
+                Str target_name = alias_resolve_full(e, target->value, &textra);
+                ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, target_name) + textra;
+                if (off == PTRDIFF_MAX + textra) {
+                    VM_ERR(target, "undefined target '%.*s' in $set",
+                           (int)target->value.len, target->value.ptr);
+                    return false;
+                }
+                const MorphlType* fn_type = target->type ? unwrap_ref(target->type) : NULL;
+                uint32_t param_sz = 0;
+                if (fn_type && fn_type->kind == MORPHL_TYPE_FUNC &&
+                    fn_type->data.func.param_count > 0 && fn_type->data.func.param_types[0]) {
+                    param_sz = (uint32_t)type_frame_size(
+                        unwrap_ref(fn_type->data.func.param_types[0]));
+                }
+                if (e->native_sym_count >= e->native_sym_capacity) {
+                    if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
+                                 sizeof(char*), e->native_sym_count + 1))
+                        return false;
+                }
+                Str sym_str = value->extern_symbol.ptr ? value->extern_symbol : target->value;
+                char* sym_name = (char*)malloc(sym_str.len + 1);
+                if (!sym_name) return false;
+                memcpy(sym_name, sym_str.ptr, sym_str.len);
+                sym_name[sym_str.len] = '\0';
+                e->native_syms[e->native_sym_count] = sym_name;
+                size_t native_idx = e->native_sym_count++;
+                size_t fidx = func_alloc(e);
+                if (fidx == SIZE_MAX) return false;
+                e->functions.items[fidx].entry_point = (uint32_t)native_idx;
+                e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
+                e->functions.items[fidx].param_size = param_sz;
+                e->functions.items[fidx].frame_size = 0;
+                if (!emit_iconst(e, (int64_t)fidx)) return false;
+                return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
+            }
+        }
+
         /* resolve compile-time $ref aliases for the assignment target */
         ptrdiff_t textra = 0;
         Str target_name = alias_resolve_full(e, target->value, &textra);
         ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, target_name) + textra;
+        if (off == PTRDIFF_MAX + textra) {
+            char* full_name = lexical_make_binding_path(e, target_name);
+            const StaticSlot* slot = full_name
+                ? static_slot_lookup(e, str_from(full_name, strlen(full_name)))
+                : NULL;
+            free(full_name);
+            if (slot) {
+                if (!emit_op(e, VM_OP_GLOBAL)) return false;
+                if (!emit_node(e, value)) return false;
+                if (textra < 0) {
+                    VM_ERR(target, "negative offset into static storage is not supported");
+                    return false;
+                }
+                return emit_op_i32(e, VM_OP_ASTORE, (int32_t)(slot->global_slot + (size_t)textra));
+            }
+        }
+        if (!emit_node(e, value)) return false;
         if (off == PTRDIFF_MAX + textra) {
             VM_ERR(target, "undefined target '%.*s' in $set",
                    (int)target->value.len, target->value.ptr);
@@ -1637,16 +1931,14 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 const MorphlType* t = unwrap_ref(node->children[0]->type);
                 uint8_t sop = store_op(t);
                 if (sop != 0xFF) {
-                    /* return slot is at a negative offset from frame base: -ret_size */
-                    size_t ret_sz = type_frame_size(t);
-                    if (!emit_op_i32(e, sop, -(int32_t)ret_sz)) return false;
+                    if (!emit_op_i32(e, sop, e->return_slot_offset)) return false;
                 }
             }
             return emit_op(e, VM_OP_RET);
         }
 
-        /* $mut / $const / $ref (qualifier form) — transparent storage qualifiers */
-        if (OP_IS("$mut") || OP_IS("$const") || OP_IS("$ref")) {
+        /* $mut / $const / $static / $ref (qualifier form) — transparent storage qualifiers */
+        if (OP_IS("$mut") || OP_IS("$const") || OP_IS("$static") || OP_IS("$ref")) {
             return node->child_count > 0 ? emit_node(e, node->children[0]) : true;
         }
 
@@ -1776,25 +2068,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             }
 
             /* compute field offset within the block (natural alignment, declaration order) */
-            size_t field_offset = 0;
-            bool field_found = false;
             const MorphlType* field_type = NULL;
-            for (size_t fi = 0; fi < target_btype->data.block.field_count; fi++) {
-                Str fname = {NULL, 0};
-                if (e->interns && target_btype->data.block.field_names[fi]) {
-                    fname = interns_lookup(e->interns, target_btype->data.block.field_names[fi]);
-                }
-                const MorphlType* uft = unwrap_ref(target_btype->data.block.field_types[fi]);
-                size_t fa = type_frame_align(uft);
-                field_offset = align_up(field_offset, fa);
-                if (str_eq(fname, field_name)) {
-                    field_found = true;
-                    field_type = target_btype->data.block.field_types[fi];
-                    break;
-                }
-                field_offset += type_frame_size(uft);
-            }
-            if (!field_found) {
+            ptrdiff_t field_offset = block_layout_field_offset(target_btype, e->interns, field_name, &field_type);
+            if (field_offset == PTRDIFF_MAX || !field_type) {
                 VM_ERR(field_nd, "$member: field '%.*s' not found",
                        (int)field_name.len, field_name.ptr);
                 return false;
@@ -2091,15 +2367,17 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
              * before jumping, so nested sub-blocks are correctly unwound. */
             struct AstNode* body = node->children[1];
             if (body && body->kind == AST_BLOCK) {
+                if (!lexical_scope_push_anon(e)) { e->loop_stack_count--; return false; }
                 size_t bsz = block_scope_size(body);
                 if (bsz > 0 && !emit_enter(e, (uint32_t)bsz))
-                    { e->loop_stack_count--; return false; }
+                    { lexical_scope_pop(e); e->loop_stack_count--; return false; }
                 for (size_t k = 0; k < body->child_count; k++) {
                     if (!emit_node(e, body->children[k]))
-                        { e->loop_stack_count--; return false; }
+                        { lexical_scope_pop(e); e->loop_stack_count--; return false; }
                 }
                 if (bsz > 0 && !emit_leave(e, (uint32_t)bsz))
-                    { e->loop_stack_count--; return false; }
+                    { lexical_scope_pop(e); e->loop_stack_count--; return false; }
+                lexical_scope_pop(e);
             } else if (body) {
                 if (!emit_node(e, body)) { e->loop_stack_count--; return false; }
             }
@@ -2326,13 +2604,19 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
 /* ── emit a deferred function body ──────────────────────────────────────── */
 
-static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t func_idx) {
+static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t func_idx, Str func_name) {
     if (!func_node || func_node->kind != AST_FUNC) return false;
     if (func_node->child_count < 2) return false;
     bool saved_in_function = e->in_function;
     size_t saved_scope_depth = e->scope_depth;
+    int32_t saved_return_slot_offset = e->return_slot_offset;
     e->in_function = true;
     e->scope_depth = 0; /* reset scope tracking for this function body */
+    if (func_name.ptr && func_name.len > 0) {
+        if (!lexical_scope_push_named(e, func_name)) return false;
+    } else {
+        if (!lexical_scope_push_anon(e)) return false;
+    }
 
     struct AstNode* params = func_node->children[0]; /* AST_GROUP of AST_DECL */
     struct AstNode* body   = func_node->children[1]; /* AST_BLOCK */
@@ -2362,6 +2646,13 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
         }
     }
     e->functions.items[func_idx].param_size = (uint32_t)param_sz;
+
+    size_t ret_sz = 0;
+    const MorphlType* fn_type = unwrap_ref(func_node->type);
+    if (fn_type && fn_type->kind == MORPHL_TYPE_FUNC && fn_type->data.func.return_type) {
+        ret_sz = type_frame_size(unwrap_ref(fn_type->data.func.return_type));
+    }
+    e->return_slot_offset = -(int32_t)(param_sz + 8 + ret_sz);
 
     /* push param scope */
     if (!morphl_backend_push_frame(&e->frameInfo)) return false;
@@ -2393,6 +2684,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     size_t body_scope_sz = body_scope_sz_raw + 8; /* +8 for implicit $parent slot */
     {
         if (!morphl_backend_push_frame(&e->frameInfo)) {
+            lexical_scope_pop(e);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
@@ -2402,22 +2694,26 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
             .size = 8
         };
         if (!morphl_backend_append_offset(&e->frameInfo, parent_foff)) {
+            lexical_scope_pop(e);
             morphl_backend_pop_frame(&e->frameInfo);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
         if (!emit_enter(e, (uint32_t)body_scope_sz)) {
+            lexical_scope_pop(e);
             morphl_backend_pop_frame(&e->frameInfo);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
         /* copy hidden parent arg from frame[-(param_sz+8)] into the $parent slot at frame[0] */
         if (!emit_op_i32(e, VM_OP_ILOAD, -(int32_t)(param_sz + 8))) {
+            lexical_scope_pop(e);
             morphl_backend_pop_frame(&e->frameInfo);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
         }
         if (!emit_op_i32(e, VM_OP_ISTORE, 0)) {
+            lexical_scope_pop(e);
             morphl_backend_pop_frame(&e->frameInfo);
             morphl_backend_pop_frame(&e->frameInfo);
             return false;
@@ -2426,15 +2722,24 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
 
     if (body) {
         if (body->kind == AST_BLOCK) {
+            if (!lexical_scope_push_anon(e)) {
+                lexical_scope_pop(e);
+                morphl_backend_pop_frame(&e->frameInfo);
+                return false;
+            }
             for (size_t i = 0; i < body->child_count; i++) {
                 if (!emit_node(e, body->children[i])) {
+                    lexical_scope_pop(e);
+                    lexical_scope_pop(e);
                     if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
                     morphl_backend_pop_frame(&e->frameInfo);
                     return false;
                 }
             }
+            lexical_scope_pop(e);
         } else {
             if (!emit_node(e, body)) {
+                lexical_scope_pop(e);
                 if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
                 morphl_backend_pop_frame(&e->frameInfo);
                 return false;
@@ -2449,6 +2754,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
 
     /* implicit RET at end of body */
     if (!emit_op(e, VM_OP_RET)) {
+        lexical_scope_pop(e);
         morphl_backend_pop_frame(&e->frameInfo);
         return false;
     }
@@ -2457,8 +2763,10 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node, size_t f
     e->functions.items[func_idx].frame_size = (uint32_t)(param_sz + body_scope_sz);
 
     morphl_backend_pop_frame(&e->frameInfo);
+    lexical_scope_pop(e);
     e->in_function = saved_in_function;
     e->scope_depth = saved_scope_depth;
+    e->return_slot_offset = saved_return_slot_offset;
     return true;
 }
 
@@ -2474,6 +2782,9 @@ static void emitter_free(VmEmitter* e) {
     free(e->loop_stack);
     free(e->scope_sizes);
     free(e->import_slots);
+    free(e->static_slots);
+    while (e->lexical_scope_count > 0) lexical_scope_pop(e);
+    free(e->lexical_scopes);
     for (size_t i = 0; i < e->str_count; i++) free(e->str_table[i]);
     free(e->str_table);
     for (size_t i = 0; i < e->native_sym_count; i++) free(e->native_syms[i]);
@@ -2531,8 +2842,8 @@ static size_t flatten_new_group(FlattenCtx* ctx, InternTable* interns,
         !group || group->kind != AST_GROUP) return 0;
     size_t inserted = 0;
     for (size_t fi = 0;
-         fi < block_type->data.block.field_count && fi < group->child_count; fi++) {
-        const MorphlType* raw_ft = block_type->data.block.field_types[fi];
+         fi < block_type->data.block.layout_field_count && fi < group->child_count; fi++) {
+        const MorphlType* raw_ft = block_type->data.block.layout_field_types[fi];
         /* Strip $mut/$const qualifiers to reach the actual $ref (is_ref=true) layer */
         const MorphlType* ft = unwrap_ref(raw_ft);
         if (!ft || ft->kind != MORPHL_TYPE_REF || !ft->data.ref.is_ref) continue;
@@ -2572,6 +2883,10 @@ static size_t flatten_new_group(FlattenCtx* ctx, InternTable* interns,
         sibling->filename = gv->filename;
         sibling->row      = gv->row;
         sibling->col      = gv->col;
+        sibling->contributes_to_shape = true;
+        sibling->contributes_to_layout = true;
+        sibling->storage_is_mutable = false;
+        sibling->storage_residence = MORPHL_STORAGE_INSTANCE;
         if (!ast_append_child(sibling, name_node) ||
             !ast_append_child(sibling, gv)) {
             /* Roll back: detach gv so it isn't freed with sibling */
@@ -2678,10 +2993,90 @@ static size_t count_imports(InternTable* interns, struct AstNode* root) {
     return count;
 }
 
+static bool collect_static_slots(VmEmitter* e, struct AstNode* node) {
+    if (!e || !node) return true;
+    switch (node->kind) {
+        case AST_FILE:
+            for (size_t i = 0; i < node->child_count; ++i) {
+                if (!collect_static_slots(e, node->children[i])) return false;
+            }
+            return true;
+        case AST_BLOCK:
+            if (!lexical_scope_push_anon(e)) return false;
+            for (size_t i = 0; i < node->child_count; ++i) {
+                if (!collect_static_slots(e, node->children[i])) {
+                    lexical_scope_pop(e);
+                    return false;
+                }
+            }
+            lexical_scope_pop(e);
+            return true;
+        case AST_DECL: {
+            if (node->child_count >= 2 && node->storage_residence == MORPHL_STORAGE_STATIC) {
+                AstNode* name_node = node->children[0];
+                const MorphlType* t = node->type ? unwrap_ref(node->type) : NULL;
+                if (name_node && name_node->kind == AST_IDENT && t) {
+                    char* full_name = lexical_make_binding_path(e, name_node->value);
+                    if (!full_name) return false;
+                    const StaticSlot* slot =
+                        static_slot_register(e, str_from(full_name, strlen(full_name)), t);
+                    (void)slot;
+                    if (!slot) {
+                        free(full_name);
+                        return false;
+                    }
+                }
+            }
+            if (node->child_count >= 2 && node->children[1] &&
+                node->children[1]->kind == AST_FUNC &&
+                node->children[0] && node->children[0]->kind == AST_IDENT) {
+                if (!lexical_scope_push_named(e, node->children[0]->value)) return false;
+                bool ok = collect_static_slots(e, node->children[1]);
+                lexical_scope_pop(e);
+                return ok;
+            }
+            for (size_t i = 1; i < node->child_count; ++i) {
+                if (!collect_static_slots(e, node->children[i])) return false;
+            }
+            return true;
+        }
+        case AST_FUNC:
+            if (!lexical_scope_push_anon(e)) return false;
+            for (size_t i = 0; i < node->child_count; ++i) {
+                if (!collect_static_slots(e, node->children[i])) {
+                    lexical_scope_pop(e);
+                    return false;
+                }
+            }
+            lexical_scope_pop(e);
+            return true;
+        default:
+            for (size_t i = 0; i < node->child_count; ++i) {
+                if (!collect_static_slots(e, node->children[i])) return false;
+            }
+            return true;
+    }
+}
+
 /* ── public backend entry point ─────────────────────────────────────────── */
 
 bool morphl_backend_func_vm(MorphlBackendContext* context) {
     if (!context || !context->out_file || !context->tree) return false;
+
+    struct AstNode* emit_root = context->tree;
+    struct AstNode* wrapper_root = NULL;
+    if (emit_root->kind != AST_FILE && emit_root->kind != AST_BLOCK) {
+        wrapper_root = ast_new(AST_FILE);
+        if (!wrapper_root) return false;
+        wrapper_root->filename = emit_root->filename;
+        wrapper_root->row = emit_root->row;
+        wrapper_root->col = emit_root->col;
+        if (!ast_append_child(wrapper_root, emit_root)) {
+            ast_free(wrapper_root);
+            return false;
+        }
+        emit_root = wrapper_root;
+    }
 
     VmEmitter e;
     memset(&e, 0, sizeof(e));
@@ -2690,14 +3085,34 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     e.main_func_fidx  = SIZE_MAX;
     e.frameInfo       = morphl_backend_frame_init();
     if (!e.frameInfo.root) { emitter_free(&e); return false; }
+    char* root_path = (char*)malloc(1);
+    if (!root_path) { emitter_free(&e); return false; }
+    root_path[0] = '\0';
+    if (!lexical_scope_push_full(&e, root_path)) { emitter_free(&e); return false; }
 
-    /* pre-pass: compute global_frame_size = 32 + 8*import_count + impl_prop_space */
+    /* pre-pass: compute global_frame_size = 32 + 8*import_count + impl_prop_space + static_space */
     {
-        size_t import_count    = count_imports(e.interns, context->tree);
-        size_t impl_prop_space = count_impl_prop_space(e.interns, context->tree);
-        e.global_frame_size    = 32 + 8 * import_count + impl_prop_space;
+        size_t import_count    = count_imports(e.interns, emit_root);
+        size_t impl_prop_space = count_impl_prop_space(e.interns, emit_root);
+        e.static_slot_ptr      = 0;
+        if (!collect_static_slots(&e, emit_root)) {
+            emitter_free(&e);
+            if (wrapper_root) {
+                wrapper_root->child_count = 0;
+                ast_free(wrapper_root);
+            }
+            return false;
+        }
+        size_t static_space    = e.static_slot_ptr;
+        e.global_frame_size    = 32 + 8 * import_count + impl_prop_space + static_space;
         e.impl_prop_table_base = 32 + 8 * import_count;
         e.impl_prop_table_ptr  = e.impl_prop_table_base;
+        e.static_slot_base     = e.impl_prop_table_base + impl_prop_space;
+        for (size_t i = 0; i < e.static_slot_count; ++i) {
+            e.static_slots[i].global_slot += e.static_slot_base;
+            e.static_slots[i].guard_slot += e.static_slot_base;
+        }
+        e.static_slot_ptr      = e.static_slot_base + static_space;
     }
 
     /* function 0 = top-level program (implicit main) */
@@ -2712,18 +3127,29 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
         bool ok = emit_op(&e, VM_OP_GLOBAL)
                && emit_iconst(&e, (int64_t)e.global_frame_size)
                && emit_op_i32(&e, VM_OP_ASTORE, 24);
-        if (!ok) { emitter_free(&e); return false; }
+        if (!ok) {
+            emitter_free(&e);
+            if (wrapper_root) {
+                wrapper_root->child_count = 0;
+                ast_free(wrapper_root);
+            }
+            return false;
+        }
     }
 
     /* pre-pass: flatten nested $new in $ref fields into sibling $decl nodes */
     {
         FlattenCtx fctx = {0};
-        flatten_block(&fctx, e.interns, context->tree);
+        flatten_block(&fctx, e.interns, emit_root);
     }
 
     /* emit top-level code */
-    if (!emit_node(&e, context->tree)) {
+    if (!emit_node(&e, emit_root)) {
         emitter_free(&e);
+        if (wrapper_root) {
+            wrapper_root->child_count = 0;
+            ast_free(wrapper_root);
+        }
         return false;
     }
     /* if a top-level 'main : () => i32' was declared, auto-call it and exit */
@@ -2734,20 +3160,33 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
             !emit_op_u32(&e, VM_OP_CALL, (uint32_t)e.main_func_fidx) ||
             !emit_op(&e, VM_OP_EXIT)) {
             emitter_free(&e);
+            if (wrapper_root) {
+                wrapper_root->child_count = 0;
+                ast_free(wrapper_root);
+            }
             return false;
         }
     }
 
     if (!emit_op(&e, VM_OP_HALT)) {
         emitter_free(&e);
+        if (wrapper_root) {
+            wrapper_root->child_count = 0;
+            ast_free(wrapper_root);
+        }
         return false;
     }
     e.functions.items[main_idx].frame_size = 0; /* top-level has no single frame */
 
     /* emit all deferred function bodies */
     for (size_t i = 0; i < e.deferred_count; i++) {
-        if (!emit_function_body(&e, e.deferred[i].node, e.deferred[i].func_idx)) {
+        if (!emit_function_body(&e, e.deferred[i].node, e.deferred[i].func_idx,
+                                e.deferred[i].name)) {
             emitter_free(&e);
+            if (wrapper_root) {
+                wrapper_root->child_count = 0;
+                ast_free(wrapper_root);
+            }
             return false;
         }
     }
@@ -2755,12 +3194,23 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     /* apply jump patches */
     if (!patches_apply(&e)) {
         emitter_free(&e);
+        if (wrapper_root) {
+            wrapper_root->child_count = 0;
+            ast_free(wrapper_root);
+        }
         return false;
     }
 
     /* serialize to file */
     FILE* out = fopen(context->out_file, "wb");
-    if (!out) { emitter_free(&e); return false; }
+    if (!out) {
+        emitter_free(&e);
+        if (wrapper_root) {
+            wrapper_root->child_count = 0;
+            ast_free(wrapper_root);
+        }
+        return false;
+    }
 
     VmBytes file = {0};
     bool ok = true;
@@ -2806,5 +3256,9 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     fclose(out);
     free(file.data);
     emitter_free(&e);
+    if (wrapper_root) {
+        wrapper_root->child_count = 0;
+        ast_free(wrapper_root);
+    }
     return ok;
 }

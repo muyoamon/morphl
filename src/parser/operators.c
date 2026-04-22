@@ -810,12 +810,14 @@ static OperatorRow kBuiltinOps[] = {
   {"$set",    AST_SET,    false, 2, 2,          pp_action_set,     0, OP_PP_KEEP_NODE, SET},
   {"$decl",   AST_DECL,   true,  2, 2,          pp_action_decl,    0, OP_PP_KEEP_NODE, DECL},
   {"$import", AST_BUILTIN,true,  1, 1,          pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},
+  {"$alias",  AST_BUILTIN,true,  2, 2,          NULL,              0, OP_PP_DROP_NODE, ALIAS},
   {"$syntax", AST_BUILTIN,true,  1, 1,          pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
   {"$prop",   AST_PROP   ,true,  2, 2,          pp_action_prop,    0, OP_PP_KEEP_NODE, PROP},
   {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE, RET},
   {"$member", AST_BUILTIN,false, 2, 2,          pp_action_member,  0, OP_PP_KEEP_NODE, MEMBER},
   {"$mut",    AST_BUILTIN,false, 1, 1,          pp_action_mut,     0, OP_PP_KEEP_NODE, MUT},
   {"$const",  AST_BUILTIN,false, 1, 1,          pp_action_const,   0, OP_PP_KEEP_NODE, CONST},
+  {"$static", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, STATIC},
   {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, INLINE},
   {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, THIS},
   {"$parent", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, PARENT},
@@ -870,6 +872,7 @@ static OperatorRow kBuiltinOps[] = {
   // Preprocessor
   {"$syntax", AST_BUILTIN,true,  1, 1,           pp_action_syntax,  0, OP_PP_DROP_NODE, SYNTAX},
   {"$import", AST_BUILTIN,true,  1, 1,           pp_action_import,  0, OP_PP_KEEP_NODE, IMPORT},
+  {"$alias",  AST_BUILTIN,true,  2, 2,           NULL,              0, OP_PP_DROP_NODE, ALIAS},
 
   // Trait system
   {"$traits", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, TRAITS},
@@ -882,8 +885,8 @@ static OperatorRow kBuiltinOps[] = {
   {"$i2f",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, I2F},
   {"$f2i",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, F2I},
 
-  // Native FFI storage specifier: $extern <expr>
-  {"$extern", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, EXTERN},
+  // Native FFI storage specifier: $extern <type-expr> | $extern <string> <type-expr>
+  {"$extern", AST_BUILTIN,false, 1, 2,           NULL,              0, OP_PP_KEEP_NODE, EXTERN},
 
   // Array types
   {"$array",  AST_BUILTIN, true, 2, 2,           pp_action_array,   0, OP_PP_KEEP_NODE, ARRAY},
@@ -919,6 +922,7 @@ const OperatorInfo* operator_info_lookup(Sym op) {
       out.max_args = kBuiltinOps[i].max_args;
       out.is_preprocessor = kBuiltinOps[i].is_preprocessor;
       out.pp_policy = kBuiltinOps[i].policy;
+      out.op_enum = kBuiltinOps[i].op_enum;
       return &out;
     }
   }
@@ -937,6 +941,7 @@ const OperatorInfo* operator_info_from_enum(enum Operator op) {
       out.max_args = kBuiltinOps[i].max_args;
       out.is_preprocessor = kBuiltinOps[i].is_preprocessor;
       out.pp_policy = kBuiltinOps[i].policy;
+      out.op_enum = kBuiltinOps[i].op_enum;
       return &out;
     }
   }

@@ -11,6 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct MorphlAliasBinding {
+  Sym name;
+  AstNode* expr;
+};
+
 // Token kind constants from lexer
 extern const char* const LEXER_KIND_IDENT;
 extern const char* const LEXER_KIND_NUMBER;
@@ -26,6 +31,12 @@ bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* a
   ctx->grammar_stack = NULL;
   ctx->grammar_stack_size = 0;
   ctx->grammar_stack_cap = 0;
+  ctx->alias_bindings = NULL;
+  ctx->alias_binding_count = 0;
+  ctx->alias_binding_cap = 0;
+  ctx->alias_scope_markers = NULL;
+  ctx->alias_scope_depth = 0;
+  ctx->alias_scope_cap = 0;
   ctx->interns = interns;
   ctx->arena = arena;
   ctx->use_builtins = true; // Start with builtin-only
@@ -50,9 +61,17 @@ void scoped_parser_free(ScopedParserContext* ctx) {
   }
   
   free(ctx->grammar_stack);
+  free(ctx->alias_bindings);
+  free(ctx->alias_scope_markers);
   ctx->grammar_stack = NULL;
   ctx->grammar_stack_size = 0;
   ctx->grammar_stack_cap = 0;
+  ctx->alias_bindings = NULL;
+  ctx->alias_binding_count = 0;
+  ctx->alias_binding_cap = 0;
+  ctx->alias_scope_markers = NULL;
+  ctx->alias_scope_depth = 0;
+  ctx->alias_scope_cap = 0;
   
   // Free TypeContext (it's allocated from arena, so just reset)
   type_context_free(ctx->type_context);
@@ -162,14 +181,101 @@ static bool scoped_parse_expr(ScopedParserContext* ctx,
                               size_t depth,
                               AstNode** out_node);
 
+static bool alias_scope_push(ScopedParserContext* ctx) {
+  if (!ctx) return false;
+  if (ctx->alias_scope_depth >= ctx->alias_scope_cap) {
+    size_t new_cap = ctx->alias_scope_cap ? ctx->alias_scope_cap * 2 : 4;
+    size_t* resized = (size_t*)realloc(ctx->alias_scope_markers, new_cap * sizeof(size_t));
+    if (!resized) return false;
+    ctx->alias_scope_markers = resized;
+    ctx->alias_scope_cap = new_cap;
+  }
+  ctx->alias_scope_markers[ctx->alias_scope_depth++] = ctx->alias_binding_count;
+  return true;
+}
+
+static void alias_scope_pop(ScopedParserContext* ctx) {
+  if (!ctx || ctx->alias_scope_depth == 0) return;
+  ctx->alias_binding_count = ctx->alias_scope_markers[--ctx->alias_scope_depth];
+}
+
+static bool alias_binding_add(ScopedParserContext* ctx, Sym name, AstNode* expr) {
+  if (!ctx || !name || !expr) return false;
+  size_t scope_start = ctx->alias_scope_depth
+    ? ctx->alias_scope_markers[ctx->alias_scope_depth - 1]
+    : 0;
+  for (size_t i = ctx->alias_binding_count; i > scope_start; --i) {
+    if (ctx->alias_bindings[i - 1].name == name) {
+      ctx->alias_bindings[i - 1].expr = expr;
+      return true;
+    }
+  }
+  if (ctx->alias_binding_count >= ctx->alias_binding_cap) {
+    size_t new_cap = ctx->alias_binding_cap ? ctx->alias_binding_cap * 2 : 8;
+    struct MorphlAliasBinding* resized =
+      (struct MorphlAliasBinding*)realloc(ctx->alias_bindings,
+                                          new_cap * sizeof(struct MorphlAliasBinding));
+    if (!resized) return false;
+    ctx->alias_bindings = resized;
+    ctx->alias_binding_cap = new_cap;
+  }
+  ctx->alias_bindings[ctx->alias_binding_count++] = (struct MorphlAliasBinding){ name, expr };
+  return true;
+}
+
+static AstNode* alias_binding_lookup(const ScopedParserContext* ctx, Sym name) {
+  if (!ctx || !name) return NULL;
+  for (size_t i = ctx->alias_binding_count; i > 0; --i) {
+    if (ctx->alias_bindings[i - 1].name == name) return ctx->alias_bindings[i - 1].expr;
+  }
+  return NULL;
+}
+
 // Preprocessor hook executor: returns true if node should be kept, false if dropped
 static bool apply_preprocessor_if_any(ScopedParserContext* ctx, AstNode* node) {
   if (!node) return true;
+
+  if (node->kind == AST_FILE || node->kind == AST_BLOCK) {
+    if (!alias_scope_push(ctx)) return false;
+    size_t write_idx = 0;
+    for (size_t i = 0; i < node->child_count; ++i) {
+      AstNode* child = node->children[i];
+      if (apply_preprocessor_if_any(ctx, child)) {
+        node->children[write_idx++] = child;
+      } else {
+        ast_free(child);
+      }
+    }
+    node->child_count = write_idx;
+    alias_scope_pop(ctx);
+    return true;
+  }
+
+  if (node->kind == AST_IDENT) {
+    if (!node->op && node->value.ptr) {
+      node->op = interns_intern(ctx->interns, node->value);
+    }
+    if (!node->op) return true;
+    AstNode* alias_expr = alias_binding_lookup(ctx, node->op);
+    if (alias_expr) {
+      AstNode* clone = ast_clone(alias_expr);
+      AstNode** old_children = node->children;
+      if (!clone) return false;
+      *node = *clone;
+      free(clone);
+      free(old_children);
+      return true;
+    }
+  }
 
   // First run preprocessor hooks on children so nested builtins (e.g. $import
   // inside $decl) are materialized before parent inference/hooks execute.
   size_t write_idx = 0;
   for (size_t i = 0; i < node->child_count; ++i) {
+    if ((node->kind == AST_DECL || node->kind == AST_PROP) && i == 0) {
+      node->children[write_idx++] = node->children[i];
+      continue;
+    }
     AstNode* child = node->children[i];
     if (apply_preprocessor_if_any(ctx, child)) {
       node->children[write_idx++] = child;
@@ -180,8 +286,23 @@ static bool apply_preprocessor_if_any(ScopedParserContext* ctx, AstNode* node) {
   node->child_count = write_idx;
 
   if (node->kind != AST_BUILTIN || !node->op) return true;
+  Str op_name = interns_lookup(ctx->interns, node->op);
+  if (op_name.len == 6 && memcmp(op_name.ptr, "$alias", 6) == 0) {
+    if (node->child_count != 2 || !node->children[0] || !node->children[1]) return false;
+    AstNode* name_node = node->children[0];
+    AstNode* expr_node = node->children[1];
+    if (name_node->kind != AST_IDENT) return false;
+    if (!name_node->op && name_node->value.ptr) {
+      name_node->op = interns_intern(ctx->interns, name_node->value);
+    }
+    if (!name_node->op) return false;
+    if (!alias_binding_add(ctx, name_node->op, expr_node)) return false;
+    node->children[1] = NULL;
+    return false;
+  }
   const OperatorInfo* info = operator_info_lookup(node->op);
-  if (!info || !info->is_preprocessor || !info->func) return true;
+  if (!info || !info->is_preprocessor) return true;
+  if (!info->func) return true;
   // Pass ctx as global_state and type_context as block_state
   info->func(info, ctx, ctx->type_context, node->children, node->child_count);
   return info->pp_policy != OP_PP_DROP_NODE;
@@ -199,6 +320,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
                                         size_t depth,
                                         AstNode*** out_children,
                                         size_t* out_count) {
+  if (!alias_scope_push(ctx)) return false;
   // Intern token kinds
   TokenKind symbol_kind = interns_intern(ctx->interns, str_from(LEXER_KIND_SYMBOL, strlen(LEXER_KIND_SYMBOL)));
   TokenKind eof_kind = interns_intern(ctx->interns, str_from(LEXER_KIND_EOF, strlen(LEXER_KIND_EOF)));
@@ -221,6 +343,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
         tokens[*cursor].lexeme.ptr[0] == '$') {
       AstNode* stmt = NULL;
       if (!scoped_parse_expr(ctx, tokens, token_count, cursor, depth + 1, &stmt)) {
+        alias_scope_pop(ctx);
         for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
         free(children);
         return false;
@@ -238,6 +361,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
             size_t new_cap = child_capacity ? child_capacity * 2 : 4;
             AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
             if (!resized) {
+              alias_scope_pop(ctx);
               ast_free(stmt);
               for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
               free(children);
@@ -266,6 +390,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
       size_t remaining = token_count - *cursor;
       AstNode* grammar_root = NULL;
       if (!grammar_parse_ast(grammar, 0, tokens + *cursor, remaining, &grammar_root)) {
+        alias_scope_pop(ctx);
         for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
         free(children);
         return false;
@@ -289,6 +414,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
             while (new_cap < needed) new_cap *= 2;
             AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
             if (!resized) {
+              alias_scope_pop(ctx);
               ast_free(grammar_root);
               for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
               free(children);
@@ -311,6 +437,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
           size_t new_cap = child_capacity ? child_capacity * 2 : 4;
           AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
           if (!resized) {
+            alias_scope_pop(ctx);
             ast_free(grammar_root);
             for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
             free(children);
@@ -330,6 +457,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
     // Parse statement
     AstNode* stmt = NULL;
     if (!scoped_parse_expr(ctx, tokens, token_count, cursor, depth + 1, &stmt)) {
+      alias_scope_pop(ctx);
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children);
       return false;
@@ -343,6 +471,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
         size_t new_cap = child_capacity ? child_capacity * 2 : 4;
         AstNode** resized = realloc(children, new_cap * sizeof(AstNode*));
         if (!resized) {
+          alias_scope_pop(ctx);
           ast_free(stmt);
           for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
           free(children);
@@ -365,6 +494,7 @@ static bool scoped_parse_block_contents(ScopedParserContext* ctx,
     }
   }
   
+  alias_scope_pop(ctx);
   *out_children = children;
   *out_count = child_count;
   return true;

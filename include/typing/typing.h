@@ -29,6 +29,21 @@ typedef enum {
 typedef struct MorphlType MorphlType;
 typedef struct AstNode AstNode;
 
+typedef enum {
+  MORPHL_STORAGE_INSTANCE = 0,
+  MORPHL_STORAGE_STATIC,
+  MORPHL_STORAGE_IMPORT,
+  MORPHL_STORAGE_EXTERN,
+  MORPHL_STORAGE_INLINE,
+} MorphlStorageResidence;
+
+typedef struct {
+  bool contributes_to_shape;
+  bool contributes_to_layout;
+  bool is_mutable;
+  MorphlStorageResidence residence;
+} MorphlMemberStorage;
+
 // Function type metadata: stores parameter and return types
 typedef struct {
   MorphlType** param_types;
@@ -47,6 +62,11 @@ typedef struct {
   Sym* field_names;
   MorphlType** field_types;
   size_t field_count;
+  MorphlMemberStorage* field_storage;
+  Sym* layout_field_names;
+  MorphlType** layout_field_types;
+  MorphlMemberStorage* layout_field_storage;
+  size_t layout_field_count;
   // Properties ($prop) — do not participate in structural subtyping;
   // resolved at compile time via $member (static substitution)
   Sym* prop_names;
@@ -120,6 +140,11 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
                                          Sym* field_names,
                                          MorphlType** field_types,
                                          size_t field_count,
+                                         MorphlMemberStorage* field_storage,
+                                         Sym* layout_field_names,
+                                         MorphlType** layout_field_types,
+                                         size_t layout_field_count,
+                                         MorphlMemberStorage* layout_field_storage,
                                          Sym* prop_names,
                                          MorphlType** prop_types,
                                          AstNode** prop_values,
@@ -143,6 +168,18 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b);
 Str morphl_type_to_string(const MorphlType* type, InternTable *interns);
 
 bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super);
+
+static inline MorphlMemberStorage morphl_member_storage_make(bool shape,
+                                                             bool layout,
+                                                             bool is_mutable,
+                                                             MorphlStorageResidence residence) {
+  MorphlMemberStorage storage;
+  storage.contributes_to_shape = shape;
+  storage.contributes_to_layout = layout;
+  storage.is_mutable = is_mutable;
+  storage.residence = residence;
+  return storage;
+}
 
 static inline bool morphl_type_is_primitive(const MorphlType* type) {
   return type && (type->kind == MORPHL_TYPE_INT ||

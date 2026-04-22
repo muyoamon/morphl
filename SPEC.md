@@ -158,20 +158,25 @@ The behaviour of `$decl` is entirely determined by the storage expression. `$dec
 
 ### 4.3 Structural Shape Contribution
 
-A `$decl` contributes to the structural shape of the enclosing block **iff**:
+A `$decl` has three distinct properties:
 
-- its storage is **instance-resident**
+- whether it contributes to the **structural shape**
+- whether it contributes to the **instance layout**
+- where the bound storage ultimately resides
+
+Structural shape is about which named members a value exposes. Instance layout is about which bytes are stored in each instance.
 
 Examples:
-| Storage | Contributes to shape? |
-| --- | --- |
-| `$const <expr>` | yes |
-| `$mut <expr>` | yes |
-| `$ref <lvalue>` (field context) | yes |
-| `$static <expr>` | no |
-| `$extern <expr>` | no |
+| Storage | Shape? | Layout? | Residence |
+| --- | --- | --- | --- |
+| `$const <expr>` | yes | yes | instance |
+| `$mut <expr>` | yes | yes | instance |
+| `$ref <lvalue>` | yes | yes | instance-held reference |
+| `$extern ...` | yes | yes | instance-held external binding |
+| `$static <expr>` | no | no | static/global |
+| `$import "file"` | yes | yes | instance-held module binding |
 
-> Structural type is derived only from `$decl`s whose storage resides in the instance frame.
+> Structural type is derived from declarations whose bindings are exposed as members, not only from declarations whose targets live directly in the instance frame.
 
 ### 4.4 Expression Lifetime and Pinning
 
@@ -206,6 +211,17 @@ Each use of `<name>` resolves to `<expr>`.
 $alias x $add 1 2;
 $add x x;    // expands to: $add ($add 1 2) ($add 1 2)
 ```
+
+When the aliased expression is an `$import`, the same rule applies: the alias substitutes the usage site with the import expression itself. It does **not** inline the imported file textually, and it does not introduce storage or shape into the current scope:
+
+```
+$alias io $import "stdlib/io.mpl";
+$call $member io println ("hello");
+// equivalent to:
+$call $member ($import "stdlib/io.mpl") println ("hello");
+```
+
+`$alias` itself does not create a runtime binding. When an aliased expression is materialized into an unnamed runtime site, that site may still receive a compiler-generated lexical name such as `$anon$0` for diagnostics and debugging.
 
 #### 4.5.1 `$alias` vs `$decl`
 
@@ -440,22 +456,47 @@ This rule is enforced by the type checker for function arguments, `$set` targets
 
 ### 5.6 `$extern` — Native Symbol Binding
 
-`$extern` is a storage specifier that binds a name to a native C symbol resolved at load time. Its type is inferred from the wrapped expression, exactly as with other storage specifiers:
+`$extern` is a storage expression that binds an instance-held slot to a native C symbol resolved at load time.
+
+Supported forms:
 
 ```
-$decl <name> $extern <expr>;
+$extern <type-expr>
+$extern <string> <type-expr>
+$extern <string>
 ```
 
-The symbol name used for resolution is the `$decl` name itself.
+Semantics:
+
+- `$extern <type-expr>` uses the enclosing declaration name as the native symbol name
+- `$extern <string> <type-expr>` uses the explicit symbol name and explicit type
+- `$extern <string>` uses the explicit symbol name and requires the type to be known from context, for example from `$forward` or assignment target type
+
+Unlike `$import` and `$static`, `$extern` contributes to both structural shape and instance layout. The instance stores the external binding handle/value; the bound target lives in native space.
 
 **Native function binding** — the most common form:
 
 ```
 $decl println   $extern $func ($decl s "") 0;   // (string) → i64
 $decl print_int $extern $func ($decl n 0) 0;    // (i64)    → i64
+$decl writer    $extern "println" $func ($decl s "") 0;
 ```
 
 The `$func` expression is used only for its type; its body is not emitted. The VM stores a function table index in the declared slot; at call time the dispatcher invokes the native C function pointer instead of interpreting bytecode.
+
+**Late binding after a forward declaration**:
+
+```
+$decl writer $forward $extern $func ($decl s "") 0;
+$decl writer $extern "println";
+```
+
+**Rebinding a mutable extern**:
+
+```
+$decl writer $mut $extern "print" $func ($decl s "") 0;
+$set writer $extern "println";
+```
 
 **Native constant binding** (v2 — via `dlsym`):
 
@@ -510,6 +551,7 @@ Move the storage described by `<storage-expr>` into **program-lifetime storage**
 **Semantics**:
 - Storage exists in global/static region
 - Not part of the block's structural shape
+- Static identity is determined by lexical binding path, not by local name alone
 
 ```
 $decl counter $static $mut 0;   // a static mutable counter
@@ -522,6 +564,36 @@ $decl counter $static $mut 0;   // a static mutable counter
 | Storage Location | `$global.$statics` region |
 | Shape Contribution | none — does not affect block's structural type |
 | `$new` inheritance | no — static fields are not inherited by new instances |
+
+#### 5.7.1 Lexical Static Identity
+
+Each `$static` declaration is keyed by its **lexical path** under `$global.$statics`.
+
+- Named scopes contribute their declared name
+- Unnamed scopes contribute `$anon$N`, in lexical order within the parent scope
+- The declaration name is the final path segment
+
+Examples:
+
+```
+$decl x $static $mut 0;
+// binds to: $global.$statics.x
+
+$decl f1 $func () {
+    $decl x $static $mut 0;
+};
+// binds to: $global.$statics.f1.$anon$0.x
+```
+
+This rule prevents collisions between same-named local statics in different scopes and gives unnamed runtime sites a stable canonical name for diagnostics/debugging.
+
+#### 5.7.2 Initialization
+
+`$static` storage is initialized at most once for each lexical binding path.
+
+- top-level statics initialize when their declaration executes
+- function-local statics initialize on first execution of that declaration
+- subsequent executions reuse the same slot without re-running the initializer
 
 
 ```
@@ -582,8 +654,10 @@ $decl x 0;
 | `$inline expr` | non-storage expression, must be consumed by storage specifier | no |
 | `$new T` | fresh instance via re-execution of block T | depends on fields |
 | `$new T init` | instantiate T with initializer (any type) | depends on fields |
-| `$import "file"` | reference to external file scope | no |
-| `$extern expr` | native C symbol binding | no |
+| `$import "file"` | module-loading expression; when pinned by `$decl`, yields an instance-held module binding | depends on mutability wrapper |
+| `$extern <type-expr>` | native symbol binding, default symbol name from declaration | depends on mutability |
+| `$extern <string> <type-expr>` | native symbol binding with explicit symbol name and type | depends on mutability |
+| `$extern <string>` | native symbol binding with explicit symbol name and contextual type | depends on mutability |
 | bare `expr` (in storage expression context only) | implicitly lifted into constant ephemeral storage | no |
 
 ---
@@ -1372,10 +1446,19 @@ A file is a block. Its type is the structural shape of its top-level `$decl` exp
 
 ### 11.2 `$import`
 
-`$import` is a storage expression that loads an external file's scope:
+`$import` is a module-loading expression. Evaluating it ensures the target file is loaded and registered in `$global.$modules`, and the expression evaluates to the loaded module binding.
+
+Pinned with `$decl`, the resulting module binding becomes a real field:
 
 ```
 $decl module $import "some_module";
+$member module some_var;
+```
+
+Aliased with `$alias`, it remains a pure expression substitution and does not affect the scope's type or structure:
+
+```
+$alias module $import "some_module";
 $member module some_var;
 ```
 
@@ -1386,6 +1469,12 @@ $member ($import "some_module") some_var;
 ```
 
 The imported module's type is structurally inferred from its file scope. No separate interface file or explicit export list is required — all top-level declarations are visible.
+
+Conceptually:
+
+- `$import "path"` mutates the module registry if needed and returns a module value
+- `$alias name $import "path"` keeps that value at the expression layer only
+- `$decl name $import "path"` pins that module value into storage as an ordinary declaration, so it contributes to structural shape and instance layout like any other declared field
 
 ### 11.3 Standard Library
 
@@ -1767,9 +1856,12 @@ decl        ::= '$decl' name storage-expr ';'
              |  '$prop' name expr ';'
 storage-expr::= '$mut' expr
              |  '$const' expr
+             |  '$static' expr
              |  '$ref' name
              |  '$new' expr
              |  '$import' string
+             |  '$extern' expr
+             |  '$extern' string expr
              |  '$func' '(' params ')' block
              |  '$traits' block
              |  '$impl' name name block?

@@ -170,6 +170,7 @@ MorphlType* morphl_type_block(Arena* arena,
                               MorphlType** field_types,
                               size_t field_count) {
   return morphl_type_block_with_props(arena, field_names, field_types, field_count,
+                                      NULL, field_names, field_types, field_count, NULL,
                                       NULL, NULL, NULL, 0);
 }
 
@@ -177,6 +178,11 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
                                          Sym* field_names,
                                          MorphlType** field_types,
                                          size_t field_count,
+                                         MorphlMemberStorage* field_storage,
+                                         Sym* layout_field_names,
+                                         MorphlType** layout_field_types,
+                                         size_t layout_field_count,
+                                         MorphlMemberStorage* layout_field_storage,
                                          Sym* prop_names,
                                          MorphlType** prop_types,
                                          AstNode** prop_values,
@@ -191,14 +197,36 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
   if (field_count > 0 && field_names && field_types) {
     Sym* names = arena_alloc(arena, field_count * sizeof(Sym));
     MorphlType** types = arena_alloc(arena, field_count * sizeof(MorphlType*));
-    if (!names || !types) return NULL;
+    MorphlMemberStorage* storage = arena_alloc(arena, field_count * sizeof(MorphlMemberStorage));
+    if (!names || !types || !storage) return NULL;
     for (size_t i = 0; i < field_count; ++i) {
       names[i] = field_names[i];
       types[i] = field_types[i];
+      storage[i] = field_storage
+        ? field_storage[i]
+        : morphl_member_storage_make(true, true, false, MORPHL_STORAGE_INSTANCE);
     }
     t->data.block.field_names = names;
     t->data.block.field_types = types;
+    t->data.block.field_storage = storage;
     t->data.block.field_count = field_count;
+  }
+  if (layout_field_count > 0 && layout_field_names && layout_field_types) {
+    Sym* layout_names = arena_alloc(arena, layout_field_count * sizeof(Sym));
+    MorphlType** layout_types = arena_alloc(arena, layout_field_count * sizeof(MorphlType*));
+    MorphlMemberStorage* layout_storage = arena_alloc(arena, layout_field_count * sizeof(MorphlMemberStorage));
+    if (!layout_names || !layout_types || !layout_storage) return NULL;
+    for (size_t i = 0; i < layout_field_count; ++i) {
+      layout_names[i] = layout_field_names[i];
+      layout_types[i] = layout_field_types[i];
+      layout_storage[i] = layout_field_storage
+        ? layout_field_storage[i]
+        : morphl_member_storage_make(true, true, false, MORPHL_STORAGE_INSTANCE);
+    }
+    t->data.block.layout_field_names = layout_names;
+    t->data.block.layout_field_types = layout_types;
+    t->data.block.layout_field_storage = layout_storage;
+    t->data.block.layout_field_count = layout_field_count;
   }
   if (prop_count > 0 && prop_names && prop_types) {
     Sym* pnames = arena_alloc(arena, prop_count * sizeof(Sym));
@@ -335,14 +363,37 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
     if (t->data.block.field_count > 0 && t->data.block.field_types && t->data.block.field_names) {
       Sym* names = arena_alloc(arena, t->data.block.field_count * sizeof(Sym));
       MorphlType** types = arena_alloc(arena, t->data.block.field_count * sizeof(MorphlType*));
-      if (!names || !types) return NULL;
+      MorphlMemberStorage* storage = arena_alloc(arena, t->data.block.field_count * sizeof(MorphlMemberStorage));
+      if (!names || !types || !storage) return NULL;
       for (size_t i = 0; i < t->data.block.field_count; ++i) {
         names[i] = t->data.block.field_names[i];
         types[i] = morphl_type_clone(arena, t->data.block.field_types[i]);
+        storage[i] = t->data.block.field_storage ? t->data.block.field_storage[i]
+                                                 : morphl_member_storage_make(true, true, false, MORPHL_STORAGE_INSTANCE);
         if (!types[i]) return NULL;
       }
       t->data.block.field_names = names;
       t->data.block.field_types = types;
+      t->data.block.field_storage = storage;
+    }
+    if (t->data.block.layout_field_count > 0 &&
+        t->data.block.layout_field_types && t->data.block.layout_field_names) {
+      Sym* layout_names = arena_alloc(arena, t->data.block.layout_field_count * sizeof(Sym));
+      MorphlType** layout_types = arena_alloc(arena, t->data.block.layout_field_count * sizeof(MorphlType*));
+      MorphlMemberStorage* layout_storage =
+        arena_alloc(arena, t->data.block.layout_field_count * sizeof(MorphlMemberStorage));
+      if (!layout_names || !layout_types || !layout_storage) return NULL;
+      for (size_t i = 0; i < t->data.block.layout_field_count; ++i) {
+        layout_names[i] = t->data.block.layout_field_names[i];
+        layout_types[i] = morphl_type_clone(arena, t->data.block.layout_field_types[i]);
+        layout_storage[i] = t->data.block.layout_field_storage
+          ? t->data.block.layout_field_storage[i]
+          : morphl_member_storage_make(true, true, false, MORPHL_STORAGE_INSTANCE);
+        if (!layout_types[i]) return NULL;
+      }
+      t->data.block.layout_field_names = layout_names;
+      t->data.block.layout_field_types = layout_types;
+      t->data.block.layout_field_storage = layout_storage;
     }
     if (t->data.block.prop_count > 0 && t->data.block.prop_types && t->data.block.prop_names) {
       Sym* pnames = arena_alloc(arena, t->data.block.prop_count * sizeof(Sym));
@@ -417,6 +468,18 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
       if (a->data.block.field_names[i] != b->data.block.field_names[i]) return false;
       if (!morphl_type_equals(a->data.block.field_types[i], b->data.block.field_types[i])) {
         return false;
+      }
+      if (a->data.block.field_storage && b->data.block.field_storage) {
+        if (a->data.block.field_storage[i].contributes_to_shape !=
+              b->data.block.field_storage[i].contributes_to_shape ||
+            a->data.block.field_storage[i].contributes_to_layout !=
+              b->data.block.field_storage[i].contributes_to_layout ||
+            a->data.block.field_storage[i].is_mutable !=
+              b->data.block.field_storage[i].is_mutable ||
+            a->data.block.field_storage[i].residence !=
+              b->data.block.field_storage[i].residence) {
+          return false;
+        }
       }
     }
     // Also compare properties for exact equality

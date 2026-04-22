@@ -40,6 +40,139 @@ static MorphlType* unwrap_ref(MorphlType* t) {
   return t;
 }
 
+static bool is_string_literal(TypeContext* ctx, const AstNode* node) {
+  if (!ctx || !node || node->kind != AST_LITERAL || !node->op) return false;
+  Sym string_sym = interns_intern(ctx->interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
+  return node->op == string_sym;
+}
+
+static Str string_literal_contents(const AstNode* node) {
+  if (!node || !node->value.ptr || node->value.len < 2) return node ? node->value : str_from("", 0);
+  if (node->value.ptr[0] == '"' && node->value.ptr[node->value.len - 1] == '"') {
+    return str_from(node->value.ptr + 1, node->value.len - 2);
+  }
+  return node->value;
+}
+
+static Str default_extern_symbol(const AstNode* node) {
+  if (!node) return str_from("", 0);
+  if (node->extern_symbol.ptr && node->extern_symbol.len > 0) return node->extern_symbol;
+  return node->value;
+}
+
+static void set_storage_defaults(AstNode* node) {
+  if (!node) return;
+  node->contributes_to_shape = true;
+  node->contributes_to_layout = true;
+  node->storage_is_mutable = false;
+  node->storage_residence = MORPHL_STORAGE_INSTANCE;
+}
+
+static void apply_storage_metadata(TypeContext* ctx,
+                                   AstNode* decl_or_expr,
+                                   Sym bound_sym,
+                                   const MorphlType* expected_type) {
+  (void)expected_type;
+  if (!ctx || !decl_or_expr) return;
+  set_storage_defaults(decl_or_expr);
+  if (decl_or_expr->kind != AST_BUILTIN || !decl_or_expr->op) return;
+
+  Sym mut_sym = interns_intern(ctx->interns, str_from("$mut", 4));
+  Sym const_sym = interns_intern(ctx->interns, str_from("$const", 6));
+  Sym inline_sym = interns_intern(ctx->interns, str_from("$inline", 7));
+  Sym static_sym = interns_intern(ctx->interns, str_from("$static", 7));
+  Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
+  Sym extern_sym = interns_intern(ctx->interns, str_from("$extern", 7));
+  Sym ref_sym = interns_intern(ctx->interns, str_from("$ref", 4));
+
+  if (decl_or_expr->op == mut_sym || decl_or_expr->op == const_sym ||
+      decl_or_expr->op == inline_sym || decl_or_expr->op == static_sym) {
+    if (decl_or_expr->child_count > 0 && decl_or_expr->children[0]) {
+      apply_storage_metadata(ctx, decl_or_expr->children[0], bound_sym, expected_type);
+      decl_or_expr->contributes_to_shape = decl_or_expr->children[0]->contributes_to_shape;
+      decl_or_expr->contributes_to_layout = decl_or_expr->children[0]->contributes_to_layout;
+      decl_or_expr->storage_is_mutable = decl_or_expr->children[0]->storage_is_mutable;
+      decl_or_expr->storage_residence = decl_or_expr->children[0]->storage_residence;
+      decl_or_expr->extern_symbol = decl_or_expr->children[0]->extern_symbol;
+    }
+  }
+
+  if (decl_or_expr->op == mut_sym) {
+    decl_or_expr->storage_is_mutable = true;
+  } else if (decl_or_expr->op == const_sym) {
+    decl_or_expr->storage_is_mutable = false;
+  } else if (decl_or_expr->op == inline_sym) {
+    if (decl_or_expr->child_count > 0 && decl_or_expr->children[0]) {
+      decl_or_expr->contributes_to_shape = decl_or_expr->children[0]->contributes_to_shape;
+      decl_or_expr->contributes_to_layout = decl_or_expr->children[0]->contributes_to_layout;
+      decl_or_expr->storage_residence = decl_or_expr->children[0]->storage_residence;
+    }
+  } else if (decl_or_expr->op == static_sym) {
+    decl_or_expr->contributes_to_shape = false;
+    decl_or_expr->contributes_to_layout = false;
+    decl_or_expr->storage_residence = MORPHL_STORAGE_STATIC;
+  } else if (decl_or_expr->op == import_sym) {
+    decl_or_expr->contributes_to_shape = true;
+    decl_or_expr->contributes_to_layout = true;
+    decl_or_expr->storage_is_mutable = false;
+    decl_or_expr->storage_residence = MORPHL_STORAGE_IMPORT;
+  } else if (decl_or_expr->op == extern_sym) {
+    decl_or_expr->contributes_to_shape = true;
+    decl_or_expr->contributes_to_layout = true;
+    decl_or_expr->storage_is_mutable = false;
+    decl_or_expr->storage_residence = MORPHL_STORAGE_EXTERN;
+    if (decl_or_expr->child_count == 2 && is_string_literal(ctx, decl_or_expr->children[0])) {
+      decl_or_expr->extern_symbol = string_literal_contents(decl_or_expr->children[0]);
+    } else if (decl_or_expr->child_count == 1 && is_string_literal(ctx, decl_or_expr->children[0])) {
+      decl_or_expr->extern_symbol = string_literal_contents(decl_or_expr->children[0]);
+    } else if (bound_sym) {
+      decl_or_expr->extern_symbol = interns_lookup(ctx->interns, bound_sym);
+    }
+  } else if (decl_or_expr->op == ref_sym) {
+    decl_or_expr->contributes_to_shape = true;
+    decl_or_expr->contributes_to_layout = true;
+    decl_or_expr->storage_residence = MORPHL_STORAGE_INSTANCE;
+  }
+}
+
+static MorphlType* infer_extern_binding_type(TypeContext* ctx,
+                                             AstNode* node,
+                                             MorphlType* expected_type,
+                                             Sym bound_sym) {
+  if (!ctx || !node) return NULL;
+  if (node->child_count == 1) {
+    AstNode* arg = node->children[0];
+    if (is_string_literal(ctx, arg)) {
+      if (!expected_type) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                        "$extern with only a symbol name requires an expected type");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
+      node->extern_symbol = string_literal_contents(arg);
+      return expected_type;
+    }
+    node->extern_symbol = bound_sym ? interns_lookup(ctx->interns, bound_sym) : str_from("", 0);
+    return arg ? arg->type : NULL;
+  }
+  if (node->child_count == 2) {
+    AstNode* sym_node = node->children[0];
+    AstNode* type_node = node->children[1];
+    if (!is_string_literal(ctx, sym_node)) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                      "$extern expects string literal as first argument when two arguments are used");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    node->extern_symbol = string_literal_contents(sym_node);
+    return type_node ? type_node->type : NULL;
+  }
+  MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                  "$extern expects 1 or 2 arguments");
+  morphl_error_emit(NULL, &err);
+  return NULL;
+}
+
 static void morphl_error_swallow(void* user, const MorphlError* err) {
   (void)user;
   (void)err;
@@ -117,10 +250,22 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
   
   // Type inference by operator kind
-  // $extern <expr>: storage specifier for native symbols — type is that of the wrapped expression
   if (op_sym == interns_intern(ctx->interns, str_from("$extern", 7))) {
+    MorphlType* expected_type = NULL;
+    if (node && node->kind == AST_BUILTIN) {
+      expected_type = infer_extern_binding_type(ctx, (AstNode*)node, NULL, 0);
+      if (expected_type) return expected_type;
+    }
+    if (arg_count == 1 && arg_types[0]) return arg_types[0];
+    if (arg_count == 2 && arg_types[1]) return arg_types[1];
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$extern expects type information");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$static", 7))) {
     if (arg_count != 1 || !arg_types[0]) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$extern expects 1 argument");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$static expects 1 argument");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -547,6 +692,11 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_names : NULL,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_types : NULL,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_count : 0,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.field_storage : NULL,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.layout_field_names : NULL,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.layout_field_types : NULL,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.layout_field_count : 0,
+        base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.layout_field_storage : NULL,
         merged_names, merged_types, NULL, total_props);
     free(merged_names);
     free(merged_types);
@@ -849,6 +999,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       }
       if (!var_sym) return NULL;
       if (!init_node) return NULL;
+      set_storage_defaults(node);
       Sym forward_sym = interns_intern(ctx->interns, str_from("$forward", 8));
       if (init_node->kind == AST_BUILTIN && init_node->op == forward_sym) {
         if (init_node->child_count != 1) {
@@ -858,8 +1009,8 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         }
         AstNode* stub_node = init_node->children[0];
         MorphlType* stub_type = morphl_infer_type_of_ast(ctx, stub_node);
-        if (!stub_type || stub_type->kind != MORPHL_TYPE_FUNC) {
-          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: stub must be a function");
+        if (!stub_type) {
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: cannot infer stub type");
           morphl_error_emit(NULL, &err);
           return NULL;
         }
@@ -873,8 +1024,16 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           morphl_error_emit(NULL, &err);
           return NULL;
         }
+        apply_storage_metadata(ctx, stub_node, var_sym, stub_type);
+        node->contributes_to_shape = stub_node->contributes_to_shape;
+        node->contributes_to_layout = stub_node->contributes_to_layout;
+        node->storage_is_mutable = stub_node->storage_is_mutable;
+        node->storage_residence = stub_node->storage_residence;
+        node->extern_symbol = default_extern_symbol(stub_node);
         type_context_define_var(ctx, var_sym, stub_type);
-        type_context_define_func(ctx, var_sym, stub_type);
+        if (stub_type->kind == MORPHL_TYPE_FUNC) {
+          type_context_define_func(ctx, var_sym, stub_type);
+        }
         return stub_type;
       }
       bool declared_placeholder = false;
@@ -890,8 +1049,26 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         type_context_set_pending_func(ctx, placeholder);
       }
 
-
-      MorphlType* init_type = morphl_infer_type_of_ast(ctx, init_node);
+      MorphlType* init_type = NULL;
+      Sym extern_sym = interns_intern(ctx->interns, str_from("$extern", 7));
+      ForwardEntry* pending_forward = type_context_lookup_forward(ctx, var_sym);
+      MorphlType* expected_type = NULL;
+      if (pending_forward && !pending_forward->resolved) {
+        expected_type = pending_forward->type;
+      } else if (type_context_check_duplicate_var(ctx, var_sym)) {
+        expected_type = type_context_lookup_var(ctx, var_sym);
+      }
+      if (init_node->kind == AST_BUILTIN && init_node->op == extern_sym) {
+        if (init_node->child_count > 0) {
+          for (size_t i = 0; i < init_node->child_count; ++i) {
+            if (!init_node->children[i]) continue;
+            init_node->children[i]->type = morphl_infer_type_of_ast(ctx, init_node->children[i]);
+          }
+        }
+        init_type = infer_extern_binding_type(ctx, init_node, expected_type, var_sym);
+      } else {
+        init_type = morphl_infer_type_of_ast(ctx, init_node);
+      }
       if (declared_placeholder) {
         type_context_set_pending_func(ctx, NULL);
       }
@@ -901,7 +1078,14 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         return NULL;
       }
 
-      ForwardEntry* forward = type_context_lookup_forward(ctx, var_sym);
+      apply_storage_metadata(ctx, init_node, var_sym, init_type);
+      node->contributes_to_shape = init_node->contributes_to_shape;
+      node->contributes_to_layout = init_node->contributes_to_layout;
+      node->storage_is_mutable = init_node->storage_is_mutable;
+      node->storage_residence = init_node->storage_residence;
+      node->extern_symbol = default_extern_symbol(init_node);
+
+      ForwardEntry* forward = pending_forward;
       if (forward && !forward->resolved) {
         if (!type_context_define_forward_body(ctx, var_sym, init_type)) {
           MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$forward: definition mismatch for stub");
@@ -935,12 +1119,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       // The stored type is always init_type as-is; constness is tracked via is_const flag.
       // This keeps ref types transparent unless explicitly captured via $ref.
       if (node->kind == AST_DECL) {
-        bool has_explicit_qualifier = (init_node->kind == AST_BUILTIN &&
-            (init_node->op == interns_intern(ctx->interns, str_from("$mut", 4)) ||
-             init_node->op == interns_intern(ctx->interns, str_from("$inline", 7)) ||
-             init_node->op == interns_intern(ctx->interns, str_from("$const", 6)) ||
-             init_node->op == interns_intern(ctx->interns, str_from("$ref", 4))));
-        if (!has_explicit_qualifier) {
+        if (!node->storage_is_mutable) {
           type_context_define_const_var(ctx, var_sym, init_type);
         } else {
           type_context_define_var(ctx, var_sym, init_type);
@@ -1050,6 +1229,12 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       MorphlType** field_types = NULL;
       size_t field_count = 0;
       size_t field_cap = 0;
+      MorphlMemberStorage* field_storage = NULL;
+      Sym* layout_field_names = NULL;
+      MorphlType** layout_field_types = NULL;
+      MorphlMemberStorage* layout_field_storage = NULL;
+      size_t layout_field_count = 0;
+      size_t layout_field_cap = 0;
       Sym* prop_names = NULL;
       MorphlType** prop_types = NULL;
       AstNode** prop_values = NULL;  /* value AST nodes for compile-time substitution */
@@ -1074,27 +1259,86 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         if (!name_node->op) { ok = false; break; }
 
         if (is_decl) {
-          // Structural field — participates in subtyping
-          if (field_count >= field_cap) {
-            size_t new_cap = field_cap ? field_cap * 2 : 4;
-            Sym* new_names = (Sym*)realloc(field_names, new_cap * sizeof(Sym));
-            MorphlType** new_types = (MorphlType**)realloc(field_types, new_cap * sizeof(MorphlType*));
-            if (!new_names || !new_types) { ok = false; break; }
-            field_names = new_names;
-            field_types = new_types;
-            field_cap = new_cap;
+          if (stmt->contributes_to_shape) {
+            if (field_count >= field_cap) {
+              size_t new_cap = field_cap ? field_cap * 2 : 4;
+              Sym* new_names = (Sym*)realloc(field_names, new_cap * sizeof(Sym));
+              MorphlType** new_types = (MorphlType**)realloc(field_types, new_cap * sizeof(MorphlType*));
+              MorphlMemberStorage* new_storage =
+                (MorphlMemberStorage*)realloc(field_storage, new_cap * sizeof(MorphlMemberStorage));
+              if (!new_names || !new_types || !new_storage) { ok = false; break; }
+              field_names = new_names;
+              field_types = new_types;
+              field_storage = new_storage;
+              field_cap = new_cap;
+            }
+            field_names[field_count] = name_node->op;
+            field_types[field_count] = stmt_type;
+            field_storage[field_count] = morphl_member_storage_make(
+              stmt->contributes_to_shape,
+              stmt->contributes_to_layout,
+              stmt->storage_is_mutable,
+              stmt->storage_residence);
+            field_count++;
           }
-          field_names[field_count] = name_node->op;
-          field_types[field_count] = stmt_type;
-          field_count++;
-          Sym* names = (Sym*)arena_push(ctx->arena, NULL, field_count * sizeof(Sym));
-          MorphlType** types = (MorphlType**)arena_push(ctx->arena, NULL, field_count * sizeof(MorphlType*));
-          if (!names || !types) { ok = false; break; }
-          memcpy(names, field_names, field_count * sizeof(Sym));
-          memcpy(types, field_types, field_count * sizeof(MorphlType*));
+          if (stmt->contributes_to_layout) {
+            if (layout_field_count >= layout_field_cap) {
+              size_t new_cap = layout_field_cap ? layout_field_cap * 2 : 4;
+              Sym* new_names = (Sym*)realloc(layout_field_names, new_cap * sizeof(Sym));
+              MorphlType** new_types =
+                (MorphlType**)realloc(layout_field_types, new_cap * sizeof(MorphlType*));
+              MorphlMemberStorage* new_storage =
+                (MorphlMemberStorage*)realloc(layout_field_storage, new_cap * sizeof(MorphlMemberStorage));
+              if (!new_names || !new_types || !new_storage) { ok = false; break; }
+              layout_field_names = new_names;
+              layout_field_types = new_types;
+              layout_field_storage = new_storage;
+              layout_field_cap = new_cap;
+            }
+            layout_field_names[layout_field_count] = name_node->op;
+            layout_field_types[layout_field_count] = stmt_type;
+            layout_field_storage[layout_field_count] = morphl_member_storage_make(
+              stmt->contributes_to_shape,
+              stmt->contributes_to_layout,
+              stmt->storage_is_mutable,
+              stmt->storage_residence);
+            layout_field_count++;
+          }
+          Sym* names = field_count ? (Sym*)arena_push(ctx->arena, NULL, field_count * sizeof(Sym)) : NULL;
+          MorphlType** types = field_count
+            ? (MorphlType**)arena_push(ctx->arena, NULL, field_count * sizeof(MorphlType*)) : NULL;
+          MorphlMemberStorage* storage = field_count
+            ? (MorphlMemberStorage*)arena_push(ctx->arena, NULL, field_count * sizeof(MorphlMemberStorage)) : NULL;
+          Sym* layout_names = layout_field_count
+            ? (Sym*)arena_push(ctx->arena, NULL, layout_field_count * sizeof(Sym)) : NULL;
+          MorphlType** layout_types = layout_field_count
+            ? (MorphlType**)arena_push(ctx->arena, NULL, layout_field_count * sizeof(MorphlType*)) : NULL;
+          MorphlMemberStorage* layout_storage = layout_field_count
+            ? (MorphlMemberStorage*)arena_push(ctx->arena, NULL, layout_field_count * sizeof(MorphlMemberStorage)) : NULL;
+          if ((field_count && (!names || !types || !storage)) ||
+              (layout_field_count && (!layout_names || !layout_types || !layout_storage))) {
+            ok = false;
+            break;
+          }
+          if (field_count) {
+            memcpy(names, field_names, field_count * sizeof(Sym));
+            memcpy(types, field_types, field_count * sizeof(MorphlType*));
+            memcpy(storage, field_storage, field_count * sizeof(MorphlMemberStorage));
+          }
+          if (layout_field_count) {
+            memcpy(layout_names, layout_field_names, layout_field_count * sizeof(Sym));
+            memcpy(layout_types, layout_field_types, layout_field_count * sizeof(MorphlType*));
+            memcpy(layout_storage, layout_field_storage,
+                   layout_field_count * sizeof(MorphlMemberStorage));
+          }
           block_type->data.block.field_names = names;
           block_type->data.block.field_types = types;
+          block_type->data.block.field_storage = storage;
           block_type->data.block.field_count = field_count;
+          block_type->data.block.layout_field_names = layout_names;
+          block_type->data.block.layout_field_types = layout_types;
+          block_type->data.block.layout_field_storage = layout_storage;
+          block_type->data.block.layout_field_count = layout_field_count;
         } else {
           // Property — does NOT participate in structural subtyping (SPEC §9.2)
           // Resolved at compile time via $member (static substitution).
@@ -1132,6 +1376,10 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       type_context_pop_scope(ctx);
       free(field_names);
       free(field_types);
+      free(field_storage);
+      free(layout_field_names);
+      free(layout_field_types);
+      free(layout_field_storage);
       free(prop_names);
       free(prop_types);
       free(prop_values);
@@ -1229,6 +1477,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       Sym member_sym = interns_intern(ctx->interns, str_from("$member", 7));
       Sym set_sym = interns_intern(ctx->interns, str_from("$set", 4));
       Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
+      Sym extern_sym = interns_intern(ctx->interns, str_from("$extern", 7));
       if (node->op == import_sym) {
         if (node->child_count != 1) {
           MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$import expects 1 arg");
@@ -1367,7 +1616,21 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           return NULL;
         }
         MorphlType* target_type = morphl_infer_type_of_ast(ctx, node->children[0]);
-        MorphlType* value_type = morphl_infer_type_of_ast(ctx, node->children[1]);
+        MorphlType* value_type = NULL;
+        if (target_type && node->children[1] && node->children[1]->kind == AST_BUILTIN &&
+            node->children[1]->op == extern_sym) {
+          AstNode* extern_node = node->children[1];
+          MorphlType* extern_expected =
+            (target_type->kind == MORPHL_TYPE_REF) ? target_type->data.ref.target : target_type;
+          for (size_t i = 0; i < extern_node->child_count; ++i) {
+            if (!extern_node->children[i]) continue;
+            extern_node->children[i]->type = morphl_infer_type_of_ast(ctx, extern_node->children[i]);
+          }
+          value_type = infer_extern_binding_type(ctx, extern_node, extern_expected, 0);
+          apply_storage_metadata(ctx, extern_node, 0, extern_expected);
+        } else {
+          value_type = morphl_infer_type_of_ast(ctx, node->children[1]);
+        }
         if (!target_type || !value_type) return NULL;
         // Check const-declared ident targets (non-ref path)
         if (node->children[0]->kind == AST_IDENT && target_type->kind != MORPHL_TYPE_REF) {

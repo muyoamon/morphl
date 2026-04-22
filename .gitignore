@@ -14,3 +14,5 @@ _deps
 build/**
 
 CLAUDE.md
+.codex
+AGENTS.md

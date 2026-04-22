@@ -120,6 +120,7 @@ static bool stack_pop_f64(VmByteStack* s, double* out) {
 
 typedef struct {
     size_t   frame_base;  /* stack.top value when this frame was entered */
+    size_t   return_top;  /* caller stack top after reclaiming args on RET */
     size_t   return_ip;   /* instruction pointer to restore on RET */
     uint32_t func_index;  /* for diagnostics */
 } VmCallFrame;
@@ -184,6 +185,8 @@ static bool read_u32_le(const uint8_t* buf, size_t len, size_t* pos, uint32_t* o
                       ((uint32_t)raw[2] << 16) | ((uint32_t)raw[3] << 24));
     return true;
 }
+
+static bool validate_program_functions(MorphlVmProgram* prog);
 
 /* ── program loader ─────────────────────────────────────────────────────── */
 
@@ -345,6 +348,8 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
         }
     }
 
+    if (!validate_program_functions(prog)) goto err;
+
     free(buf);
     *out = prog;
     return true;
@@ -408,14 +413,95 @@ void morphl_vm_free(MorphlVm* vm) {
     free(vm);
 }
 
-/* ── frame pointer ──────────────────────────────────────────────────────── */
-
-static uint8_t* frame_ptr(MorphlVm* vm, int32_t offset) {
-    if (vm->call_frame_count == 0) {
-        return vm->stack.data + (ptrdiff_t)offset;
+static bool checked_stack_addr(MorphlVm* vm, ptrdiff_t base, int32_t offset, size_t width,
+                               ptrdiff_t* out_addr, FILE* err, const char* opname) {
+    ptrdiff_t addr = base + (ptrdiff_t)offset;
+    if (addr < 0 || width > vm->stack.top || (size_t)addr > vm->stack.top - width) {
+        RT_ERR(err, "vm: %s address %td out of bounds", opname, addr);
+        return false;
     }
-    VmCallFrame* cf = &vm->call_frames[vm->call_frame_count - 1];
-    return vm->stack.data + (ptrdiff_t)cf->frame_base + (ptrdiff_t)offset;
+    *out_addr = addr;
+    return true;
+}
+
+static bool checked_frame_addr(MorphlVm* vm, int32_t offset, size_t width,
+                               ptrdiff_t* out_addr, FILE* err, const char* opname) {
+    ptrdiff_t base = 0;
+    VmCallFrame* cf = NULL;
+    if (vm->call_frame_count > 0) {
+        cf = &vm->call_frames[vm->call_frame_count - 1];
+        base = (ptrdiff_t)cf->frame_base;
+    }
+    ptrdiff_t addr = base + (ptrdiff_t)offset;
+    if (cf && cf->return_ip == SIZE_MAX && addr >= 0) {
+        size_t needed_top = (size_t)addr + width;
+        if (needed_top > vm->stack.top) {
+            if (!stack_reserve(&vm->stack, needed_top - vm->stack.top)) {
+                RT_ERR(err, "vm: OOM extending top-level frame");
+                return false;
+            }
+        }
+    }
+    return checked_stack_addr(vm, base, offset, width, out_addr, err, opname);
+}
+
+static bool read_frame_i64_checked(MorphlVm* vm, int32_t offset, int64_t* out,
+                                   FILE* err, const char* opname) {
+    ptrdiff_t addr = 0;
+    if (!checked_frame_addr(vm, offset, 8, &addr, err, opname)) return false;
+    memcpy(out, vm->stack.data + addr, 8);
+    return true;
+}
+
+static bool write_frame_i64_checked(MorphlVm* vm, int32_t offset, int64_t value,
+                                    FILE* err, const char* opname) {
+    ptrdiff_t addr = 0;
+    if (!checked_frame_addr(vm, offset, 8, &addr, err, opname)) return false;
+    memcpy(vm->stack.data + addr, &value, 8);
+    return true;
+}
+
+static bool validate_program_functions(MorphlVmProgram* prog) {
+    if (!prog) return false;
+
+    for (uint32_t i = 0; i < prog->func_count; i++) {
+        VmFunctionMeta* fn = &prog->functions[i];
+        if ((fn->flags & ~MORPHL_FUNC_FLAG_NATIVE) != 0) {
+            RT_ERR(stderr, "vm: function %u has unsupported flags 0x%08X",
+                   i, fn->flags & ~MORPHL_FUNC_FLAG_NATIVE);
+            return false;
+        }
+        if ((fn->flags & MORPHL_FUNC_FLAG_NATIVE) != 0) {
+            if (fn->entry_point >= prog->native_sym_count) {
+                RT_ERR(stderr,
+                       "vm: function %u native symbol index %u out of range (table size %u)",
+                       i, fn->entry_point, prog->native_sym_count);
+                return false;
+            }
+        } else if (fn->entry_point >= prog->code_len) {
+            RT_ERR(stderr,
+                   "vm: function %u entry point %u out of range (code size %u)",
+                   i, fn->entry_point, prog->code_len);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool prepare_call_frame(MorphlVm* vm, uint32_t idx, const VmFunctionMeta* fn,
+                               VmCallFrame* out_cf, FILE* err, const char* opname) {
+    size_t frame_base = vm->stack.top;
+    size_t arg_bytes = (size_t)fn->param_size + 8;
+    if (frame_base < arg_bytes) {
+        RT_ERR(err, "vm: %s frame underflow for function %u", opname, idx);
+        return false;
+    }
+    out_cf->frame_base = frame_base;
+    out_cf->return_top = frame_base - arg_bytes;
+    out_cf->return_ip = vm->ip;
+    out_cf->func_index = idx;
+    return true;
 }
 
 /* ── call frame push ────────────────────────────────────────────────────── */
@@ -508,6 +594,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
     {
         VmCallFrame phantom = {
             .frame_base = (size_t)gfsz,
+            .return_top = (size_t)gfsz,
             .return_ip  = SIZE_MAX,   /* sentinel: RET from phantom frame → exit program */
             .func_index = 0,
         };
@@ -608,14 +695,16 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_ILOAD: {
             int32_t off; READ_I32(off);
             int64_t v;
-            memcpy(&v, frame_ptr(vm, off), 8);
+            if (!read_frame_i64_checked(vm, off, &v, err, "ILOAD")) return 1;
             PUSH_I64(v);
             break;
         }
         case VM_OP_FLOAD: {
             int32_t off; READ_I32(off);
+            int64_t raw;
             double v;
-            memcpy(&v, frame_ptr(vm, off), 8);
+            if (!read_frame_i64_checked(vm, off, &raw, err, "FLOAD")) return 1;
+            memcpy(&v, &raw, 8);
             PUSH_F64(v);
             break;
         }
@@ -623,27 +712,29 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             /* load i64 ref (absolute stack address) stored at frame[off]; push as i64 */
             int32_t off; READ_I32(off);
             int64_t v;
-            memcpy(&v, frame_ptr(vm, off), 8);
+            if (!read_frame_i64_checked(vm, off, &v, err, "RLOAD")) return 1;
             PUSH_I64(v);
             break;
         }
         case VM_OP_ISTORE: {
             int32_t off; READ_I32(off);
             int64_t v; POP_I64(v);
-            memcpy(frame_ptr(vm, off), &v, 8);
+            if (!write_frame_i64_checked(vm, off, v, err, "ISTORE")) return 1;
             break;
         }
         case VM_OP_FSTORE: {
             int32_t off; READ_I32(off);
             double v; POP_F64(v);
-            memcpy(frame_ptr(vm, off), &v, 8);
+            int64_t raw;
+            memcpy(&raw, &v, 8);
+            if (!write_frame_i64_checked(vm, off, raw, err, "FSTORE")) return 1;
             break;
         }
         case VM_OP_RSTORE: {
             /* pop i64 ref (absolute stack address), store as i64 at frame[off] */
             int32_t off; READ_I32(off);
             int64_t v; POP_I64(v);
-            memcpy(frame_ptr(vm, off), &v, 8);
+            if (!write_frame_i64_checked(vm, off, v, err, "RSTORE")) return 1;
             break;
         }
 
@@ -684,18 +775,22 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
                 size_t fb = vm->stack.top;
-                if (fb < 8) { RT_ERR(err, "vm: native CALL stack underflow"); return 1; }
+                if (fn->entry_point >= vm->program->native_sym_count) {
+                    RT_ERR(err, "vm: CALL native index %u out of range", fn->entry_point);
+                    return 1;
+                }
+                if (fb < (size_t)fn->param_size + 16) {
+                    RT_ERR(err, "vm: native CALL stack underflow"); return 1;
+                }
+                size_t ret_addr = fb - ((size_t)fn->param_size + 16);
                 int64_t result = vm->program->native_fns[fn->entry_point](
                     vm->stack.data, fb, fn->param_size);
-                memcpy(vm->stack.data + fb - 8, &result, 8);
-                /* stack.top unchanged; caller will POP the return value from fb-8 */
+                memcpy(vm->stack.data + ret_addr, &result, 8);
+                vm->stack.top = fb - ((size_t)fn->param_size + 8);
                 break;
             }
-            VmCallFrame cf = {
-                .frame_base = vm->stack.top,
-                .return_ip  = vm->ip,
-                .func_index = idx,
-            };
+            VmCallFrame cf;
+            if (!prepare_call_frame(vm, idx, fn, &cf, err, "CALL")) return 1;
             if (!push_call_frame(vm, cf)) {
                 RT_ERR(err, "vm: call frame OOM"); return 1;
             }
@@ -710,7 +805,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 return 0;
             }
             VmCallFrame cf = vm->call_frames[--vm->call_frame_count];
-            vm->stack.top = cf.frame_base;
+            vm->stack.top = cf.return_top;
             if (cf.return_ip == SIZE_MAX) {
                 /* phantom call frame sentinel — program exit */
                 return 0;
@@ -726,7 +821,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             /* indirect call: load func index from frame[off], then dispatch */
             int32_t off; READ_I32(off);
             int64_t raw;
-            memcpy(&raw, frame_ptr(vm, off), 8);
+            if (!read_frame_i64_checked(vm, off, &raw, err, "CALLF")) return 1;
             uint32_t idx = (uint32_t)raw;
             if (idx >= vm->program->func_count) {
                 RT_ERR(err, "vm: CALLF index %u out of range", idx);
@@ -735,17 +830,22 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
                 size_t fb = vm->stack.top;
-                if (fb < 8) { RT_ERR(err, "vm: native CALLF stack underflow"); return 1; }
+                if (fn->entry_point >= vm->program->native_sym_count) {
+                    RT_ERR(err, "vm: CALLF native index %u out of range", fn->entry_point);
+                    return 1;
+                }
+                if (fb < (size_t)fn->param_size + 16) {
+                    RT_ERR(err, "vm: native CALLF stack underflow"); return 1;
+                }
+                size_t ret_addr = fb - ((size_t)fn->param_size + 16);
                 int64_t result = vm->program->native_fns[fn->entry_point](
                     vm->stack.data, fb, fn->param_size);
-                memcpy(vm->stack.data + fb - 8, &result, 8);
+                memcpy(vm->stack.data + ret_addr, &result, 8);
+                vm->stack.top = fb - ((size_t)fn->param_size + 8);
                 break;
             }
-            VmCallFrame cf = {
-                .frame_base = vm->stack.top,
-                .return_ip  = vm->ip,
-                .func_index = idx,
-            };
+            VmCallFrame cf;
+            if (!prepare_call_frame(vm, idx, fn, &cf, err, "CALLF")) return 1;
             if (!push_call_frame(vm, cf)) {
                 RT_ERR(err, "vm: call frame OOM"); return 1;
             }
@@ -767,17 +867,22 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
                 size_t fb = vm->stack.top;
-                if (fb < 8) { RT_ERR(err, "vm: native CALLX stack underflow"); return 1; }
+                if (fn->entry_point >= vm->program->native_sym_count) {
+                    RT_ERR(err, "vm: CALLX native index %u out of range", fn->entry_point);
+                    return 1;
+                }
+                if (fb < (size_t)fn->param_size + 16) {
+                    RT_ERR(err, "vm: native CALLX stack underflow"); return 1;
+                }
+                size_t ret_addr = fb - ((size_t)fn->param_size + 16);
                 int64_t result = vm->program->native_fns[fn->entry_point](
                     vm->stack.data, fb, fn->param_size);
-                memcpy(vm->stack.data + fb - 8, &result, 8);
+                memcpy(vm->stack.data + ret_addr, &result, 8);
+                vm->stack.top = fb - ((size_t)fn->param_size + 8);
                 break;
             }
-            VmCallFrame cf = {
-                .frame_base = vm->stack.top,
-                .return_ip  = vm->ip,
-                .func_index = idx,
-            };
+            VmCallFrame cf;
+            if (!prepare_call_frame(vm, idx, fn, &cf, err, "CALLX")) return 1;
             if (!push_call_frame(vm, cf)) {
                 RT_ERR(err, "vm: call frame OOM"); return 1;
             }
@@ -792,19 +897,19 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_ADDREF: {
             /* push absolute stack address of frame[off] as i64 */
             int32_t off; READ_I32(off);
-            int64_t abs_addr = (int64_t)(ptrdiff_t)(frame_ptr(vm, off) - vm->stack.data);
+            ptrdiff_t addr = 0;
+            if (!checked_frame_addr(vm, off, 8, &addr, err, "ADDREF")) return 1;
+            int64_t abs_addr = (int64_t)addr;
             PUSH_I64(abs_addr);
             break;
         }
         case VM_OP_DEREF: {
             /* pop absolute stack address, push i64 at that address */
             int64_t addr; POP_I64(addr);
-            if (addr < 0 || (size_t)addr + 8 > vm->stack.top) {
-                RT_ERR(err, "vm: DEREF address %lld out of bounds", (long long)addr);
-                return 1;
-            }
             int64_t v;
-            memcpy(&v, vm->stack.data + (size_t)addr, 8);
+            ptrdiff_t checked = 0;
+            if (!checked_stack_addr(vm, (ptrdiff_t)addr, 0, 8, &checked, err, "DEREF")) return 1;
+            memcpy(&v, vm->stack.data + checked, 8);
             PUSH_I64(v);
             break;
         }
@@ -814,14 +919,11 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             /* load i64 from (parent_base + off) where parent_base = frame[0] as abs addr */
             int32_t off; READ_I32(off);
             int64_t parent_addr;
-            memcpy(&parent_addr, frame_ptr(vm, 0), 8);  /* $parent slot at frame offset 0 */
-            int64_t field_addr = parent_addr + off;
-            if (field_addr < 0 || (size_t)field_addr + 8 > vm->stack.top) {
-                RT_ERR(err, "vm: PLOAD address %lld out of bounds", (long long)field_addr);
-                return 1;
-            }
+            ptrdiff_t field_addr = 0;
+            if (!read_frame_i64_checked(vm, 0, &parent_addr, err, "PLOAD")) return 1;
+            if (!checked_stack_addr(vm, (ptrdiff_t)parent_addr, off, 8, &field_addr, err, "PLOAD")) return 1;
             int64_t v;
-            memcpy(&v, vm->stack.data + (size_t)field_addr, 8);
+            memcpy(&v, vm->stack.data + field_addr, 8);
             PUSH_I64(v);
             break;
         }
@@ -830,13 +932,10 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int32_t off; READ_I32(off);
             int64_t v; POP_I64(v);
             int64_t parent_addr;
-            memcpy(&parent_addr, frame_ptr(vm, 0), 8);
-            int64_t field_addr = parent_addr + off;
-            if (field_addr < 0 || (size_t)field_addr + 8 > vm->stack.top) {
-                RT_ERR(err, "vm: PSTORE address %lld out of bounds", (long long)field_addr);
-                return 1;
-            }
-            memcpy(vm->stack.data + (size_t)field_addr, &v, 8);
+            ptrdiff_t field_addr = 0;
+            if (!read_frame_i64_checked(vm, 0, &parent_addr, err, "PSTORE")) return 1;
+            if (!checked_stack_addr(vm, (ptrdiff_t)parent_addr, off, 8, &field_addr, err, "PSTORE")) return 1;
+            memcpy(vm->stack.data + field_addr, &v, 8);
             break;
         }
 
@@ -882,11 +981,8 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             /* pop i64 base, push i64 from stack.data[base + off] */
             int32_t off; READ_I32(off);
             int64_t base; POP_I64(base);
-            ptrdiff_t abs = (ptrdiff_t)base + (ptrdiff_t)off;
-            if (abs < 0 || (size_t)(abs + 8) > vm->stack.top) {
-                RT_ERR(err, "vm: ALOAD address %td out of bounds", abs);
-                return 1;
-            }
+            ptrdiff_t abs = 0;
+            if (!checked_stack_addr(vm, (ptrdiff_t)base, off, 8, &abs, err, "ALOAD")) return 1;
             int64_t v;
             memcpy(&v, vm->stack.data + abs, 8);
             PUSH_I64(v);
@@ -897,11 +993,8 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int32_t off; READ_I32(off);
             int64_t v;    POP_I64(v);
             int64_t base; POP_I64(base);
-            ptrdiff_t abs = (ptrdiff_t)base + (ptrdiff_t)off;
-            if (abs < 0 || (size_t)(abs + 8) > vm->stack.top) {
-                RT_ERR(err, "vm: ASTORE address %td out of bounds", abs);
-                return 1;
-            }
+            ptrdiff_t abs = 0;
+            if (!checked_stack_addr(vm, (ptrdiff_t)base, off, 8, &abs, err, "ASTORE")) return 1;
             memcpy(vm->stack.data + abs, &v, 8);
             break;
         }

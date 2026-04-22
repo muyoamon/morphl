@@ -245,6 +245,54 @@ static void test_e2e_ref_alias_write() {
     printf("PASS test_e2e_ref_alias_write\n");
 }
 
+static void test_e2e_alias_scalar_substitution() {
+    int rc = compile_and_run(
+        "$alias one 1;\n"
+        "$decl result $add one 2;\n"
+        "$exit result;\n"
+    );
+    assert(rc == 3);
+    printf("PASS test_e2e_alias_scalar_substitution\n");
+}
+
+static void test_e2e_alias_func_duplicate_by_use() {
+    int rc = compile_and_run(
+        "$alias inc $func ($decl x 0) {\n"
+        "  $ret $add x 1;\n"
+        "};\n"
+        "$decl a $call inc 1;\n"
+        "$decl b $call inc 2;\n"
+        "$exit $add a b;\n"
+    );
+    assert(rc == 5);
+    printf("PASS test_e2e_alias_func_duplicate_by_use\n");
+}
+
+static void test_e2e_static_mutable_counter() {
+    int rc = compile_and_run(
+        "$decl counter $static $mut 0;\n"
+        "$set counter 41;\n"
+        "$exit $add counter 1;\n"
+    );
+    assert(rc == 42);
+    printf("PASS test_e2e_static_mutable_counter\n");
+}
+
+static void test_e2e_function_local_static_persists() {
+    int rc = compile_and_run(
+        "$decl step $func ($decl unused 0) {\n"
+        "  $decl counter $static $mut 0;\n"
+        "  $set counter $add counter 1;\n"
+        "  $ret counter;\n"
+        "};\n"
+        "$decl a $call step 0;\n"
+        "$decl b $call step 0;\n"
+        "$exit b;\n"
+    );
+    assert(rc == 2);
+    printf("PASS test_e2e_function_local_static_persists\n");
+}
+
 /* Spec §6 ($func) + CALLF: call a function stored as a value */
 static void test_e2e_callf() {
     int rc = compile_and_run(
@@ -730,6 +778,41 @@ static void test_e2e_extern_unknown_sym() {
     printf("PASS test_e2e_extern_unknown_sym\n");
 }
 
+/* Explicit extern symbol name in declaration. */
+static void test_e2e_extern_explicit_symbol() {
+    std::string main_src =
+        "$decl writer $extern \"println\" $func ($decl s \"\") 0;\n"
+        "$decl _ $call writer (\"explicit symbol\");\n"
+        "$exit 0;\n";
+    int rc = compile_and_run(main_src.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_extern_explicit_symbol\n");
+}
+
+/* Rebind a mutable extern by name-only extern in $set. */
+static void test_e2e_extern_rebind() {
+    std::string main_src =
+        "$decl writer $mut $extern \"print\" $func ($decl s \"\") 0;\n"
+        "$set writer $extern \"println\";\n"
+        "$decl _ $call writer (\"rebound symbol\");\n"
+        "$exit 0;\n";
+    int rc = compile_and_run(main_src.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_extern_rebind\n");
+}
+
+/* Resolve an extern after a forward declaration using name-only syntax. */
+static void test_e2e_extern_forward_resolve() {
+    std::string main_src =
+        "$decl writer $forward $extern $func ($decl s \"\") 0;\n"
+        "$decl writer $extern \"println\";\n"
+        "$decl _ $call writer (\"forward extern\");\n"
+        "$exit 0;\n";
+    int rc = compile_and_run(main_src.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_extern_forward_resolve\n");
+}
+
 // ── Array tests ──────────────────────────────────────────────────────────────
 
 /* $array declaration zero-initialises all elements */
@@ -1030,6 +1113,10 @@ int main(void) {
     test_e2e_multiple_decls();
     test_e2e_ref_alias_read();
     test_e2e_ref_alias_write();
+    test_e2e_alias_scalar_substitution();
+    test_e2e_alias_func_duplicate_by_use();
+    test_e2e_static_mutable_counter();
+    test_e2e_function_local_static_persists();
     test_e2e_callf();
     test_e2e_null();
     test_e2e_this();
@@ -1062,6 +1149,9 @@ int main(void) {
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();
     test_e2e_extern_unknown_sym();
+    test_e2e_extern_explicit_symbol();
+    test_e2e_extern_rebind();
+    test_e2e_extern_forward_resolve();
     test_e2e_array_zero_init();
     test_e2e_array_index_read();
     test_e2e_array_type_name();

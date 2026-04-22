@@ -14,6 +14,7 @@ extern "C" {
 #include "typing/inference.h"
 #include "util/util.h"
 #include "util/error.h"
+#include "util/file.h"
 #include "parser/operators.h"
 #include "parser/scoped_parser.h"
 #include "lexer/lexer.h"
@@ -60,6 +61,30 @@ static std::string write_temp_file(const char* contents) {
 
   assert(false && "failed to open temp file");
   return std::string();
+}
+
+static AstNode* parse_source(InternTable* interns,
+                             Arena* arena,
+                             const char* source,
+                             ScopedParserContext* out_ctx) {
+  std::string path = write_temp_file(source);
+  assert(scoped_parser_init(out_ctx, interns, arena, path.c_str()));
+  char* source_buffer = NULL;
+  size_t source_len = 0;
+  assert(morphl_file_read_all(path.c_str(), &source_buffer, &source_len));
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  assert(lexer_tokenize(path.c_str(),
+                        str_from(source_buffer, source_len),
+                        interns,
+                        &tokens,
+                        &token_count));
+  AstNode* root = NULL;
+  assert(scoped_parse_ast(out_ctx, tokens, token_count, &root));
+  free(tokens);
+  free(source_buffer);
+  std::remove(path.c_str());
+  return root;
 }
 
 // Helper: create identifier AST node with interned symbol
@@ -764,6 +789,140 @@ static void test_import_block_fields() {
   printf("\u2713 test_import_block_fields passed\n");
 }
 
+static void test_alias_substitution_parse() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+    interns, &arena,
+    "$alias zero 0;\n"
+    "$decl x $add zero 2;\n",
+    &parser_ctx);
+  assert(root != NULL);
+  AstNode* decl = root;
+  if (root->kind == AST_FILE) {
+    assert(root->child_count == 1);
+    decl = root->children[0];
+  }
+  assert(decl != NULL);
+  assert(decl->kind == AST_DECL);
+  assert(decl->type != NULL);
+  assert(decl->type->kind == MORPHL_TYPE_INT);
+  assert(decl->child_count == 2);
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_alias_substitution_parse passed\n");
+}
+
+// ============================================================================
+// Test: storage metadata and contextual extern forms
+// ============================================================================
+static void test_storage_shape_and_extern_metadata() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  AstNode* extern_decl = ast_new(AST_DECL);
+  assert(extern_decl != NULL);
+  ast_append_child(extern_decl, make_ident(interns, "printer"));
+  AstNode* func_sig = make_builtin(interns, "$func", {make_literal("0"), make_literal("0")});
+  ast_append_child(extern_decl, make_builtin(interns, "$extern", {func_sig}));
+  MorphlType* extern_type = morphl_infer_type_of_ast(ctx, extern_decl);
+  assert(extern_type != NULL && extern_type->kind == MORPHL_TYPE_FUNC);
+  assert(extern_decl->contributes_to_shape == true);
+  assert(extern_decl->contributes_to_layout == true);
+  assert(extern_decl->storage_residence == MORPHL_STORAGE_EXTERN);
+  assert(std::string(extern_decl->extern_symbol.ptr, extern_decl->extern_symbol.len) == "printer");
+
+  AstNode* forward_decl = ast_new(AST_DECL);
+  assert(forward_decl != NULL);
+  ast_append_child(forward_decl, make_ident(interns, "late"));
+  AstNode* forward_stub = make_builtin(interns, "$forward", {
+    make_builtin(interns, "$extern", {make_builtin(interns, "$func", {make_literal("0"), make_literal("0")})})
+  });
+  ast_append_child(forward_decl, forward_stub);
+  MorphlType* forward_type = morphl_infer_type_of_ast(ctx, forward_decl);
+  assert(forward_type != NULL && forward_type->kind == MORPHL_TYPE_FUNC);
+
+  AstNode* resolve_decl = ast_new(AST_DECL);
+  assert(resolve_decl != NULL);
+  ast_append_child(resolve_decl, make_ident(interns, "late"));
+  AstNode* late_name = make_literal_with_kind(interns, "\"puts\"", LEXER_KIND_STRING);
+  ast_append_child(resolve_decl, make_builtin(interns, "$extern", {late_name}));
+  MorphlType* resolve_type = morphl_infer_type_of_ast(ctx, resolve_decl);
+  assert(resolve_type != NULL && resolve_type->kind == MORPHL_TYPE_FUNC);
+  assert(resolve_decl->extern_symbol.ptr != NULL);
+  assert(std::string(resolve_decl->extern_symbol.ptr, resolve_decl->extern_symbol.len) == "puts");
+
+  AstNode* bad_decl = ast_new(AST_DECL);
+  assert(bad_decl != NULL);
+  ast_append_child(bad_decl, make_ident(interns, "bad"));
+  ast_append_child(bad_decl, make_builtin(interns, "$extern", {
+    make_literal_with_kind(interns, "\"puts\"", LEXER_KIND_STRING)
+  }));
+  assert(morphl_infer_type_of_ast(ctx, bad_decl) == NULL);
+
+  AstNode* block = ast_new(AST_BLOCK);
+  assert(block != NULL);
+  AstNode* static_decl = ast_new(AST_DECL);
+  ast_append_child(static_decl, make_ident(interns, "cached"));
+  ast_append_child(static_decl, make_builtin(interns, "$static", {make_literal("1")}));
+  AstNode* value_decl = ast_new(AST_DECL);
+  ast_append_child(value_decl, make_ident(interns, "value"));
+  ast_append_child(value_decl, make_literal("2"));
+  ast_append_child(block, static_decl);
+  ast_append_child(block, value_decl);
+  MorphlType* block_type = morphl_infer_type_of_ast(ctx, block);
+  assert(block_type != NULL && block_type->kind == MORPHL_TYPE_BLOCK);
+  assert(block_type->data.block.field_count == 1);
+  assert(block_type->data.block.field_names[0] == interns_intern(interns, str_from("value", 5)));
+
+  const char* module_src = "$decl foo 1; $decl bar 2;";
+  std::string module_path = write_temp_file(module_src);
+  ScopedParserContext parser_ctx;
+  assert(scoped_parser_init(&parser_ctx, interns, &arena, NULL));
+  std::string quoted_path = "\"" + module_path + "\"";
+  AstNode* import_arg = make_literal_with_kind(interns, quoted_path.c_str(), LEXER_KIND_STRING);
+  AstNode* import_args[] = {import_arg};
+  Sym import_sym = interns_intern(interns, str_from("$import", 7));
+  const OperatorInfo* import_info = operator_info_lookup(import_sym);
+  assert(import_info != NULL && import_info->func != NULL);
+  import_info->func(import_info, &parser_ctx, NULL, import_args, 1);
+  AstNode* import_decl = ast_new(AST_DECL);
+  assert(import_decl != NULL);
+  ast_append_child(import_decl, make_ident(interns, "io"));
+  ast_append_child(import_decl, make_builtin(interns, "$import", {import_args[0]}));
+  AstNode* import_block = ast_new(AST_BLOCK);
+  assert(import_block != NULL);
+  ast_append_child(import_block, import_decl);
+  MorphlType* import_block_type = morphl_infer_type_of_ast(ctx, import_block);
+  assert(import_block_type != NULL && import_block_type->kind == MORPHL_TYPE_BLOCK);
+  assert(import_block_type->data.block.field_count == 1);
+  assert(import_block_type->data.block.field_names[0] == interns_intern(interns, str_from("io", 2)));
+  assert(import_decl->contributes_to_shape == true);
+  assert(import_decl->contributes_to_layout == true);
+  scoped_parser_free(&parser_ctx);
+  std::remove(module_path.c_str());
+
+  ast_free(extern_decl);
+  ast_free(forward_decl);
+  ast_free(resolve_decl);
+  ast_free(bad_decl);
+  ast_free(block);
+  ast_free(import_block);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_storage_shape_and_extern_metadata passed\n");
+}
+
 // ============================================================================
 // Test: Preprocessor action for $call with group parameter
 // ============================================================================
@@ -1225,6 +1384,8 @@ int main() {
   test_pp_ret();
   test_pp_member();
   test_import_block_fields();
+  test_alias_substitution_parse();
+  test_storage_shape_and_extern_metadata();
   test_pp_call_group_param();
   test_pp_while();
   test_overload_resolution();

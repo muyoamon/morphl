@@ -10,6 +10,8 @@
 #include "util/util.h"
 #include "typing/type_context.h"
 
+typedef struct MorphlAliasBinding MorphlAliasBinding;
+
 /**
  * @brief Parse context that maintains a grammar stack for scoped $syntax.
  *
@@ -23,6 +25,12 @@ typedef struct ScopedParserContext {
   Grammar** grammar_stack;     /**< Stack of active grammars. */
   size_t grammar_stack_size;   /**< Number of grammars on stack. */
   size_t grammar_stack_cap;    /**< Allocated stack capacity. */
+  MorphlAliasBinding* alias_bindings; /**< Scoped $alias bindings. */
+  size_t alias_binding_count;
+  size_t alias_binding_cap;
+  size_t* alias_scope_markers;
+  size_t alias_scope_depth;
+  size_t alias_scope_cap;
   InternTable* interns;        /**< Shared intern table. */
   Arena* arena;                /**< Arena for grammar string allocations. */
   bool use_builtins;           /**< Whether current scope uses builtin fallback. */

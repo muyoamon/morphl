@@ -20,15 +20,30 @@ class BytecodeBuilder {
     std::vector<uint8_t> code_;
     uint32_t frame_size_ = 0;
     // For multi-function bytecode
-    struct FuncEntry { uint32_t entry_point; uint32_t frame_size; uint32_t param_size; };
+    struct FuncEntry {
+        uint32_t entry_point;
+        uint32_t frame_size;
+        uint32_t param_size;
+        uint32_t flags;
+    };
     std::vector<FuncEntry> extra_funcs_;  // additional functions beyond func 0
+    std::vector<std::string> native_symbols_;
 
 public:
     void set_frame_size(uint32_t n) { frame_size_ = n; }
 
     // Add an extra function (entry_point = offset from start of code section)
     void add_extra_func(uint32_t entry_point, uint32_t frame_sz, uint32_t param_sz = 0) {
-        extra_funcs_.push_back({entry_point, frame_sz, param_sz});
+        extra_funcs_.push_back({entry_point, frame_sz, param_sz, 0});
+    }
+
+    void add_extra_func_with_flags(uint32_t entry_point, uint32_t frame_sz,
+                                   uint32_t param_sz, uint32_t flags) {
+        extra_funcs_.push_back({entry_point, frame_sz, param_sz, flags});
+    }
+
+    void add_native_symbol(const char* symbol) {
+        native_symbols_.emplace_back(symbol);
     }
 
     // Byte emitters
@@ -107,12 +122,22 @@ public:
             write_u32(ef.entry_point);
             write_u32(ef.frame_size);
             write_u32(ef.param_size);
-            write_u32(0);
+            write_u32(ef.flags);
         }
 
         // Code section
         write_u32((uint32_t)code_.size());
         f.write((char*)code_.data(), (std::streamsize)code_.size());
+
+        // String table
+        write_u32(0);
+
+        // Native symbol table
+        write_u32((uint32_t)native_symbols_.size());
+        for (const std::string& symbol : native_symbols_) {
+            write_u32((uint32_t)symbol.size());
+            f.write(symbol.c_str(), (std::streamsize)symbol.size() + 1);
+        }
 
         f.close();
         return path;
@@ -167,6 +192,25 @@ static void run_and_check_exit(BytecodeBuilder& bc, int expected_exit) {
     assert(vm);
     morphl_exit_code_t rc = morphl_vm_execute(vm, stderr);
     assert(rc == (morphl_exit_code_t)expected_exit);
+    morphl_vm_free(vm);
+    morphl_vm_program_free(prog);
+    std::remove(path.c_str());
+}
+
+static void run_and_expect_load_failure(BytecodeBuilder& bc) {
+    std::string path = bc.write_temp();
+    MorphlVmProgram* prog = NULL;
+    assert(!morphl_vm_program_load(path.c_str(), &prog));
+    std::remove(path.c_str());
+}
+
+static void run_and_expect_execute_failure(BytecodeBuilder& bc) {
+    std::string path = bc.write_temp();
+    MorphlVmProgram* prog = NULL;
+    assert(morphl_vm_program_load(path.c_str(), &prog));
+    MorphlVm* vm = morphl_vm_new(prog);
+    assert(vm);
+    assert(morphl_vm_execute(vm, stderr) != 0);
     morphl_vm_free(vm);
     morphl_vm_program_free(prog);
     std::remove(path.c_str());
@@ -481,24 +525,23 @@ static void test_vm_call_ret() {
     // func 1 starts after func 0's code
 
     // func 0 code:
-    //   RESERVE 8   (6 bytes: 1+4+1? no: 1+4=5)
-    //   CALL 1      (5 bytes: 1+4)
-    //   HALT        (1 byte)
-    // = 11 bytes total for func 0
-    // func 1 entry_point = 11
+    //   RESERVE 8        (return slot)
+    //   ICONST <parent>  (hidden parent placeholder for the ABI)
+    //   CALL 1
+    //   HALT
 
     BytecodeBuilder bc;
     // func 0:
-    bc.op_reserve(8);   // 5 bytes: opcode + u32
-    bc.op_call(1);      // 5 bytes
-    bc.op_halt();       // 1 byte
-    // = 11 bytes → func 1 starts at offset 11
+    bc.op_reserve(8);
+    bc.op_iconst(0);
+    bc.op_call(1);
+    bc.op_halt();
 
-    size_t func1_entry = bc.size();  // = 11
+    size_t func1_entry = bc.size();
 
     // func 1:
     bc.op_iconst(99);   // push 99
-    bc.op_istore(-8);   // store to return slot (8 bytes before frame_base)
+    bc.op_istore(-16);  // return slot sits before the hidden parent slot
     bc.op_ret();
 
     bc.add_extra_func((uint32_t)func1_entry, 0, 0);
@@ -518,6 +561,96 @@ static void test_vm_call_ret() {
     morphl_vm_free(vm); morphl_vm_program_free(prog);
     std::remove(path.c_str());
     printf("PASS test_vm_call_ret\n");
+}
+
+static void test_vm_call_ret_reclaims_args() {
+    BytecodeBuilder bc;
+
+    bc.op_reserve(8);
+    bc.op_iconst(111);    // hidden parent placeholder
+    bc.op_iconst(222);    // one 8-byte argument
+    bc.op_call(1);
+    bc.op_reserve(8);
+    bc.op_iconst(55);
+    bc.op_istore(8);
+    bc.op_halt();
+
+    size_t func1_entry = bc.size();
+    bc.op_iconst(99);
+    bc.op_istore(-24);    // return slot sits before hidden parent + 1 arg
+    bc.op_ret();
+    bc.add_extra_func((uint32_t)func1_entry, 0, 8);
+
+    std::string path = bc.write_temp();
+    MorphlVmProgram* prog = NULL;
+    assert(morphl_vm_program_load(path.c_str(), &prog));
+    MorphlVm* vm = morphl_vm_new(prog);
+    assert(vm);
+    assert(morphl_vm_execute(vm, stderr) == 0);
+
+    int64_t ret = 0;
+    int64_t marker = 0;
+    int64_t leaked = 0;
+    assert(morphl_vm_read_stack_i64(vm, 0, &ret));
+    assert(morphl_vm_read_stack_i64(vm, 8, &marker));
+    assert(ret == 99);
+    assert(marker == 55);
+    assert(!morphl_vm_read_stack_i64(vm, 16, &leaked));
+
+    morphl_vm_free(vm);
+    morphl_vm_program_free(prog);
+    std::remove(path.c_str());
+    printf("PASS test_vm_call_ret_reclaims_args\n");
+}
+
+static void test_vm_load_rejects_bad_entry_point() {
+    BytecodeBuilder bc;
+    bc.op_halt();
+    bc.add_extra_func(99, 0, 0);
+    run_and_expect_load_failure(bc);
+    printf("PASS test_vm_load_rejects_bad_entry_point\n");
+}
+
+static void test_vm_load_rejects_bad_native_symbol_index() {
+    BytecodeBuilder bc;
+    bc.op_halt();
+    bc.add_native_symbol("native_ok");
+    bc.add_extra_func_with_flags(1, 0, 0, MORPHL_FUNC_FLAG_NATIVE);
+    run_and_expect_load_failure(bc);
+    printf("PASS test_vm_load_rejects_bad_native_symbol_index\n");
+}
+
+static void test_vm_iload_oob_fails() {
+    BytecodeBuilder bc;
+    bc.op_reserve(8);
+    bc.op_iconst(0);
+    bc.op_call(1);
+    bc.op_halt();
+
+    size_t func1_entry = bc.size();
+    bc.op_iload(0);
+    bc.op_ret();
+    bc.add_extra_func((uint32_t)func1_entry, 0, 0);
+
+    run_and_expect_execute_failure(bc);
+    printf("PASS test_vm_iload_oob_fails\n");
+}
+
+static void test_vm_callf_oob_fails() {
+    BytecodeBuilder bc;
+    bc.op_reserve(8);
+    bc.op_iconst(0);
+    bc.op_call(1);
+    bc.op_halt();
+
+    size_t func1_entry = bc.size();
+    bc.u8(VM_OP_CALLF);
+    bc.i32le(0);
+    bc.op_ret();
+    bc.add_extra_func((uint32_t)func1_entry, 0, 0);
+
+    run_and_expect_execute_failure(bc);
+    printf("PASS test_vm_callf_oob_fails\n");
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -564,6 +697,11 @@ int main(void) {
 
     // Function calls
     test_vm_call_ret();
+    test_vm_call_ret_reclaims_args();
+    test_vm_load_rejects_bad_entry_point();
+    test_vm_load_rejects_bad_native_symbol_index();
+    test_vm_iload_oob_fails();
+    test_vm_callf_oob_fails();
 
     printf("All VM opcode tests passed.\n");
     return 0;

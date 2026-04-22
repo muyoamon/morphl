@@ -39,6 +39,36 @@ bool ast_append_child(AstNode* node, AstNode* child) {
   return true;
 }
 
+AstNode* ast_clone(const AstNode* node) {
+  if (!node) return NULL;
+  AstNode* clone = ast_new(node->kind);
+  if (!clone) return NULL;
+  clone->op = node->op;
+  clone->value = node->value;
+  clone->filename = node->filename;
+  clone->row = node->row;
+  clone->col = node->col;
+  clone->type = node->type;
+  clone->contributes_to_shape = node->contributes_to_shape;
+  clone->contributes_to_layout = node->contributes_to_layout;
+  clone->storage_is_mutable = node->storage_is_mutable;
+  clone->storage_residence = node->storage_residence;
+  clone->extern_symbol = node->extern_symbol;
+  for (size_t i = 0; i < node->child_count; ++i) {
+    AstNode* child = ast_clone(node->children[i]);
+    if (!child) {
+      ast_free(clone);
+      return NULL;
+    }
+    if (!ast_append_child(clone, child)) {
+      ast_free(child);
+      ast_free(clone);
+      return NULL;
+    }
+  }
+  return clone;
+}
+
 void ast_free(AstNode* node) {
   if (!node) return;
   for (size_t i = 0; i < node->child_count; ++i) {

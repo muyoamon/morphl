@@ -625,6 +625,15 @@ static void emit_type_signature(EmitBuffer *out, TypeArray *type_arr, TypeContex
 static TypeArray type_arr;
 static InternTable* interns;
 
+static bool contains_unsupported_c_storage(const AstNode* node) {
+    if (!node) return false;
+    if (node->storage_residence == MORPHL_STORAGE_STATIC) return true;
+    for (size_t i = 0; i < node->child_count; ++i) {
+        if (contains_unsupported_c_storage(node->children[i])) return true;
+    }
+    return false;
+}
+
 static const char *find_decl_type(AstNode *value) {
     if (!value) {
         return NULL;
@@ -656,6 +665,10 @@ static const char *find_decl_type(AstNode *value) {
 
 // compile to C source code
 bool morphl_backend_func_c(MorphlBackendContext* context) {
+    if (!context || !context->tree || !context->out_file) return false;
+    if (contains_unsupported_c_storage(context->tree)) {
+        return false;
+    }
 
     // open output file for writing
     FILE* out_file = fopen(context->out_file, "w");
