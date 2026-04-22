@@ -138,9 +138,9 @@ In practice: use `()` for void returns and no-arg functions. Use `{}` when you m
 
 ## 4. Core Construct: `$decl`
 
-### 4.1 Declaration as Shape Definition
+### 4.1 Declaration as Binding of Storage
 
-`$decl` is the single construct for introducing a named entity into a scope. It does not perform allocation or execution — it defines the **shape** of the enclosing block by binding a name to a storage expression.
+`$decl` is the single construct for introducing a named entity into a scope. It does not perform allocation or execution — it captures (pins) a storage described expression into the current scope.
 
 ```
 $decl <name> <storage-expr>;
@@ -152,7 +152,77 @@ $decl <name> <storage-expr>;
 - The **type**, inferred from the storage expression
 - The **byte offset** in the block's layout, determined by declaration order with natural alignment
 
-### 4.2 Block as Value
+### 4.2 Storage Driven Semantics
+
+The behaviour of `$decl` is entirely determined by the storage expression. `$decl` itself is a pure declaration — it does not imply mutability, indirection, or any particular runtime behavior. The storage expression describes the semantics of the declared field.
+
+### 4.3 Structural Shape Contribution
+
+A `$decl` contributes to the structural shape of the enclosing block **iff**:
+
+- its storage is **instance-resident**
+
+Examples:
+| Storage | Contributes to shape? |
+| --- | --- |
+| `$const <expr>` | yes |
+| `$mut <expr>` | yes |
+| `$ref <lvalue>` (field context) | yes |
+| `$static <expr>` | no |
+| `$extern <expr>` | no |
+
+> Structural type is derived only from `$decl`s whose storage resides in the instance frame.
+
+### 4.4 Expression Lifetime and Pinning
+
+Expressions in morphl are **ephimeral** by default.
+
+An expression has no lifetime until it is captured by `$decl`.
+
+```
+$add 1 2;  // ephimeral expression — no storage, no lifetime, cannot be referenced
+$decl x $add 1 2;  // x = 3, lifetime pinned by $decl, can be referenced
+```
+
+### 4.5 `$alias` - Expression Substitution Binding
+
+```
+$alias <name> <expr>;
+```
+
+`$alias` introduces a **compile-time expression binding.**
+
+**Properties**:
+
+    - No storage
+    - No capture
+    - No lifetime extension
+    - No contribution to block shape
+    - No participation in runtime layouts
+
+Each use of `<name>` resolves to `<expr>`.
+
+```
+$alias x $add 1 2;
+$add x x;    // expands to: $add ($add 1 2) ($add 1 2)
+```
+
+#### 4.5.1 `$alias` vs `$decl`
+
+| Feature | `$alias` | `$decl` |
+| --- | --- | --- |
+| Storage | none | required |
+| Lifetime | none | pinned to scope |
+| Runtime presence | no | yes |
+| Shape contribution | no | yes (if instance-resident) |
+| Substitution | compile-time | no |
+
+> `$alias` operates at the **expression layer**  \
+> `$decl` operates at the **storage layer**
+
+
+
+### 4.6 Block as Value
 
 A block delimited by `{}` is both a struct and a code block — they are the same construct. Statements inside a block are initialization logic. The block's **type** is the structural shape of its surviving `$decl` expressions.
 
@@ -167,7 +237,7 @@ $decl x {
 
 `$decl` **suspends** the expression — the block executes once at declaration site and captures its final state. Referencing `x` later does not re-execute the block.
 
-### 4.3 Instantiation via `$new`
+### 4.7 Instantiation via `$new`
 
 `$new` is a universal instantiation operator. It accepts any type expression and an optional initializer:
 
@@ -206,43 +276,41 @@ The initializer can be:
 
 **Union instantiation**: when the base type is a union, the compiler determines which variant the initializer belongs to via structural subtype check, and automatically injects the `$$tag` value. The tag is invisible in user code — it is always set by the compiler at construction time.
 
-### 4.4 Default Mutability
-
-A bare expression used as a storage expression is sugar for `$const`:
-
-```
-$decl foo 10;         // sugar for: $decl foo $const 10
-```
-
-This is also the case for mutable reference expression without explicit storage specifier:
-
-```
-$decl foo $mut 0;
-$decl bar foo;      // sugar for: $decl bar $const foo;
-```
 ---
 
 ## 5. Storage Expressions
 
-Storage expressions determine the runtime behavior of a declaration. `$decl` only binds a name — all storage semantics come from the expression.
+A **storage expression** is an expression that describes a concrete storage behavior.
+
+Only storage expressions can be used as RHS of `$decl`.
 
 ### 5.1 `$const` — Immutable Storage
 
 ```
-$decl foo $const 10;
+$const <storage-expr>
 ```
 
-Allocates immutable storage initialized to the given value. The value cannot be overwritten after initialization.
+Marks the storage expression as immutable.
+
+```
+$decl x $const 10;   // x is an immutable int with value 10
+$decl x $const $ref y;   // x is an immutable view to y (mark the reference bridge as immutable, therefore, only permit read access through x, even if y is mutable)
+```
 
 ### 5.2 `$mut` — Mutable Storage
 
 ```
-$decl foo $mut 10;
+$mut <storage-expr>;
 ```
 
-Allocates mutable storage. The value can be overwritten via `$set`.
+Marks the storage expression as mutable. Its value can be changed via `$set` later. The mutability of a field is part of its type and cannot be changed after declaration.
 
-**`$set` — Mutable Assignment**
+```
+$decl x $mut 10;   // x is a mutable int with initial value 10
+$decl x $mut $ref y;   // x is a mutable view to y (mark the reference bridge as mutable, therefore, permit write access through x, will fail if y is immutable)
+```
+
+#### **`$set` — Mutable Assignment**
 
 `$set` writes a new value to a mutable storage location. The LHS can be a plain identifier or a compound lvalue:
 
@@ -253,7 +321,7 @@ $decl p { $decl x $mut 0; };
 $set $member p x 42;            // block field
 $set $member s $$tag 1;         // union tag (manual, bypasses type safety)
 
-$decl arr $array 0 4;
+$decl arr $mut $array 0 4;
 $set $index arr 2 99;           // array element (literal index)
 $decl i 2;
 $set $index arr i 77;           // array element (runtime index)
@@ -261,7 +329,44 @@ $set $index arr i 77;           // array element (runtime index)
 
 Only `$mut`-declared variables and fields may appear on the LHS of `$set`. Assigning to a `$const` binding is a compile error.
 
-### 5.3 `$ref` — Reference (Absolute Stack Address)
+### 5.3 `$inline` - Non-Storage Expression
+
+```
+$inline expr;
+```
+
+Marks an expression as **non-storage**
+
+**Properties**:
+
+- Does not allocate storage
+
+`$inline` can be used via `$alias` to create reusable non-storage expressions:
+
+```
+$alias zero $inline 0;   // zero is a reusable non-storage expression
+
+$decl x $mut zero;       // valid — zero is consumed by $mut, which allocates storage for x
+```
+
+> Using `$inline` directly with `$decl` will treat it as a bare expression and implicitly lift it into constant ephemeral storage, so `$inline` is effectively ignored in that context:
+
+```
+$decl x $inline 10;   // $inline is ignored, x is a constant int with value 10 (not a non-storage expression)
+```
+
+#### Inlining functions
+
+`$call` has a special interaction with `$inline` — if the callee is an `$inline` expression, the call is inlined at compile time:
+
+```
+$alias add_one $inline $func ($decl n 0) 0 {
+    $add n 1
+};
+$decl x $call add_one 5;   // inlined to: $decl x $add 5 1
+```
+
+### 5.4 `$ref` — Reference (Absolute Stack Address)
 
 ```
 $decl r $ref <lvalue>
@@ -271,16 +376,22 @@ $decl r $ref <lvalue>
 
 `$ref` is transparent in expressions — using `r` in an expression reads/writes through to the target's storage. The `$ref` keyword is only needed when explicitly bridging to the reference itself.
 
-**As a local alias**: compile-time only, no runtime storage allocated.
-
-**As a struct field**: runtime storage (an 8-byte absolute stack address).
+Using mutability storage descriptors on `$ref` describes access through the reference, not the reference slot itself, the mutability descriptor will not return the reference bridge as-is, instead, it will return a reference as an instance so that preceding mutability descriptor can apply to the reference's storage:
 
 ```
-$decl x $mut 5;
-$decl r $ref x;
+$decl r $mut $ref x;   // r is a mutable view to x — allows read/write access through r, but r itself is immutable (cannot reassign r to point to something else)
+$decl r2 $const $ref x; // r2 is a read-only view to x — allows read access through r2, but no write access, and r2 itself is immutable (cannot reassign r2 to point to something else)
 
-$add r 1;   // transparent — reads x, computes 6
-$set r 10;  // transparent — writes 10 to x's storage
+$decl r3 $mut $mut $ref x; // r3 is a mutable view to x, allows read/write access through r3, and r3 itself is mutable (can reassign r3 to point to something else)
+$decl r4 $const $mut $ref x; // r4 is a mutable view to x, allows read/write access through r4, but r4 itself is immutable (cannot reassign r4 to point to something else)
+
+// and so on...
+```
+
+Using $ref bridge without mutability descriptor is default to immutable view:
+
+```
+$decl r $ref x;   // r is a read-only view to x — allows read access through r, but no write access, and r itself is immutable (cannot reassign r to point to something else)
 ```
 
 **General lvalue operand**: `$ref` accepts any addressable lvalue — not just plain identifiers:
@@ -299,7 +410,7 @@ Compound lvalue offsets are resolved entirely at **compile time** — no additio
 
 **Lifetime rule**: a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. The compiler does not enforce this in v1.0 — it is a programmer responsibility. Storing a `$ref` to a local that is subsequently popped results in undefined behavior.
 
-### 5.4 Mutability Subtyping
+### 5.5 Mutability Subtyping
 
 Mutable storage satisfies immutable expectations, but not vice versa:
 
@@ -327,7 +438,7 @@ $const $ref T </: $mut $ref T    // unsafe — would grant write access to immut
 
 This rule is enforced by the type checker for function arguments, `$set` targets, and `$decl` initializers.
 
-### 5.5 `$extern` — Native Symbol Binding
+### 5.6 `$extern` — Native Symbol Binding
 
 `$extern` is a storage specifier that binds a name to a native C symbol resolved at load time. Its type is inferred from the wrapped expression, exactly as with other storage specifiers:
 
@@ -388,18 +499,92 @@ typedef int64_t (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t para
 
 Arguments sit below `frame_base` in declaration order, 8 bytes each. The last argument is at `stack[frame_base - 8]`. The return value should be returned as `int64_t`.
 
-### 5.6 Storage Expression Summary
+### 5.7 `$static` - Static Storage Transformer
+
+```
+$static <storage-expr>
+```
+
+Move the storage described by `<storage-expr>` into **program-lifetime storage**.
+
+**Semantics**:
+- Storage exists in global/static region
+- Not part of the block's structural shape
+
+```
+$decl counter $static $mut 0;   // a static mutable counter
+```
+
+**Properties**:
+| Property | Description |
+| --- | --- |
+| Lifetime | program lifetime (static storage) |
+| Storage Location | `$global.$statics` region |
+| Shape Contribution | none — does not affect block's structural type |
+| `$new` inheritance | no — static fields are not inherited by new instances |
+
+
+```
+$decl counter $static $mut 0;   // a static mutable counter
+
+// in $file scope
+$decl x {
+    $decl y $static 42;         // a static constant field in a block
+    $decl a {
+        $decl b $static 100;    // a static constant field in a nested block
+
+        // Access via normal field access:
+        $decl val1 $member x y;     // → 42
+    };
+};
+```
+
+Since `$static` fields contribute no shape to the block, they are not inheritable via `$new`:
+
+```
+$decl Foo {
+    $decl a 0;
+    $decl b $static 42;   // static field — not inherited by new instances
+};
+
+$decl f1 $new Foo;     // f1 has only field a, no b
+
+$member f1 a;  // valid
+$member f1 b;  // error — b is not part of f1's shape
+```
+
+### 5.8 Bare Expression as Storage
+
+A bare expression in storage-expression context is treated as a constant ephemeral storage expression.
+
+So expression like:
+```
+0
+$func () { ... }
+"Hello"
+```
+are implicitly lifted into constant ephemeral storage.
+
+Therefore, using a bare expression as the RHS of a `$decl` works:
+
+```
+$decl x 0; 
+```
+
+### 5.8 Storage Expression Summary
 
 | Expression | Meaning | Writable |
 |---|---|---|
 | `$const expr` | immutable storage | no |
 | `$mut expr` | mutable storage | yes |
 | `$ref lvalue` | alias to any addressable lvalue | depends on referent |
+| `$static expr` | static storage (program lifetime) | depends on wrapped storage |
+| `$inline expr` | non-storage expression, must be consumed by storage specifier | no |
 | `$new T` | fresh instance via re-execution of block T | depends on fields |
 | `$new T init` | instantiate T with initializer (any type) | depends on fields |
 | `$import "file"` | reference to external file scope | no |
 | `$extern expr` | native C symbol binding | no |
-| bare `expr` | sugar for `$const expr` | no |
+| bare `expr` (in storage expression context only) | implicitly lifted into constant ephemeral storage | no |
 
 ---
 
@@ -416,6 +601,13 @@ $decl point {
 };
 // type: { x: $mut i32, y: $mut i32 }
 ```
+
+> The structural type of a block consists only of `$decl`s whose storage resides in the instance frame.
+
+This excludes:
+- `$static`
+- `$extern`
+- future non-instance storage specifiers
 
 ### 6.2 Structural Subtyping
 
@@ -1327,8 +1519,8 @@ $expr[10] lhs "*" $expr[11] rhs   // left-associative:  higher precedence than +
 $expr[15] lhs "^" $expr[15] rhs   // right-associative: lhs and rhs same bp
 ```
 
-- **Left-associative**: rhs binding power = lhs binding power + 1
-- **Right-associative**: rhs binding power = lhs binding power (same value)
+- **Left-associative**: rhs binding power > lhs binding power
+- **Right-associative**: rhs binding power <= lhs binding power
 - **Higher number = tighter binding**: `*` at `[10]` binds tighter than `+` at `[1]`
 
 A production whose first atom is a `$rule_name` (or labeled rule reference) is treated as an **infix/postfix production**. The Pratt loop offers it only when the current left-hand expression has sufficient binding power.
