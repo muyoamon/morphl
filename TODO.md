@@ -18,6 +18,13 @@
 
 [x] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Immediate `$member` block operands hoist and evaluate declaration/mutation logic so block-as-value captures final field state, and simple non-captured local declarations can be substituted into later captured field logic. `$set $member <immediate-aggregate> field ...` and `$ref $member <immediate-aggregate> field` materialize the aggregate before use.
 
+## Good to have features (Medium Priority, Not in Spec yet)
+
+[] - Unify C ABI, rather than use C type for external library, use morphl ABI type system, e.g., morphl_i64, morphl_str
+
+[] - Make Error code specific. Currently, only error code has mode: [MXXX] the last three digits is unused.
+
+
 ## Out of Spec Features (Low Priority, Not in order):
 
 [] - `mpldb` morphl debugger, a tool to debug the program.
