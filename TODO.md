@@ -6,6 +6,16 @@
 
 [] - Allowing `$static` specifier on function type. Just a function table index inside the static storage. Mutability depend on the operand mutability descriptor e.g., `$decl static_func $static $mut $func () {...};`
 
+[] - Implement `$alias` end-to-end as the SPEC defines it: compile-time expression substitution with no runtime storage, no shape contribution, and support for `$import` aliases.
+
+[] - Finish the remaining `$$` directives and metadata named in `SPEC.md`. `$$name`, `$$size`, `$$type`, `$$tag`, and `$$data` exist, but `$$op`, `$$path`, `$$delim`, `$$version`, `$$line`, and `$$col` are still missing, and the spec also reserves `$$syntax`.
+
+[] - Bring control-flow typing in line with the SPEC. Current typing still treats `$if`/`$while` conditions as `bool`-only in places, returns `{}` for `$while`, allows zero-arg `$exit`, and returns `void` instead of `$never` for `$ret`.
+
+[] - Make `$new` fully match the SPEC's "any type expression" contract. Type inference accepts arbitrary base expressions, but VM emission still requires an identifier-backed template and does not cover the full generic surface described in the spec.
+
+[] - Enforce the full `main` entry-point contract from the SPEC. The VM checks `main` return type, but the spec also requires no explicit arguments.
+
 
 ## Out of Spec Features (Low Priority):
 
