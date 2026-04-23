@@ -2,7 +2,7 @@
 
 ## In Spec Features (High Priority):
 
-[] - Make `$inline` a true non-storage storage descriptor. `$member $inline { ... } <fieldname>` should collapse to value of `<fieldname>` allowing `$alias <name> $inline $import "<mod-path>"` to be used as import-as-alias e.g. `$alias type $inline $import "stdlib/typing"; $decl x $mut $member type i8; $decl y $const $member type f64;`
+[] - Make `$inline` a true non-storage storage descriptor. `$member $inline { ... } <fieldname>` should collapse to value of `<fieldname>` allowing `$alias <name> $inline $import "<mod-path>"` to be used as import-as-alias e.g. `$alias type $inline $import "stdlib/typing"; $decl x $mut $member type i8; $decl y $const $member type f64;` The inlined block should not have runtime storage, therefore its inside logic should not be evaluate. If the field inlining depends on other field or prior logic inside the block, throw a warning (bad usage) and try to resolve its dependency statically.
 
 [] - Allowing `$static` specifier on function type. Just a function table index inside the static storage. Mutability depend on the operand mutability descriptor e.g., `$decl static_func $static $mut $func () {...};`
 
@@ -16,6 +16,7 @@
 
 [] - Enforce the full `main` entry-point contract from the SPEC. The VM checks `main` return type, but the spec also requires no explicit arguments.
 
+[] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Unlike the inlined counterpart the immediate block here should have its inside logic evaluated following the spec of block-as-value is capturing last state of the block.
 
 ## Out of Spec Features (Low Priority):
 

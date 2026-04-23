@@ -40,6 +40,23 @@ static MorphlType* unwrap_ref(MorphlType* t) {
   return t;
 }
 
+static bool is_truthy_condition_type(const MorphlType* t) {
+  t = unwrap_ref((MorphlType*)t);
+  return t && (t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_INT);
+}
+
+static bool is_main_signature(const MorphlType* t) {
+  t = unwrap_ref((MorphlType*)t);
+  if (!t || t->kind != MORPHL_TYPE_FUNC || !t->data.func.return_type ||
+      t->data.func.return_type->kind != MORPHL_TYPE_INT ||
+      t->data.func.param_count != 1 || !t->data.func.param_types) {
+    return false;
+  }
+  MorphlType* params = unwrap_ref(t->data.func.param_types[0]);
+  return params && params->kind == MORPHL_TYPE_GROUP &&
+         params->data.group.elem_count == 0;
+}
+
 static bool is_string_literal(TypeContext* ctx, const AstNode* node) {
   if (!ctx || !node || node->kind != AST_LITERAL || !node->op) return false;
   Sym string_sym = interns_intern(ctx->interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
@@ -848,21 +865,18 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$exit", 5))) {
-    /* $exit          — exits with code 0  (no args)
-     * $exit <expr>   — exits with code <expr> (must be INT) */
-    if (arg_count == 1) {
-      MorphlType* exit_arg = unwrap_ref(arg_types[0]);
-      if (!exit_arg || exit_arg->kind != MORPHL_TYPE_INT) {
-        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: argument must be of type i32 (integer)");
-        morphl_error_emit(NULL, &err);
-        return NULL;
-      }
-    } else if (arg_count != 0) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: expects 0 or 1 argument");
+    if (arg_count != 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: expects exactly 1 argument");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    return morphl_type_void(ctx->arena);
+    MorphlType* exit_arg = unwrap_ref(arg_types[0]);
+    if (!exit_arg || exit_arg->kind != MORPHL_TYPE_INT) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: argument must be of type i32 (integer)");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_never(ctx->arena);
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$impl", 5))) {
@@ -1004,8 +1018,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       }
     }
     
-    // Return statement: void type
-    return morphl_type_void(ctx->arena);
+    return morphl_type_never(ctx->arena);
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$call", 5))) {
@@ -1037,8 +1050,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     MorphlType* cond_type = unwrap_ref(arg_types[0]);
-    if (!cond_type || cond_type->kind != MORPHL_TYPE_BOOL) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: condition must be bool");
+    if (!is_truthy_condition_type(cond_type)) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: condition must be bool or int");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -1196,9 +1209,19 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return morphl_type_never(ctx->arena);
   }
 
-  // $while cond body — loop expression; always produces {} (empty block, not void)
+  // $while cond body — loop expression; always produces void
   if (op_sym == interns_intern(ctx->interns, str_from("$while", 6))) {
-    return morphl_type_empty_block(ctx->arena);
+    if (arg_count != 2 || !arg_types[0] || !arg_types[1]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$while expects 2 arguments");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    if (!is_truthy_condition_type(arg_types[0])) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$while: condition must be bool or int");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_void(ctx->arena);
   }
 
   // $break / $continue — divergent control flow; type is $never (bottom)
@@ -1324,12 +1347,41 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         return NULL;
       }
 
+      Str decl_name = interns_lookup(ctx->interns, var_sym);
+      if (decl_name.len == 4 && memcmp(decl_name.ptr, "main", 4) == 0) {
+        MorphlType* current_this = type_context_get_this(ctx);
+        bool is_toplevel_decl =
+            (ctx->file_type == NULL && current_this == NULL) ||
+            (ctx->file_type != NULL && current_this == ctx->file_type);
+        if (!is_toplevel_decl) {
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                          "'main' must be declared at top level");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+        if (!is_main_signature(init_type)) {
+          MorphlError err = MORPHL_ERR_AT(
+              node, MORPHL_E_TYPE,
+              "'main' must have signature () => i32 with no explicit arguments");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+      }
+
       apply_storage_metadata(ctx, init_node, var_sym, init_type);
       node->contributes_to_shape = init_node->contributes_to_shape;
       node->contributes_to_layout = init_node->contributes_to_layout;
       node->storage_is_mutable = init_node->storage_is_mutable;
       node->storage_residence = init_node->storage_residence;
       node->extern_symbol = default_extern_symbol(init_node);
+
+      if (decl_name.len == 4 && memcmp(decl_name.ptr, "main", 4) == 0 &&
+          node->storage_residence == MORPHL_STORAGE_STATIC) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                        "'main' cannot use $static storage");
+        morphl_error_emit(NULL, &err);
+        return NULL;
+      }
 
       ForwardEntry* forward = pending_forward;
       if (forward && !forward->resolved) {
@@ -1784,11 +1836,26 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         bool _is_cname = field_name.len == 6 && memcmp(field_name.ptr, "$$name", 6) == 0;
         bool _is_csize = field_name.len == 6 && memcmp(field_name.ptr, "$$size", 6) == 0;
         bool _is_ctype = field_name.len == 6 && memcmp(field_name.ptr, "$$type", 6) == 0;
-        if (_is_cname || _is_csize || _is_ctype) {
+        bool _is_cop = field_name.len == 4 && memcmp(field_name.ptr, "$$op", 4) == 0;
+        bool _is_cpath = field_name.len == 6 && memcmp(field_name.ptr, "$$path", 6) == 0;
+        bool _is_cdelim = field_name.len == 7 && memcmp(field_name.ptr, "$$delim", 7) == 0;
+        bool _is_cversion = field_name.len == 9 && memcmp(field_name.ptr, "$$version", 9) == 0;
+        bool _is_cline = field_name.len == 6 && memcmp(field_name.ptr, "$$line", 6) == 0;
+        bool _is_ccol = field_name.len == 5 && memcmp(field_name.ptr, "$$col", 5) == 0;
+        bool _is_csyntax = field_name.len == 8 && memcmp(field_name.ptr, "$$syntax", 8) == 0;
+        if (_is_csyntax) {
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                          "$$syntax is reserved and not implemented");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+        if (_is_cname || _is_csize || _is_ctype || _is_cop || _is_cpath ||
+            _is_cdelim || _is_cversion || _is_cline || _is_ccol) {
             /* Infer target type so target->type is populated for vm.c code emission. */
             morphl_infer_type_of_ast(ctx, target);
-            return _is_csize ? morphl_type_int(ctx->arena)
-                             : morphl_type_string(ctx->arena);
+            return (_is_csize || _is_cline || _is_ccol)
+                     ? morphl_type_int(ctx->arena)
+                     : morphl_type_string(ctx->arena);
         }
 
         /* compiler-injected $$data / $$tag fields on union types */

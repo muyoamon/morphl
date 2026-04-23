@@ -921,6 +921,31 @@ static uint8_t store_op(const MorphlType* t) {
   }
 }
 
+static Str metadata_op_string(const VmEmitter* e, const AstNode* node) {
+  if (!node) return str_from("", 0);
+  if (node->kind == AST_BUILTIN || node->kind == AST_CALL || node->kind == AST_IF ||
+      node->kind == AST_SET) {
+    if (node->op && e && e->interns) return interns_lookup(e->interns, node->op);
+    if (node->value.ptr) return node->value;
+  }
+  if (node->kind == AST_IDENT || node->kind == AST_LITERAL) {
+    return node->value.ptr ? node->value : str_from("", 0);
+  }
+  return str_from("", 0);
+}
+
+static bool is_main_function_type(const MorphlType* t) {
+  t = unwrap_ref((MorphlType*)t);
+  if (!t || t->kind != MORPHL_TYPE_FUNC || !t->data.func.return_type ||
+      t->data.func.return_type->kind != MORPHL_TYPE_INT ||
+      t->data.func.param_count != 1 || !t->data.func.param_types) {
+    return false;
+  }
+  const MorphlType* params = unwrap_ref((MorphlType*)t->data.func.param_types[0]);
+  return params && params->kind == MORPHL_TYPE_GROUP &&
+         params->data.group.elem_count == 0;
+}
+
 static bool collect_inline_param_bindings(
     VmEmitter* e, AstNode* params, AstNode* call_args,
     InlineParamBinding* bindings, size_t binding_cap, size_t* out_count,
@@ -1492,6 +1517,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (!name_node || name_node->kind != AST_IDENT) return false;
 
       Str name = name_node->value;
+      if (!e->in_function && name.len == 4 && memcmp(name.ptr, "main", 4) == 0 &&
+          node->storage_residence == MORPHL_STORAGE_STATIC) {
+        VM_ERR(node, "'main' cannot use $static storage");
+        return false;
+      }
 
       /* handle compile-time $ref alias BEFORE any frame registration.
        * Supports any lvalue: identifier, $member, $index (literal), $as. */
@@ -1629,10 +1659,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       const MorphlType* raw_type = node->type;
       const MorphlType* t = unwrap_ref(raw_type);
       if (node->storage_residence == MORPHL_STORAGE_STATIC) {
-        if (rhs && (rhs->kind == AST_FUNC || extern_rhs)) {
+        if (rhs && extern_rhs) {
           VM_ERR(node,
-                 "$static function and extern bindings are not implemented "
-                 "in the VM backend");
+                 "$static extern bindings are not implemented in the VM backend");
           return false;
         }
         char* full_name = lexical_make_binding_path(e, name);
@@ -1653,7 +1682,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return false;
         if (!emit_jump(e, VM_OP_JIF, done_lbl)) return false;
         if (!emit_op(e, VM_OP_GLOBAL)) return false;
-        if (!emit_node(e, rhs)) return false;
+        if (rhs && rhs->kind == AST_FUNC) {
+          size_t fidx = func_alloc(e);
+          if (fidx == SIZE_MAX) return false;
+          if (e->deferred_count >= e->deferred_capacity) {
+            if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
+                         sizeof(DeferredFunc), e->deferred_count + 1))
+              return false;
+          }
+          e->deferred[e->deferred_count++] =
+              (DeferredFunc){rhs, fidx, name, current_file_root_prefix(e)};
+          if (!emit_iconst(e, (int64_t)fidx)) return false;
+        } else {
+          if (!emit_node(e, rhs)) return false;
+        }
         if (!emit_op_i32(e, VM_OP_ASTORE, (int32_t)slot->global_slot))
           return false;
         if (!emit_op(e, VM_OP_GLOBAL)) return false;
@@ -1812,14 +1854,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* record 'main' for auto-call injection (top-level only) */
         if (!e->in_function && name.len == 4 &&
             memcmp(name.ptr, "main", 4) == 0) {
-          /* validate that main returns i32 */
+          /* validate that main has signature () => i32 */
           const MorphlType* fn_type = unwrap_ref(node->type);
-          if (!fn_type || fn_type->kind != MORPHL_TYPE_FUNC ||
-              !fn_type->data.func.return_type ||
-              fn_type->data.func.return_type->kind != MORPHL_TYPE_INT) {
+          if (!is_main_function_type(fn_type)) {
             VM_ERR(node,
-                   "'main' must have return type i32, e.g. main := () => { "
-                   "$ret 0; };");
+                   "'main' must have signature () => i32 with no explicit "
+                   "arguments");
             return false;
           }
           e->main_func_fidx = fidx;
@@ -2786,7 +2826,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           field_name = interns_lookup(e->interns, field_nd->op);
         }
 
-        /* ── compile-time intrinsic properties: $$name, $$size, $$type ──
+        /* ── compile-time intrinsic properties ──
          * These resolve entirely at compile time; the target expression is
          * NOT emitted (pure compile-time, analogous to C's sizeof). */
         {
@@ -2796,6 +2836,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               field_name.len == 6 && memcmp(field_name.ptr, "$$size", 6) == 0;
           bool is_ctype =
               field_name.len == 6 && memcmp(field_name.ptr, "$$type", 6) == 0;
+          bool is_cop =
+              field_name.len == 4 && memcmp(field_name.ptr, "$$op", 4) == 0;
+          bool is_cpath =
+              field_name.len == 6 && memcmp(field_name.ptr, "$$path", 6) == 0;
+          bool is_cdelim =
+              field_name.len == 7 && memcmp(field_name.ptr, "$$delim", 7) == 0;
+          bool is_cversion =
+              field_name.len == 9 && memcmp(field_name.ptr, "$$version", 9) == 0;
+          bool is_cline =
+              field_name.len == 6 && memcmp(field_name.ptr, "$$line", 6) == 0;
+          bool is_ccol =
+              field_name.len == 5 && memcmp(field_name.ptr, "$$col", 5) == 0;
+          bool is_csyntax =
+              field_name.len == 8 && memcmp(field_name.ptr, "$$syntax", 8) == 0;
 
           if (is_cname) {
             /* Bound name of the expression, or "" for non-identifiers. */
@@ -2818,6 +2872,36 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             bool ok = emit_sconst(e, ts);
             if (t && ts.ptr) free((void*)ts.ptr);
             return ok;
+          }
+          if (is_cop) {
+            return emit_sconst(e, metadata_op_string(e, target));
+          }
+          if (is_cpath) {
+            const char* path = target->filename ? target->filename : node->filename;
+            return emit_sconst(e, path ? str_from(path, strlen(path)) : str_from("", 0));
+          }
+          if (is_cdelim) {
+            return emit_sconst(e, str_from(";", 1));
+          }
+          if (is_cversion) {
+            char version_buf[32];
+            int n = snprintf(version_buf, sizeof(version_buf), "%u.%u",
+                             (unsigned)MORPHL_VM_VERSION_MAJOR,
+                             (unsigned)MORPHL_VM_VERSION_MINOR);
+            if (n < 0) return false;
+            return emit_sconst(e, str_from(version_buf, (size_t)n));
+          }
+          if (is_cline) {
+            size_t line = target->row ? target->row : node->row;
+            return emit_iconst(e, (int64_t)line);
+          }
+          if (is_ccol) {
+            size_t col = target->col ? target->col : node->col;
+            return emit_iconst(e, (int64_t)col);
+          }
+          if (is_csyntax) {
+            VM_ERR(field_nd, "$$syntax is reserved and not implemented");
+            return false;
           }
         }
 

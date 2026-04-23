@@ -402,6 +402,12 @@ static void test_e2e_exit_nonzero() {
     printf("PASS test_e2e_exit_nonzero\n");
 }
 
+static void test_e2e_exit_requires_arg() {
+    int rc = compile_and_run("$exit;\n");
+    assert(rc == -1);
+    printf("PASS test_e2e_exit_requires_arg\n");
+}
+
 /* Spec §main: top-level main auto-called, return value used as exit code */
 static void test_e2e_main_autocall() {
     int rc = compile_and_run(
@@ -424,6 +430,26 @@ static void test_e2e_main_returns_zero() {
     printf("PASS test_e2e_main_returns_zero\n");
 }
 
+static void test_e2e_main_rejects_explicit_args() {
+    int rc = compile_and_run(
+        "$decl main $func ($decl argc 0) {\n"
+        "    $ret 0;\n"
+        "};\n"
+    );
+    assert(rc == -1);
+    printf("PASS test_e2e_main_rejects_explicit_args\n");
+}
+
+static void test_e2e_main_rejects_static_storage() {
+    int rc = compile_and_run(
+        "$decl main $static $func () {\n"
+        "    $ret 0;\n"
+        "};\n"
+    );
+    assert(rc == -1);
+    printf("PASS test_e2e_main_rejects_static_storage\n");
+}
+
 // ── $while / $and / $or / $not / $break / $continue ─────────────────────────
 
 static void test_e2e_while_basic() {
@@ -444,6 +470,25 @@ static void test_e2e_while_no_iter() {
     );
     assert(rc == 99);
     printf("PASS test_e2e_while_no_iter\n");
+}
+
+static void test_e2e_if_int_condition() {
+    int rc = compile_and_run(
+        "$decl value $if 1 9 3;\n"
+        "$exit value;\n"
+    );
+    assert(rc == 9);
+    printf("PASS test_e2e_if_int_condition\n");
+}
+
+static void test_e2e_while_int_condition() {
+    int rc = compile_and_run(
+        "$decl i $mut 3;\n"
+        "$while i { $set i $sub i 1; };\n"
+        "$exit i;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_while_int_condition\n");
 }
 
 static void test_e2e_not() {
@@ -776,6 +821,26 @@ static void test_e2e_module_statics_access() {
     std::remove(mod_path.c_str());
     assert(rc == 1);
     printf("PASS test_e2e_module_statics_access\n");
+}
+
+static void test_e2e_file_static_function() {
+    int rc = compile_and_run(
+        "$decl f $static $func () {\n"
+        "    $ret 9;\n"
+        "};\n"
+        "$decl fn $member $member $file $$statics f;\n"
+        "$exit $call fn ();\n"
+    );
+    assert(rc == 9);
+    printf("PASS test_e2e_file_static_function\n");
+}
+
+static void test_e2e_metadata_syntax_reserved() {
+    int rc = compile_and_run(
+        "$decl x $member 7 $$syntax;\n"
+    );
+    assert(rc == -1);
+    printf("PASS test_e2e_metadata_syntax_reserved\n");
 }
 
 // ── $extern / FFI tests ───────────────────────────────────────────────────────
@@ -1242,10 +1307,15 @@ int main(void) {
     test_e2e_impl_with_func_prop();
     test_e2e_exit_zero();
     test_e2e_exit_nonzero();
+    test_e2e_exit_requires_arg();
     test_e2e_main_autocall();
     test_e2e_main_returns_zero();
+    test_e2e_main_rejects_explicit_args();
+    test_e2e_main_rejects_static_storage();
     test_e2e_while_basic();
     test_e2e_while_no_iter();
+    test_e2e_if_int_condition();
+    test_e2e_while_int_condition();
     test_e2e_not();
     test_e2e_and();
     test_e2e_or();
@@ -1266,6 +1336,7 @@ int main(void) {
     test_e2e_file_statics_access();
     test_e2e_global_source_statics_access();
     test_e2e_module_statics_access();
+    test_e2e_file_static_function();
     test_e2e_extern_print();
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();
@@ -1294,6 +1365,7 @@ int main(void) {
     test_e2e_intrinsic_size_block();
     test_e2e_intrinsic_name_ident();
     test_e2e_intrinsic_type_int();
+    test_e2e_metadata_syntax_reserved();
     test_e2e_recursive_new_head_val();
     test_e2e_recursive_new_two_nodes();
     test_e2e_recursive_new_three_nodes();

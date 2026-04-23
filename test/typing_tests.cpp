@@ -1080,12 +1080,12 @@ static void test_pp_while() {
   MorphlType* ok = while_info->func(while_info, NULL, ctx, args_ok, 2);
   assert(ok != NULL && ok->kind == MORPHL_TYPE_VOID);
 
-  // Non-bool condition should fail (fresh lookup because operator_info_lookup uses a static buffer)
+  // Integer conditions are also valid (truthy semantics)
   const OperatorInfo* while_info_bad = operator_info_lookup(interns_intern(interns, str_from("$while", 6)));
   AstNode* cond_bad = make_literal("10");
   AstNode* args_bad[] = {cond_bad, body};
   MorphlType* bad = while_info_bad->func(while_info_bad, NULL, ctx, args_bad, 2);
-  assert(bad == NULL);
+  assert(bad != NULL && bad->kind == MORPHL_TYPE_VOID);
 
   ast_free(cond);
   ast_free(cond_bad);
@@ -1419,14 +1419,41 @@ static void test_control_flow_inference() {
     assert(result->data.union_t.variant_count == 2);
   }
 
-  // $while → {} (empty block, not void)
+  // $while → void
   {
     Sym while_sym = interns_intern(interns, str_from("$while", 6));
     MorphlType* bool_t = morphl_type_bool(&arena);
     MorphlType* void_t = morphl_type_void(&arena);
     MorphlType* args[2] = { bool_t, void_t };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, while_sym, args, 2);
-    assert(result && result->kind == MORPHL_TYPE_BLOCK && result->data.block.field_count == 0);
+    assert(result && result->kind == MORPHL_TYPE_VOID);
+  }
+
+  // $if with int condition is valid
+  {
+    Sym if_sym = interns_intern(interns, str_from("$if", 3));
+    MorphlType* int_t = morphl_type_int(&arena);
+    MorphlType* args[3] = { int_t, morphl_type_int(&arena), morphl_type_int(&arena) };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
+    assert(result && result->kind == MORPHL_TYPE_INT);
+  }
+
+  // $ret → $never
+  {
+    Sym ret_sym = interns_intern(interns, str_from("$ret", 4));
+    type_context_set_return_type(ctx, morphl_type_unknown(&arena));
+    MorphlType* args[1] = { morphl_type_int(&arena) };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, ret_sym, args, 1);
+    assert(result && result->kind == MORPHL_TYPE_NEVER);
+    type_context_set_return_type(ctx, NULL);
+  }
+
+  // $exit → $never
+  {
+    Sym exit_sym = interns_intern(interns, str_from("$exit", 5));
+    MorphlType* args[1] = { morphl_type_int(&arena) };
+    MorphlType* result = morphl_infer_type_for_op(ctx, NULL, exit_sym, args, 1);
+    assert(result && result->kind == MORPHL_TYPE_NEVER);
   }
 
   // $break → $never
