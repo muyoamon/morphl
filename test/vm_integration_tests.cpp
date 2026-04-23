@@ -622,6 +622,23 @@ static void test_e2e_import_single_decl_module() {
     printf("PASS test_e2e_import_single_decl_module\n");
 }
 
+static void test_e2e_import_nested_member_chain() {
+    std::string mod_path = write_temp_source(
+        "$decl x {\n"
+        "  $decl a 42;\n"
+        "};\n"
+    );
+
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$exit $member $member mod x a;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 42);
+    printf("PASS test_e2e_import_nested_member_chain\n");
+}
+
 /* compile_and_run variant that forwards a custom argc to $global.$argc */
 static int compile_and_run_argc(const char* source, int vm_argc) {
     std::string src_path = write_temp_source(source);
@@ -1242,6 +1259,7 @@ int main(void) {
     test_e2e_string_mutation();
     test_e2e_import_basic();
     test_e2e_import_single_decl_module();
+    test_e2e_import_nested_member_chain();
     test_e2e_global_argc();
     test_e2e_global_entry();
     test_e2e_global_modules_slot();

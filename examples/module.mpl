@@ -1,3 +1,3 @@
 $decl x {
-  $decl a 0;
+  $decl a 67;
 };

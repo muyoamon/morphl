@@ -2970,7 +2970,24 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                  (int)target_name.len, target_name.ptr);
           return false;
         }
-        uint8_t lop = load_op(unwrap_ref(field_type));
+        const MorphlType* ft_unwrapped = unwrap_ref(field_type);
+        if (ft_unwrapped &&
+            (ft_unwrapped->kind == MORPHL_TYPE_BLOCK ||
+             ft_unwrapped->kind == MORPHL_TYPE_ARRAY ||
+             ft_unwrapped->kind == MORPHL_TYPE_UNION)) {
+          const MorphlType* ft_ref = field_type;
+          while (ft_ref && ft_ref->kind == MORPHL_TYPE_REF &&
+                 !ft_ref->data.ref.is_ref) {
+            ft_ref = ft_ref->data.ref.target;
+          }
+          if (ft_ref && ft_ref->kind == MORPHL_TYPE_REF &&
+              ft_ref->data.ref.is_ref) {
+            return emit_op_i32(e, VM_OP_ILOAD, (int32_t)(target_off + field_offset));
+          }
+          return emit_op_i32(e, VM_OP_ADDREF, (int32_t)(target_off + field_offset));
+        }
+
+        uint8_t lop = load_op(ft_unwrapped);
         if (lop == 0xFF) {
           VM_ERR(field_nd, "$member: unsupported field type for load");
           return false;
