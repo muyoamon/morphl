@@ -566,43 +566,31 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
   // Pop file-level grammar
   scoped_parser_pop_grammar(ctx);
   
-  // Create root node
-  if (child_count == 1) {
-    // if the only child is a group, unwrap it
-    if (children[0]->kind == AST_GROUP) {
-      AstNode* group = children[0];
-      *out_root = ast_new(AST_FILE);
-      if (!*out_root) {
-        for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
-        free(children);
-        MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "failed to allocate root AST node");
-        morphl_error_emit(NULL, &err);
-        return false;
-      }
-      (*out_root)->filename = group->filename;
-      (*out_root)->children = group->children;
-      (*out_root)->child_count = group->child_count;
-      group->children = NULL;
-      group->child_count = 0;
-      ast_free(group);
-      free(children);
-    } else {
-    *out_root = children[0];
+  // Always return a file root so imports, typing, and backends see a stable
+  // top-level shape regardless of the number of statements in the source.
+  AstNode* root = ast_new(AST_FILE);
+  if (!root) {
+    for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
     free(children);
-    }
+    MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "failed to allocate root AST node");
+    morphl_error_emit(NULL, &err);
+    return false;
+  }
+
+  if (child_count == 1 && children[0]->kind == AST_GROUP) {
+    AstNode* group = children[0];
+    root->filename = group->filename;
+    root->children = group->children;
+    root->child_count = group->child_count;
+    group->children = NULL;
+    group->child_count = 0;
+    ast_free(group);
+    free(children);
   } else {
-    AstNode* root = ast_new(AST_FILE);
-    if (!root) {
-      for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
-      free(children);
-      MorphlError err = MORPHL_ERR(MORPHL_E_PARSE, "failed to allocate root AST node");
-      morphl_error_emit(NULL, &err);
-      return false;
-    }
     root->children = children;
     root->child_count = child_count;
-    *out_root = root;
   }
+  *out_root = root;
   
   // Perform typing pass on the entire AST
   typing_pass_ast(ctx->type_context, *out_root);

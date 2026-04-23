@@ -590,7 +590,6 @@ static void test_e2e_string_mutation() {
  * Verify that the VM emitter handles $import without crashing ("unhandled builtin").
  * The imported module's AST is emitted inline. */
 static void test_e2e_import_basic() {
-    /* Write a module with 2+ declarations so scoped_parse_ast wraps in AST_FILE */
     std::string mod_path = write_temp_source(
         "$decl modval 42;\n"
         "$decl other 1;\n"
@@ -605,6 +604,22 @@ static void test_e2e_import_basic() {
     std::remove(mod_path.c_str());
     assert(rc == 0);
     printf("PASS test_e2e_import_basic\n");
+}
+
+static void test_e2e_import_single_decl_module() {
+    std::string mod_path = write_temp_source(
+        "$decl modval 42;\n"
+    );
+
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$decl value $member mod modval;\n"
+        "$exit value;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 42);
+    printf("PASS test_e2e_import_single_decl_module\n");
 }
 
 /* compile_and_run variant that forwards a custom argc to $global.$argc */
@@ -1226,6 +1241,7 @@ int main(void) {
     test_e2e_string_neq();
     test_e2e_string_mutation();
     test_e2e_import_basic();
+    test_e2e_import_single_decl_module();
     test_e2e_global_argc();
     test_e2e_global_entry();
     test_e2e_global_modules_slot();
