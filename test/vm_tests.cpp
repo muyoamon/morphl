@@ -204,6 +204,54 @@ static void run_and_expect_load_failure(BytecodeBuilder& bc) {
     std::remove(path.c_str());
 }
 
+static std::string make_temp_path(const char* prefix) {
+    const char* tmpdir = std::getenv("TMPDIR");
+    if (!tmpdir) tmpdir = "/tmp";
+    static int counter = 0;
+    std::ostringstream ss;
+    ss << tmpdir << "/" << prefix << "_" << ++counter << ".mbc";
+    return ss.str();
+}
+
+static void write_valid_empty_header(std::ofstream& f) {
+    auto write_u16 = [&](uint16_t v) {
+        uint8_t b[2] = {uint8_t(v), uint8_t(v >> 8)};
+        f.write((char*)b, 2);
+    };
+    auto write_u32 = [&](uint32_t v) {
+        uint8_t b[4] = {
+            uint8_t(v),
+            uint8_t(v >> 8),
+            uint8_t(v >> 16),
+            uint8_t(v >> 24),
+        };
+        f.write((char*)b, 4);
+    };
+
+    f.write("MVMB", 4);
+    write_u16(MORPHL_VM_VERSION_MAJOR);
+    write_u16(MORPHL_VM_VERSION_MINOR);
+    write_u32(0); // global_frame_size
+    write_u32(1); // func_count
+    write_u32(0); // entry_point
+    write_u32(0); // frame_size
+    write_u32(0); // param_size
+    write_u32(0); // flags
+    write_u32(1); // code_len
+    uint8_t halt = VM_OP_HALT;
+    f.write((char*)&halt, 1);
+}
+
+static void write_u32_le(std::ofstream& f, uint32_t v) {
+    uint8_t b[4] = {
+        uint8_t(v),
+        uint8_t(v >> 8),
+        uint8_t(v >> 16),
+        uint8_t(v >> 24),
+    };
+    f.write((char*)b, 4);
+}
+
 static void run_and_expect_execute_failure(BytecodeBuilder& bc) {
     std::string path = bc.write_temp();
     MorphlVmProgram* prog = NULL;
@@ -620,6 +668,40 @@ static void test_vm_load_rejects_bad_native_symbol_index() {
     printf("PASS test_vm_load_rejects_bad_native_symbol_index\n");
 }
 
+static void test_vm_load_rejects_nonterminated_string() {
+    std::string path = make_temp_path("morphl_vm_bad_string");
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    assert(f.is_open());
+    write_valid_empty_header(f);
+    write_u32_le(f, 1); // str_count
+    write_u32_le(f, 3); // string length without terminator
+    f.write("abcX", 4);
+    write_u32_le(f, 0); // native_sym_count
+    f.close();
+
+    MorphlVmProgram* prog = NULL;
+    assert(!morphl_vm_program_load(path.c_str(), &prog));
+    std::remove(path.c_str());
+    printf("PASS test_vm_load_rejects_nonterminated_string\n");
+}
+
+static void test_vm_load_rejects_nonterminated_native_symbol() {
+    std::string path = make_temp_path("morphl_vm_bad_native_symbol");
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    assert(f.is_open());
+    write_valid_empty_header(f);
+    write_u32_le(f, 0); // str_count
+    write_u32_le(f, 1); // native_sym_count
+    write_u32_le(f, 6); // symbol length without terminator
+    f.write("nativeX", 7);
+    f.close();
+
+    MorphlVmProgram* prog = NULL;
+    assert(!morphl_vm_program_load(path.c_str(), &prog));
+    std::remove(path.c_str());
+    printf("PASS test_vm_load_rejects_nonterminated_native_symbol\n");
+}
+
 static void test_vm_iload_oob_fails() {
     BytecodeBuilder bc;
     bc.op_reserve(8);
@@ -700,6 +782,8 @@ int main(void) {
     test_vm_call_ret_reclaims_args();
     test_vm_load_rejects_bad_entry_point();
     test_vm_load_rejects_bad_native_symbol_index();
+    test_vm_load_rejects_nonterminated_string();
+    test_vm_load_rejects_nonterminated_native_symbol();
     test_vm_iload_oob_fails();
     test_vm_callf_oob_fails();
 

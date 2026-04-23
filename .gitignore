@@ -17,3 +17,7 @@ CLAUDE.md
 .codex
 AGENTS.md
 plan.md
+
+/out.c
+/out.mbc
+/DartConfiguration.tcl

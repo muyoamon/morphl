@@ -12,9 +12,12 @@
 #define FRAME_INITIAL_OFFSETS_CAPACITY 10
 
 static bool _realloc_offsets(struct MorphlBackendFrame* frame) {
-  void* temp = realloc(frame->offsets, sizeof(struct MorphlBackendFrameOffset) * frame->offset_capacity * 2);
+  size_t new_capacity = frame->offset_capacity * 2;
+  void* temp = realloc(frame->offsets,
+                       sizeof(struct MorphlBackendFrameOffset) * new_capacity);
   if (temp != NULL) {
     frame->offsets = temp;
+    frame->offset_capacity = new_capacity;
     return true;
   } else {
     return false;
@@ -137,4 +140,3 @@ ptrdiff_t morphl_backend_find_offset(MorphlBackendFrameInfo* frameInfo, Str name
   }
   return PTRDIFF_MAX;
 }
-

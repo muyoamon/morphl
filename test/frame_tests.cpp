@@ -118,15 +118,15 @@ static void test_frame_nested_scopes() {
 }
 
 static void test_frame_capacity_growth() {
-    // Append more than the initial capacity (10) to trigger realloc
+    // Append enough entries to trigger multiple reallocations.
     MorphlBackendFrameInfo fi = morphl_backend_frame_init();
-    char names[20][8];
-    for (int i = 0; i < 20; i++) {
+    char names[25][8];
+    for (int i = 0; i < 25; i++) {
         snprintf(names[i], sizeof(names[i]), "v%d", i);
         assert(morphl_backend_append_offset(&fi, make_off(names[i], 8)));
     }
     // Verify all are found at correct cumulative offsets
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 25; i++) {
         ptrdiff_t expected = (ptrdiff_t)(i * 8);
         ptrdiff_t got = morphl_backend_find_offset(&fi, make_str(names[i]));
         assert(got == expected);

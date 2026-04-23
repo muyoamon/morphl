@@ -284,6 +284,10 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
                 }
                 prog->str_table[i] = (char*)(prog->str_data + data_len);
                 if (!read_bytes(buf, len, &pos, prog->str_data + data_len, slen + 1)) goto err;
+                if (prog->str_data[data_len + slen] != '\0') {
+                    RT_ERR(stderr, "vm: string table entry %u is not null-terminated", i);
+                    goto err;
+                }
                 data_len += slen + 1;
             }
         }
@@ -303,6 +307,10 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
                 prog->native_sym_names[i] = (char*)malloc(nlen + 1);
                 if (!prog->native_sym_names[i]) goto err;
                 if (!read_bytes(buf, len, &pos, prog->native_sym_names[i], nlen + 1)) goto err;
+                if (prog->native_sym_names[i][nlen] != '\0') {
+                    RT_ERR(stderr, "vm: native symbol entry %u is not null-terminated", i);
+                    goto err;
+                }
             }
             /* resolve each symbol: static registry first, then dlopen fallback */
             for (uint32_t i = 0; i < prog->native_sym_count; i++) {
