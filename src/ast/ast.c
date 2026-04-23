@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "util/util.h"
 
 static bool ensure_child_capacity(AstNode* node, size_t needed) {
   if (node->child_capacity >= needed) return true;
@@ -159,4 +160,25 @@ static void ast_print_impl(const AstNode* node, InternTable* interns, size_t dep
 
 void ast_print(const AstNode* node, InternTable* interns) {
   ast_print_impl(node, interns, 0);
+}
+
+
+void ast_replace_ident(AstNode* root, InternTable* interns, Str name, AstNode* _new) {
+  if (root->child_count == 0) {
+    return;
+  }
+
+  for (size_t i = 0; i < root->child_count; i++) {
+    AstNode* node = root->children[i];
+
+    if (node->kind == AST_IDENT &&
+        str_eq(interns_lookup(interns, node->op), name)) {
+      
+      ast_free(root->children[i]);
+      root->children[i] = _new;
+      return;
+    }
+
+    ast_replace_ident(node, interns, name, _new);
+  }
 }

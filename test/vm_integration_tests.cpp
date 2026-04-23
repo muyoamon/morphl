@@ -1137,6 +1137,52 @@ static void test_e2e_recursive_new_three_nodes() {
     printf("PASS test_e2e_recursive_new_three_nodes\n");
 }
 
+static void test_e2e_inline_func_expression_body() {
+    int rc = compile_and_run(
+        "$alias add_one $inline $func ($decl n 0) $add n 1;\n"
+        "$exit $call add_one 5;\n"
+    );
+    assert(rc == 6);
+    printf("PASS test_e2e_inline_func_expression_body\n");
+}
+
+static void test_e2e_inline_func_multiple_uses() {
+    int rc = compile_and_run(
+        "$alias twice $inline $func ($decl n 0) $add n n;\n"
+        "$decl a $call twice 4;\n"
+        "$decl b $call twice 7;\n"
+        "$exit $add a b;\n"
+    );
+    assert(rc == 22);
+    printf("PASS test_e2e_inline_func_multiple_uses\n");
+}
+
+static void test_e2e_inline_func_block_body_ret() {
+    int rc = compile_and_run(
+        "$alias choose $inline $func ($decl x 0) {\n"
+        "    $if $gt x 4 {\n"
+        "        $ret $add x 10;\n"
+        "    } {\n"
+        "        $ret 0;\n"
+        "    };\n"
+        "};\n"
+        "$exit $call choose 7;\n"
+    );
+    assert(rc == 17);
+    printf("PASS test_e2e_inline_func_block_body_ret\n");
+}
+
+static void test_e2e_inline_func_block_body_no_ret() {
+    int rc = compile_and_run(
+        "$alias zeroed $inline $func () {\n"
+        "    $decl x 9;\n"
+        "};\n"
+        "$exit $call zeroed ();\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_inline_func_block_body_no_ret\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -1217,6 +1263,10 @@ int main(void) {
     test_e2e_recursive_new_head_val();
     test_e2e_recursive_new_two_nodes();
     test_e2e_recursive_new_three_nodes();
+    test_e2e_inline_func_expression_body();
+    test_e2e_inline_func_multiple_uses();
+    test_e2e_inline_func_block_body_ret();
+    test_e2e_inline_func_block_body_no_ret();
     printf("All integration tests passed.\n");
     return 0;
 }

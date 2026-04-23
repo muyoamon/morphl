@@ -59,5 +59,8 @@ void ast_free(AstNode* node);
 void ast_print(const AstNode* node, InternTable* interns);
 
 
+// helper
+
+void ast_replace_ident(AstNode* root, InternTable* interns, Str name, AstNode* _new);
 
 #endif // MORPHL_AST_AST_H_
