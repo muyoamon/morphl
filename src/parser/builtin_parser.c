@@ -140,6 +140,9 @@ static bool parse_builtin_expr(const struct token* tokens,
       return false;
     }
     node->op = op_sym;
+    node->filename = tok->filename;
+    node->row = tok->row;
+    node->col = tok->col;
     node->children = children;
     node->child_count = child_count;
     *out_node = node;
@@ -183,7 +186,12 @@ static bool parse_builtin_expr(const struct token* tokens,
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children); return false;
     }
-    node->op = group_sym; node->children = children; node->child_count = child_count;
+    node->op = group_sym;
+    node->filename = tok->filename;
+    node->row = tok->row;
+    node->col = tok->col;
+    node->children = children;
+    node->child_count = child_count;
     *out_node = node; return true;
   }
 
@@ -224,7 +232,12 @@ static bool parse_builtin_expr(const struct token* tokens,
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children); return false;
     }
-    node->op = block_sym; node->children = children; node->child_count = child_count;
+    node->op = block_sym;
+    node->filename = tok->filename;
+    node->row = tok->row;
+    node->col = tok->col;
+    node->children = children;
+    node->child_count = child_count;
     *out_node = node; return true;
   }
 
@@ -246,6 +259,9 @@ static bool parse_builtin_expr(const struct token* tokens,
   
   if (kind == AST_LITERAL || kind == AST_IDENT) {
     node->value = tok->lexeme;
+    node->filename = tok->filename;
+    node->row = tok->row;
+    node->col = tok->col;
     if (kind == AST_LITERAL) {
       node->op = tok->kind;
     }
@@ -340,6 +356,11 @@ bool builtin_parse_ast(const struct token* tokens,
       for (size_t i = 0; i < child_count; ++i) ast_free(children[i]);
       free(children);
       return false;
+    }
+    if (child_count > 0) {
+      root->filename = children[0]->filename;
+      root->row = children[0]->row;
+      root->col = children[0]->col;
     }
     root->children = children;
     root->child_count = child_count;

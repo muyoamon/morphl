@@ -138,7 +138,8 @@ bool scoped_parser_replace_grammar(ScopedParserContext* ctx,
   
   if (!grammar_load_file(new_grammar, resolved_path.ptr, ctx->interns, ctx->arena)) {
     free(new_grammar);
-    MorphlError err = MORPHL_WARN(MORPHL_E_PARSE,
+    MorphlSpan span = morphl_span_from_loc(ctx->filename, 0, 0);
+    MorphlError err = MORPHL_ERR_SPAN(MORPHL_E_PARSE, MORPHL_SEV_WARN, span,
         "failed to load grammar from '%s', keeping current grammar", resolved_path.ptr);
     morphl_error_emit(NULL, &err);
     return false;
@@ -161,8 +162,9 @@ bool scoped_parser_replace_grammar(ScopedParserContext* ctx,
       return false;
     }
   }
-  MorphlError err = MORPHL_NOTE(MORPHL_E_PARSE, 
-                                "loaded grammar from '%s", resolved_path.ptr);
+  MorphlSpan span = morphl_span_from_loc(ctx->filename, 0, 0);
+  MorphlError err = MORPHL_ERR_SPAN(MORPHL_E_PARSE, MORPHL_SEV_NOTE, span,
+                                    "loaded grammar from '%s'", resolved_path.ptr);
   morphl_error_emit(NULL, &err);
   
   return true;
@@ -576,10 +578,13 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
     morphl_error_emit(NULL, &err);
     return false;
   }
+  root->filename = ctx->filename;
 
   if (child_count == 1 && children[0]->kind == AST_GROUP) {
     AstNode* group = children[0];
-    root->filename = group->filename;
+    if (group->filename) root->filename = group->filename;
+    root->row = group->row;
+    root->col = group->col;
     root->children = group->children;
     root->child_count = group->child_count;
     group->children = NULL;
@@ -587,6 +592,11 @@ bool scoped_parse_ast(ScopedParserContext* ctx,
     ast_free(group);
     free(children);
   } else {
+    if (child_count > 0 && children[0]->filename) {
+      root->filename = children[0]->filename;
+      root->row = children[0]->row;
+      root->col = children[0]->col;
+    }
     root->children = children;
     root->child_count = child_count;
   }

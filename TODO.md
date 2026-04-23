@@ -20,10 +20,11 @@
 
 ## Good to have features (Medium Priority, Not in Spec yet)
 
-[] - Unify C ABI, rather than use C type for external library, use morphl ABI type system, e.g., morphl_i64, morphl_str
+[] - Unify ABI: rather than use C type for external library, use morphl ABI type system, e.g., morphl_i64, morphl_str
 
-[] - Make Error code specific. Currently, only error code has mode: [MXXX] the last three digits is unused.
+[] - Make error code specific. Currently, only error code has mode: [MXXX] the last three digits is unused.
 
+[] - `$comment` and/or `//` treat the following tokens as comments (drop node) until new line.
 
 ## Out of Spec Features (Low Priority, Not in order):
 

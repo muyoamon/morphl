@@ -9,6 +9,8 @@
 
 extern "C" {
 #include "parser/parser.h"
+#include "parser/operators.h"
+#include "parser/scoped_parser.h"
 #include "lexer/lexer.h"
 #include "util/util.h"
 #include "ast/ast.h"
@@ -212,11 +214,48 @@ end
   std::remove(grammar_path.c_str());
 }
 
+static void test_scoped_builtin_ast_locations() {
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+  assert(operator_registry_init(interns));
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  const char* source_path = "unit_test.mpl";
+  const char* source = "$add 1 2;";
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  assert(lexer_tokenize(source_path, str_from(source, strlen(source)), interns, &tokens, &token_count));
+
+  ScopedParserContext ctx;
+  assert(scoped_parser_init(&ctx, interns, &arena, source_path));
+
+  AstNode* root = NULL;
+  assert(scoped_parse_ast(&ctx, tokens, token_count, &root));
+  assert(root != NULL);
+  assert(root->kind == AST_FILE);
+  assert(root->filename != NULL);
+  assert(std::strcmp(root->filename, source_path) == 0);
+  assert(root->child_count == 1);
+  assert(root->children[0]->filename != NULL);
+  assert(std::strcmp(root->children[0]->filename, source_path) == 0);
+  assert(root->children[0]->row == 1);
+  assert(root->children[0]->col == 1);
+
+  ast_free(root);
+  scoped_parser_free(&ctx);
+  free(tokens);
+  arena_free(&arena);
+  interns_free(interns);
+}
+
 int main() {
   test_grammar_loading();
   test_parser_accept_reject();
   test_parser_ast_build();
   test_float_literal_token_kind();
+  test_scoped_builtin_ast_locations();
   std::puts("All parser tests passed.");
   return 0;
 }
