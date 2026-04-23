@@ -923,6 +923,32 @@ static void test_storage_shape_and_extern_metadata() {
   printf("\u2713 test_storage_shape_and_extern_metadata passed\n");
 }
 
+static void test_inline_decl_storage_metadata() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  AstNode* inline_decl = ast_new(AST_DECL);
+  assert(inline_decl != NULL);
+  ast_append_child(inline_decl, make_ident(interns, "x"));
+  ast_append_child(inline_decl,
+                   make_builtin(interns, "$inline", {make_literal("10")}));
+  MorphlType* inline_type = morphl_infer_type_of_ast(ctx, inline_decl);
+  assert(inline_type != NULL && inline_type->kind == MORPHL_TYPE_REF);
+  assert(inline_type->data.ref.is_inline == true);
+  assert(inline_decl->contributes_to_shape == true);
+  assert(inline_decl->contributes_to_layout == true);
+  assert(inline_decl->storage_residence == MORPHL_STORAGE_INSTANCE);
+
+  ast_free(inline_decl);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_inline_decl_storage_metadata passed\n");
+}
+
 static void test_file_and_global_statics_intrinsics() {
   Arena arena = create_test_arena();
   InternTable* interns = create_test_interns();
@@ -1499,6 +1525,7 @@ int main() {
   test_import_block_fields();
   test_alias_substitution_parse();
   test_storage_shape_and_extern_metadata();
+  test_inline_decl_storage_metadata();
   test_file_and_global_statics_intrinsics();
   test_pp_call_group_param();
   test_pp_while();

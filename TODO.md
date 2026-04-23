@@ -2,23 +2,25 @@
 
 ## In Spec Features (High Priority):
 
-[] - Make `$inline` a true non-storage storage descriptor. `$member $inline { ... } <fieldname>` should collapse to value of `<fieldname>` allowing `$alias <name> $inline $import "<mod-path>"` to be used as import-as-alias e.g. `$alias type $inline $import "stdlib/typing"; $decl x $mut $member type i8; $decl y $const $member type f64;` The inlined block should not have runtime storage, therefore its inside logic should not be evaluate. If the field inlining depends on other field or prior logic inside the block, throw a warning (bad usage) and try to resolve its dependency statically.
+[x] - Make `$inline` a true non-storage storage descriptor. VM-side `$member $inline { ... } <fieldname>` collapse works for declaration-only blocks/imports, including `$alias <name> $inline $import "<mod-path>"`, and it can resolve dependencies on earlier declarations statically. Runtime-dependent inline logic emits a warning before the hard failure. Direct `$decl x $inline expr` remains ordinary storage as specified.
 
-[] - Allowing `$static` specifier on function type. Just a function table index inside the static storage. Mutability depend on the operand mutability descriptor e.g., `$decl static_func $static $mut $func () {...};`
+[x] - Allowing `$static` specifier on function type. Just a function table index inside the static storage. Mutability depend on the operand mutability descriptor e.g., `$decl static_func $static $mut $func () {...};`
 
-[] - Implement `$alias` end-to-end as the SPEC defines it: compile-time expression substitution with no runtime storage, no shape contribution, and support for `$import` aliases.
+[x] - Implement `$alias` as parser-level compile-time expression substitution, including `$import` aliases. Storage/layout/no-runtime-binding behavior follows from substitution; remaining non-storage semantics belong to `$inline`.
 
-[] - Finish the remaining `$$` directives and metadata named in `SPEC.md`. `$$name`, `$$size`, `$$type`, `$$tag`, and `$$data` exist, but `$$op`, `$$path`, `$$delim`, `$$version`, `$$line`, and `$$col` are still missing, and the spec also reserves `$$syntax`.
+[x] - Finish the remaining `$$` directives and metadata named in `SPEC.md`. `$$name`, `$$size`, `$$type`, `$$tag`, and `$$data` exist, but `$$op`, `$$path`, `$$delim`, `$$version`, `$$line`, and `$$col` are still missing, and the spec also reserves `$$syntax`.
 
-[] - Bring control-flow typing in line with the SPEC. Current typing still treats `$if`/`$while` conditions as `bool`-only in places, returns `{}` for `$while`, allows zero-arg `$exit`, and returns `void` instead of `$never` for `$ret`.
+[x] - Bring control-flow typing in line with the SPEC. Current typing still treats `$if`/`$while` conditions as `bool`-only in places, returns `{}` for `$while`, allows zero-arg `$exit`, and returns `void` instead of `$never` for `$ret`.
 
-[] - Make `$new` fully match the SPEC's "any type expression" contract. Type inference accepts arbitrary base expressions, but VM emission still requires an identifier-backed template and does not cover the full generic surface described in the spec.
+[x] - Make `$new` fully match the SPEC's "any type expression" contract. Declaration-context VM emission supports non-identifier base expressions via the inferred target type, including inline block literals and imported/member-derived block types, with 2-arg initializers. Value-context aggregate `$new` works when consumed through `$member`/`$ref $member`, including imported/member-derived type expressions, arrays, and nested `$ref` initializers.
 
-[] - Enforce the full `main` entry-point contract from the SPEC. The VM checks `main` return type, but the spec also requires no explicit arguments.
+[x] - Enforce the full `main` entry-point contract from the SPEC. The VM checks `main` return type, but the spec also requires no explicit arguments.
 
-[] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Unlike the inlined counterpart the immediate block here should have its inside logic evaluated following the spec of block-as-value is capturing last state of the block.
+[x] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Immediate `$member` block operands hoist and evaluate declaration/mutation logic so block-as-value captures final field state, and simple non-captured local declarations can be substituted into later captured field logic. `$set $member <immediate-aggregate> field ...` and `$ref $member <immediate-aggregate> field` materialize the aggregate before use.
 
-## Out of Spec Features (Low Priority):
+## Out of Spec Features (Low Priority, Not in order):
+
+[] - `mpldb` morphl debugger, a tool to debug the program.
 
 [] - `$comptime` construct; Evaluate expression at compile-time.
 

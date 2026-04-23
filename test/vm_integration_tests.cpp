@@ -835,6 +835,84 @@ static void test_e2e_file_static_function() {
     printf("PASS test_e2e_file_static_function\n");
 }
 
+static void test_e2e_member_immediate_block_operand() {
+    int rc = compile_and_run(
+        "$exit $member {\n"
+        "    $decl value 9;\n"
+        "} value;\n"
+    );
+    assert(rc == 9);
+    printf("PASS test_e2e_member_immediate_block_operand\n");
+}
+
+static void test_e2e_set_from_member_immediate_block_operand() {
+    int rc = compile_and_run(
+        "$decl y $mut 0;\n"
+        "$set y $member {\n"
+        "    $decl value 9;\n"
+        "} value;\n"
+        "$exit y;\n"
+    );
+    assert(rc == 9);
+    printf("PASS test_e2e_set_from_member_immediate_block_operand\n");
+}
+
+static void test_e2e_member_immediate_block_operand_mutation() {
+    int rc = compile_and_run(
+        "$exit $member {\n"
+        "    $decl value $mut 0;\n"
+        "    $set value 12;\n"
+        "} value;\n"
+    );
+    assert(rc == 12);
+    printf("PASS test_e2e_member_immediate_block_operand_mutation\n");
+}
+
+static void test_e2e_block_value_captures_final_state() {
+    int rc = compile_and_run(
+        "$decl p {\n"
+        "    $decl x $mut 1;\n"
+        "    $set x 5;\n"
+        "};\n"
+        "$exit $member p x;\n"
+    );
+    assert(rc == 5);
+    printf("PASS test_e2e_block_value_captures_final_state\n");
+}
+
+static void test_e2e_ref_member_immediate_block_operand() {
+    int rc = compile_and_run(
+        "$decl r $ref $member {\n"
+        "    $decl value $mut 3;\n"
+        "    $set value 21;\n"
+        "} value;\n"
+        "$exit r;\n"
+    );
+    assert(rc == 21);
+    printf("PASS test_e2e_ref_member_immediate_block_operand\n");
+}
+
+static void test_e2e_set_member_immediate_block_lhs() {
+    int rc = compile_and_run(
+        "$set $member {\n"
+        "    $decl value $mut 3;\n"
+        "} value 8;\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_set_member_immediate_block_lhs\n");
+}
+
+static void test_e2e_set_member_new_value_context_lhs() {
+    int rc = compile_and_run(
+        "$decl Point { $decl x $mut 0; };\n"
+        "$set $member $new Point (3) x 8;\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_set_member_new_value_context_lhs\n");
+}
+
 static void test_e2e_metadata_syntax_reserved() {
     int rc = compile_and_run(
         "$decl x $member 7 $$syntax;\n"
@@ -1143,6 +1221,15 @@ static void test_e2e_new_scalar() {
     printf("PASS test_e2e_new_scalar\n");
 }
 
+static void test_e2e_new_array_group_initializer() {
+    int rc = compile_and_run(
+        "$decl arr $new ($array 0 3) (4, 5, 6);\n"
+        "$exit $index arr 2;\n"
+    );
+    assert(rc == 6);
+    printf("PASS test_e2e_new_array_group_initializer\n");
+}
+
 /* Phase 6: $new block with positional group initializer — field override */
 static void test_e2e_new_union_tag() {
     const char* src =
@@ -1152,6 +1239,99 @@ static void test_e2e_new_union_tag() {
     int rc = compile_and_run(src);
     assert(rc == 7);
     printf("PASS test_e2e_new_union_tag\n");
+}
+
+static void test_e2e_new_inline_block_type_expr() {
+    int rc = compile_and_run(
+        "$decl p $new $inline {\n"
+        "    $decl x 7;\n"
+        "};\n"
+        "$exit $member p x;\n"
+    );
+    assert(rc == 7);
+    printf("PASS test_e2e_new_inline_block_type_expr\n");
+}
+
+static void test_e2e_new_import_member_type_expr_default() {
+    std::string mod_path = write_temp_source(
+        "$decl Point { $decl x 0; };\n"
+    );
+
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$decl p $new $member mod Point;\n"
+        "$exit $member p x;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_new_import_member_type_expr_default\n");
+}
+
+static void test_e2e_new_import_member_type_expr_init() {
+    std::string mod_path = write_temp_source(
+        "$decl Point { $decl x 0; };\n"
+    );
+
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$decl p $new $member mod Point (11);\n"
+        "$exit $member p x;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 11);
+    printf("PASS test_e2e_new_import_member_type_expr_init\n");
+}
+
+static void test_e2e_new_value_context_member() {
+    int rc = compile_and_run(
+        "$decl Point { $decl x 0; };\n"
+        "$exit $member $new Point (13) x;\n"
+    );
+    assert(rc == 13);
+    printf("PASS test_e2e_new_value_context_member\n");
+}
+
+static void test_e2e_new_value_context_import_member() {
+    std::string mod_path = write_temp_source(
+        "$decl Point { $decl x 0; };\n"
+    );
+
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$exit $member $new $member mod Point (17) x;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 17);
+    printf("PASS test_e2e_new_value_context_import_member\n");
+}
+
+static void test_e2e_ref_member_new_value_context() {
+    int rc = compile_and_run(
+        "$decl Point { $decl x $mut 0; };\n"
+        "$decl r $ref $member $new Point (23) x;\n"
+        "$exit r;\n"
+    );
+    assert(rc == 23);
+    printf("PASS test_e2e_ref_member_new_value_context\n");
+}
+
+static void test_e2e_nested_new_import_member_ref_field() {
+    std::string mod_path = write_temp_source(
+        "$decl Node { $decl val $mut 0; $decl next $mut $ref $this; };\n"
+    );
+
+    std::string main_src =
+        std::string("$decl mod $import \"") + mod_path + "\";\n"
+        "$decl node $new $member mod Node (5, $new $member mod Node (9, $null));\n"
+        "$exit $member node val;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 5);
+    printf("PASS test_e2e_nested_new_import_member_ref_field\n");
 }
 
 // ── Compiler-injected intrinsic properties ────────────────────────────────────
@@ -1232,6 +1412,53 @@ static void test_e2e_recursive_new_three_nodes() {
     );
     assert(rc == 5);
     printf("PASS test_e2e_recursive_new_three_nodes\n");
+}
+
+static void test_e2e_inline_member_block_field() {
+    int rc = compile_and_run(
+        "$exit $member $inline {\n"
+        "    $decl value 9;\n"
+        "} value;\n"
+    );
+    assert(rc == 9);
+    printf("PASS test_e2e_inline_member_block_field\n");
+}
+
+static void test_e2e_inline_member_block_dependency() {
+    int rc = compile_and_run(
+        "$exit $member $inline {\n"
+        "    $decl base 4;\n"
+        "    $decl doubled $add base base;\n"
+        "} doubled;\n"
+    );
+    assert(rc == 8);
+    printf("PASS test_e2e_inline_member_block_dependency\n");
+}
+
+static void test_e2e_inline_member_import_alias() {
+    std::string mod_path = write_temp_source(
+        "$decl answer 42;\n"
+    );
+
+    std::string main_src =
+        std::string("$alias mod $inline $import \"") + mod_path + "\";\n"
+        "$exit $member mod answer;\n";
+
+    int rc = compile_and_run(main_src.c_str());
+    std::remove(mod_path.c_str());
+    assert(rc == 42);
+    printf("PASS test_e2e_inline_member_import_alias\n");
+}
+
+static void test_e2e_inline_member_runtime_dependency_rejected() {
+    int rc = compile_and_run(
+        "$exit $member $inline {\n"
+        "    $decl value $mut 1;\n"
+        "    $set value 2;\n"
+        "} value;\n"
+    );
+    assert(rc == -1);
+    printf("PASS test_e2e_inline_member_runtime_dependency_rejected\n");
 }
 
 static void test_e2e_inline_func_expression_body() {
@@ -1337,6 +1564,13 @@ int main(void) {
     test_e2e_global_source_statics_access();
     test_e2e_module_statics_access();
     test_e2e_file_static_function();
+    test_e2e_member_immediate_block_operand();
+    test_e2e_set_from_member_immediate_block_operand();
+    test_e2e_member_immediate_block_operand_mutation();
+    test_e2e_block_value_captures_final_state();
+    test_e2e_ref_member_immediate_block_operand();
+    test_e2e_set_member_immediate_block_lhs();
+    test_e2e_set_member_new_value_context_lhs();
     test_e2e_extern_print();
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();
@@ -1360,7 +1594,15 @@ int main(void) {
     test_e2e_set_index();
     test_e2e_runtime_index();
     test_e2e_new_scalar();
+    test_e2e_new_array_group_initializer();
     test_e2e_new_union_tag();
+    test_e2e_new_inline_block_type_expr();
+    test_e2e_new_import_member_type_expr_default();
+    test_e2e_new_import_member_type_expr_init();
+    test_e2e_new_value_context_member();
+    test_e2e_new_value_context_import_member();
+    test_e2e_ref_member_new_value_context();
+    test_e2e_nested_new_import_member_ref_field();
     test_e2e_intrinsic_size_int();
     test_e2e_intrinsic_size_block();
     test_e2e_intrinsic_name_ident();
@@ -1369,6 +1611,10 @@ int main(void) {
     test_e2e_recursive_new_head_val();
     test_e2e_recursive_new_two_nodes();
     test_e2e_recursive_new_three_nodes();
+    test_e2e_inline_member_block_field();
+    test_e2e_inline_member_block_dependency();
+    test_e2e_inline_member_import_alias();
+    test_e2e_inline_member_runtime_dependency_rejected();
     test_e2e_inline_func_expression_body();
     test_e2e_inline_func_multiple_uses();
     test_e2e_inline_func_block_body_ret();

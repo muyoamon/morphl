@@ -1125,6 +1125,211 @@ static bool inline_body_contains_builtin(const VmEmitter* e, const AstNode* node
   return false;
 }
 
+static bool inline_runtime_builtin_forbidden(const VmEmitter* e,
+                                             const AstNode* node) {
+  static const char* const forbidden[] = {
+      "$set", "$while", "$ret", "$exit", "$break", "$continue", "$call",
+      "$parent", "$this"};
+  for (size_t i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); ++i) {
+    if (builtin_is_name(e, node, forbidden[i])) return true;
+  }
+  return false;
+}
+
+static bool inline_container_has_decl_named(const VmEmitter* e,
+                                            const AstNode* container,
+                                            Str name) {
+  if (!container || (container->kind != AST_FILE && container->kind != AST_BLOCK))
+    return false;
+  for (size_t i = 0; i < container->child_count; ++i) {
+    AstNode* child = container->children[i];
+    if (!child ||
+        (child->kind != AST_DECL && child->kind != AST_PROP) ||
+        child->child_count < 1 || !child->children[0] ||
+        child->children[0]->kind != AST_IDENT)
+      continue;
+    Str declared = child->children[0]->value;
+    if (!declared.ptr && e && e->interns && child->children[0]->op) {
+      declared = interns_lookup(e->interns, child->children[0]->op);
+    }
+    if (declared.ptr && str_eq(declared, name)) return true;
+  }
+  return false;
+}
+
+static bool inline_expand_compile_time_expr(VmEmitter* e, AstNode* node,
+                                            const AstNode* container,
+                                            const InlineParamBinding* bindings,
+                                            size_t binding_count,
+                                            const AstNode* err_node,
+                                            size_t depth) {
+  if (!node) return true;
+  if (depth > 128) {
+    VM_ERR(err_node, "$member: inline expression expansion exceeded recursion limit");
+    return false;
+  }
+
+  if (node->kind == AST_IDENT) {
+    Str ident = node->value;
+    if (!ident.ptr && e && e->interns && node->op) {
+      ident = interns_lookup(e->interns, node->op);
+    }
+    if (!ident.ptr) return true;
+    AstNode* binding_value = inline_binding_value(ident, bindings, binding_count);
+    if (!binding_value) {
+      if (inline_container_has_decl_named(e, container, ident)) {
+        VM_ERR(err_node,
+               "$member: inline field depends on declaration '%.*s' that is "
+               "not statically available at this use site",
+               (int)ident.len, ident.ptr);
+        return false;
+      }
+      return true;
+    }
+    AstNode* replacement = ast_clone(binding_value);
+    if (!replacement) return false;
+    AstNode** old_children = node->children;
+    *node = *replacement;
+    free(replacement);
+    free(old_children);
+    return inline_expand_compile_time_expr(
+        e, node, container, bindings, binding_count, err_node, depth + 1);
+  }
+
+  if (inline_runtime_builtin_forbidden(e, node)) {
+    Str opname = node->op && e && e->interns ? interns_lookup(e->interns, node->op)
+                                             : node->value;
+    VM_WARN(err_node,
+            "$member: inline field uses runtime-only builtin '%.*s'; "
+            "attempting static collapse failed",
+            (int)opname.len, opname.ptr);
+    VM_ERR(err_node,
+           "$member: inline field depends on runtime-only builtin '%.*s'",
+           (int)opname.len, opname.ptr);
+    return false;
+  }
+
+  if (node->kind == AST_FUNC) return true;
+
+  if (node->kind == AST_FILE || node->kind == AST_BLOCK) {
+    for (size_t i = 0; i < node->child_count; ++i) {
+      AstNode* child = node->children[i];
+      if (!child) continue;
+      if (child->kind != AST_DECL && child->kind != AST_PROP) {
+        VM_WARN(err_node,
+                "$member: inline block contains runtime logic; attempting "
+                "static collapse failed");
+        VM_ERR(err_node,
+               "$member: inline block imports/blocks must be declaration-only");
+        return false;
+      }
+      if (child->child_count > 1 &&
+          !inline_expand_compile_time_expr(e, child->children[1], container,
+                                           bindings, binding_count, err_node,
+                                           depth + 1)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if ((node->kind == AST_DECL || node->kind == AST_PROP) && node->child_count > 1) {
+    return inline_expand_compile_time_expr(e, node->children[1], container,
+                                           bindings, binding_count, err_node,
+                                           depth + 1);
+  }
+
+  for (size_t i = 0; i < node->child_count; ++i) {
+    if (!inline_expand_compile_time_expr(e, node->children[i], container,
+                                         bindings, binding_count, err_node,
+                                         depth + 1)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static AstNode* inline_member_container(const VmEmitter* e, AstNode* target) {
+  if (!builtin_is_name(e, target, "$inline") || target->child_count < 1 ||
+      !target->children[0]) {
+    return NULL;
+  }
+  AstNode* inner = target->children[0];
+  if (inner->kind == AST_BLOCK || inner->kind == AST_FILE) return inner;
+  if (builtin_is_name(e, inner, "$import") && inner->child_count > 0) {
+    AstNode* module_file = inner->children[0];
+    if (module_file &&
+        (module_file->kind == AST_FILE || module_file->kind == AST_BLOCK)) {
+      return module_file;
+    }
+  }
+  return NULL;
+}
+
+static bool emit_inline_member_field(VmEmitter* e, AstNode* target,
+                                     Str field_name, const AstNode* err_node) {
+  AstNode* container = inline_member_container(e, target);
+  if (!container) {
+    VM_ERR(err_node,
+           "$member: $inline target must wrap a declaration block or import");
+    return false;
+  }
+
+  InlineParamBinding bindings[128];
+  size_t binding_count = 0;
+  AstNode* selected_value = NULL;
+  for (size_t i = 0; i < container->child_count; ++i) {
+    AstNode* child = container->children[i];
+    if (!child) continue;
+    if (child->kind != AST_DECL && child->kind != AST_PROP) {
+      VM_WARN(err_node,
+              "$member: inline block contains runtime logic; attempting "
+              "static collapse failed");
+      VM_ERR(err_node,
+             "$member: inline block imports/blocks must be declaration-only");
+      return false;
+    }
+  }
+
+  for (size_t i = 0; i < container->child_count; ++i) {
+    AstNode* child = container->children[i];
+    if (!child) continue;
+    if (child->child_count < 2 || !child->children[0] ||
+        child->children[0]->kind != AST_IDENT) {
+      continue;
+    }
+    Str declared = child->children[0]->value;
+    if (!declared.ptr && e && e->interns && child->children[0]->op) {
+      declared = interns_lookup(e->interns, child->children[0]->op);
+    }
+    if (!declared.ptr) continue;
+    if (str_eq(declared, field_name)) {
+      selected_value = child->children[1];
+      break;
+    }
+    if (binding_count >= sizeof(bindings) / sizeof(bindings[0])) {
+      VM_ERR(err_node, "$member: inline block exceeds compile-time binding limit");
+      return false;
+    }
+    bindings[binding_count++] =
+        (InlineParamBinding){.name = declared, .value = child->children[1]};
+  }
+
+  if (!selected_value) {
+    VM_ERR(err_node, "$member: field '%.*s' not found", (int)field_name.len,
+           field_name.ptr);
+    return false;
+  }
+
+  AstNode* resolved = ast_clone(selected_value);
+  if (!resolved) return false;
+  bool ok = inline_expand_compile_time_expr(
+      e, resolved, container, bindings, binding_count, err_node, 0);
+  if (ok) ok = emit_node(e, resolved);
+  ast_free(resolved);
+  return ok;
+}
+
 static bool emit_inline_node(VmEmitter* e, AstNode* node,
                              const InlineReturnCtx* ret_ctx);
 
@@ -1343,6 +1548,141 @@ static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
         unwrap_ref(block_type->data.block.layout_field_types[i]));
   }
   return PTRDIFF_MAX;
+}
+
+static bool emit_block_decl_initializers_into_slot(VmEmitter* e,
+                                                   const MorphlType* block_type,
+                                                   struct AstNode* block,
+                                                   ptrdiff_t base_off) {
+  if (!e || !block_type || block_type->kind != MORPHL_TYPE_BLOCK || !block)
+    return true;
+  for (size_t ci = 0; ci < block->child_count; ci++) {
+    struct AstNode* child = block->children[ci];
+    if (!child || child->kind != AST_DECL || child->child_count < 2)
+      continue;
+    struct AstNode* fn = child->children[0];
+    struct AstNode* fv = child->children[1];
+    if (!fn || !fv) continue;
+    Str field_name = fn->value;
+    if (!field_name.ptr && e->interns && fn->op)
+      field_name = interns_lookup(e->interns, fn->op);
+    const MorphlType* field_type = NULL;
+    ptrdiff_t field_off =
+        block_layout_field_offset(block_type, e->interns, field_name, &field_type);
+    if (field_off == PTRDIFF_MAX || !field_type) continue;
+    if (!emit_node(e, fv)) return false;
+    uint8_t sop = store_op(unwrap_ref(field_type));
+    if (sop != 0xFF) {
+      if (!emit_op_i32(e, sop, (int32_t)(base_off + field_off))) return false;
+    }
+  }
+  return true;
+}
+
+static bool emit_block_value_into_slot(VmEmitter* e,
+                                       const MorphlType* block_type,
+                                       struct AstNode* block,
+                                       Str target_name,
+                                       ptrdiff_t base_off) {
+  if (!e || !block_type || block_type->kind != MORPHL_TYPE_BLOCK || !block)
+    return true;
+
+  size_t alias_mark = e->alias_count;
+  InlineParamBinding local_bindings[128];
+  size_t local_binding_count = 0;
+  for (size_t i = 0; i < block_type->data.block.layout_field_count; ++i) {
+    Str field_name = {NULL, 0};
+    if (e->interns && block_type->data.block.layout_field_names[i]) {
+      field_name =
+          interns_lookup(e->interns, block_type->data.block.layout_field_names[i]);
+    }
+    if (!field_name.ptr) continue;
+    ptrdiff_t field_off =
+        block_layout_field_offset(block_type, e->interns, field_name, NULL);
+    if (field_off == PTRDIFF_MAX) continue;
+    if (!alias_add(e, field_name, target_name, field_off)) {
+      e->alias_count = alias_mark;
+      return false;
+    }
+  }
+
+  bool ok = true;
+  for (size_t ci = 0; ci < block->child_count; ci++) {
+    struct AstNode* child = block->children[ci];
+    if (!child) continue;
+    if (child->kind == AST_PROP) continue;
+    if (child->kind == AST_DECL) {
+      if (child->child_count < 1 || !child->children[0] ||
+          child->children[0]->kind != AST_IDENT) {
+        VM_ERR(child, "block-as-value declaration must bind an identifier");
+        ok = false;
+        break;
+      }
+      Str field_name = child->children[0]->value;
+      if (!field_name.ptr && e->interns && child->children[0]->op)
+        field_name = interns_lookup(e->interns, child->children[0]->op);
+      const MorphlType* field_type = NULL;
+      ptrdiff_t field_off =
+          block_layout_field_offset(block_type, e->interns, field_name, &field_type);
+      if (field_off == PTRDIFF_MAX || !field_type) {
+        if (child->child_count >= 2 && child->children[1]) {
+          if (local_binding_count >=
+              sizeof(local_bindings) / sizeof(local_bindings[0])) {
+            VM_ERR(child, "block-as-value local binding limit exceeded");
+            ok = false;
+            break;
+          }
+          local_bindings[local_binding_count++] =
+              (InlineParamBinding){.name = field_name, .value = child->children[1]};
+        }
+        continue;
+      }
+      if (child->child_count >= 2 && child->children[1]) {
+        AstNode* value = ast_clone(child->children[1]);
+        if (!value) {
+          ok = false;
+          break;
+        }
+        Str shadowed[128];
+        ok = inline_substitute_node(e, value, local_bindings,
+                                    local_binding_count, shadowed, 0);
+        if (ok) ok = emit_node(e, value);
+        ast_free(value);
+        if (!ok) break;
+        uint8_t sop = store_op(unwrap_ref(field_type));
+        if (sop != 0xFF &&
+            !emit_op_i32(e, sop, (int32_t)(base_off + field_off))) {
+          ok = false;
+          break;
+        }
+      }
+      continue;
+    }
+    AstNode* stmt = ast_clone(child);
+    if (!stmt) {
+      ok = false;
+      break;
+    }
+    Str shadowed[128];
+    ok = inline_substitute_node(e, stmt, local_bindings, local_binding_count,
+                                shadowed, 0);
+    if (ok) ok = emit_node(e, stmt);
+    ast_free(stmt);
+    if (!ok) break;
+  }
+
+  e->alias_count = alias_mark;
+  return ok;
+}
+
+static struct AstNode* new_base_inline_block_initializer(VmEmitter* e,
+                                                         struct AstNode* base) {
+  if (!base) return NULL;
+  if (base->kind == AST_BLOCK) return base;
+  if (builtin_is_name(e, base, "$inline") && base->child_count > 0) {
+    return new_base_inline_block_initializer(e, base->children[0]);
+  }
+  return NULL;
 }
 
 /* ── frame alignment helper ─────────────────────────────────────────────── */
@@ -1892,28 +2232,38 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * Walk the inline block's $decl children and store each field directly
        * into the target frame slot, bypassing ENTER/LEAVE sub-scope. */
       if (t && t->kind == MORPHL_TYPE_BLOCK && rhs && rhs->kind == AST_BLOCK) {
-        for (size_t ci = 0; ci < rhs->child_count; ci++) {
-          struct AstNode* child = rhs->children[ci];
-          if (!child || child->kind != AST_DECL || child->child_count < 2)
-            continue;
-          struct AstNode* fn = child->children[0];
-          struct AstNode* fv = child->children[1];
-          if (!fn || !fv) continue;
-          Str field_name = fn->value;
-          if (!field_name.ptr && e->interns && fn->op)
-            field_name = interns_lookup(e->interns, fn->op);
-          /* find the field offset within the block type */
-          const MorphlType* field_type = NULL;
-          ptrdiff_t field_off =
-              block_layout_field_offset(t, e->interns, field_name, &field_type);
-          if (field_off == PTRDIFF_MAX || !field_type) continue;
-          if (!emit_node(e, fv)) return false;
-          uint8_t sop = store_op(unwrap_ref(field_type));
-          if (sop != 0xFF) {
-            if (!emit_op_i32(e, sop, (int32_t)(off + field_off))) return false;
+        return emit_block_value_into_slot(e, t, rhs, name, off);
+      }
+
+      /* 1-arg $new in declaration context: the target slot already exists and
+       * is zeroed by ENTER, so non-identifier type expressions can instantiate
+       * by using the inferred declaration type instead of requiring a deferred
+       * named template function. Inline block literals still get their
+       * declaration defaults copied into the target slot. */
+      if (rhs && rhs->kind == AST_BUILTIN && rhs->child_count == 1 &&
+          e->interns && rhs->op) {
+        Str new_op = interns_lookup(e->interns, rhs->op);
+        if (new_op.len == 4 && memcmp(new_op.ptr, "$new", 4) == 0) {
+          if (!t) {
+            VM_ERR(rhs, "$new: expression is not instantiable");
+            return false;
           }
+          if (t->kind == MORPHL_TYPE_BLOCK) {
+            struct AstNode* base_init =
+                new_base_inline_block_initializer(e, rhs->children[0]);
+            if (base_init) {
+              return emit_block_decl_initializers_into_slot(e, t, base_init, off);
+            }
+            return true;
+          }
+          if (t->kind == MORPHL_TYPE_ARRAY || t->kind == MORPHL_TYPE_UNION ||
+              t->kind == MORPHL_TYPE_INT || t->kind == MORPHL_TYPE_FLOAT ||
+              t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_STRING) {
+            return true;
+          }
+          VM_ERR(rhs, "$new: expression is not instantiable");
+          return false;
         }
-        return true;
       }
 
       /* 2-arg $new: `$decl var ($new TypeExpr init)` — universal instantiation.
@@ -1999,6 +2349,28 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)(off + foff2)))
                   return false;
               }
+            }
+            return true;
+          }
+          /* Array type: apply positional group initializer */
+          if (t && t->kind == MORPHL_TYPE_ARRAY) {
+            if (init_node->kind == AST_GROUP) {
+              const MorphlType* elem_t = unwrap_ref(t->data.array.elem_type);
+              size_t elem_sz = type_frame_size(elem_t);
+              for (size_t ai = 0; ai < t->data.array.count &&
+                                  ai < init_node->child_count;
+                   ai++) {
+                struct AstNode* av = init_node->children[ai];
+                if (!av) continue;
+                if (!emit_node(e, av)) return false;
+                uint8_t sop = store_op(elem_t);
+                if (sop != 0xFF &&
+                    !emit_op_i32(e, sop, (int32_t)(off + (ptrdiff_t)(ai * elem_sz))))
+                  return false;
+              }
+            } else {
+              VM_ERR(init_node, "$new array: initializer must be a group");
+              return false;
             }
             return true;
           }
@@ -2791,10 +3163,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         return emit_op(e, VM_OP_RET);
       }
 
-      /* $mut / $const / $static / $ref (qualifier form) — transparent storage
-       * qualifiers */
-      if (OP_IS("$mut") || OP_IS("$const") || OP_IS("$static") ||
-          OP_IS("$ref")) {
+      /* $mut / $const / $inline / $static / $ref (qualifier form) —
+       * transparent storage qualifiers */
+      if (OP_IS("$mut") || OP_IS("$const") || OP_IS("$inline") ||
+          OP_IS("$static") || OP_IS("$ref")) {
         return node->child_count > 0 ? emit_node(e, node->children[0]) : true;
       }
 
@@ -2910,6 +3282,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           if (resolve_static_access_chain(e, node, &access)) {
             return emit_static_access_load(e, node, &access);
           }
+        }
+
+        if (builtin_is_name(e, target, "$inline")) {
+          return emit_inline_member_field(e, target, field_name, field_nd);
         }
 
         /* get target type (block or union) */
@@ -3135,7 +3511,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         Str block_name =
             block_ref->kind == AST_IDENT ? block_ref->value : (Str){NULL, 0};
         if (!block_name.ptr) {
-          VM_ERR(block_ref, "$new requires an identifier");
+          VM_ERR(block_ref,
+                 "$new: expression is not instantiable in value context");
           return false;
         }
         uint32_t fidx = UINT32_MAX;
@@ -3146,8 +3523,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           }
         }
         if (fidx == UINT32_MAX) {
-          VM_ERR(block_ref, "$new: unknown block '%.*s'", (int)block_name.len,
-                 block_name.ptr);
+          VM_ERR(block_ref, "$new: expression is not an instantiable type '%.*s'",
+                 (int)block_name.len, block_name.ptr);
           return false;
         }
         /* determine block size from the function's frame */
@@ -3880,6 +4257,168 @@ static void flatten_block(FlattenCtx* ctx, InternTable* interns,
                           struct AstNode* block);
 
 /*
+ * Hoist immediate aggregate operands used as storage-expression targets in
+ * `$member` into sibling declarations so VM emission can treat them like any
+ * other block value: evaluate once, capture, then access by identifier.
+ */
+static size_t hoist_immediate_member_targets(FlattenCtx* ctx,
+                                             InternTable* interns,
+                                             struct AstNode* block,
+                                             size_t insert_pos,
+                                             struct AstNode* node) {
+  if (!ctx || !interns || !block || !node) return 0;
+  if (node->kind == AST_FUNC || node->kind == AST_FILE) return 0;
+
+  size_t inserted = 0;
+  for (size_t i = 0; i < node->child_count; ++i) {
+    struct AstNode* child = node->children[i];
+    if (!child || child->kind == AST_BLOCK || child->kind == AST_FILE) continue;
+    inserted += hoist_immediate_member_targets(ctx, interns, block,
+                                               insert_pos + inserted, child);
+  }
+
+  if (node->kind != AST_BUILTIN || !node->op || node->child_count < 2 ||
+      !node->children[0]) {
+    return inserted;
+  }
+  Str op = interns_lookup(interns, node->op);
+  if (op.len != 7 || memcmp(op.ptr, "$member", 7) != 0) return inserted;
+
+  struct AstNode* target = node->children[0];
+  bool target_is_new = false;
+  if (target->kind == AST_BUILTIN && target->op) {
+    Str target_op = interns_lookup(interns, target->op);
+    target_is_new =
+        target_op.len == 4 && memcmp(target_op.ptr, "$new", 4) == 0;
+  }
+  if (target->kind != AST_BLOCK && !target_is_new) return inserted;
+
+  const MorphlType* target_t = target->type ? unwrap_ref(target->type) : NULL;
+
+  char name_buf[48];
+  int name_len = snprintf(name_buf, sizeof(name_buf), "$anon$%zu", ctx->count++);
+  if (name_len <= 0) return inserted;
+  Sym anon_sym = interns_intern(interns, str_from(name_buf, (size_t)name_len));
+  Str anon_name = interns_lookup(interns, anon_sym);
+
+  struct AstNode* name_node =
+      ast_make_leaf(AST_IDENT, anon_name, target->filename, target->row, target->col);
+  if (!name_node) return inserted;
+  name_node->type = (MorphlType*)target_t;
+
+  struct AstNode* sibling = ast_new(AST_DECL);
+  if (!sibling) {
+    ast_free(name_node);
+    return inserted;
+  }
+  sibling->type = (MorphlType*)target_t;
+  sibling->filename = target->filename;
+  sibling->row = target->row;
+  sibling->col = target->col;
+  sibling->contributes_to_shape = true;
+  sibling->contributes_to_layout = true;
+  sibling->storage_is_mutable = false;
+  sibling->storage_residence = MORPHL_STORAGE_INSTANCE;
+  if (!ast_append_child(sibling, name_node) || !ast_append_child(sibling, target)) {
+    sibling->child_count = 1;
+    ast_free(sibling);
+    return inserted;
+  }
+  if (!block_insert_child(block, insert_pos + inserted, sibling)) {
+    sibling->child_count = 1;
+    ast_free(sibling);
+    return inserted;
+  }
+  inserted++;
+
+  struct AstNode* ident =
+      ast_make_leaf(AST_IDENT, anon_name, target->filename, target->row, target->col);
+  if (!ident) return inserted;
+  ident->type = (MorphlType*)target_t;
+  node->children[0] = ident;
+  return inserted;
+}
+
+static size_t hoist_immediate_ref_member_targets(FlattenCtx* ctx,
+                                                 InternTable* interns,
+                                                 struct AstNode* block,
+                                                 size_t insert_pos,
+                                                 struct AstNode* node) {
+  if (!ctx || !interns || !block || !node || node->kind != AST_DECL ||
+      node->child_count < 2 || !node->children[1]) {
+    return 0;
+  }
+  struct AstNode* rhs = node->children[1];
+  if (rhs->kind != AST_BUILTIN || !rhs->op || rhs->child_count < 1 ||
+      !rhs->children[0]) {
+    return 0;
+  }
+  Str rhs_op = interns_lookup(interns, rhs->op);
+  if (rhs_op.len != 4 || memcmp(rhs_op.ptr, "$ref", 4) != 0) return 0;
+
+  struct AstNode* member = rhs->children[0];
+  if (!member || member->kind != AST_BUILTIN || !member->op ||
+      member->child_count < 2 || !member->children[0]) {
+    return 0;
+  }
+  Str member_op = interns_lookup(interns, member->op);
+  if (member_op.len != 7 || memcmp(member_op.ptr, "$member", 7) != 0)
+    return 0;
+
+  struct AstNode* target = member->children[0];
+  bool target_is_new = false;
+  if (target->kind == AST_BUILTIN && target->op) {
+    Str target_op = interns_lookup(interns, target->op);
+    target_is_new =
+        target_op.len == 4 && memcmp(target_op.ptr, "$new", 4) == 0;
+  }
+  if (target->kind != AST_BLOCK && !target_is_new) return 0;
+
+  const MorphlType* target_t = target->type ? unwrap_ref(target->type) : NULL;
+  char name_buf[48];
+  int name_len = snprintf(name_buf, sizeof(name_buf), "$anon$%zu", ctx->count++);
+  if (name_len <= 0) return 0;
+  Sym anon_sym = interns_intern(interns, str_from(name_buf, (size_t)name_len));
+  Str anon_name = interns_lookup(interns, anon_sym);
+
+  struct AstNode* name_node =
+      ast_make_leaf(AST_IDENT, anon_name, target->filename, target->row, target->col);
+  if (!name_node) return 0;
+  name_node->type = (MorphlType*)target_t;
+
+  struct AstNode* sibling = ast_new(AST_DECL);
+  if (!sibling) {
+    ast_free(name_node);
+    return 0;
+  }
+  sibling->type = (MorphlType*)target_t;
+  sibling->filename = target->filename;
+  sibling->row = target->row;
+  sibling->col = target->col;
+  sibling->contributes_to_shape = true;
+  sibling->contributes_to_layout = true;
+  sibling->storage_is_mutable = false;
+  sibling->storage_residence = MORPHL_STORAGE_INSTANCE;
+  if (!ast_append_child(sibling, name_node) || !ast_append_child(sibling, target)) {
+    sibling->child_count = 1;
+    ast_free(sibling);
+    return 0;
+  }
+  if (!block_insert_child(block, insert_pos, sibling)) {
+    sibling->child_count = 1;
+    ast_free(sibling);
+    return 0;
+  }
+
+  struct AstNode* ident =
+      ast_make_leaf(AST_IDENT, anon_name, target->filename, target->row, target->col);
+  if (!ident) return 1;
+  ident->type = (MorphlType*)target_t;
+  member->children[0] = ident;
+  return 1;
+}
+
+/*
  * Walk a positional group init of `block_type`, find fields where a $ref field
  * is initialised with a nested $new expression, hoist each into a sibling $decl
  * inserted at `insert_pos` in `block`, and replace the group element with a
@@ -4004,6 +4543,16 @@ static void flatten_block(FlattenCtx* ctx, InternTable* interns,
         if (child->children[ci] && child->children[ci]->kind == AST_BLOCK)
           flatten_block(ctx, interns, child->children[ci]);
       }
+      i++;
+      continue;
+    }
+    size_t hoisted =
+        hoist_immediate_member_targets(ctx, interns, block, i, child);
+    hoisted += hoist_immediate_ref_member_targets(
+        ctx, interns, block, i + hoisted, child);
+    i += hoisted;
+    child = block->children[i];
+    if (!child) {
       i++;
       continue;
     }
