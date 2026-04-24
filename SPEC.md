@@ -25,7 +25,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
 ### 2.1 Single-`$` Keywords 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`.
 
 ### 2.2 Double-`$$` Directives
 `$$`-prefixed name are compiler directives - They are as-early-as-possible resolutions. The compiler substitute them at compile time whenever it can determine the value statically. If it cannot, resolution defers to runtime
@@ -253,7 +253,35 @@ $decl x {
 
 `$decl` **suspends** the expression — the block executes once at declaration site and captures its final state. Referencing `x` later does not re-execute the block.
 
-### 4.7 Instantiation via `$new`
+### 4.7 `$defer` — Deferred Cleanup
+
+```morphl
+$defer <expr>
+```
+
+`$defer` means: run `<expr>` after the current block goes out of scope.
+
+- `$defer` has type `()`
+- `$defer` contributes no structural shape
+- deferred expressions execute in reverse lexical order (LIFO)
+
+For an ordinary lexical block, the compiler lowers `$defer` to explicit unwind code for that block. This unwind runs when execution leaves the block by fallthrough or by a control-flow escape that exits the block.
+
+When a block's lifetime is extended by capture, the defer list follows the lifetime of that captured block instance:
+
+- block captured by `$decl` — defers run when the binding goes out of scope
+- block captured by `$static` — defers run on normal program termination
+- block captured and then moved to `$heap` — defers run when `$free` releases the allocation
+
+For `$static`, "normal program termination" means the program reaches the end of top-level execution or returns normally from `main`. Immediate `$exit` does not guarantee static deferred cleanup in v1.
+
+For heap-backed captured blocks, the implementation attaches a compiler-generated cleanup thunk to the allocation. `$free` invokes that thunk exactly once before releasing the allocation.
+
+Deferred actions are runtime behavior of the block instance, but they are not structural members and do not participate in the block's type.
+
+`$defer` does not duplicate through ordinary value copying. Copying a block value copies the current value, not a second independent cleanup schedule. A fresh defer schedule is created only by constructing a fresh block instance, such as via `$new`.
+
+### 4.8 Instantiation via `$new`
 
 `$new` is a universal instantiation operator. It accepts any type expression and an optional initializer:
 
@@ -382,13 +410,15 @@ $alias add_one $inline $func ($decl n 0) 0 {
 $decl x $call add_one 5;   // inlined to: $decl x $add 5 1
 ```
 
-### 5.4 `$ref` — Reference (Absolute Stack Address)
+### 5.4 `$ref` — Reference
 
 ```
 $decl r $ref <lvalue>
 ```
 
-`$ref` is not a pointer — it is an **absolute stack address** to an existing storage location. It has fixed size regardless of the referent's type (always 8 bytes), which enables recursive type definitions.
+`$ref` is a typed handle to an existing storage location. It is morphl's uniform indirection mechanism across storage classes such as stack, static, heap, and future storage regions. `$ref` does not own the referent; it only provides access to existing storage.
+
+In the current VM backend, local and static references are represented as 8-byte address-like handles. Other storage classes may use different backend encodings while preserving the same source-level semantics.
 
 `$ref` is transparent in expressions — using `r` in an expression reads/writes through to the target's storage. The `$ref` keyword is only needed when explicitly bridging to the reference itself.
 
@@ -404,7 +434,7 @@ $decl r4 $const $mut $ref x; // r4 is a mutable view to x, allows read/write acc
 // and so on...
 ```
 
-Using $ref bridge without mutability descriptor is default to immutable view:
+Using `$ref` without a preceding mutability descriptor defaults to an immutable view:
 
 ```
 $decl r $ref x;   // r is a read-only view to x — allows read access through r, but no write access, and r itself is immutable (cannot reassign r to point to something else)
@@ -422,9 +452,27 @@ $decl fx $ref $member p x;        // reference to field x of block p
 $decl circ $ref $as s Circle;     // reference reinterpreted as Circle (no extra offset)
 ```
 
-Compound lvalue offsets are resolved entirely at **compile time** — no additional address computation is emitted at runtime.
+Compound lvalue offsets are resolved entirely at **compile time** when the referent layout is statically known — no additional address computation is emitted at runtime in those cases.
 
-**Lifetime rule**: a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. The compiler does not enforce this in v1.0 — it is a programmer responsibility. Storing a `$ref` to a local that is subsequently popped results in undefined behavior.
+**Nullability**: `$null` is valid for all `$ref` values.
+
+**Equality**: two `$ref` values are equal when they denote the same storage slot.
+
+**Rebinding**: assignment to a mutable reference slot rebinds the reference itself; assignment of a non-reference value writes through to the current referent.
+
+```morphl
+$decl x $mut 1;
+$decl y $mut 2;
+
+$decl r $mut $mut $ref x;
+$set r $ref y;   // rebind r to point at y
+$set r 3;        // write through r into y
+$set r $null;    // rebind r to the null reference
+```
+
+Rebinding is valid only when the reference slot itself is mutable and the new target satisfies the reference's access requirements. Rebinding may cross storage classes at the language level as long as the referent type and access rules remain compatible.
+
+**Lifetime rule**: a `$ref` must not outlive its target unless the target's storage class guarantees that lifetime. The compiler does not enforce this in v1.0 — it is a programmer responsibility. Storing a `$ref` to storage that is subsequently invalidated results in undefined behavior.
 
 ### 5.5 Mutability Subtyping
 
@@ -729,20 +777,20 @@ Direct recursive fields are impossible because the type has no finite size:
 $decl Node { $decl value 0; $decl next Node; };  // error — infinite size
 ```
 
-`$ref` breaks the cycle by storing a fixed-size absolute address regardless of the referent's size:
+`$ref` breaks the cycle by storing a fixed-size handle regardless of the referent's size:
 
 ```
 $decl Node {
     $decl value 0;
-    $decl next $ref Node;   // fixed size: 8 bytes (absolute stack address)
+    $decl next $ref Node;   // fixed size handle in the current backend
 };
 ```
 
 ### 6.5 `$null`
 
-`$null` is defined as `$decl $null $ref $null` — a reference that refers to itself, forming an unresolvable indirection chain. It is not a value per se but a sentinel indicating "this reference points to nothing." Dereferencing `$null` is an error.
+`$null` is the universal null reference sentinel. It is valid for every `$ref` type and indicates "this reference points to nothing." Dereferencing `$null` traps at runtime in the current VM backend.
 
-**Concrete representation**: `$null` is stored as the absolute address `0`. The `RNULL` opcode pushes `0`. `DEREF` traps at runtime if it encounters `0` (address 0 is never a valid frame address — frame slot 0 is reserved for `$parent`). `JNULL` branches when the top of stack equals `0`.
+**Concrete representation**: in the current VM backend, `$null` is stored as the address-like handle `0`. The `RNULL` opcode pushes `0`. `DEREF` traps at runtime if it encounters `0` (address 0 is never a valid frame address — frame slot 0 is reserved for `$parent`). `JNULL` branches when the top of stack equals `0`.
 
 ---
 
@@ -1104,6 +1152,7 @@ Rules:
 - An explicit exit code is always required. `$exit 0;` is the canonical success exit.
 - The argument must be of type `i64` (integer). Any other type is a compile error.
 - `$exit` can appear anywhere in top-level code or inside a function.
+- `$exit` is immediate in v1 and does not guarantee deferred cleanup for longer-lived static bindings.
 
 ### 9.6 `main` — Program Entry Point
 
@@ -1221,7 +1270,6 @@ $while $lt i 10 {
 - Variables declared inside the body are re-initialized on each iteration; they are not accessible after the loop exits.
 - **Type of `$while`**: always `void`. `$while` is always used for its side effects; it never produces a meaningful value.
 
-**Known limitation**: `$break`/`$continue` nested inside a sub-block within the body (with its own scope allocation) bypass the sub-block's `LEAVE` instruction. Avoid nesting `$break`/`$continue` inside inner `{}` blocks within a while body until scope unwinding is implemented.
 
 ### 7.3 `$break` and `$continue` — Loop Control
 
@@ -1758,10 +1806,10 @@ The VM uses **typed opcodes** — the operand type and size are encoded in the o
 ```
 ILOAD  <offset>    — load i64 from frame offset
 FLOAD  <offset>    — load f64 from frame offset
-RLOAD  <offset>    — load i64 absolute stack address ($ref) from frame offset
+RLOAD  <offset>    — load i64 reference handle ($ref) from frame offset
 ISTORE <offset>    — store i64 to frame offset
 FSTORE <offset>    — store f64 to frame offset
-RSTORE <offset>    — store i64 absolute stack address to frame offset
+RSTORE <offset>    — store i64 reference handle to frame offset
 ```
 
 ### 13.2 Constants
@@ -1809,6 +1857,8 @@ ENTER  <size>      — push new scope region of <size> bytes
 LEAVE  <size>      — pop scope region
 ```
 
+When a scope contains lexical `$defer` expressions that are not captured into a longer-lived block instance, the compiler emits the deferred cleanup sequence before the corresponding `LEAVE`, in reverse lexical order.
+
 ### 13.7 Function Call
 
 ```
@@ -1824,9 +1874,9 @@ Each function table entry carries a `flags` field. When `flags & NATIVE` is set,
 ### 13.8 Reference / Indirection
 
 ```
-ADDREF  <offset>   — push absolute stack address of frame[offset] as i64
-DEREF              — resolve an absolute stack address to its target location (traps on 0)
-RNULL              — push $null (absolute address 0) as i64
+ADDREF  <offset>   — push the current backend's reference handle for frame[offset]
+DEREF              — resolve a reference handle to its target location (traps on 0 in the current VM)
+RNULL              — push $null (reference handle 0 in the current VM) as i64
 JNULL   <label>    — jump if top of stack is 0 ($null reference)
 PLOAD   <offset>   — load field from $parent frame at (parent_base + offset)
 PSTORE  <offset>   — store field to $parent frame at (parent_base + offset)
@@ -1876,7 +1926,7 @@ EXIT               — pop i64 from stack; exit the process with that value as e
 | Properties | `$prop`, no fixed offset | no |
 | Traits | `$traits` + `$impl` | via property table |
 | Mutability | `$mut` / `$const` in field type | yes — `$mut <: $const` |
-| References | `$ref`, absolute stack address (8 bytes) | yes — same as referent type |
+| References | `$ref`, fixed-size reference handle (8 bytes in the current VM) | yes — same as referent type |
 
 ---
 
@@ -1903,6 +1953,7 @@ stmt        ::= decl
              |  expr ';'
              |  '$ret' expr ';'
              |  '$exit' expr ';'
+             |  '$defer' expr ';'
              |  '$set' name expr ';'
              |  '$call' expr expr ';'
              |  '$if' expr expr expr? ';'
@@ -1933,14 +1984,14 @@ The following questions were previously open; they are now settled.
 
 **Implicit `$parent` in method calls** — when emitting `$call $member obj method args`, the caller pushes `$parent = &obj` as a hidden argument before the normal arguments, matching the existing calling convention (caller-owned, cleaned up after CALL). The VM emitter is responsible for inserting this push. This is consistent with the existing `$parent` slot at `frame[0]` inside every function body.
 
-**`$null` representation** — `RNULL` pushes `0` (absolute address 0) as the null sentinel. Address 0 is never a valid frame address since `frame[0]` is reserved for `$parent`. `DEREF` traps at runtime if it encounters `0`. `JNULL` branches when the top of stack equals `0`. The self-referential definition `$decl $null $ref $null` in §5.5 maps to this concrete value.
+**`$null` representation** — `RNULL` pushes `0` as the null reference sentinel in the current VM backend. Address 0 is never a valid frame address since `frame[0]` is reserved for `$parent`. `DEREF` traps at runtime if it encounters `0`. `JNULL` branches when the top of stack equals `0`.
 
-**Cross-frame `$ref` lifetime** — a `$ref` must not outlive its target. A `$ref` field stored in a struct may only safely reference data in the same frame or a longer-lived (parent) frame. This rule is not enforced by the compiler in v1.0; it is a programmer responsibility documented here. Violating it (e.g. storing a `$ref` to a local that is then popped) results in undefined behavior.
+**Cross-storage `$ref` lifetime** — a `$ref` must not outlive its target unless the target's storage class guarantees that lifetime. This rule is not enforced by the compiler in v1.0; it is a programmer responsibility documented here. Violating it (e.g. storing a `$ref` to storage that is later invalidated) results in undefined behavior.
 
 **`$mut` / `$const` on `$ref` fields** — the mutability qualifier on a `$ref` describes access through the reference, not storage of the reference itself:
 - `$const $ref x` — read-only access through the ref, regardless of x's own mutability.
 - `$mut $ref x` — read-write access through the ref, but only valid if x is itself `$mut`.
-The ref's own storage (the 8-byte absolute address) is always fixed-size and always writable as a slot (it is the access semantics that are controlled, not the ref slot).
+The ref's own storage is a fixed-size handle in the current VM backend. Slot mutability is still controlled separately by the outer mutability qualifiers; rebinding requires the reference slot itself to be mutable.
 
 **Property table dispatch for `$parent`** — when a trait method is called through a fat trait variable, the emitted sequence is: (1) `RESERVE` the return slot, (2) `RLOAD traitVar+8` to push `$parent = traitVar.$data` (the concrete instance address), (3) push any call arguments, (4) `RLOAD traitVar` to load the `$impl` property table absolute address, (5) `ALOAD prop_idx*8` to load the method's function-table index from the property table, (6) `CALLX` to dispatch. The `$parent` slot at the callee's `frame[0]` then points to the concrete data instance, not the fat variable itself. `CALLX` pops the function index from the stack rather than reading it from a fixed frame offset, enabling runtime-resolved dispatch.
 
@@ -1965,6 +2016,7 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$while` | 2 | Loop: `$while cond body`. Result type is `{}`. |
 | `$ret` | 1 | Return from function. `$ret ()` for void return. Explicit operand required. |
 | `$exit` | 1 | Exit process. `$exit 0;` required (no bare `$exit`). |
+| `$defer` | 1 | Schedule an expression to run when the current block instance goes out of scope. |
 | `$break` | 0 | Break out of nearest loop. Type is `$never`. |
 | `$continue` | 0 | Continue to next loop iteration. Type is `$never`. |
 | **Member Access** | | |
@@ -1974,8 +2026,8 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$const` | 1 | Mark storage as immutable (default). |
 | `$inline` | 1 | Inline storage qualifier (implementation extension). |
 | **Reference** | | |
-| `$ref` | 1 | Create a reference (8-byte absolute stack address). |
-| `$null` | 0 | Null reference (absolute address 0). |
+| `$ref` | 1 | Create a reference (fixed-size handle; 8 bytes in the current VM). |
+| `$null` | 0 | Null reference (handle value 0 in the current VM). |
 | `$new` | 1–2 | Re-instantiate a block: `$new Type [overrides]`. |
 | **Scope / Context** | | |
 | `$this` | 0 | Address of the current block. |
@@ -2008,8 +2060,8 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$gt` | 2 | Integer greater-than. |
 | `$lte` | 2 | Integer less-than-or-equal. |
 | `$gte` | 2 | Integer greater-than-or-equal. |
-| `$req` | 2 | Reference equality (compare absolute stack addresses). |
-| `$rneq` | 2 | Reference inequality (compare absolute stack addresses). |
+| `$req` | 2 | Reference equality (compare storage-slot identity). |
+| `$rneq` | 2 | Reference inequality (compare storage-slot identity). |
 | **Logic** | | |
 | `$and` | 2 | Logical AND. |
 | `$or` | 2 | Logical OR. |

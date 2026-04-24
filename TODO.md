@@ -18,6 +18,10 @@
 
 [x] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Immediate `$member` block operands hoist and evaluate declaration/mutation logic so block-as-value captures final field state, and simple non-captured local declarations can be substituted into later captured field logic. `$set $member <immediate-aggregate> field ...` and `$ref $member <immediate-aggregate> field` materialize the aggregate before use.
 
+[] - Generalize `$ref` from "absolute stack address" to the spec's storage-handle model. Preserve current VM address-like lowering where valid, but implement unified nullability, storage-slot identity equality, and explicit reference-slot rebinding semantics across storage classes.
+
+[] - Implement `$defer`, `$heap`, and `$free` per the updated spec/proposal. Lexical blocks should lower defers into unwind code, captured blocks should keep deferred cleanup for the binding lifetime, static blocks should run deferred cleanup on normal program termination, and heap-backed captured blocks should run compiler-generated cleanup thunks on `$free`.
+
 ## Good to have features (Medium Priority, Not in Spec yet)
 
 [] - Unify ABI: rather than use C type for external library, use morphl ABI type system, e.g., morphl_i64, morphl_str
