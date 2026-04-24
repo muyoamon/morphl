@@ -13,19 +13,25 @@
 #include "util/util.h"
 #include <backend/backend.h>
 
+static void print_usage(const char* program_name) {
+  fprintf(stderr, "usage: %s [--backend c|vm] [-c] [-o <filename>] [grammar-file] <source-file>\n", program_name);
+  fprintf(stderr, "  If grammar-file is omitted, uses builtin operators only.\n");
+  fprintf(stderr, "  VM backend compiles and runs by default; use -c to compile only.\n");
+  fprintf(stderr, "  Use $syntax \"file\" directive within source to load custom grammars.\n");
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: %s [--backend c|vm] [--run] [grammar-file] <source-file>\n", argv[0]);
-    fprintf(stderr, "  If grammar-file is omitted, uses builtin operators only.\n");
-    fprintf(stderr, "  Use $syntax \"file\" directive within source to load custom grammars.\n");
+    print_usage(argv[0]);
     return 1;
   }
 
   enum MorphlBackendType backend_type = MORPHL_BACKEND_TYPE_VM;
-  bool run_bytecode = false;
+  bool compile_only = false;
+  const char* output_path = NULL;
   int arg_index = 1;
 
-  while (argc > arg_index && strncmp(argv[arg_index], "--", 2) == 0) {
+  while (argc > arg_index && argv[arg_index][0] == '-') {
     if (strcmp(argv[arg_index], "--backend") == 0) {
       if (argc <= arg_index + 1) {
         MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "missing backend value after --backend");
@@ -47,9 +53,21 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    if (strcmp(argv[arg_index], "--run") == 0) {
-      run_bytecode = true;
+    if (strcmp(argv[arg_index], "-c") == 0) {
+      compile_only = true;
       arg_index += 1;
+      continue;
+    }
+
+    if (strcmp(argv[arg_index], "-o") == 0) {
+      if (argc <= arg_index + 1) {
+        MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "missing output filename after -o");
+        morphl_error_emit(NULL, &e);
+        return 1;
+      }
+
+      output_path = argv[arg_index + 1];
+      arg_index += 2;
       continue;
     }
 
@@ -60,13 +78,7 @@ int main(int argc, char** argv) {
 
   int remaining = argc - arg_index;
   if (remaining < 1 || remaining > 2) {
-    fprintf(stderr, "usage: %s [--backend c|vm] [--run] [grammar-file] <source-file>\n", argv[0]);
-    return 1;
-  }
-
-  if (run_bytecode && backend_type != MORPHL_BACKEND_TYPE_VM) {
-    MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "--run is only supported with --backend vm");
-    morphl_error_emit(NULL, &e);
+    print_usage(argv[0]);
     return 1;
   }
 
@@ -152,7 +164,8 @@ int main(int argc, char** argv) {
 
     MorphlBackendContext backend_ctx;
     backend_ctx.tree = root;
-    backend_ctx.out_file = (backend_type == MORPHL_BACKEND_TYPE_VM) ? "out.mbc" : "out.c";
+    backend_ctx.out_file = output_path ? output_path
+                                       : ((backend_type == MORPHL_BACKEND_TYPE_VM) ? "out.mbc" : "out.c");
     backend_ctx.type_context = parser_ctx.type_context;
 
     if (!morphl_register_backend(backend_type)) {
@@ -160,7 +173,7 @@ int main(int argc, char** argv) {
       accepted = false;
     } else if (morphl_compile(&backend_ctx)) {
       printf("backend code generation succeeded, output written to %s\n", backend_ctx.out_file);
-      if (run_bytecode) {
+      if (backend_type == MORPHL_BACKEND_TYPE_VM && !compile_only) {
         printf("executing VM bytecode from %s...\n", backend_ctx.out_file);
         extern char** environ;
         int exit_code = (int)morphl_vm_run_file(backend_ctx.out_file, argc, argv, environ, stderr);

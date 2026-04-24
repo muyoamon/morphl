@@ -93,3 +93,18 @@ target_link_libraries(vm_integration_tests PRIVATE
 )
 
 add_test(NAME vm_integration_tests COMMAND vm_integration_tests)
+
+add_executable(cli_tests
+  cli_tests.cpp
+)
+
+target_include_directories(cli_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+
+target_compile_definitions(cli_tests PRIVATE
+  MORPHLC_PATH="$<TARGET_FILE:morphlc>"
+  MORPHL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_test(NAME cli_tests COMMAND cli_tests)
