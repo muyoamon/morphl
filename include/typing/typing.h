@@ -32,6 +32,7 @@ typedef struct AstNode AstNode;
 typedef enum {
   MORPHL_STORAGE_INSTANCE = 0,
   MORPHL_STORAGE_STATIC,
+  MORPHL_STORAGE_HEAP,
   MORPHL_STORAGE_IMPORT,
   MORPHL_STORAGE_EXTERN,
   MORPHL_STORAGE_INLINE,
@@ -80,7 +81,7 @@ typedef struct {
   MorphlType* target;
   bool is_mutable;
   bool is_inline;
-  bool is_ref;     // true for $ref (absolute-address reference, 8 bytes); false for $mut/$const/$inline qualifiers
+  bool is_ref;     // true for $ref / heap-capable storage handles; false for $mut/$const/$inline qualifiers
   bool is_recursive;
   Sym recursive_sym; // only check when is recursive
 } MorphlRefType;

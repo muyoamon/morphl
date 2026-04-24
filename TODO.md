@@ -18,9 +18,9 @@
 
 [x] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Immediate `$member` block operands hoist and evaluate declaration/mutation logic so block-as-value captures final field state, and simple non-captured local declarations can be substituted into later captured field logic. `$set $member <immediate-aggregate> field ...` and `$ref $member <immediate-aggregate> field` materialize the aggregate before use.
 
-[] - Generalize `$ref` from "absolute stack address" to the spec's storage-handle model. Preserve current VM address-like lowering where valid, but implement unified nullability, storage-slot identity equality, and explicit reference-slot rebinding semantics across storage classes.
+[] - Finish the remaining VM-side `$ref` generalization work. The current tagged/storage-handle model covers stack/static/heap refs, nullability, identity equality, and direct rebinding/write-through cases, but helper paths and edge cases still need broader storage-class-neutral coverage and regression tests.
 
-[] - Implement `$defer`, `$heap`, and `$free` per the updated spec/proposal. Lexical blocks should lower defers into unwind code, captured blocks should keep deferred cleanup for the binding lifetime, static blocks should run deferred cleanup on normal program termination, and heap-backed captured blocks should run compiler-generated cleanup thunks on `$free`.
+[] - Finish the remaining `$defer`, `$heap`, and `$free` work in the VM. Main direct cases are implemented, but the runtime/emitter still need a more general per-allocation cleanup-thunk model, alias-safe heap cleanup, broader `$free` target support, and fuller copied-block / `$new` cleanup semantics.
 
 ## Good to have features (Medium Priority, Not in Spec yet)
 

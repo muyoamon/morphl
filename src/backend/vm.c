@@ -158,6 +158,16 @@ typedef struct {
   Str file_root;
 } DeferredFunc;
 
+typedef struct {
+  Str binding_name;
+  const AstNode* block;
+  const MorphlType* block_type;
+  const MorphlType* binding_type;
+  size_t scope_depth;
+  bool run_on_scope_exit;
+  bool run_on_free;
+} BindingCleanup;
+
 /* Compile-time alias: $decl r $ref x makes 'r' an alias for 'x' (no frame
  * storage). extra_offset is added to the target's frame offset when resolving;
  * used for $ref of compound lvalues like $member and $index where the offset is
@@ -253,6 +263,10 @@ typedef struct VmEmitter {
   size_t static_slot_ptr;
   LexicalScope* lexical_scopes;
   size_t lexical_scope_count, lexical_scope_capacity;
+  BindingCleanup* binding_cleanups;
+  size_t binding_cleanup_count, binding_cleanup_capacity;
+  BindingCleanup* static_cleanups;
+  size_t static_cleanup_count, static_cleanup_capacity;
   /* native symbol table: names of $extern declarations, in order of allocation
    */
   char** native_syms;
@@ -1357,6 +1371,16 @@ static bool emit_inline_block(VmEmitter* e, AstNode* node,
       return false;
     }
   }
+  for (size_t i = node->child_count; i > 0; --i) {
+    AstNode* child = node->children[i - 1];
+    if (!builtin_is_name(e, child, "$defer") || child->child_count < 1 || !child->children[0])
+      continue;
+    if (!emit_inline_node(e, child->children[0], ret_ctx)) {
+      if (pushed_lexical) lexical_scope_pop(e);
+      morphl_backend_pop_frame(&e->frameInfo);
+      return false;
+    }
+  }
   if (!emit_leave(e, (uint32_t)scope_sz)) {
     if (pushed_lexical) lexical_scope_pop(e);
     morphl_backend_pop_frame(&e->frameInfo);
@@ -1579,6 +1603,9 @@ static bool emit_block_decl_initializers_into_slot(VmEmitter* e,
   return true;
 }
 
+static AstNode* unwrap_storage_builtin(const VmEmitter* e, AstNode* node,
+                                       const char* builtin_name);
+
 static bool emit_block_value_into_slot(VmEmitter* e,
                                        const MorphlType* block_type,
                                        struct AstNode* block,
@@ -1675,6 +1702,50 @@ static bool emit_block_value_into_slot(VmEmitter* e,
   return ok;
 }
 
+static bool emit_store_into_handle_slot(VmEmitter* e, ptrdiff_t handle_off,
+                                        ptrdiff_t field_off,
+                                        const MorphlType* field_type,
+                                        AstNode* value) {
+  if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)handle_off)) return false;
+  AstNode* heap_value = unwrap_storage_builtin(e, value, "$heap");
+  if (heap_value) {
+    const MorphlType* heap_target = field_type;
+    if (heap_target && heap_target->kind == MORPHL_TYPE_REF && heap_target->data.ref.is_ref)
+      heap_target = heap_target->data.ref.target;
+    size_t alloc_sz = heap_target ? type_frame_size(unwrap_ref(heap_target)) : 8;
+    if (!emit_op_u32(e, VM_OP_HEAP, (uint32_t)alloc_sz)) return false;
+  } else {
+    if (!emit_node(e, value)) return false;
+  }
+  return emit_op_i32(e, VM_OP_ASTORE, (int32_t)field_off);
+}
+
+static bool emit_block_decl_initializers_into_handle_slot(VmEmitter* e,
+                                                          const MorphlType* block_type,
+                                                          struct AstNode* block,
+                                                          ptrdiff_t handle_off) {
+  if (!e || !block_type || block_type->kind != MORPHL_TYPE_BLOCK || !block)
+    return true;
+  for (size_t ci = 0; ci < block->child_count; ci++) {
+    struct AstNode* child = block->children[ci];
+    if (!child || child->kind != AST_DECL || child->child_count < 2)
+      continue;
+    struct AstNode* fn = child->children[0];
+    struct AstNode* fv = child->children[1];
+    if (!fn || !fv) continue;
+    Str field_name = fn->value;
+    if (!field_name.ptr && e->interns && fn->op)
+      field_name = interns_lookup(e->interns, fn->op);
+    const MorphlType* field_type = NULL;
+    ptrdiff_t field_off =
+        block_layout_field_offset(block_type, e->interns, field_name, &field_type);
+    if (field_off == PTRDIFF_MAX || !field_type) continue;
+    if (!emit_store_into_handle_slot(e, handle_off, field_off, field_type, fv))
+      return false;
+  }
+  return true;
+}
+
 static struct AstNode* new_base_inline_block_initializer(VmEmitter* e,
                                                          struct AstNode* base) {
   if (!base) return NULL;
@@ -1683,6 +1754,206 @@ static struct AstNode* new_base_inline_block_initializer(VmEmitter* e,
     return new_base_inline_block_initializer(e, base->children[0]);
   }
   return NULL;
+}
+
+static AstNode* unwrap_storage_builtin(const VmEmitter* e, AstNode* node,
+                                       const char* builtin_name) {
+  while (node && node->kind == AST_BUILTIN) {
+    if (builtin_is_name(e, node, builtin_name)) return node;
+    if ((builtin_is_name(e, node, "$mut") || builtin_is_name(e, node, "$const") ||
+         builtin_is_name(e, node, "$inline") || builtin_is_name(e, node, "$static")) &&
+        node->child_count > 0) {
+      node = node->children[0];
+      continue;
+    }
+    break;
+  }
+  return NULL;
+}
+
+static bool block_has_defer(const VmEmitter* e, const AstNode* block) {
+  if (!block || block->kind != AST_BLOCK) return false;
+  for (size_t i = 0; i < block->child_count; ++i) {
+    if (builtin_is_name(e, block->children[i], "$defer")) return true;
+  }
+  return false;
+}
+
+static bool cleanup_array_push(BindingCleanup** items, size_t* count,
+                               size_t* capacity, const BindingCleanup* entry) {
+  if (*count >= *capacity) {
+    if (!vm_grow((void**)items, capacity, sizeof(BindingCleanup), *count + 1))
+      return false;
+  }
+  (*items)[(*count)++] = *entry;
+  return true;
+}
+
+static AstNode* rewrite_cleanup_expr(const VmEmitter* e, const AstNode* node,
+                                     Str binding_name,
+                                     const MorphlType* block_type,
+                                     const MorphlType* binding_type) {
+  if (!node) return NULL;
+  if (node->kind == AST_IDENT && block_type && block_type->kind == MORPHL_TYPE_BLOCK) {
+    const MorphlType* field_type = NULL;
+    if (block_layout_field_offset(block_type, e->interns, node->value, &field_type) != PTRDIFF_MAX) {
+      AstNode* member = ast_new(AST_BUILTIN);
+      if (!member) return NULL;
+      member->value = str_from("$member", 7);
+      if (e->interns) member->op = interns_intern(e->interns, member->value);
+      AstNode* target = ast_make_leaf(AST_IDENT, binding_name, node->filename, node->row, node->col);
+      AstNode* field = ast_make_leaf(AST_IDENT, node->value, node->filename, node->row, node->col);
+      if (!target || !field || !ast_append_child(member, target) || !ast_append_child(member, field)) {
+        if (target) ast_free(target);
+        if (field) ast_free(field);
+        ast_free(member);
+        return NULL;
+      }
+      if (e->interns) {
+        target->op = interns_intern(e->interns, binding_name);
+        field->op = node->op ? node->op : interns_intern(e->interns, node->value);
+      }
+      target->type = (MorphlType*)binding_type;
+      field->type = (MorphlType*)field_type;
+      member->type = node->type;
+      return member;
+    }
+  }
+  AstNode* clone = ast_new(node->kind);
+  if (!clone) return NULL;
+  clone->op = node->op;
+  clone->value = node->value;
+  clone->filename = node->filename;
+  clone->row = node->row;
+  clone->col = node->col;
+  clone->type = node->type;
+  clone->contributes_to_shape = node->contributes_to_shape;
+  clone->contributes_to_layout = node->contributes_to_layout;
+  clone->storage_is_mutable = node->storage_is_mutable;
+  clone->storage_residence = node->storage_residence;
+  clone->extern_symbol = node->extern_symbol;
+  for (size_t i = 0; i < node->child_count; ++i) {
+    AstNode* child = rewrite_cleanup_expr(e, node->children[i], binding_name, block_type,
+                                          binding_type);
+    if (!child || !ast_append_child(clone, child)) {
+      if (child) ast_free(child);
+      ast_free(clone);
+      return NULL;
+    }
+  }
+  return clone;
+}
+
+static bool emit_binding_cleanup_block(VmEmitter* e, Str binding_name,
+                                       const AstNode* block,
+                                       const MorphlType* block_type,
+                                       const MorphlType* binding_type) {
+  if (!e || !block || block->kind != AST_BLOCK) return true;
+  for (size_t i = block->child_count; i > 0; --i) {
+    const AstNode* child = block->children[i - 1];
+    if (!builtin_is_name(e, child, "$defer") || child->child_count < 1 || !child->children[0]) continue;
+    AstNode* rewritten =
+        rewrite_cleanup_expr(e, child->children[0], binding_name, block_type, binding_type);
+    if (!rewritten) return false;
+    bool ok = emit_node(e, rewritten);
+    ast_free(rewritten);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+static bool emit_scope_binding_cleanups(VmEmitter* e, size_t scope_depth) {
+  if (!e) return false;
+  while (e->binding_cleanup_count > 0 &&
+         e->binding_cleanups[e->binding_cleanup_count - 1].scope_depth == scope_depth) {
+    BindingCleanup cleanup = e->binding_cleanups[--e->binding_cleanup_count];
+    if (cleanup.run_on_scope_exit &&
+        !emit_binding_cleanup_block(e, cleanup.binding_name, cleanup.block,
+                                    cleanup.block_type, cleanup.binding_type))
+      return false;
+  }
+  return true;
+}
+
+static const BindingCleanup* find_binding_cleanup(const VmEmitter* e, Str binding_name,
+                                                  bool require_free) {
+  if (!e) return NULL;
+  for (size_t i = e->binding_cleanup_count; i > 0; --i) {
+    const BindingCleanup* cleanup = &e->binding_cleanups[i - 1];
+    if (str_eq(cleanup->binding_name, binding_name) &&
+        (!require_free || cleanup->run_on_free)) {
+      return cleanup;
+    }
+  }
+  for (size_t i = e->static_cleanup_count; i > 0; --i) {
+    const BindingCleanup* cleanup = &e->static_cleanups[i - 1];
+    if (str_eq(cleanup->binding_name, binding_name) &&
+        (!require_free || cleanup->run_on_free)) {
+      return cleanup;
+    }
+  }
+  return NULL;
+}
+
+static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
+  if (!e || !node) return false;
+  if (node->kind == AST_IDENT) {
+    ptrdiff_t extra = 0;
+    Str resolved = alias_resolve_full(e, node->value, &extra);
+    ptrdiff_t base_off = morphl_backend_find_offset(&e->frameInfo, resolved);
+    if (!str_eq(resolved, node->value) || extra != 0) {
+      if (base_off == PTRDIFF_MAX) return false;
+      return emit_op_i32(e, VM_OP_ADDREF, (int32_t)(base_off + extra));
+    }
+    if (base_off != PTRDIFF_MAX) {
+      return emit_op_i32(e, VM_OP_RLOAD, (int32_t)base_off);
+    }
+    char* full_name = lexical_make_binding_path(e, resolved);
+    const StaticSlot* slot =
+        full_name ? static_slot_lookup(e, str_from(full_name, strlen(full_name))) : NULL;
+    free(full_name);
+    if (!slot) return false;
+    return emit_op(e, VM_OP_GLOBAL) &&
+           emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)extra));
+  }
+  if (builtin_is_name(e, node, "$member") && node->child_count >= 2 &&
+      node->children[0] && node->children[1] && node->children[0]->kind == AST_IDENT) {
+    AstNode* target = node->children[0];
+    AstNode* field_nd = node->children[1];
+    Str field_name = field_nd->value;
+    if (!field_name.ptr && e->interns && field_nd->op)
+      field_name = interns_lookup(e->interns, field_nd->op);
+    const MorphlType* target_btype = target->type;
+    bool target_is_ref = target_btype && target_btype->kind == MORPHL_TYPE_REF &&
+                         target_btype->data.ref.is_ref;
+    if (target_is_ref && target_btype->data.ref.target)
+      target_btype = unwrap_ref(target_btype->data.ref.target);
+    else
+      target_btype = unwrap_ref(target_btype);
+    const MorphlType* field_type = NULL;
+    ptrdiff_t field_offset = block_layout_field_offset(target_btype, e->interns,
+                                                       field_name, &field_type);
+    if (field_offset == PTRDIFF_MAX || !field_type ||
+        field_type->kind != MORPHL_TYPE_REF || !field_type->data.ref.is_ref) {
+      return false;
+    }
+    ptrdiff_t target_off = morphl_backend_find_offset(&e->frameInfo, target->value);
+    if (target_off != PTRDIFF_MAX) {
+      if (target_is_ref) {
+        return emit_op_i32(e, VM_OP_RLOAD, (int32_t)target_off) &&
+               emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+      }
+      return emit_op_i32(e, VM_OP_RLOAD, (int32_t)(target_off + field_offset));
+    }
+    char* full_name = lexical_make_binding_path(e, target->value);
+    const StaticSlot* slot =
+        full_name ? static_slot_lookup(e, str_from(full_name, strlen(full_name))) : NULL;
+    free(full_name);
+    if (!slot) return false;
+    return emit_op(e, VM_OP_GLOBAL) &&
+           emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)field_offset));
+  }
+  return false;
 }
 
 /* ── frame alignment helper ─────────────────────────────────────────────── */
@@ -1853,6 +2124,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (node->child_count < 2) return true; /* empty decl, skip */
       struct AstNode* name_node = node->children[0];
       struct AstNode* rhs = node->children[1];
+      struct AstNode* heap_rhs = unwrap_storage_builtin(e, rhs, "$heap");
+      struct AstNode* heap_init =
+          (heap_rhs && heap_rhs->child_count > 0) ? heap_rhs->children[0] : NULL;
       struct AstNode* extern_rhs = unwrap_extern_expr(rhs, e->interns);
       if (!name_node || name_node->kind != AST_IDENT) return false;
 
@@ -2042,6 +2316,21 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (!emit_iconst(e, 1)) return false;
         if (!emit_op_i32(e, VM_OP_ASTORE, (int32_t)slot->guard_slot))
           return false;
+        if (t && t->kind == MORPHL_TYPE_BLOCK && rhs && rhs->kind == AST_BLOCK &&
+            block_has_defer(e, rhs)) {
+          BindingCleanup cleanup = {
+              .binding_name = name,
+              .block = rhs,
+              .block_type = t,
+              .binding_type = raw_type,
+              .scope_depth = 0,
+              .run_on_scope_exit = false,
+              .run_on_free = false,
+          };
+          if (!cleanup_array_push(&e->static_cleanups, &e->static_cleanup_count,
+                                  &e->static_cleanup_capacity, &cleanup))
+            return false;
+        }
         return label_bind(e, done_lbl);
       }
       bool is_trait_var =
@@ -2210,6 +2499,46 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
       }
 
+      if (heap_rhs) {
+        const MorphlType* heap_storage_t =
+            (t && t->kind == MORPHL_TYPE_REF && t->data.ref.is_ref && t->data.ref.target)
+                ? unwrap_ref(t->data.ref.target)
+                : t;
+        size_t alloc_sz = heap_storage_t ? type_frame_size(heap_storage_t) : 8;
+        if (!node->contributes_to_layout) {
+          VM_ERR(node, "$heap declaration must contribute storage");
+          return false;
+        }
+        if (!emit_op_u32(e, VM_OP_HEAP, (uint32_t)alloc_sz)) return false;
+        if (!emit_op_i32(e, VM_OP_RSTORE, (int32_t)off)) return false;
+        if (heap_storage_t && heap_storage_t->kind == MORPHL_TYPE_BLOCK) {
+          struct AstNode* base_block = new_base_inline_block_initializer(e, heap_init);
+          if (base_block) {
+            if (!emit_block_decl_initializers_into_handle_slot(e, heap_storage_t, base_block, off))
+              return false;
+            if (block_has_defer(e, base_block)) {
+              BindingCleanup cleanup = {
+                  .binding_name = name,
+                  .block = base_block,
+                  .block_type = heap_storage_t,
+                  .binding_type = raw_type,
+                  .scope_depth = e->scope_depth,
+                  .run_on_scope_exit = false,
+                  .run_on_free = true,
+              };
+              if (!cleanup_array_push(&e->binding_cleanups, &e->binding_cleanup_count,
+                                      &e->binding_cleanup_capacity, &cleanup))
+                return false;
+            }
+            return true;
+          }
+        }
+        if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)off)) return false;
+        if (!emit_node(e, heap_init ? heap_init : rhs)) return false;
+        if (!emit_op_i32(e, VM_OP_ASTORE, 0)) return false;
+        return true;
+      }
+
       /* For structural types (union, block, array) declared with a type-alias
        * ident RHS, the frame slot is already zero-initialized by ENTER —
        * nothing to emit or store. This handles `$decl s Shape` where Shape is a
@@ -2232,7 +2561,27 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * Walk the inline block's $decl children and store each field directly
        * into the target frame slot, bypassing ENTER/LEAVE sub-scope. */
       if (t && t->kind == MORPHL_TYPE_BLOCK && rhs && rhs->kind == AST_BLOCK) {
-        return emit_block_value_into_slot(e, t, rhs, name, off);
+        if (!emit_block_value_into_slot(e, t, rhs, name, off)) return false;
+        if (block_has_defer(e, rhs)) {
+          BindingCleanup cleanup = {
+              .binding_name = name,
+              .block = rhs,
+              .block_type = t,
+              .binding_type = raw_type,
+              .scope_depth = e->scope_depth,
+              .run_on_scope_exit = true,
+              .run_on_free = false,
+          };
+          if (node->storage_residence == MORPHL_STORAGE_STATIC) {
+            if (!cleanup_array_push(&e->static_cleanups, &e->static_cleanup_count,
+                                    &e->static_cleanup_capacity, &cleanup))
+              return false;
+          } else if (!cleanup_array_push(&e->binding_cleanups, &e->binding_cleanup_count,
+                                         &e->binding_cleanup_capacity, &cleanup)) {
+            return false;
+          }
+        }
+        return true;
       }
 
       /* 1-arg $new in declaration context: the target slot already exists and
@@ -2610,6 +2959,22 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           morphl_backend_pop_frame(&e->frameInfo);
           return false;
         }
+      }
+      for (size_t i = node->child_count; i > 0; --i) {
+        AstNode* child = node->children[i - 1];
+        if (!builtin_is_name(e, child, "$defer") || child->child_count < 1 ||
+            !child->children[0])
+          continue;
+        if (!emit_node(e, child->children[0])) {
+          if (pushed_lexical) lexical_scope_pop(e);
+          morphl_backend_pop_frame(&e->frameInfo);
+          return false;
+        }
+      }
+      if (!emit_scope_binding_cleanups(e, e->scope_depth)) {
+        if (pushed_lexical) lexical_scope_pop(e);
+        morphl_backend_pop_frame(&e->frameInfo);
+        return false;
       }
       if (!emit_leave(e, (uint32_t)scope_sz)) {
         if (pushed_lexical) lexical_scope_pop(e);
@@ -3052,6 +3417,13 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       Str target_name = alias_resolve_full(e, target->value, &textra);
       ptrdiff_t off =
           morphl_backend_find_offset(&e->frameInfo, target_name) + textra;
+      const MorphlType* target_slot_type =
+          target->type ? target->type : node->children[0]->type;
+      bool direct_rebinding =
+          target_slot_type && target_slot_type->kind == MORPHL_TYPE_REF &&
+          target_slot_type->data.ref.is_ref && value->type &&
+          value->type->kind == MORPHL_TYPE_REF && value->type->data.ref.is_ref &&
+          str_eq(target_name, target->value) && textra == 0;
       if (off == PTRDIFF_MAX + textra) {
         char* full_name = lexical_make_binding_path(e, target_name);
         const StaticSlot* slot =
@@ -3071,12 +3443,23 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                              (int32_t)(slot->global_slot + (size_t)textra));
         }
       }
-      if (!emit_node(e, value)) return false;
       if (off == PTRDIFF_MAX + textra) {
         VM_ERR(target, "undefined target '%.*s' in $set",
                (int)target->value.len, target->value.ptr);
         return false;
       }
+      if (target_slot_type && target_slot_type->kind == MORPHL_TYPE_REF &&
+          target_slot_type->data.ref.is_ref && !direct_rebinding &&
+          str_eq(target_name, target->value) && textra == 0) {
+        if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)off)) return false;
+        if (!emit_node(e, value)) return false;
+        return emit_op_i32(e, VM_OP_ASTORE, 0);
+      }
+      if (direct_rebinding) {
+        if (!emit_ref_handle_expr(e, value) && !emit_node(e, value)) return false;
+        return emit_op_i32(e, VM_OP_RSTORE, (int32_t)off);
+      }
+      if (!emit_node(e, value)) return false;
       const MorphlType* t = unwrap_ref(value->type ? value->type : node->type);
       uint8_t sop = store_op(t);
       if (sop == 0xFF) return false;
@@ -3163,11 +3546,32 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         return emit_op(e, VM_OP_RET);
       }
 
-      /* $mut / $const / $inline / $static / $ref (qualifier form) —
+      /* $mut / $const / $inline / $static / $ref / $heap (qualifier form) —
        * transparent storage qualifiers */
       if (OP_IS("$mut") || OP_IS("$const") || OP_IS("$inline") ||
-          OP_IS("$static") || OP_IS("$ref")) {
+          OP_IS("$static") || OP_IS("$ref") || OP_IS("$heap")) {
         return node->child_count > 0 ? emit_node(e, node->children[0]) : true;
+      }
+
+      if (OP_IS("$defer")) {
+        return true;
+      }
+
+      if (OP_IS("$free")) {
+        if (node->child_count < 1 || !node->children[0]) return false;
+        AstNode* target = node->children[0];
+        if (target->kind == AST_IDENT) {
+          const BindingCleanup* cleanup =
+              find_binding_cleanup(e, target->value, true);
+          if (cleanup &&
+              !emit_binding_cleanup_block(e, cleanup->binding_name,
+                                          cleanup->block, cleanup->block_type,
+                                          cleanup->binding_type)) {
+            return false;
+          }
+        }
+        if (!emit_ref_handle_expr(e, target) && !emit_node(e, target)) return false;
+        return emit_op(e, VM_OP_FREE);
       }
 
       /* $this — push absolute stack address of the current function's frame
@@ -3426,6 +3830,25 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         ptrdiff_t target_off =
             morphl_backend_find_offset(&e->frameInfo, target_name);
         if (target_off == PTRDIFF_MAX) {
+          char* full_name = lexical_make_binding_path(e, target_name);
+          const StaticSlot* slot =
+              full_name
+                  ? static_slot_lookup(e, str_from(full_name, strlen(full_name)))
+                  : NULL;
+          free(full_name);
+          if (slot) {
+            const MorphlType* ft = field_type;
+            while (ft && ft->kind == MORPHL_TYPE_REF && !ft->data.ref.is_ref)
+              ft = ft->data.ref.target;
+            if (ft && ft->kind == MORPHL_TYPE_REF && ft->data.ref.is_ref) {
+              return emit_op(e, VM_OP_GLOBAL) &&
+                     emit_op_i32(e, VM_OP_ALOAD,
+                                 (int32_t)(slot->global_slot + (size_t)field_offset));
+            }
+            return emit_op(e, VM_OP_GLOBAL) &&
+                   emit_op_i32(e, VM_OP_ALOAD,
+                               (int32_t)(slot->global_slot + (size_t)field_offset));
+          }
           VM_ERR(target, "$member: undefined variable '%.*s'",
                  (int)target_name.len, target_name.ptr);
           return false;
@@ -4204,6 +4627,8 @@ static void emitter_free(VmEmitter* e) {
   free(e->scope_sizes);
   free(e->import_slots);
   free(e->static_slots);
+  free(e->binding_cleanups);
+  free(e->static_cleanups);
   while (e->lexical_scope_count > 0) lexical_scope_pop(e);
   free(e->lexical_scopes);
   for (size_t i = 0; i < e->str_count; i++) free(e->str_table[i]);
@@ -4827,8 +5252,31 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     /* RESERVE 8 (i32 return slot), ADDREF 0 (hidden parent), CALL main, EXIT */
     if (!emit_op_u32(&e, VM_OP_RESERVE, 8) ||
         !emit_op_i32(&e, VM_OP_ADDREF, 0) ||
-        !emit_op_u32(&e, VM_OP_CALL, (uint32_t)e.main_func_fidx) ||
-        !emit_op(&e, VM_OP_EXIT)) {
+        !emit_op_u32(&e, VM_OP_CALL, (uint32_t)e.main_func_fidx)) {
+      emitter_free(&e);
+      if (wrapper_root) {
+        wrapper_root->child_count = 0;
+        ast_free(wrapper_root);
+      }
+      return false;
+    }
+  }
+
+  for (size_t i = e.static_cleanup_count; i > 0; --i) {
+    BindingCleanup cleanup = e.static_cleanups[i - 1];
+    if (!emit_binding_cleanup_block(&e, cleanup.binding_name, cleanup.block,
+                                    cleanup.block_type, cleanup.binding_type)) {
+      emitter_free(&e);
+      if (wrapper_root) {
+        wrapper_root->child_count = 0;
+        ast_free(wrapper_root);
+      }
+      return false;
+    }
+  }
+
+  if (e.main_func_fidx != SIZE_MAX) {
+    if (!emit_op(&e, VM_OP_EXIT)) {
       emitter_free(&e);
       if (wrapper_root) {
         wrapper_root->child_count = 0;

@@ -833,6 +833,7 @@ static OperatorRow kBuiltinOps[] = {
   {"$forward",AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, FORWARD},
   {"$break",  AST_BUILTIN, false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE, BREAK},
   {"$continue",AST_BUILTIN,false, 0, 0,         NULL,              0, OP_PP_KEEP_NODE, CONTINUE},
+  {"$defer",  AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, DEFER},
 
   // Arithmetic (no pp actions yet; type checker will use registry later)
   {"$add",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, ADD},
@@ -882,6 +883,8 @@ static OperatorRow kBuiltinOps[] = {
 
   // Exit — explicit exit code required: $exit 0;
   {"$exit",   AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, EXIT},
+  {"$heap",   AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, HEAP},
+  {"$free",   AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, FREE_},
 
   // Type conversions
   {"$i2f",    AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, I2F},

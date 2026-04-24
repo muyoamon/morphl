@@ -627,7 +627,14 @@ static InternTable* interns;
 
 static bool contains_unsupported_c_storage(const AstNode* node) {
     if (!node) return false;
-    if (node->storage_residence == MORPHL_STORAGE_STATIC) return true;
+    if (node->storage_residence == MORPHL_STORAGE_STATIC ||
+        node->storage_residence == MORPHL_STORAGE_HEAP) return true;
+    if (node->kind == AST_BUILTIN && node->value.ptr) {
+        if ((node->value.len == 6 && strncmp(node->value.ptr, "$defer", 6) == 0) ||
+            (node->value.len == 5 && strncmp(node->value.ptr, "$free", 5) == 0)) {
+            return true;
+        }
+    }
     for (size_t i = 0; i < node->child_count; ++i) {
         if (contains_unsupported_c_storage(node->children[i])) return true;
     }

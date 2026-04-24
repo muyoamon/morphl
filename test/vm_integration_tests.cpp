@@ -913,6 +913,43 @@ static void test_e2e_set_member_new_value_context_lhs() {
     printf("PASS test_e2e_set_member_new_value_context_lhs\n");
 }
 
+static void test_e2e_heap_alloc_free() {
+    int rc = compile_and_run(
+        "$decl x $heap $mut 41;\n"
+        "$free x;\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_heap_alloc_free\n");
+}
+
+static void test_e2e_ref_identity_ops() {
+    int rc = compile_and_run(
+        "$decl a $heap $mut 1;\n"
+        "$decl b $heap $mut 1;\n"
+        "$decl same $if $req a a 1 0;\n"
+        "$decl diff $if $rneq a b 1 0;\n"
+        "$free a;\n"
+        "$free b;\n"
+        "$exit $add same diff;\n"
+    );
+    assert(rc == 2);
+    printf("PASS test_e2e_ref_identity_ops\n");
+}
+
+static void test_e2e_heap_block_defer_cleanup() {
+    int rc = compile_and_run(
+        "$decl x $heap {\n"
+        "    $decl a $heap $mut 4;\n"
+        "    $defer $free a;\n"
+        "};\n"
+        "$free x;\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_heap_block_defer_cleanup\n");
+}
+
 static void test_e2e_metadata_syntax_reserved() {
     int rc = compile_and_run(
         "$decl x $member 7 $$syntax;\n"
@@ -1571,6 +1608,9 @@ int main(void) {
     test_e2e_ref_member_immediate_block_operand();
     test_e2e_set_member_immediate_block_lhs();
     test_e2e_set_member_new_value_context_lhs();
+    test_e2e_heap_alloc_free();
+    test_e2e_ref_identity_ops();
+    test_e2e_heap_block_defer_cleanup();
     test_e2e_extern_print();
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();

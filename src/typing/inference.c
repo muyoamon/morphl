@@ -344,12 +344,14 @@ static void apply_storage_metadata(TypeContext* ctx,
   Sym const_sym = interns_intern(ctx->interns, str_from("$const", 6));
   Sym inline_sym = interns_intern(ctx->interns, str_from("$inline", 7));
   Sym static_sym = interns_intern(ctx->interns, str_from("$static", 7));
+  Sym heap_sym = interns_intern(ctx->interns, str_from("$heap", 5));
   Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
   Sym extern_sym = interns_intern(ctx->interns, str_from("$extern", 7));
   Sym ref_sym = interns_intern(ctx->interns, str_from("$ref", 4));
 
   if (decl_or_expr->op == mut_sym || decl_or_expr->op == const_sym ||
-      decl_or_expr->op == inline_sym || decl_or_expr->op == static_sym) {
+      decl_or_expr->op == inline_sym || decl_or_expr->op == static_sym ||
+      decl_or_expr->op == heap_sym) {
     if (decl_or_expr->child_count > 0 && decl_or_expr->children[0]) {
       apply_storage_metadata(ctx, decl_or_expr->children[0], bound_sym, expected_type);
       decl_or_expr->contributes_to_shape = decl_or_expr->children[0]->contributes_to_shape;
@@ -374,6 +376,10 @@ static void apply_storage_metadata(TypeContext* ctx,
     decl_or_expr->contributes_to_shape = false;
     decl_or_expr->contributes_to_layout = false;
     decl_or_expr->storage_residence = MORPHL_STORAGE_STATIC;
+  } else if (decl_or_expr->op == heap_sym) {
+    decl_or_expr->contributes_to_shape = true;
+    decl_or_expr->contributes_to_layout = true;
+    decl_or_expr->storage_residence = MORPHL_STORAGE_HEAP;
   } else if (decl_or_expr->op == import_sym) {
     decl_or_expr->contributes_to_shape = true;
     decl_or_expr->contributes_to_layout = true;
@@ -396,6 +402,20 @@ static void apply_storage_metadata(TypeContext* ctx,
     decl_or_expr->contributes_to_layout = true;
     decl_or_expr->storage_residence = MORPHL_STORAGE_INSTANCE;
   }
+}
+
+static bool is_null_ref_type(const MorphlType* type) {
+  return type && type->kind == MORPHL_TYPE_REF && type->data.ref.is_ref &&
+         type->data.ref.target && type->data.ref.target->kind == MORPHL_TYPE_VOID;
+}
+
+static bool refs_assignable(const MorphlType* target_ref, const MorphlType* value_type) {
+  if (!target_ref || target_ref->kind != MORPHL_TYPE_REF || !target_ref->data.ref.is_ref ||
+      !value_type || value_type->kind != MORPHL_TYPE_REF || !value_type->data.ref.is_ref) {
+    return false;
+  }
+  if (is_null_ref_type(value_type)) return true;
+  return morphl_type_equals(target_ref->data.ref.target, value_type->data.ref.target);
 }
 
 static MorphlType* infer_extern_binding_type(TypeContext* ctx,
@@ -535,6 +555,47 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return arg_types[0];
   }
 
+  if (op_sym == interns_intern(ctx->interns, str_from("$heap", 5))) {
+    if (arg_count != 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$heap expects 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* target = arg_types[0];
+    MorphlType* inner_type;
+    bool inherited_mutable;
+    if (target->kind == MORPHL_TYPE_REF && !target->data.ref.is_ref) {
+      inner_type = target->data.ref.target;
+      inherited_mutable = target->data.ref.is_mutable;
+    } else {
+      inner_type = target;
+      inherited_mutable = false;
+    }
+    MorphlType* ref_type =
+        morphl_type_ref(ctx->arena, inner_type, inherited_mutable, false);
+    if (ref_type) ref_type->data.ref.is_ref = true;
+    return ref_type;
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$free", 5))) {
+    if (arg_count != 1 || !arg_types[0] || arg_types[0]->kind != MORPHL_TYPE_REF ||
+        !arg_types[0]->data.ref.is_ref) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$free expects 1 reference argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_void(ctx->arena);
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$defer", 6))) {
+    if (arg_count != 1 || !arg_types[0]) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$defer expects 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_void(ctx->arena);
+  }
+
   if (op_sym == interns_intern(ctx->interns, str_from("$mut", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$const", 6)) ||
       op_sym == interns_intern(ctx->interns, str_from("$inline", 7))) {
@@ -633,7 +694,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     MorphlType* ref_type = void_t ? morphl_type_ref(ctx->arena, void_t, false, false) : NULL;
     if (ref_type) {
       ref_type->data.ref.is_ref = true;
-      /* $null is address 0; stored as 8-byte absolute address. */
+      /* $null is the universal null storage handle. */
     }
     return ref_type;
   }
@@ -670,6 +731,18 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
 
   // Comparison operators: (any, any) → bool
+  if (op_sym == interns_intern(ctx->interns, str_from("$req", 4)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$rneq", 5))) {
+    if (arg_count != 2 || !arg_types[0] || !arg_types[1] ||
+        arg_types[0]->kind != MORPHL_TYPE_REF || !arg_types[0]->data.ref.is_ref ||
+        arg_types[1]->kind != MORPHL_TYPE_REF || !arg_types[1]->data.ref.is_ref) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s expects 2 ref arguments", op_name);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_bool(ctx->arena);
+  }
+
   if (op_sym == interns_intern(ctx->interns, str_from("$eq", 3)) ||
       op_sym == interns_intern(ctx->interns, str_from("$neq", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$lt", 3)) ||
@@ -1934,6 +2007,14 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
             MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: target is not mutable");
             morphl_error_emit(NULL, &err);
             return NULL;
+          }
+          if (value_type->kind == MORPHL_TYPE_REF && value_type->data.ref.is_ref) {
+            if (!refs_assignable(target_type, value_type)) {
+              MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: incompatible ref rebinding");
+              morphl_error_emit(NULL, &err);
+              return NULL;
+            }
+            return target_type;
           }
           if (!morphl_type_equals(target_type->data.ref.target, value_type)) {
             MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");

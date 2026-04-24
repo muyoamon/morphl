@@ -27,7 +27,7 @@ enum VmOpcode {
   /* ── Constants ── */
   VM_OP_ICONST = 0x01,   // [i64 imm]  push 64-bit integer literal
   VM_OP_FCONST = 0x02,   // [f64 imm]  push 64-bit float literal
-  VM_OP_RNULL  = 0x03,   //            push null reference (i32 = 0)
+  VM_OP_RNULL  = 0x03,   //            push null reference handle (0)
 
   /* ── Integer arithmetic  (pop 2 i64, push 1 i64) ── */
   VM_OP_IADD = 0x08,
@@ -69,10 +69,10 @@ enum VmOpcode {
   /* ── Load / Store  [i32 signed frame offset] ── */
   VM_OP_ILOAD  = 0x30,  // push i64 from frame[offset]
   VM_OP_FLOAD  = 0x31,  // push f64 from frame[offset]
-  VM_OP_RLOAD  = 0x32,  // [i32 off]  push i64 containing i32 ref stored at frame[offset]
+  VM_OP_RLOAD  = 0x32,  // [i32 off]  push i64 reference handle stored at frame[offset]
   VM_OP_ISTORE = 0x38,  // pop i64  → frame[offset]
   VM_OP_FSTORE = 0x39,  // pop f64  → frame[offset]
-  VM_OP_RSTORE = 0x3A,  // [i32 off]  pop i64, store low 32 bits as ref at frame[offset]
+  VM_OP_RSTORE = 0x3A,  // [i32 off]  pop i64 reference handle, store at frame[offset]
 
   /* ── Control flow  [i32 relative offset from end of instruction] ── */
   VM_OP_JMP   = 0x40,   // unconditional jump
@@ -86,10 +86,12 @@ enum VmOpcode {
   VM_OP_CALLF   = 0x53,  // [i32 off]   indirect call: load func index from frame[off], dispatch
   VM_OP_EXIT    = 0x54,  //             pop i64 from stack, exit program with that value as exit code
   VM_OP_CALLX   = 0x55,  //             pop i64 function index from stack, dispatch (dynamic trait dispatch)
+  VM_OP_HEAP    = 0x56,  // [u32 size] allocate zeroed heap storage, push ref handle
+  VM_OP_FREE    = 0x57,  //             pop ref handle, release heap allocation
 
   /* ── Reference / indirection ── */
-  VM_OP_ADDREF  = 0x60,  // [i32 off]  push absolute stack address of frame[off] as i64
-  VM_OP_DEREF   = 0x61,  // pop i64 (absolute stack addr), push i64 at that address
+  VM_OP_ADDREF  = 0x60,  // [i32 off]  push stack/static ref handle for frame[off]
+  VM_OP_DEREF   = 0x61,  // pop ref handle, push i64 at that location
 
   /* ── $parent field access ── */
   VM_OP_PLOAD   = 0x62,  // [i32 off]  load i64 from absolute address stored in parent slot + off
@@ -113,9 +115,9 @@ enum VmOpcode {
   VM_OP_SNEQ    = 0x72,  // pop 2 string pointers (i64), push i64 0 if strcmp==0, else 1
 
   /* ── Global frame access ── */
-  VM_OP_GLOBAL  = 0x64,  // push i64(0) — absolute stack address of the global frame base
-  VM_OP_ALOAD   = 0x65,  // [i32 off]  pop i64 base, push i64 from stack.data[base + off]
-  VM_OP_ASTORE  = 0x66,  // [i32 off]  pop i64 val, pop i64 base, store val to stack.data[base + off]
+  VM_OP_GLOBAL  = 0x64,  // push i64(0) — stack/global base handle
+  VM_OP_ALOAD   = 0x65,  // [i32 off]  pop base handle, push i64 from base + off
+  VM_OP_ASTORE  = 0x66,  // [i32 off]  pop i64 val, pop base handle, store val to base + off
 };
 
 /* Function flags — stored in VmFunctionMeta.flags */

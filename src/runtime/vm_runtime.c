@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdarg.h>
 #include <dlfcn.h>
@@ -125,6 +126,12 @@ typedef struct {
     uint32_t func_index;  /* for diagnostics */
 } VmCallFrame;
 
+typedef struct {
+    uint8_t* data;
+    size_t   size;
+    bool     live;
+} VmHeapAlloc;
+
 /* ── program and VM structs (opaque in runtime.h) ───────────────────────── */
 
 struct MorphlVmProgram {
@@ -155,6 +162,9 @@ struct MorphlVm {
     VmCallFrame*    call_frames;
     size_t          call_frame_count;
     size_t          call_frame_capacity;
+    VmHeapAlloc*    heap_allocs;
+    size_t          heap_alloc_count;
+    size_t          heap_alloc_capacity;
     /* process arguments forwarded to the $global frame */
     int             argc;
     char**          argv;
@@ -418,7 +428,73 @@ void morphl_vm_free(MorphlVm* vm) {
     if (!vm) return;
     free(vm->stack.data);
     free(vm->call_frames);
+    for (size_t i = 0; i < vm->heap_alloc_count; ++i) {
+        free(vm->heap_allocs[i].data);
+    }
+    free(vm->heap_allocs);
     free(vm);
+}
+
+static bool heap_alloc_slot(MorphlVm* vm, size_t size, int64_t* out_handle, FILE* err) {
+    if (!vm || !out_handle) return false;
+    if (vm->heap_alloc_count >= vm->heap_alloc_capacity) {
+        size_t newcap = vm->heap_alloc_capacity ? vm->heap_alloc_capacity * 2 : 64;
+        VmHeapAlloc* p = (VmHeapAlloc*)realloc(vm->heap_allocs, newcap * sizeof(VmHeapAlloc));
+        if (!p) {
+            RT_ERR(err, "vm: OOM growing heap allocation table");
+            return false;
+        }
+        memset(p + vm->heap_alloc_capacity, 0, (newcap - vm->heap_alloc_capacity) * sizeof(VmHeapAlloc));
+        vm->heap_allocs = p;
+        vm->heap_alloc_capacity = newcap;
+    }
+    uint8_t* data = NULL;
+    if (size > 0) {
+        data = (uint8_t*)calloc(1, size);
+        if (!data) {
+            RT_ERR(err, "vm: OOM allocating heap object");
+            return false;
+        }
+    }
+    size_t idx = vm->heap_alloc_count++;
+    vm->heap_allocs[idx].data = data;
+    vm->heap_allocs[idx].size = size;
+    vm->heap_allocs[idx].live = true;
+    *out_handle = -(int64_t)(idx + 1);
+    return true;
+}
+
+static bool checked_stack_addr(MorphlVm* vm, ptrdiff_t base, int32_t offset, size_t width,
+                               ptrdiff_t* out_addr, FILE* err, const char* opname);
+
+static bool checked_heap_addr(MorphlVm* vm, int64_t handle, int32_t offset, size_t width,
+                              uint8_t** out_ptr, FILE* err, const char* opname) {
+    if (handle >= 0) {
+        RT_ERR(err, "vm: %s expected heap handle, got %" PRId64, opname, handle);
+        return false;
+    }
+    size_t idx = (size_t)(-handle - 1);
+    if (idx >= vm->heap_alloc_count || !vm->heap_allocs[idx].live) {
+        RT_ERR(err, "vm: %s invalid heap handle %" PRId64, opname, handle);
+        return false;
+    }
+    VmHeapAlloc* alloc = &vm->heap_allocs[idx];
+    ptrdiff_t addr = (ptrdiff_t)offset;
+    if (addr < 0 || width > alloc->size || (size_t)addr > alloc->size - width) {
+        RT_ERR(err, "vm: %s heap address %td out of bounds", opname, addr);
+        return false;
+    }
+    *out_ptr = alloc->data + addr;
+    return true;
+}
+
+static bool checked_ref_addr(MorphlVm* vm, int64_t handle, int32_t offset, size_t width,
+                             uint8_t** out_ptr, FILE* err, const char* opname) {
+    if (handle < 0) return checked_heap_addr(vm, handle, offset, width, out_ptr, err, opname);
+    ptrdiff_t abs = 0;
+    if (!checked_stack_addr(vm, (ptrdiff_t)handle, offset, width, &abs, err, opname)) return false;
+    *out_ptr = vm->stack.data + abs;
+    return true;
 }
 
 static bool checked_stack_addr(MorphlVm* vm, ptrdiff_t base, int32_t offset, size_t width,
@@ -825,6 +901,34 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int64_t v; POP_I64(v);
             return (morphl_exit_code_t)v;
         }
+        case VM_OP_HEAP: {
+            uint32_t sz; READ_U32(sz);
+            int64_t handle = 0;
+            if (!heap_alloc_slot(vm, (size_t)sz, &handle, err)) return 1;
+            PUSH_I64(handle);
+            break;
+        }
+        case VM_OP_FREE: {
+            int64_t handle; POP_I64(handle);
+            if (handle == 0) {
+                RT_ERR(err, "vm: FREE null reference");
+                return 1;
+            }
+            if (handle >= 0) {
+                RT_ERR(err, "vm: FREE expects heap reference");
+                return 1;
+            }
+            size_t idx = (size_t)(-handle - 1);
+            if (idx >= vm->heap_alloc_count || !vm->heap_allocs[idx].live) {
+                RT_ERR(err, "vm: FREE invalid heap handle %" PRId64, handle);
+                return 1;
+            }
+            vm->heap_allocs[idx].live = false;
+            free(vm->heap_allocs[idx].data);
+            vm->heap_allocs[idx].data = NULL;
+            vm->heap_allocs[idx].size = 0;
+            break;
+        }
         case VM_OP_CALLF: {
             /* indirect call: load func index from frame[off], then dispatch */
             int32_t off; READ_I32(off);
@@ -903,7 +1007,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
 
         /* ── reference / indirection ── */
         case VM_OP_ADDREF: {
-            /* push absolute stack address of frame[off] as i64 */
+            /* push stack/storage handle of frame[off] as i64 */
             int32_t off; READ_I32(off);
             ptrdiff_t addr = 0;
             if (!checked_frame_addr(vm, off, 8, &addr, err, "ADDREF")) return 1;
@@ -912,12 +1016,16 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             break;
         }
         case VM_OP_DEREF: {
-            /* pop absolute stack address, push i64 at that address */
+            /* pop reference handle, push i64 at that location */
             int64_t addr; POP_I64(addr);
+            if (addr == 0) {
+                RT_ERR(err, "vm: DEREF null reference");
+                return 1;
+            }
             int64_t v;
-            ptrdiff_t checked = 0;
-            if (!checked_stack_addr(vm, (ptrdiff_t)addr, 0, 8, &checked, err, "DEREF")) return 1;
-            memcpy(&v, vm->stack.data + checked, 8);
+            uint8_t* ptr = NULL;
+            if (!checked_ref_addr(vm, addr, 0, 8, &ptr, err, "DEREF")) return 1;
+            memcpy(&v, ptr, 8);
             PUSH_I64(v);
             break;
         }
@@ -927,11 +1035,15 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             /* load i64 from (parent_base + off) where parent_base = frame[0] as abs addr */
             int32_t off; READ_I32(off);
             int64_t parent_addr;
-            ptrdiff_t field_addr = 0;
             if (!read_frame_i64_checked(vm, 0, &parent_addr, err, "PLOAD")) return 1;
-            if (!checked_stack_addr(vm, (ptrdiff_t)parent_addr, off, 8, &field_addr, err, "PLOAD")) return 1;
+            if (parent_addr == 0) {
+                RT_ERR(err, "vm: PLOAD null parent reference");
+                return 1;
+            }
+            uint8_t* field_ptr = NULL;
+            if (!checked_ref_addr(vm, parent_addr, off, 8, &field_ptr, err, "PLOAD")) return 1;
             int64_t v;
-            memcpy(&v, vm->stack.data + field_addr, 8);
+            memcpy(&v, field_ptr, 8);
             PUSH_I64(v);
             break;
         }
@@ -940,10 +1052,14 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int32_t off; READ_I32(off);
             int64_t v; POP_I64(v);
             int64_t parent_addr;
-            ptrdiff_t field_addr = 0;
             if (!read_frame_i64_checked(vm, 0, &parent_addr, err, "PSTORE")) return 1;
-            if (!checked_stack_addr(vm, (ptrdiff_t)parent_addr, off, 8, &field_addr, err, "PSTORE")) return 1;
-            memcpy(vm->stack.data + field_addr, &v, 8);
+            if (parent_addr == 0) {
+                RT_ERR(err, "vm: PSTORE null parent reference");
+                return 1;
+            }
+            uint8_t* field_ptr = NULL;
+            if (!checked_ref_addr(vm, parent_addr, off, 8, &field_ptr, err, "PSTORE")) return 1;
+            memcpy(field_ptr, &v, 8);
             break;
         }
 
@@ -986,24 +1102,24 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             break;
         }
         case VM_OP_ALOAD: {
-            /* pop i64 base, push i64 from stack.data[base + off] */
+            /* pop base handle, push i64 from base + off */
             int32_t off; READ_I32(off);
             int64_t base; POP_I64(base);
-            ptrdiff_t abs = 0;
-            if (!checked_stack_addr(vm, (ptrdiff_t)base, off, 8, &abs, err, "ALOAD")) return 1;
+            uint8_t* ptr = NULL;
+            if (!checked_ref_addr(vm, base, off, 8, &ptr, err, "ALOAD")) return 1;
             int64_t v;
-            memcpy(&v, vm->stack.data + abs, 8);
+            memcpy(&v, ptr, 8);
             PUSH_I64(v);
             break;
         }
         case VM_OP_ASTORE: {
-            /* pop i64 val, pop i64 base, store val → stack.data[base + off] */
+            /* pop i64 val, pop base handle, store val → base + off */
             int32_t off; READ_I32(off);
             int64_t v;    POP_I64(v);
             int64_t base; POP_I64(base);
-            ptrdiff_t abs = 0;
-            if (!checked_stack_addr(vm, (ptrdiff_t)base, off, 8, &abs, err, "ASTORE")) return 1;
-            memcpy(vm->stack.data + abs, &v, 8);
+            uint8_t* ptr = NULL;
+            if (!checked_ref_addr(vm, base, off, 8, &ptr, err, "ASTORE")) return 1;
+            memcpy(ptr, &v, 8);
             break;
         }
 
