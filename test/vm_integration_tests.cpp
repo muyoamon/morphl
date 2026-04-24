@@ -950,6 +950,146 @@ static void test_e2e_heap_block_defer_cleanup() {
     printf("PASS test_e2e_heap_block_defer_cleanup\n");
 }
 
+// ── $ref regression tests ────────────────────────────────────────────────────
+
+static void test_e2e_rnull_decl_and_req_check() {
+    // $null pushes a null ref handle; $req against same address returns 1
+    int rc = compile_and_run(
+        "$decl p $null;\n"
+        "$decl is_null $if $req p $null 1 0;\n"
+        "$exit is_null;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_rnull_decl_and_req_check\n");
+}
+
+static void test_e2e_ref_write_through() {
+    // write-through: $set r val writes to x via ref alias; x is changed
+    int rc = compile_and_run(
+        "$decl x $mut 10;\n"
+        "$decl r $ref x;\n"
+        "$set r 99;\n"
+        "$exit x;\n"
+    );
+    assert(rc == 99);
+    printf("PASS test_e2e_ref_write_through\n");
+}
+
+static void test_e2e_static_ref_read() {
+    // $ref on a $static variable produces a valid ref
+    int rc = compile_and_run(
+        "$decl x $static $mut 77;\n"
+        "$decl r $ref x;\n"
+        "$exit r;\n"
+    );
+    assert(rc == 77);
+    printf("PASS test_e2e_static_ref_read\n");
+}
+
+// ── $defer / $free regression tests ──────────────────────────────────────────
+
+static void test_e2e_func_body_defer_runs_at_ret() {
+    // $defer at function-body level fires AFTER $ret stores the return value.
+    // Function-local static: defer increments AFTER the pre-defer value is returned.
+    // r1 = 0 (cnt was 0), defer runs → cnt=1; r2 = 1 (cnt is now 1); exit = 0+1 = 1
+    int rc = compile_and_run(
+        "$decl f $func () {\n"
+        "    $decl cnt $static $mut 0;\n"
+        "    $defer $set cnt $add cnt 1;\n"
+        "    $ret cnt;\n"
+        "};\n"
+        "$decl r1 $call f ();\n"
+        "$decl r2 $call f ();\n"
+        "$exit $add r1 r2;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_func_body_defer_runs_at_ret\n");
+}
+
+static void test_e2e_func_body_defer_lifo_order() {
+    // Multiple function-body $defer statements run in LIFO order.
+    // defer2 (second registered) runs first, defer1 runs second.
+    // order starts at 0: defer2 first → 0*10+2=2; defer1 next → 2*10+1=21.
+    // r1 = 0 (pre-defer), r2 = 21 (next call sees order=21); exit = 0+21 = 21
+    int rc = compile_and_run(
+        "$decl f $func () {\n"
+        "    $decl order $static $mut 0;\n"
+        "    $defer $set order $add $mul order 10 1;\n"
+        "    $defer $set order $add $mul order 10 2;\n"
+        "    $ret order;\n"
+        "};\n"
+        "$decl r1 $call f ();\n"
+        "$decl r2 $call f ();\n"
+        "$exit $add r1 r2;\n"
+    );
+    assert(rc == 21);
+    printf("PASS test_e2e_func_body_defer_lifo_order\n");
+}
+
+static void test_e2e_func_body_defer_implicit_ret() {
+    // $defer fires at implicit end-of-function (no explicit $ret).
+    // A heap alloc is created and freed by the deferred $free — no crash = correct.
+    int rc = compile_and_run(
+        "$decl do_work $func () {\n"
+        "    $decl x $heap $mut 0;\n"
+        "    $defer $free x;\n"
+        "};\n"
+        "$decl _ $call do_work ();\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_func_body_defer_implicit_ret\n");
+}
+
+static void test_e2e_free_alias_cleanup() {
+    // $free via an $alias must still trigger the original binding's cleanup
+    int rc = compile_and_run(
+        "$decl x $heap {\n"
+        "    $decl a $heap $mut 1;\n"
+        "    $defer $free a;\n"
+        "};\n"
+        "$alias y x;\n"
+        "$free y;\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_free_alias_cleanup\n");
+}
+
+static void test_e2e_new_decl_cleanup_at_scope_exit() {
+    // $new creates a fresh block instance; if the template has $defer the
+    // new declaration inherits cleanup and it fires when the binding goes out of scope
+    int rc = compile_and_run(
+        "$decl counter $static $mut 0;\n"
+        "$decl Template {\n"
+        "    $decl x $mut 0;\n"
+        "    $defer $set counter $add counter 1;\n"
+        "};\n"
+        "{\n"
+        "    $decl n $new Template ();\n"
+        "};\n"
+        "$exit counter;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_new_decl_cleanup_at_scope_exit\n");
+}
+
+static void test_e2e_heap_free_via_alias_thunk() {
+    // $decl y x copies the heap handle value (not a $alias).
+    // $free y must still invoke the cleanup thunk via the runtime cleanup_fidx.
+    int rc = compile_and_run(
+        "$decl counter $static $mut 0;\n"
+        "$decl x $heap {\n"
+        "    $defer $set counter $add counter 1;\n"
+        "};\n"
+        "$decl y x;\n"
+        "$free y;\n"
+        "$exit counter;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_heap_free_via_alias_thunk\n");
+}
+
 static void test_e2e_metadata_syntax_reserved() {
     int rc = compile_and_run(
         "$decl x $member 7 $$syntax;\n"
@@ -1611,6 +1751,15 @@ int main(void) {
     test_e2e_heap_alloc_free();
     test_e2e_ref_identity_ops();
     test_e2e_heap_block_defer_cleanup();
+    test_e2e_rnull_decl_and_req_check();
+    test_e2e_ref_write_through();
+    test_e2e_static_ref_read();
+    test_e2e_func_body_defer_runs_at_ret();
+    test_e2e_func_body_defer_lifo_order();
+    test_e2e_func_body_defer_implicit_ret();
+    test_e2e_free_alias_cleanup();
+    test_e2e_new_decl_cleanup_at_scope_exit();
+    test_e2e_heap_free_via_alias_thunk();
     test_e2e_extern_print();
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();

@@ -130,6 +130,7 @@ typedef struct {
     uint8_t* data;
     size_t   size;
     bool     live;
+    uint32_t cleanup_fidx;  /* 0 = none; non-zero = thunk fidx to call before free */
 } VmHeapAlloc;
 
 /* ── program and VM structs (opaque in runtime.h) ───────────────────────── */
@@ -169,6 +170,7 @@ struct MorphlVm {
     int             argc;
     char**          argv;
     char**          envp;
+    int64_t         pending_free_handle;  /* set by FREE when deferring to cleanup thunk */
 };
 
 /* ── low-level file helpers ─────────────────────────────────────────────── */
@@ -895,6 +897,20 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 return 0;
             }
             vm->ip = cf.return_ip;
+            /* cleanup thunk: pending_free_handle set by FREE before dispatching */
+            if (vm->pending_free_handle != 0) {
+                int64_t h = vm->pending_free_handle;
+                vm->pending_free_handle = 0;
+                if (h < 0) {
+                    size_t ci = (size_t)(-h - 1);
+                    if (ci < vm->heap_alloc_count && vm->heap_allocs[ci].live) {
+                        vm->heap_allocs[ci].live = false;
+                        free(vm->heap_allocs[ci].data);
+                        vm->heap_allocs[ci].data = NULL;
+                        vm->heap_allocs[ci].size = 0;
+                    }
+                }
+            }
             break;
         }
         case VM_OP_EXIT: {
@@ -923,10 +939,53 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                 RT_ERR(err, "vm: FREE invalid heap handle %" PRId64, handle);
                 return 1;
             }
+            {
+                uint32_t fidx = vm->heap_allocs[idx].cleanup_fidx;
+                if (fidx != 0) {
+                    if (fidx >= vm->program->func_count) {
+                        RT_ERR(err, "vm: FREE cleanup fidx %u out of range", fidx);
+                        return 1;
+                    }
+                    const VmFunctionMeta* fn = &vm->program->functions[fidx];
+                    if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
+                        RT_ERR(err, "vm: FREE cleanup must not be native");
+                        return 1;
+                    }
+                    vm->heap_allocs[idx].cleanup_fidx = 0;  /* prevent double-call */
+                    vm->pending_free_handle = handle;
+                    /* push hidden_parent + handle as args to cleanup thunk */
+                    int64_t hidden_parent = vm->call_frame_count > 0
+                        ? (int64_t)vm->call_frames[vm->call_frame_count - 1].frame_base : 0;
+                    PUSH_I64(hidden_parent);
+                    PUSH_I64(handle);
+                    VmCallFrame cf2;
+                    cf2.frame_base  = vm->stack.top;
+                    cf2.return_top  = vm->stack.top - ((size_t)fn->param_size + 8);
+                    cf2.return_ip   = vm->ip;  /* resume after FREE on thunk return */
+                    cf2.func_index  = fidx;
+                    if (!push_call_frame(vm, cf2)) {
+                        RT_ERR(err, "vm: OOM FREE cleanup frame"); return 1;
+                    }
+                    if (!stack_reserve(&vm->stack, fn->frame_size)) {
+                        RT_ERR(err, "vm: OOM FREE cleanup reserve"); return 1;
+                    }
+                    vm->ip = fn->entry_point;
+                    break;
+                }
+            }
             vm->heap_allocs[idx].live = false;
             free(vm->heap_allocs[idx].data);
             vm->heap_allocs[idx].data = NULL;
             vm->heap_allocs[idx].size = 0;
+            break;
+        }
+        case VM_OP_SET_CLEANUP: {
+            uint32_t fidx; READ_U32(fidx);
+            int64_t handle; POP_I64(handle);
+            if (handle >= 0) break;  /* ignore non-heap handles */
+            size_t idx = (size_t)(-handle - 1);
+            if (idx >= vm->heap_alloc_count || !vm->heap_allocs[idx].live) break;
+            vm->heap_allocs[idx].cleanup_fidx = fidx;
             break;
         }
         case VM_OP_CALLF: {

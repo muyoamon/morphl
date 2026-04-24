@@ -267,6 +267,11 @@ typedef struct VmEmitter {
   size_t binding_cleanup_count, binding_cleanup_capacity;
   BindingCleanup* static_cleanups;
   size_t static_cleanup_count, static_cleanup_capacity;
+  /* function-body $defer: collected at the top level of each function body and
+   * emitted before $ret / implicit end-of-body. */
+  struct AstNode** func_defers;
+  size_t func_defer_count, func_defer_capacity;
+  size_t func_defer_base; /* index of first defer owned by the current function */
   /* native symbol table: names of $extern declarations, in order of allocation
    */
   char** native_syms;
@@ -278,6 +283,24 @@ typedef struct VmEmitter {
   size_t impl_prop_table_base; /* byte offset in global frame where prop tables
                                   start */
   size_t impl_prop_table_ptr;  /* current alloc pointer for next prop table */
+  /* block declaration map: binding name → (block AST, block type) so that
+     $new <ident> can find the original block for cleanup registration */
+  struct VmBlockDeclEntry {
+    Str name;
+    struct AstNode* block;
+    const MorphlType* block_type;
+  } * block_decl_map;
+  size_t block_decl_map_count, block_decl_map_capacity;
+  /* deferred cleanup thunks: heap block decls with $defer register a generated
+     cleanup function to be emitted after all other deferred functions */
+  struct DeferredCleanupThunk {
+    size_t fidx;
+    const struct AstNode* block;
+    const MorphlType* block_type;
+    const MorphlType* binding_type;
+    char* saved_lexical_path;  /* lexical scope path at registration time */
+  } * deferred_cleanups;
+  size_t deferred_cleanup_count, deferred_cleanup_capacity;
 } VmEmitter;
 
 /* ── opcode helpers ─────────────────────────────────────────────────────── */
@@ -535,6 +558,19 @@ static const StaticSlot* static_slot_lookup(const VmEmitter* e, Str name) {
   return NULL;
 }
 
+/* Try the fully-qualified scope-prefixed path first; if that misses, fall back
+ * to the bare name. This lets cleanup expressions refer to top-level statics
+ * even when emitted inside a nested lexical scope. */
+static const StaticSlot* static_slot_lookup_scoped(const VmEmitter* e,
+                                                    Str name) {
+  char* full = lexical_make_binding_path(e, name);
+  const StaticSlot* slot =
+      full ? static_slot_lookup(e, str_from(full, strlen(full))) : NULL;
+  free(full);
+  if (!slot) slot = static_slot_lookup(e, name);
+  return slot;
+}
+
 static size_t static_slot_align(const MorphlType* t) {
   size_t align = type_frame_align(t);
   return align < 8 ? 8 : align;
@@ -570,6 +606,7 @@ static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
                                            const MorphlType** out_field_type);
 static size_t block_scope_size(struct AstNode* block);
 static bool emit_node(VmEmitter* e, struct AstNode* node);
+static bool emit_func_body_defers(VmEmitter* e);
 
 typedef struct {
   Str name;
@@ -1753,6 +1790,15 @@ static struct AstNode* new_base_inline_block_initializer(VmEmitter* e,
   if (builtin_is_name(e, base, "$inline") && base->child_count > 0) {
     return new_base_inline_block_initializer(e, base->children[0]);
   }
+  if (base->kind == AST_IDENT && e) {
+    Str name = base->value;
+    if (!name.ptr && e->interns && base->op)
+      name = interns_lookup(e->interns, base->op);
+    for (size_t i = e->block_decl_map_count; i > 0; --i) {
+      if (str_eq(e->block_decl_map[i - 1].name, name))
+        return e->block_decl_map[i - 1].block;
+    }
+  }
   return NULL;
 }
 
@@ -1875,25 +1921,6 @@ static bool emit_scope_binding_cleanups(VmEmitter* e, size_t scope_depth) {
   return true;
 }
 
-static const BindingCleanup* find_binding_cleanup(const VmEmitter* e, Str binding_name,
-                                                  bool require_free) {
-  if (!e) return NULL;
-  for (size_t i = e->binding_cleanup_count; i > 0; --i) {
-    const BindingCleanup* cleanup = &e->binding_cleanups[i - 1];
-    if (str_eq(cleanup->binding_name, binding_name) &&
-        (!require_free || cleanup->run_on_free)) {
-      return cleanup;
-    }
-  }
-  for (size_t i = e->static_cleanup_count; i > 0; --i) {
-    const BindingCleanup* cleanup = &e->static_cleanups[i - 1];
-    if (str_eq(cleanup->binding_name, binding_name) &&
-        (!require_free || cleanup->run_on_free)) {
-      return cleanup;
-    }
-  }
-  return NULL;
-}
 
 static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
   if (!e || !node) return false;
@@ -1917,7 +1944,7 @@ static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
            emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)extra));
   }
   if (builtin_is_name(e, node, "$member") && node->child_count >= 2 &&
-      node->children[0] && node->children[1] && node->children[0]->kind == AST_IDENT) {
+      node->children[0] && node->children[1]) {
     AstNode* target = node->children[0];
     AstNode* field_nd = node->children[1];
     Str field_name = field_nd->value;
@@ -1937,21 +1964,28 @@ static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
         field_type->kind != MORPHL_TYPE_REF || !field_type->data.ref.is_ref) {
       return false;
     }
-    ptrdiff_t target_off = morphl_backend_find_offset(&e->frameInfo, target->value);
-    if (target_off != PTRDIFF_MAX) {
-      if (target_is_ref) {
-        return emit_op_i32(e, VM_OP_RLOAD, (int32_t)target_off) &&
-               emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+    /* AST_IDENT target: look up in frame or static slots */
+    if (target->kind == AST_IDENT) {
+      ptrdiff_t target_off = morphl_backend_find_offset(&e->frameInfo, target->value);
+      if (target_off != PTRDIFF_MAX) {
+        if (target_is_ref) {
+          return emit_op_i32(e, VM_OP_RLOAD, (int32_t)target_off) &&
+                 emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+        }
+        return emit_op_i32(e, VM_OP_RLOAD, (int32_t)(target_off + field_offset));
       }
-      return emit_op_i32(e, VM_OP_RLOAD, (int32_t)(target_off + field_offset));
+      char* full_name = lexical_make_binding_path(e, target->value);
+      const StaticSlot* slot =
+          full_name ? static_slot_lookup(e, str_from(full_name, strlen(full_name))) : NULL;
+      free(full_name);
+      if (!slot) return false;
+      return emit_op(e, VM_OP_GLOBAL) &&
+             emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)field_offset));
     }
-    char* full_name = lexical_make_binding_path(e, target->value);
-    const StaticSlot* slot =
-        full_name ? static_slot_lookup(e, str_from(full_name, strlen(full_name))) : NULL;
-    free(full_name);
-    if (!slot) return false;
-    return emit_op(e, VM_OP_GLOBAL) &&
-           emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)field_offset));
+    /* Non-ident target (nested $member or other ref-yielding expr): recursively
+     * obtain the base handle then offset into the ref field. */
+    if (!emit_ref_handle_expr(e, target)) return false;
+    return emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
   }
   return false;
 }
@@ -2072,12 +2106,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       Str resolved = alias_resolve_full(e, node->value, &extra);
       ptrdiff_t base_off = morphl_backend_find_offset(&e->frameInfo, resolved);
       if (base_off == PTRDIFF_MAX) {
-        char* full_name = lexical_make_binding_path(e, resolved);
-        const StaticSlot* slot =
-            full_name
-                ? static_slot_lookup(e, str_from(full_name, strlen(full_name)))
-                : NULL;
-        free(full_name);
+        const StaticSlot* slot = static_slot_lookup_scoped(e, resolved);
         if (slot) {
           const MorphlType* t = unwrap_ref(node->type);
           if (t &&
@@ -2517,18 +2546,21 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             if (!emit_block_decl_initializers_into_handle_slot(e, heap_storage_t, base_block, off))
               return false;
             if (block_has_defer(e, base_block)) {
-              BindingCleanup cleanup = {
-                  .binding_name = name,
-                  .block = base_block,
-                  .block_type = heap_storage_t,
-                  .binding_type = raw_type,
-                  .scope_depth = e->scope_depth,
-                  .run_on_scope_exit = false,
-                  .run_on_free = true,
-              };
-              if (!cleanup_array_push(&e->binding_cleanups, &e->binding_cleanup_count,
-                                      &e->binding_cleanup_capacity, &cleanup))
-                return false;
+              size_t thunk_fidx = func_alloc(e);
+              if (thunk_fidx == SIZE_MAX) return false;
+              /* attach cleanup thunk to this allocation via runtime SET_CLEANUP */
+              if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)off)) return false;
+              if (!emit_op_u32(e, VM_OP_SET_CLEANUP, (uint32_t)thunk_fidx)) return false;
+              /* record thunk for deferred emission */
+              if (e->deferred_cleanup_count >= e->deferred_cleanup_capacity) {
+                if (!vm_grow((void**)&e->deferred_cleanups, &e->deferred_cleanup_capacity,
+                             sizeof(*e->deferred_cleanups), e->deferred_cleanup_count + 1))
+                  return false;
+              }
+              char* slp = strdup(lexical_current_path(e));
+              if (!slp) return false;
+              e->deferred_cleanups[e->deferred_cleanup_count++] =
+                  (struct DeferredCleanupThunk){thunk_fidx, base_block, heap_storage_t, raw_type, slp};
             }
             return true;
           }
@@ -2561,6 +2593,14 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * Walk the inline block's $decl children and store each field directly
        * into the target frame slot, bypassing ENTER/LEAVE sub-scope. */
       if (t && t->kind == MORPHL_TYPE_BLOCK && rhs && rhs->kind == AST_BLOCK) {
+        /* Register in block_decl_map so $new <name> can find the block AST */
+        if (e->block_decl_map_count >= e->block_decl_map_capacity) {
+          if (!vm_grow((void**)&e->block_decl_map, &e->block_decl_map_capacity,
+                       sizeof(*e->block_decl_map), e->block_decl_map_count + 1))
+            return false;
+        }
+        e->block_decl_map[e->block_decl_map_count++] =
+            (struct VmBlockDeclEntry){name, rhs, t};
         if (!emit_block_value_into_slot(e, t, rhs, name, off)) return false;
         if (block_has_defer(e, rhs)) {
           BindingCleanup cleanup = {
@@ -2601,7 +2641,25 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             struct AstNode* base_init =
                 new_base_inline_block_initializer(e, rhs->children[0]);
             if (base_init) {
-              return emit_block_decl_initializers_into_slot(e, t, base_init, off);
+              if (!emit_block_decl_initializers_into_slot(e, t, base_init, off))
+                return false;
+              /* Register cleanup if the template block has $defer nodes */
+              if (block_has_defer(e, base_init)) {
+                BindingCleanup cleanup = {
+                    .binding_name = name,
+                    .block = base_init,
+                    .block_type = t,
+                    .binding_type = raw_type,
+                    .scope_depth = e->scope_depth,
+                    .run_on_scope_exit = true,
+                    .run_on_free = false,
+                };
+                if (!cleanup_array_push(&e->binding_cleanups,
+                                        &e->binding_cleanup_count,
+                                        &e->binding_cleanup_capacity, &cleanup))
+                  return false;
+              }
+              return true;
             }
             return true;
           }
@@ -2634,6 +2692,26 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           }
           /* Block type: apply positional or named field overrides */
           if (t && t->kind == MORPHL_TYPE_BLOCK) {
+            /* Register cleanup for $new if the template block has $defer */
+            {
+              struct AstNode* tmpl_block =
+                  new_base_inline_block_initializer(e, rhs->children[0]);
+              if (tmpl_block && block_has_defer(e, tmpl_block)) {
+                BindingCleanup cleanup = {
+                    .binding_name = name,
+                    .block = tmpl_block,
+                    .block_type = t,
+                    .binding_type = raw_type,
+                    .scope_depth = e->scope_depth,
+                    .run_on_scope_exit = true,
+                    .run_on_free = false,
+                };
+                if (!cleanup_array_push(&e->binding_cleanups,
+                                        &e->binding_cleanup_count,
+                                        &e->binding_cleanup_capacity, &cleanup))
+                  return false;
+              }
+            }
             if (init_node->kind == AST_GROUP) {
               size_t field_byte_off = 0;
               for (size_t fi = 0; fi < t->data.block.layout_field_count &&
@@ -3425,12 +3503,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           value->type->kind == MORPHL_TYPE_REF && value->type->data.ref.is_ref &&
           str_eq(target_name, target->value) && textra == 0;
       if (off == PTRDIFF_MAX + textra) {
-        char* full_name = lexical_make_binding_path(e, target_name);
-        const StaticSlot* slot =
-            full_name
-                ? static_slot_lookup(e, str_from(full_name, strlen(full_name)))
-                : NULL;
-        free(full_name);
+        const StaticSlot* slot = static_slot_lookup_scoped(e, target_name);
         if (slot) {
           if (!emit_op(e, VM_OP_GLOBAL)) return false;
           if (!emit_node(e, value)) return false;
@@ -3543,6 +3616,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             if (!emit_op_i32(e, sop, e->return_slot_offset)) return false;
           }
         }
+        /* run pending function-body $defer statements before returning */
+        if (e->in_function && !emit_func_body_defers(e)) return false;
         return emit_op(e, VM_OP_RET);
       }
 
@@ -3560,16 +3635,6 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (OP_IS("$free")) {
         if (node->child_count < 1 || !node->children[0]) return false;
         AstNode* target = node->children[0];
-        if (target->kind == AST_IDENT) {
-          const BindingCleanup* cleanup =
-              find_binding_cleanup(e, target->value, true);
-          if (cleanup &&
-              !emit_binding_cleanup_block(e, cleanup->binding_name,
-                                          cleanup->block, cleanup->block_type,
-                                          cleanup->binding_type)) {
-            return false;
-          }
-        }
         if (!emit_ref_handle_expr(e, target) && !emit_node(e, target)) return false;
         return emit_op(e, VM_OP_FREE);
       }
@@ -4432,6 +4497,77 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
 /* ── emit a deferred function body ──────────────────────────────────────── */
 
+/* Emit a cleanup thunk for a heap block with $defer.
+ * The thunk takes one param ($self, 8 bytes = the heap handle at frame[-8]) and
+ * runs all $defer expressions from the block in LIFO order via $self field refs. */
+static bool emit_cleanup_thunk(VmEmitter* e, size_t fidx,
+                                const AstNode* block,
+                                const MorphlType* block_type,
+                                const MorphlType* binding_type,
+                                const char* saved_lexical_path) {
+  e->functions.items[fidx].entry_point = (uint32_t)e->code.len;
+  e->functions.items[fidx].param_size  = 8;
+  e->functions.items[fidx].frame_size  = 16;  /* 8 param + 8 body ($parent) */
+
+  /* restore lexical scope so static_slot_lookup_scoped finds scoped names */
+  bool pushed_lexical = false;
+  if (saved_lexical_path && *saved_lexical_path) {
+    char* path_dup = strdup(saved_lexical_path);
+    if (!path_dup) return false;
+    if (!lexical_scope_push_full(e, path_dup)) { free(path_dup); return false; }
+    pushed_lexical = true;
+  }
+
+  /* param frame: $self at frame[-8] */
+  if (!morphl_backend_push_frame(&e->frameInfo)) {
+    if (pushed_lexical) lexical_scope_pop(e);
+    return false;
+  }
+  struct MorphlBackendFrameOffset self_foff = {str_from("$self", 5), 8};
+  if (!morphl_backend_append_offset(&e->frameInfo, self_foff)) {
+    morphl_backend_pop_frame(&e->frameInfo);
+    if (pushed_lexical) lexical_scope_pop(e);
+    return false;
+  }
+  /* body frame: $parent slot at frame[0] */
+  if (!morphl_backend_push_frame(&e->frameInfo)) {
+    morphl_backend_pop_frame(&e->frameInfo);
+    if (pushed_lexical) lexical_scope_pop(e);
+    return false;
+  }
+  struct MorphlBackendFrameOffset parent_foff = {str_from("$parent", 7), 8};
+  if (!morphl_backend_append_offset(&e->frameInfo, parent_foff)) {
+    morphl_backend_pop_frame(&e->frameInfo);
+    morphl_backend_pop_frame(&e->frameInfo);
+    if (pushed_lexical) lexical_scope_pop(e);
+    return false;
+  }
+
+  bool ok = true;
+  ok = ok && emit_enter(e, 8);
+  /* copy hidden_parent arg (frame[-16]) into $parent (frame[0]) */
+  ok = ok && emit_op_i32(e, VM_OP_ILOAD,  -(int32_t)(8 + 8));
+  ok = ok && emit_op_i32(e, VM_OP_ISTORE, 0);
+  /* emit defer expressions in LIFO order, rewritten to use $self as binding */
+  ok = ok && emit_binding_cleanup_block(e, str_from("$self", 5),
+                                        block, block_type, binding_type);
+  if (ok) emit_leave(e, 8);
+  ok = ok && emit_op(e, VM_OP_RET);
+
+  morphl_backend_pop_frame(&e->frameInfo);
+  morphl_backend_pop_frame(&e->frameInfo);
+  if (pushed_lexical) lexical_scope_pop(e);
+  return ok;
+}
+
+/* Emit pending function-body $defer expressions in LIFO order.
+ * Called before each explicit $ret and before the implicit end-of-body exit. */
+static bool emit_func_body_defers(VmEmitter* e) {
+  for (size_t i = e->func_defer_count; i > e->func_defer_base; --i)
+    if (!emit_node(e, e->func_defers[i - 1])) return false;
+  return true;
+}
+
 static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
                                size_t func_idx, Str func_name, Str file_root) {
   if (!func_node || func_node->kind != AST_FUNC) return false;
@@ -4439,6 +4575,9 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
   bool saved_in_function = e->in_function;
   size_t saved_scope_depth = e->scope_depth;
   int32_t saved_return_slot_offset = e->return_slot_offset;
+  size_t saved_func_defer_base  = e->func_defer_base;
+  size_t saved_func_defer_count = e->func_defer_count;
+  e->func_defer_base = e->func_defer_count; /* own defer region starts here */
   e->in_function = true;
   e->scope_depth = 0; /* reset scope tracking for this function body */
   bool pushed_file_root = false;
@@ -4561,6 +4700,12 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
     }
   }
 
+  /* Track whether the fallthrough $defer emission was done inside an AST_BLOCK
+     body (before its anon scope was popped). Static-slot lookups inside deferred
+     expressions require the body's anonymous lexical scope to be active, so we
+     emit them before popping that scope rather than after. */
+  bool fallthrough_defers_done = false;
+
   if (body) {
     if (body->kind == AST_BLOCK) {
       if (!lexical_scope_push_anon(e)) {
@@ -4569,7 +4714,26 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
         return false;
       }
       for (size_t i = 0; i < body->child_count; i++) {
-        if (!emit_node(e, body->children[i])) {
+        struct AstNode* child = body->children[i];
+        /* Collect top-level $defer nodes; emit everything else normally */
+        if (builtin_is_name(e, child, "$defer") && child->child_count > 0 &&
+            child->children[0]) {
+          if (e->func_defer_count >= e->func_defer_capacity) {
+            size_t newcap = e->func_defer_capacity ? e->func_defer_capacity * 2 : 8;
+            struct AstNode** tmp = realloc(e->func_defers,
+                                           newcap * sizeof(*e->func_defers));
+            if (!tmp) {
+              lexical_scope_pop(e);
+              lexical_scope_pop(e);
+              if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
+              morphl_backend_pop_frame(&e->frameInfo);
+              return false;
+            }
+            e->func_defers = tmp;
+            e->func_defer_capacity = newcap;
+          }
+          e->func_defers[e->func_defer_count++] = child->children[0];
+        } else if (!emit_node(e, child)) {
           lexical_scope_pop(e);
           lexical_scope_pop(e);
           if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
@@ -4577,6 +4741,18 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
           return false;
         }
       }
+      /* Emit fallthrough defers HERE, while the body's anon scope is still
+         active. This ensures that static-slot lookups inside defer expressions
+         use the correct lexical path. (If an explicit $ret already emitted
+         them, this produces unreachable dead code — that is fine.) */
+      if (!emit_func_body_defers(e)) {
+        lexical_scope_pop(e);
+        lexical_scope_pop(e);
+        if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
+        morphl_backend_pop_frame(&e->frameInfo);
+        return false;
+      }
+      fallthrough_defers_done = true;
       lexical_scope_pop(e);
     } else {
       if (!emit_node(e, body)) {
@@ -4589,8 +4765,18 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
   }
 
   if (body_scope_sz > 0) {
+    if (!fallthrough_defers_done && !emit_func_body_defers(e)) {
+      lexical_scope_pop(e);
+      morphl_backend_pop_frame(&e->frameInfo);
+      return false;
+    }
     emit_leave(e, (uint32_t)body_scope_sz);
     morphl_backend_pop_frame(&e->frameInfo);
+  } else {
+    if (!fallthrough_defers_done && !emit_func_body_defers(e)) {
+      lexical_scope_pop(e);
+      return false;
+    }
   }
 
   /* implicit RET at end of body */
@@ -4611,6 +4797,8 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
   e->in_function = saved_in_function;
   e->scope_depth = saved_scope_depth;
   e->return_slot_offset = saved_return_slot_offset;
+  e->func_defer_count = saved_func_defer_count;
+  e->func_defer_base  = saved_func_defer_base;
   return true;
 }
 
@@ -4629,6 +4817,7 @@ static void emitter_free(VmEmitter* e) {
   free(e->static_slots);
   free(e->binding_cleanups);
   free(e->static_cleanups);
+  free(e->func_defers);
   while (e->lexical_scope_count > 0) lexical_scope_pop(e);
   free(e->lexical_scopes);
   for (size_t i = 0; i < e->str_count; i++) free(e->str_table[i]);
@@ -4636,6 +4825,10 @@ static void emitter_free(VmEmitter* e) {
   for (size_t i = 0; i < e->native_sym_count; i++) free(e->native_syms[i]);
   free(e->native_syms);
   free(e->impl_entries);
+  free(e->block_decl_map);
+  for (size_t i = 0; i < e->deferred_cleanup_count; i++)
+    free(e->deferred_cleanups[i].saved_lexical_path);
+  free(e->deferred_cleanups);
   morphl_backend_frame_free(&e->frameInfo);
   memset(e, 0, sizeof(*e));
 }
@@ -5301,6 +5494,19 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
   for (size_t i = 0; i < e.deferred_count; i++) {
     if (!emit_function_body(&e, e.deferred[i].node, e.deferred[i].func_idx,
                             e.deferred[i].name, e.deferred[i].file_root)) {
+      emitter_free(&e);
+      if (wrapper_root) {
+        wrapper_root->child_count = 0;
+        ast_free(wrapper_root);
+      }
+      return false;
+    }
+  }
+
+  /* emit all deferred cleanup thunks (for heap blocks with $defer) */
+  for (size_t i = 0; i < e.deferred_cleanup_count; i++) {
+    struct DeferredCleanupThunk* t = &e.deferred_cleanups[i];
+    if (!emit_cleanup_thunk(&e, t->fidx, t->block, t->block_type, t->binding_type, t->saved_lexical_path)) {
       emitter_free(&e);
       if (wrapper_root) {
         wrapper_root->child_count = 0;

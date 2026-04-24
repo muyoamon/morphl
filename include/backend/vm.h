@@ -86,8 +86,9 @@ enum VmOpcode {
   VM_OP_CALLF   = 0x53,  // [i32 off]   indirect call: load func index from frame[off], dispatch
   VM_OP_EXIT    = 0x54,  //             pop i64 from stack, exit program with that value as exit code
   VM_OP_CALLX   = 0x55,  //             pop i64 function index from stack, dispatch (dynamic trait dispatch)
-  VM_OP_HEAP    = 0x56,  // [u32 size] allocate zeroed heap storage, push ref handle
-  VM_OP_FREE    = 0x57,  //             pop ref handle, release heap allocation
+  VM_OP_HEAP        = 0x56,  // [u32 size] allocate zeroed heap storage, push ref handle
+  VM_OP_FREE        = 0x57,  //             pop ref handle, release heap allocation
+  VM_OP_SET_CLEANUP = 0x58,  // [u32 fidx] pop heap handle, store cleanup fidx in allocation
 
   /* ── Reference / indirection ── */
   VM_OP_ADDREF  = 0x60,  // [i32 off]  push stack/static ref handle for frame[off]

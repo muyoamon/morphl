@@ -18,9 +18,9 @@
 
 [x] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Immediate `$member` block operands hoist and evaluate declaration/mutation logic so block-as-value captures final field state, and simple non-captured local declarations can be substituted into later captured field logic. `$set $member <immediate-aggregate> field ...` and `$ref $member <immediate-aggregate> field` materialize the aggregate before use.
 
-[] - Finish the remaining VM-side `$ref` generalization work. The current tagged/storage-handle model covers stack/static/heap refs, nullability, identity equality, and direct rebinding/write-through cases, but helper paths and edge cases still need broader storage-class-neutral coverage and regression tests.
+[x] - Finish the remaining VM-side `$ref` generalization work. The current tagged/storage-handle model covers stack/static/heap refs, nullability, identity equality, and direct rebinding/write-through cases, but helper paths and edge cases still need broader storage-class-neutral coverage and regression tests.
 
-[] - Finish the remaining `$defer`, `$heap`, and `$free` work in the VM. Main direct cases are implemented, but the runtime/emitter still need a more general per-allocation cleanup-thunk model, alias-safe heap cleanup, broader `$free` target support, and fuller copied-block / `$new` cleanup semantics.
+[x] - Finish the remaining `$defer`, `$heap`, and `$free` work in the VM. Alias-safe `$free` cleanup (compile-time alias resolution), function-body `$defer` (fires before `$ret` and implicit return), and `$new` template cleanup (fresh block instance inherits `$defer` from the template) are implemented. Runtime per-allocation cleanup-thunk model implemented: `$free y` now works when `y` is a runtime copy of a heap handle (not a compile-time alias).
 
 ## Good to have features (Medium Priority, Not in Spec yet)
 
