@@ -41,6 +41,9 @@ bool scoped_parser_init(ScopedParserContext* ctx, InternTable* interns, Arena* a
   ctx->arena = arena;
   ctx->use_builtins = true; // Start with builtin-only
   ctx->filename = filename;
+  ctx->import_cache_entries = NULL;
+  ctx->import_cache_count = 0;
+  ctx->import_cache_cap = 0;
   
   // Initialize TypeContext for type checking
   ctx->type_context = type_context_new(arena, interns);
@@ -63,6 +66,11 @@ void scoped_parser_free(ScopedParserContext* ctx) {
   free(ctx->grammar_stack);
   free(ctx->alias_bindings);
   free(ctx->alias_scope_markers);
+  for (size_t i = 0; i < ctx->import_cache_count; ++i) {
+    free((void*)ctx->import_cache_entries[i].canonical_path.ptr);
+    ast_free(ctx->import_cache_entries[i].module_root);
+  }
+  free(ctx->import_cache_entries);
   ctx->grammar_stack = NULL;
   ctx->grammar_stack_size = 0;
   ctx->grammar_stack_cap = 0;
@@ -72,6 +80,9 @@ void scoped_parser_free(ScopedParserContext* ctx) {
   ctx->alias_scope_markers = NULL;
   ctx->alias_scope_depth = 0;
   ctx->alias_scope_cap = 0;
+  ctx->import_cache_entries = NULL;
+  ctx->import_cache_count = 0;
+  ctx->import_cache_cap = 0;
   
   // Free TypeContext (it's allocated from arena, so just reset)
   type_context_free(ctx->type_context);

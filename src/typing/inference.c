@@ -1828,7 +1828,8 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           morphl_error_emit(NULL, &err);
           return NULL;
         }
-        AstNode* module_node = node->children[0];
+        AstNode* module_node =
+            node->children[0] ? node->children[0]->import_module : NULL;
         if (!module_node) return NULL;
         if (!type_context_push_file(ctx, NULL)) {
           return NULL;

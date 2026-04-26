@@ -113,6 +113,7 @@ static const OpcodeInfo opcode_table[256] = {
 typedef struct {
     uint16_t        version_major;
     uint16_t        version_minor;
+    uint16_t        artifact_kind;
     uint32_t        global_frame_size;
     VmFunctionMeta *functions;
     uint32_t        func_count;
@@ -149,14 +150,22 @@ static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
     }
 
     if (!read_u16_le(buf, len, &pos, &mbc->version_major) ||
-        !read_u16_le(buf, len, &pos, &mbc->version_minor)) {
-        fprintf(stderr, "error: truncated header (version)\n");
+        !read_u16_le(buf, len, &pos, &mbc->version_minor) ||
+        !read_u16_le(buf, len, &pos, &mbc->artifact_kind)) {
+        fprintf(stderr, "error: truncated header (version/artifact kind)\n");
         return false;
     }
     if (mbc->version_major != MORPHL_VM_VERSION_MAJOR) {
         fprintf(stderr, "warning: version mismatch (file=%u.%u, reader=%u.%u)\n",
                 mbc->version_major, mbc->version_minor,
                 MORPHL_VM_VERSION_MAJOR, MORPHL_VM_VERSION_MINOR);
+    }
+
+    if (mbc->artifact_kind != MORPHL_VM_ARTIFACT_EXECUTABLE &&
+        mbc->artifact_kind != MORPHL_VM_ARTIFACT_OBJECT) {
+        fprintf(stderr, "error: unsupported artifact kind %u\n",
+                (unsigned)mbc->artifact_kind);
+        return false;
     }
 
     if (!read_u32_le(buf, len, &pos, &mbc->global_frame_size)) {
@@ -252,9 +261,13 @@ static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
 /* ─── printing ─────────────────────────────────────────────────────────────── */
 
 static void print_header(const MbcFile *mbc) {
+    const char* artifact_name =
+        mbc->artifact_kind == MORPHL_VM_ARTIFACT_OBJECT ? "object" : "executable";
     printf("--- Header ---\n");
     printf("  Magic:         MVMB\n");
     printf("  Version:       %u.%u\n", mbc->version_major, mbc->version_minor);
+    printf("  Artifact:      %s (%u)\n", artifact_name,
+           (unsigned)mbc->artifact_kind);
     printf("  Global frame:  %u bytes\n", mbc->global_frame_size);
     printf("\n");
 }

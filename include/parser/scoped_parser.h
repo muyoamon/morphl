@@ -11,6 +11,10 @@
 #include "typing/type_context.h"
 
 typedef struct MorphlAliasBinding MorphlAliasBinding;
+typedef struct MorphlImportCacheEntry {
+  Str canonical_path;
+  AstNode* module_root;
+} MorphlImportCacheEntry;
 
 /**
  * @brief Parse context that maintains a grammar stack for scoped $syntax.
@@ -36,6 +40,9 @@ typedef struct ScopedParserContext {
   bool use_builtins;           /**< Whether current scope uses builtin fallback. */
   TypeContext* type_context;   /**< Type checking context. */
   const char* filename;      /**< Current source file being parsed. */
+  MorphlImportCacheEntry* import_cache_entries;
+  size_t import_cache_count;
+  size_t import_cache_cap;
 } ScopedParserContext;
 
 /**

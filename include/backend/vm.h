@@ -9,6 +9,11 @@
 #define MORPHL_VM_VERSION_MAJOR 0         // Major Version 0 never guarantee backward compatibility
 #define MORPHL_VM_VERSION_MINOR 2
 
+typedef enum {
+  MORPHL_VM_ARTIFACT_EXECUTABLE = 0,
+  MORPHL_VM_ARTIFACT_OBJECT = 1,
+} MorphlVmArtifactKind;
+
 /*
  * Opcode encoding
  * ---------------

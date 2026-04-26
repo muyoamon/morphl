@@ -107,7 +107,8 @@ public:
         f.write("MVMB", 4);
         write_u16(MORPHL_VM_VERSION_MAJOR);
         write_u16(MORPHL_VM_VERSION_MINOR);
-        write_u32(0); // flags
+        write_u16(MORPHL_VM_ARTIFACT_EXECUTABLE);
+        write_u32(0); // global_frame_size
 
         // Function table
         uint32_t func_count = 1 + (uint32_t)extra_funcs_.size();
@@ -231,6 +232,7 @@ static void write_valid_empty_header(std::ofstream& f) {
     f.write("MVMB", 4);
     write_u16(MORPHL_VM_VERSION_MAJOR);
     write_u16(MORPHL_VM_VERSION_MINOR);
+    write_u16(MORPHL_VM_ARTIFACT_EXECUTABLE);
     write_u32(0); // global_frame_size
     write_u32(1); // func_count
     write_u32(0); // entry_point
@@ -685,6 +687,41 @@ static void test_vm_load_rejects_nonterminated_string() {
     printf("PASS test_vm_load_rejects_nonterminated_string\n");
 }
 
+static void test_vm_load_rejects_object_artifact() {
+    std::string path = make_temp_path("morphl_vm_object_artifact");
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    assert(f.is_open());
+    auto write_u16 = [&](uint16_t v) {
+        uint8_t b[2] = {uint8_t(v), uint8_t(v >> 8)};
+        f.write((char*)b, 2);
+    };
+    auto write_u32 = [&](uint32_t v) {
+        uint8_t b[4] = {
+            uint8_t(v),
+            uint8_t(v >> 8),
+            uint8_t(v >> 16),
+            uint8_t(v >> 24),
+        };
+        f.write((char*)b, 4);
+    };
+
+    f.write("MVMB", 4);
+    write_u16(MORPHL_VM_VERSION_MAJOR);
+    write_u16(MORPHL_VM_VERSION_MINOR);
+    write_u16(MORPHL_VM_ARTIFACT_OBJECT);
+    write_u32(0); // global_frame_size
+    write_u32(0); // func_count
+    write_u32(0); // code_len
+    write_u32(0); // str_count
+    write_u32(0); // native_sym_count
+    f.close();
+
+    MorphlVmProgram* prog = NULL;
+    assert(!morphl_vm_program_load(path.c_str(), &prog));
+    std::remove(path.c_str());
+    printf("PASS test_vm_load_rejects_object_artifact\n");
+}
+
 static void test_vm_load_rejects_nonterminated_native_symbol() {
     std::string path = make_temp_path("morphl_vm_bad_native_symbol");
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
@@ -783,6 +820,7 @@ int main(void) {
     test_vm_load_rejects_bad_entry_point();
     test_vm_load_rejects_bad_native_symbol_index();
     test_vm_load_rejects_nonterminated_string();
+    test_vm_load_rejects_object_artifact();
     test_vm_load_rejects_nonterminated_native_symbol();
     test_vm_iload_oob_fails();
     test_vm_callf_oob_fails();

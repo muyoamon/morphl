@@ -138,6 +138,7 @@ typedef struct {
 struct MorphlVmProgram {
     uint16_t        version_major;
     uint16_t        version_minor;
+    uint16_t        artifact_kind;
     uint32_t        global_frame_size;  /* bytes reserved for the global frame at stack[0] */
     VmFunctionMeta* functions;
     uint32_t        func_count;
@@ -235,18 +236,24 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
     if (!prog) { free(buf); return false; }
 
     /* version */
-    uint16_t vmaj, vmin;
+    uint16_t vmaj, vmin, artifact_kind;
     if (!read_u16_le(buf, len, &pos, &vmaj) ||
-        !read_u16_le(buf, len, &pos, &vmin)) goto err;
+        !read_u16_le(buf, len, &pos, &vmin) ||
+        !read_u16_le(buf, len, &pos, &artifact_kind)) goto err;
     if (vmaj != MORPHL_VM_VERSION_MAJOR) {
         RT_ERR(stderr, "vm: unsupported bytecode version %u.%u (expected %u.x)",
                vmaj, vmin, MORPHL_VM_VERSION_MAJOR);
         goto err;
     }
+    if (artifact_kind != MORPHL_VM_ARTIFACT_EXECUTABLE) {
+        RT_ERR(stderr, "vm: '%s' is not a runnable VM executable", path);
+        goto err;
+    }
     prog->version_major = vmaj;
     prog->version_minor = vmin;
+    prog->artifact_kind = artifact_kind;
 
-    /* flags field repurposed as global_frame_size */
+    /* header field after artifact kind stores global_frame_size */
     if (!read_u32_le(buf, len, &pos, &prog->global_frame_size)) goto err;
 
     /* function table */

@@ -750,7 +750,10 @@ static void test_import_block_fields() {
   assert(import_info != NULL && import_info->func != NULL);
   import_info->func(import_info, &parser_ctx, NULL, args, 1);
   assert(args[0] != NULL);
-  assert(args[0]->kind == AST_FILE);
+  assert(args[0]->kind == AST_LITERAL);
+  assert(args[0]->import_module != NULL);
+  assert(args[0]->import_module->kind == AST_FILE);
+  assert(args[0]->import_path.ptr != NULL);
 
   AstNode* import_node = make_builtin(interns, "$import", {args[0]});
   assert(import_node != NULL);
@@ -787,6 +790,46 @@ static void test_import_block_fields() {
   arena_free(&arena);
   std::remove(module_path.c_str());
   printf("\u2713 test_import_block_fields passed\n");
+}
+
+static void test_import_cache_reuses_analyzed_module() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  const char* module_src = "$decl foo 1; $decl bar 2;";
+  std::string module_path = write_temp_file(module_src);
+
+  ScopedParserContext parser_ctx;
+  assert(scoped_parser_init(&parser_ctx, interns, &arena, NULL));
+
+  std::string quoted_path = "\"" + module_path + "\"";
+  Sym import_sym = interns_intern(interns, str_from("$import", 7));
+  const OperatorInfo* import_info = operator_info_lookup(import_sym);
+  assert(import_info != NULL && import_info->func != NULL);
+
+  AstNode* first_arg = make_literal_with_kind(interns, quoted_path.c_str(), LEXER_KIND_STRING);
+  AstNode* first_args[] = {first_arg};
+  import_info->func(import_info, &parser_ctx, NULL, first_args, 1);
+  assert(first_args[0] != NULL);
+  assert(first_args[0]->import_module != NULL);
+
+  AstNode* second_arg = make_literal_with_kind(interns, quoted_path.c_str(), LEXER_KIND_STRING);
+  AstNode* second_args[] = {second_arg};
+  import_info->func(import_info, &parser_ctx, NULL, second_args, 1);
+  assert(second_args[0] != NULL);
+  assert(second_args[0]->import_module != NULL);
+
+  assert(first_args[0]->import_module == second_args[0]->import_module);
+  assert(parser_ctx.import_cache_count == 1);
+
+  ast_free(first_args[0]);
+  ast_free(second_args[0]);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  std::remove(module_path.c_str());
+  printf("\u2713 test_import_cache_reuses_analyzed_module passed\n");
 }
 
 static void test_alias_substitution_parse() {
@@ -1523,6 +1566,7 @@ int main() {
   test_pp_ret();
   test_pp_member();
   test_import_block_fields();
+  test_import_cache_reuses_analyzed_module();
   test_alias_substitution_parse();
   test_storage_shape_and_extern_metadata();
   test_inline_decl_storage_metadata();

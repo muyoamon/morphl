@@ -79,6 +79,37 @@ static void ast_intern_all_strings(AstNode* node, InternTable* interns) {
   }
 }
 
+static struct MorphlImportCacheEntry* import_cache_lookup(
+    ScopedParserContext* ctx, Str canonical_path) {
+  if (!ctx || !canonical_path.ptr) return NULL;
+  for (size_t i = 0; i < ctx->import_cache_count; ++i) {
+    if (str_eq(ctx->import_cache_entries[i].canonical_path, canonical_path)) {
+      return &ctx->import_cache_entries[i];
+    }
+  }
+  return NULL;
+}
+
+static struct MorphlImportCacheEntry* import_cache_store(
+    ScopedParserContext* ctx, Str canonical_path, AstNode* module_root) {
+  if (!ctx || !canonical_path.ptr || !module_root) return NULL;
+  if (ctx->import_cache_count >= ctx->import_cache_cap) {
+    size_t new_cap = ctx->import_cache_cap ? ctx->import_cache_cap * 2 : 4;
+    struct MorphlImportCacheEntry* resized =
+        (struct MorphlImportCacheEntry*)realloc(
+            ctx->import_cache_entries,
+            new_cap * sizeof(struct MorphlImportCacheEntry));
+    if (!resized) return NULL;
+    ctx->import_cache_entries = resized;
+    ctx->import_cache_cap = new_cap;
+  }
+  struct MorphlImportCacheEntry* entry =
+      &ctx->import_cache_entries[ctx->import_cache_count++];
+  entry->canonical_path = canonical_path;
+  entry->module_root = module_root;
+  return entry;
+}
+
 // $import: validate single string argument; keep node for downstream handling
 static MorphlType* pp_action_import(const OperatorInfo* info,
                                     void* global_state,
@@ -96,7 +127,25 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   if (fs_is_relative_path(filename) && ctx->filename) {
     resolved_path = fs_get_absolute_path_from_source(filename, ctx->filename);
   } else {
-    resolved_path = str_from(filename, strlen(filename));
+    char* path_copy = strdup(filename);
+    if (!path_copy) return NULL;
+    resolved_path = str_from(path_copy, strlen(path_copy));
+  }
+  if (!resolved_path.ptr) return NULL;
+
+  struct MorphlImportCacheEntry* cached = import_cache_lookup(ctx, resolved_path);
+  if (cached) {
+    if (args[0]->import_module && !args[0]->import_module_shared) {
+      ast_free(args[0]->import_module);
+    }
+    free((void*)args[0]->import_path.ptr);
+    args[0]->import_module = cached->module_root;
+    args[0]->import_module_shared = true;
+    args[0]->import_path =
+        str_from(strdup(cached->canonical_path.ptr), cached->canonical_path.len);
+    free((void*)resolved_path.ptr);
+    if (!args[0]->import_path.ptr) return NULL;
+    return NULL;
   }
 
   char* source_buffer = NULL;
@@ -104,6 +153,7 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   if (!morphl_file_read_all(resolved_path.ptr, &source_buffer, &source_len)) {
     MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: failed to read '%s'", resolved_path.ptr);
     morphl_error_emit(NULL, &err);
+    free((void*)resolved_path.ptr);
     return NULL;
   }
   struct token* tokens = NULL;
@@ -112,6 +162,7 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
     MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: tokenization failed for '%s'", resolved_path.ptr);
     morphl_error_emit(NULL, &err);
     free(source_buffer);
+    free((void*)resolved_path.ptr);
     return NULL;
   }
 
@@ -119,6 +170,7 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   if (!scoped_parser_init(&module_ctx, ctx->interns, ctx->arena, resolved_path.ptr)) {
     free(tokens);
     free(source_buffer);
+    free((void*)resolved_path.ptr);
     return NULL;
   }
 
@@ -132,6 +184,7 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
   free(source_buffer);
 
   if (!ok || !module_root) {
+    free((void*)resolved_path.ptr);
     return NULL;
   }
 
@@ -140,14 +193,28 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
     MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_PARSE, "$import: expected file AST, got %d", (int)module_root->kind);
     morphl_error_emit(NULL, &err);
     ast_free(module_root);
+    free((void*)resolved_path.ptr);
     return NULL;
   }
-  
 
-  if (args[0]) {
-    ast_free(args[0]);
+  struct MorphlImportCacheEntry* stored =
+      import_cache_store(ctx, resolved_path, module_root);
+  if (!stored) {
+    ast_free(module_root);
+    free((void*)resolved_path.ptr);
+    return NULL;
   }
-  args[0] = module_root;
+  if (args[0]->import_module && !args[0]->import_module_shared) {
+    ast_free(args[0]->import_module);
+  }
+  free((void*)args[0]->import_path.ptr);
+  args[0]->import_module = stored->module_root;
+  args[0]->import_module_shared = true;
+  args[0]->import_path =
+      str_from(strdup(stored->canonical_path.ptr), stored->canonical_path.len);
+  if (!args[0]->import_path.ptr) {
+    return NULL;
+  }
   /* Do NOT run type inference here: the return value is always discarded by
    * apply_preprocessor_if_any, and running inference on the module AST using the
    * parent file's type context (without push_global/push_file) would corrupt

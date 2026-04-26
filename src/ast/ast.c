@@ -55,6 +55,28 @@ AstNode* ast_clone(const AstNode* node) {
   clone->storage_is_mutable = node->storage_is_mutable;
   clone->storage_residence = node->storage_residence;
   clone->extern_symbol = node->extern_symbol;
+  clone->import_module_shared = node->import_module_shared;
+  if (node->import_path.ptr && node->import_path.len > 0) {
+    char* path_copy = (char*)malloc(node->import_path.len + 1);
+    if (!path_copy) {
+      ast_free(clone);
+      return NULL;
+    }
+    memcpy(path_copy, node->import_path.ptr, node->import_path.len);
+    path_copy[node->import_path.len] = '\0';
+    clone->import_path = str_from(path_copy, node->import_path.len);
+  }
+  if (node->import_module) {
+    if (node->import_module_shared) {
+      clone->import_module = node->import_module;
+    } else {
+      clone->import_module = ast_clone(node->import_module);
+      if (!clone->import_module) {
+        ast_free(clone);
+        return NULL;
+      }
+    }
+  }
   for (size_t i = 0; i < node->child_count; ++i) {
     AstNode* child = ast_clone(node->children[i]);
     if (!child) {
@@ -74,6 +96,10 @@ void ast_free(AstNode* node) {
   if (!node) return;
   for (size_t i = 0; i < node->child_count; ++i) {
     ast_free(node->children[i]);
+  }
+  free((void*)node->import_path.ptr);
+  if (node->import_module && !node->import_module_shared) {
+    ast_free(node->import_module);
   }
   free(node->children);
   free(node);

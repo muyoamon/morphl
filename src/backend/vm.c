@@ -671,6 +671,17 @@ static bool emitter_has_import_slot(const VmEmitter* e, Str name) {
   return false;
 }
 
+static AstNode* import_module_root(const AstNode* node) {
+  if (!node || node->kind != AST_BUILTIN || node->child_count < 1 ||
+      !node->children[0]) {
+    return NULL;
+  }
+  AstNode* module_file = node->children[0]->import_module;
+  if (!module_file) return NULL;
+  if (module_file->kind != AST_FILE && module_file->kind != AST_BLOCK) return NULL;
+  return module_file;
+}
+
 static Str current_file_root_prefix(const VmEmitter* e) {
   Str empty = {NULL, 0};
   if (!e) return empty;
@@ -1307,10 +1318,9 @@ static AstNode* inline_member_container(const VmEmitter* e, AstNode* target) {
   }
   AstNode* inner = target->children[0];
   if (inner->kind == AST_BLOCK || inner->kind == AST_FILE) return inner;
-  if (builtin_is_name(e, inner, "$import") && inner->child_count > 0) {
-    AstNode* module_file = inner->children[0];
-    if (module_file &&
-        (module_file->kind == AST_FILE || module_file->kind == AST_BLOCK)) {
+  if (builtin_is_name(e, inner, "$import")) {
+    AstNode* module_file = import_module_root(inner);
+    if (module_file) {
       return module_file;
     }
   }
@@ -1878,6 +1888,29 @@ static AstNode* rewrite_cleanup_expr(const VmEmitter* e, const AstNode* node,
   clone->storage_is_mutable = node->storage_is_mutable;
   clone->storage_residence = node->storage_residence;
   clone->extern_symbol = node->extern_symbol;
+  clone->import_module_shared = node->import_module_shared;
+  clone->import_path = node->import_path;
+  if (node->import_path.ptr && node->import_path.len > 0) {
+    char* path_copy = (char*)malloc(node->import_path.len + 1);
+    if (!path_copy) {
+      ast_free(clone);
+      return NULL;
+    }
+    memcpy(path_copy, node->import_path.ptr, node->import_path.len);
+    path_copy[node->import_path.len] = '\0';
+    clone->import_path = str_from(path_copy, node->import_path.len);
+  }
+  if (node->import_module) {
+    if (node->import_module_shared) {
+      clone->import_module = node->import_module;
+    } else {
+      clone->import_module = ast_clone(node->import_module);
+      if (!clone->import_module) {
+        ast_free(clone);
+        return NULL;
+      }
+    }
+  }
   for (size_t i = 0; i < node->child_count; ++i) {
     AstNode* child = rewrite_cleanup_expr(e, node->children[i], binding_name, block_type,
                                           binding_type);
@@ -2975,9 +3008,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       }
 
       /* emit RHS expression */
-      bool rhs_is_import = builtin_is_name(e, rhs, "$import") &&
-                           rhs->child_count >= 1 && rhs->children[0] &&
-                           rhs->children[0]->kind == AST_FILE;
+      bool rhs_is_import =
+          builtin_is_name(e, rhs, "$import") && import_module_root(rhs) != NULL;
       if (rhs_is_import) {
         if (!lexical_scope_push_named(e, name)) return false;
         bool ok = emit_node(e, rhs);
@@ -4455,8 +4487,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * parent AST_DECL handler; we find its frame offset and use
        * global_frame_size + m_off as the slot value. */
       if (OP_IS("$import")) {
-        if (node->child_count < 1 || !node->children[0]) return false;
-        struct AstNode* module_file = node->children[0];
+        struct AstNode* module_file = import_module_root(node);
+        if (!module_file) return false;
         /* emit the module's initialization code; the parent AST_DECL handler
          * handles writing the $modules global slot after this returns */
         return emit_node(e, module_file);
@@ -5267,15 +5299,15 @@ static bool collect_static_slots(VmEmitter* e, struct AstNode* node) {
     case AST_DECL: {
       if (node->child_count >= 2 && node->children[0] &&
           node->children[0]->kind == AST_IDENT &&
-          builtin_is_name(e, node->children[1], "$import") &&
-          node->children[1]->child_count >= 1 &&
-          node->children[1]->children[0] &&
-          node->children[1]->children[0]->kind == AST_FILE) {
-        if (!lexical_scope_push_named(e, node->children[0]->value))
-          return false;
-        bool ok = collect_static_slots(e, node->children[1]->children[0]);
-        lexical_scope_pop(e);
-        return ok;
+          builtin_is_name(e, node->children[1], "$import")) {
+        AstNode* module_root = import_module_root(node->children[1]);
+        if (module_root) {
+          if (!lexical_scope_push_named(e, node->children[0]->value))
+            return false;
+          bool ok = collect_static_slots(e, module_root);
+          lexical_scope_pop(e);
+          return ok;
+        }
       }
       if (node->child_count >= 2 &&
           node->storage_residence == MORPHL_STORAGE_STATIC) {
@@ -5544,6 +5576,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
   ok = ok && bytes_push(&file, MORPHL_VM_MAGIC, 4);
   ok = ok && bytes_push_u16_le(&file, MORPHL_VM_VERSION_MAJOR);
   ok = ok && bytes_push_u16_le(&file, MORPHL_VM_VERSION_MINOR);
+  ok = ok && bytes_push_u16_le(&file, MORPHL_VM_ARTIFACT_EXECUTABLE);
   ok = ok && bytes_push_u32_le(
                  &file, (uint32_t)e.global_frame_size); /* global_frame_size */
 

@@ -2,11 +2,11 @@
 
 ## Implementing Features (Highest Priority):
 
-[] - Split VM artifacts into non-runnable `.mplo` object files and runnable `.mple` executables, including header-level kind/version validation and runtime rejection of `.mplo` inputs.
+[x] - Split VM artifacts into non-runnable `.mplo` object files and runnable `.mple` executables, including header-level kind/version validation and runtime rejection of `.mplo` inputs.
 
-[] - Change VM import lowering so `$import` keeps canonical-path/type-analysis metadata without replacing the importer-visible node with an embedded `AST_FILE` for runtime emission.
+[x] - Change VM import lowering so `$import` keeps canonical-path/type-analysis metadata without replacing the importer-visible node with an embedded `AST_FILE` for runtime emission.
 
-[] - Add compile-session imported-module caching and canonical-path identity tracking so repeated imports of the same module reuse one analyzed module unit and one link-time module identity.
+[x] - Add compile-session imported-module caching and canonical-path identity tracking so repeated imports of the same module reuse one analyzed module unit and one link-time module identity.
 
 [] - Emit `.mplo` from the VM backend with module-local code/function/global metadata, import/export tables, relocation records, and module-init metadata.
 

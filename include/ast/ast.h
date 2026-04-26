@@ -49,6 +49,9 @@ typedef struct AstNode {
   bool storage_is_mutable;
   MorphlStorageResidence storage_residence;
   Str extern_symbol;
+  Str import_path;
+  struct AstNode* import_module;
+  bool import_module_shared;
 } AstNode;
 
 AstNode* ast_new(AstKind kind);
