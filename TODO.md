@@ -1,5 +1,25 @@
 # TODO
 
+## Implementing Features (Highest Priority):
+
+[] - Split VM artifacts into non-runnable `.mplo` object files and runnable `.mple` executables, including header-level kind/version validation and runtime rejection of `.mplo` inputs.
+
+[] - Change VM import lowering so `$import` keeps canonical-path/type-analysis metadata without replacing the importer-visible node with an embedded `AST_FILE` for runtime emission.
+
+[] - Add compile-session imported-module caching and canonical-path identity tracking so repeated imports of the same module reuse one analyzed module unit and one link-time module identity.
+
+[] - Emit `.mplo` from the VM backend with module-local code/function/global metadata, import/export tables, relocation records, and module-init metadata.
+
+[] - Add a static VM linker (`mpll`) that consumes `.mplo` inputs, resolves/deduplicates modules by canonical path, assigns final executable-wide indices/offsets, and writes `.mple`.
+
+[] - Synthesize linked startup/module initialization so each deduplicated module initializes once in dependency order before root top-level execution or `main` dispatch.
+
+[] - Make VM CLI/tooling follow the new split: `morphlc -c` compiles only to `.mplo`, `morphlc` remains compile+link+run sugar, `mplvm` runs `.mple`, and `mbc_reader` is renamed to `mplinsp`.
+
+[] - Rework `$global.$modules` and imported module access so all import sites of the same canonical module resolve to the same linked module slot/base offset and shared module statics.
+
+[] - Add parser, typing, linker, runtime, and CLI regression coverage for object/executable separation, once-only module initialization, canonical-path deduplication, and the new VM tools.
+
 ## In Spec Features (High Priority):
 
 [x] - Make `$inline` a true non-storage storage descriptor. VM-side `$member $inline { ... } <fieldname>` collapse works for declaration-only blocks/imports, including `$alias <name> $inline $import "<mod-path>"`, and it can resolve dependencies on earlier declarations statically. Runtime-dependent inline logic emits a warning before the hard failure. Direct `$decl x $inline expr` remains ordinary storage as specified.
