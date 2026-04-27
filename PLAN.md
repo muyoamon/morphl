@@ -80,7 +80,7 @@ Chosen defaults:
 - Synthesize executable startup so that:
   - executable global metadata is initialized first
   - linked module init runs once per deduplicated module in dependency order
-  - root program top-level execution or synthesized `main` dispatch runs after module initialization
+  - root program top-level execution runs after module initialization
 - Emit one final `$global.$modules` table in the executable, with one slot per deduplicated linked module instance.
 
 ### Runtime
@@ -133,7 +133,7 @@ Use these milestones as the implementation order and as the matching checklist e
 3. Add compile-session imported-module caching and canonical-path identity tracking so repeated imports of the same module reuse one analyzed module unit and one link-time module identity.
 4. Emit `.mplo` from the VM backend with module-local code/function/global metadata, import/export tables, relocation records, and module-init metadata.
 5. Add a static VM linker (`mpll`) that consumes `.mplo` inputs, resolves/deduplicates modules by canonical path, assigns final executable-wide indices/offsets, and writes `.mple`.
-6. Synthesize linked startup/module initialization so each deduplicated module initializes once in dependency order before root top-level execution or synthesized `main` dispatch.
+6. Synthesize linked startup/module initialization so each deduplicated module initializes once in dependency order before root top-level execution.
 7. Make VM CLI/tooling follow the new split: `morphlc -c` compiles only to `.mplo`, `morphlc` remains compile+link+run sugar, `mplvm` runs `.mple`, and `mbc_reader` is renamed to `mplinsp`.
 8. Rework `$global.$modules` and imported module access so all import sites of the same canonical module resolve to the same linked module slot/base offset and shared module statics.
 9. Add parser, typing, linker, runtime, and CLI regression coverage for object/executable separation, once-only module initialization, canonical-path deduplication, and the new VM tools.

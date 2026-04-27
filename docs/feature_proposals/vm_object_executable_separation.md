@@ -166,7 +166,7 @@ During linking, the executable startup sequence is synthesized as:
 
 1. initialize executable global metadata
 2. initialize each deduplicated module exactly once in dependency order
-3. execute the root program top-level body or synthesized `main` dispatch
+3. execute the root program top-level body
 
 Because repeated imports of the same canonical module resolve to one linked module instance, all import sites share the same module slot and base offset.
 
@@ -242,6 +242,8 @@ This proposal does not include:
 - speculative changes to the language spec beyond documenting the new VM import/runtime model
 
 V1 is strictly about static linking, object/executable separation, and once-only module initialization in the VM backend.
+
+Implicit `main` dispatch is not part of this design. If the toolchain later adds user-defined build entry selection, that entry should be explicit rather than synthesized by the VM backend or linker.
 
 ---
 

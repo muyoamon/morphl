@@ -699,46 +699,25 @@ static void test_e2e_exit_requires_arg() {
     printf("PASS test_e2e_exit_requires_arg\n");
 }
 
-/* Spec §main: top-level main auto-called, return value used as exit code */
-static void test_e2e_main_autocall() {
+static void test_e2e_main_is_not_autocalled() {
     int rc = compile_and_run(
         "$decl main $func () {\n"
         "    $ret 7;\n"
         "};\n"
     );
-    assert(rc == 7);
-    printf("PASS test_e2e_main_autocall\n");
-}
-
-/* Spec §main: main returning 0 produces exit code 0 */
-static void test_e2e_main_returns_zero() {
-    int rc = compile_and_run(
-        "$decl main $func () {\n"
-        "    $ret 0;\n"
-        "};\n"
-    );
     assert(rc == 0);
-    printf("PASS test_e2e_main_returns_zero\n");
+    printf("PASS test_e2e_main_is_not_autocalled\n");
 }
 
-static void test_e2e_main_rejects_explicit_args() {
+static void test_e2e_main_is_ordinary_binding() {
     int rc = compile_and_run(
-        "$decl main $func ($decl argc 0) {\n"
-        "    $ret 0;\n"
+        "$decl main $static $func ($decl argc 0) {\n"
+        "    $ret argc;\n"
         "};\n"
+        "$exit $call $member $member $file $$statics main 9;\n"
     );
-    assert(rc == -1);
-    printf("PASS test_e2e_main_rejects_explicit_args\n");
-}
-
-static void test_e2e_main_rejects_static_storage() {
-    int rc = compile_and_run(
-        "$decl main $static $func () {\n"
-        "    $ret 0;\n"
-        "};\n"
-    );
-    assert(rc == -1);
-    printf("PASS test_e2e_main_rejects_static_storage\n");
+    assert(rc == 9);
+    printf("PASS test_e2e_main_is_ordinary_binding\n");
 }
 
 // ── $while / $and / $or / $not / $break / $continue ─────────────────────────
@@ -2500,10 +2479,8 @@ int main(void) {
     test_e2e_exit_zero();
     test_e2e_exit_nonzero();
     test_e2e_exit_requires_arg();
-    test_e2e_main_autocall();
-    test_e2e_main_returns_zero();
-    test_e2e_main_rejects_explicit_args();
-    test_e2e_main_rejects_static_storage();
+    test_e2e_main_is_not_autocalled();
+    test_e2e_main_is_ordinary_binding();
     test_e2e_while_basic();
     test_e2e_while_no_iter();
     test_e2e_if_int_condition();

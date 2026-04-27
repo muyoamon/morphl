@@ -273,7 +273,7 @@ When a block's lifetime is extended by capture, the defer list follows the lifet
 - block captured by `$static` — defers run on normal program termination
 - block captured and then moved to `$heap` — defers run when `$free` releases the allocation
 
-For `$static`, "normal program termination" means the program reaches the end of top-level execution or returns normally from `main`. Immediate `$exit` does not guarantee static deferred cleanup in v1.
+For `$static`, "normal program termination" means the program reaches the end of top-level execution. Immediate `$exit` does not guarantee static deferred cleanup in v1.
 
 For heap-backed captured blocks, the implementation attaches a compiler-generated cleanup thunk to the allocation. `$free` invokes that thunk exactly once before releasing the allocation.
 
@@ -1154,26 +1154,24 @@ Rules:
 - `$exit` can appear anywhere in top-level code or inside a function.
 - `$exit` is immediate in v1 and does not guarantee deferred cleanup for longer-lived static bindings.
 
-### 9.6 `main` — Program Entry Point
+### 9.6 Program Entry
 
-If a top-level declaration named `main` is present and has the signature `() => i32`, the VM backend automatically calls it after all top-level statements have executed, and uses its return value as the process exit code.
+Program execution begins at top-level code.
+
+- Top-level statements execute in source order.
+- `$exit expr` terminates execution immediately with the given exit code.
+- If top-level execution reaches the end without `$exit`, the VM exits with code `0` on `HALT`.
+- A declaration named `main` has no implicit entrypoint behavior. It is an ordinary binding unless a future build configuration explicitly selects it as an entry symbol.
+
+Example:
 
 ```
-$decl main $func () {
-    // program logic
-    $ret 0;   // exit code
+$decl helper $func () {
+    $ret 7;
 };
+
+$exit $call helper ();
 ```
-
-Constraints enforced at compile time:
-- `main` **must** have return type `i32`. Any other return type is a compile error.
-- `main` takes no explicit arguments (the hidden `$parent` argument is always present).
-- If no `main` is declared, top-level code runs and exits with code 0 on `HALT`.
-
-Interaction with `$exit`:
-- `$exit` within `main` exits immediately with the given code, bypassing the return value.
-- `$exit` at top-level (outside `main`) exits before `main` is called.
-- Simple scripts with neither `main` nor `$exit` run to completion and exit 0.
 
 ### 9.7 Function Type Signature
 
@@ -1906,7 +1904,7 @@ JNULL <label>      — jump if top of stack is $null reference
 EXIT               — pop i64 from stack; exit the process with that value as exit code
 ```
 
-`EXIT` is emitted by `$exit expr` and by the `main` auto-call convention. It unconditionally terminates the VM and propagates the exit code to the host OS.
+`EXIT` is emitted by `$exit expr`. It unconditionally terminates the VM and propagates the exit code to the host OS.
 
 ### 13.12 Design Notes
 

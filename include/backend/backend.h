@@ -11,6 +11,7 @@ typedef struct {
     AstNode* tree;          ///< The AST to compile
     const char* out_file;   ///< Output file path
     TypeContext* type_context; ///< Type context for type information
+    bool vm_emit_object;    ///< VM backend: emit object format regardless of path suffix
 } MorphlBackendContext;
 
 enum MorphlBackendType {
@@ -32,4 +33,3 @@ bool morphl_register_backend(enum MorphlBackendType type);
 bool morphl_compile(MorphlBackendContext* context);
 
 #endif // MORPHL_BACKEND_BACKEND_H_
-

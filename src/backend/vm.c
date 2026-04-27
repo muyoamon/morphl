@@ -271,8 +271,6 @@ typedef struct VmEmitter {
   size_t str_count, str_capacity;
   /* true while emitting a deferred function body (false for top-level) */
   bool in_function;
-  /* function table index of top-level 'main', or SIZE_MAX if not declared */
-  size_t main_func_fidx;
   bool emit_object;
   /* global frame: 32 bytes fixed ($argc,$argv,$env,$entry) + 8 bytes per
    * $import */
@@ -1342,18 +1340,6 @@ static Str metadata_op_string(const VmEmitter* e, const AstNode* node) {
     return node->value.ptr ? node->value : str_from("", 0);
   }
   return str_from("", 0);
-}
-
-static bool is_main_function_type(const MorphlType* t) {
-  t = unwrap_ref((MorphlType*)t);
-  if (!t || t->kind != MORPHL_TYPE_FUNC || !t->data.func.return_type ||
-      t->data.func.return_type->kind != MORPHL_TYPE_INT ||
-      t->data.func.param_count != 1 || !t->data.func.param_types) {
-    return false;
-  }
-  const MorphlType* params = unwrap_ref((MorphlType*)t->data.func.param_types[0]);
-  return params && params->kind == MORPHL_TYPE_GROUP &&
-         params->data.group.elem_count == 0;
 }
 
 static bool collect_inline_param_bindings(
@@ -2912,19 +2898,6 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
         e->deferred[e->deferred_count++] =
             (DeferredFunc){rhs, fidx, name, current_file_root_prefix(e)};
-        /* record 'main' for auto-call injection (top-level only) */
-        if (!e->in_function && name.len == 4 &&
-            memcmp(name.ptr, "main", 4) == 0) {
-          /* validate that main has signature () => i32 */
-          const MorphlType* fn_type = unwrap_ref(node->type);
-          if (!is_main_function_type(fn_type)) {
-            VM_ERR(node,
-                   "'main' must have signature () => i32 with no explicit "
-                   "arguments");
-            return false;
-          }
-          e->main_func_fidx = fidx;
-        }
         /* store function table index as i64 in frame */
         if (!node->contributes_to_layout) return true;
         if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
@@ -5763,7 +5736,8 @@ static bool collect_static_slots(VmEmitter* e, struct AstNode* node) {
 
 bool morphl_backend_func_vm(MorphlBackendContext* context) {
   if (!context || !context->out_file || !context->tree) return false;
-  bool emit_object = path_has_suffix(context->out_file, ".mplo");
+  bool emit_object =
+      context->vm_emit_object || path_has_suffix(context->out_file, ".mplo");
 
   struct AstNode* emit_root = context->tree;
   struct AstNode* wrapper_root = NULL;
@@ -5785,7 +5759,6 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
   e.emit_object = emit_object;
   e.interns = context->type_context ? context->type_context->interns : NULL;
   e.type_ctx = context->type_context;
-  e.main_func_fidx = SIZE_MAX;
   e.frameInfo = morphl_backend_frame_init();
   if (!e.frameInfo.root) {
     emitter_free(&e);
@@ -5870,20 +5843,6 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     }
     return false;
   }
-  /* if a top-level 'main : () => i32' was declared, auto-call it and exit */
-  if (!emit_object && e.main_func_fidx != SIZE_MAX) {
-    /* RESERVE 8 (i32 return slot), ADDREF 0 (hidden parent), CALL main, EXIT */
-    if (!emit_op_u32(&e, VM_OP_RESERVE, 8) ||
-        !emit_op_i32(&e, VM_OP_ADDREF, 0) ||
-        !emit_op_u32(&e, VM_OP_CALL, (uint32_t)e.main_func_fidx)) {
-      emitter_free(&e);
-      if (wrapper_root) {
-        wrapper_root->child_count = 0;
-        ast_free(wrapper_root);
-      }
-      return false;
-    }
-  }
 
   if (!emit_object) {
     for (size_t i = e.static_cleanup_count; i > 0; --i) {
@@ -5897,17 +5856,6 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
         }
         return false;
       }
-    }
-  }
-
-  if (!emit_object && e.main_func_fidx != SIZE_MAX) {
-    if (!emit_op(&e, VM_OP_EXIT)) {
-      emitter_free(&e);
-      if (wrapper_root) {
-        wrapper_root->child_count = 0;
-        ast_free(wrapper_root);
-      }
-      return false;
     }
   }
 

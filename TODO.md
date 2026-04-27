@@ -20,9 +20,11 @@
 
 [x] - Finish linker/runtime integration for shared module instances so `$global.$modules` and imported module bindings resolve to the same linked module base offset and shared statics.
 
-[] - Synthesize linked startup/module initialization so each deduplicated module initializes once in dependency order before root top-level execution or `main` dispatch.
+[x] - Synthesize linked startup/module initialization so each deduplicated module initializes once in dependency order before root top-level execution.
 
-[] - Make VM CLI/tooling follow the new split: `morphlc -c` compiles only to `.mplo`, `morphlc` remains compile+link+run sugar, `mplvm` runs `.mple`, and `mbc_reader` is renamed to `mplinsp`.
+[x] - Remove implicit VM `main` dispatch support so linked and direct VM execution use explicit root top-level execution only, with any future entry selection handled by build configuration rather than backend synthesis.
+
+[x] - Make VM CLI/tooling follow the new split: `morphlc -c` compiles only to `.mplo`, `morphlc` remains compile+link+run sugar, `mplvm` runs `.mple`, and `mbc_reader` is renamed to `mplinsp`.
 
 [] - Rework `$global.$modules` and imported module access so all import sites of the same canonical module resolve to the same linked module slot/base offset and shared module statics.
 
@@ -42,7 +44,7 @@
 
 [x] - Make `$new` fully match the SPEC's "any type expression" contract. Declaration-context VM emission supports non-identifier base expressions via the inferred target type, including inline block literals and imported/member-derived block types, with 2-arg initializers. Value-context aggregate `$new` works when consumed through `$member`/`$ref $member`, including imported/member-derived type expressions, arrays, and nested `$ref` initializers.
 
-[x] - Enforce the full `main` entry-point contract from the SPEC. The VM checks `main` return type, but the spec also requires no explicit arguments.
+[x] - Align the VM and `SPEC.md` on explicit entry semantics: remove implicit `main` dispatch, treat top-level execution as the default entry model, and leave future entry selection to explicit build configuration.
 
 [x] - Makes keywords that take storage-expression as operand e.g., `$set`, `$member` able to take immediate storage-expression operand as valid e.g., `$member {$decl x 0;} x;` Immediate `$member` block operands hoist and evaluate declaration/mutation logic so block-as-value captures final field state, and simple non-captured local declarations can be substituted into later captured field logic. `$set $member <immediate-aggregate> field ...` and `$ref $member <immediate-aggregate> field` materialize the aggregate before use.
 

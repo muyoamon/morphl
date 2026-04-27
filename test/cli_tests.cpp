@@ -31,6 +31,14 @@ static std::string read_file(const std::string& path) {
   return buffer.str();
 }
 
+static std::string write_file(const std::string& path, const std::string& content) {
+  std::ofstream out(path, std::ios::trunc);
+  assert(out.is_open());
+  out << content;
+  out.close();
+  return path;
+}
+
 static int run_command_capture(const std::string& command,
                                const std::string& output_path) {
   std::string shell_command = command + " >" + output_path + " 2>&1";
@@ -47,7 +55,7 @@ static std::string quote_arg(const std::string& value) {
 static void test_default_vm_output() {
   std::string temp_dir = make_temp_dir();
   std::string log_path = temp_dir + "/default.log";
-  std::string output_path = temp_dir + "/out.mbc";
+  std::string output_path = temp_dir + "/out.mple";
   std::string source_path = std::string(MORPHL_SOURCE_DIR) + "/examples/minimal.mpl";
 
   std::string command = "cd " + quote_arg(temp_dir) + " && " +
@@ -58,14 +66,14 @@ static void test_default_vm_output() {
   assert(file_exists(output_path));
 
   std::string output = read_file(log_path);
-  assert(output.find("output written to out.mbc") != std::string::npos);
-  assert(output.find("executing VM bytecode from out.mbc") != std::string::npos);
+  assert(output.find("output written to out.mple") != std::string::npos);
+  assert(output.find("executing VM bytecode from out.mple") != std::string::npos);
 }
 
 static void test_compile_only_vm_output() {
   std::string temp_dir = make_temp_dir();
   std::string log_path = temp_dir + "/compile_only.log";
-  std::string output_path = temp_dir + "/out.mbc";
+  std::string output_path = temp_dir + "/out.mplo";
   std::string source_path = std::string(MORPHL_SOURCE_DIR) + "/examples/minimal.mpl";
 
   std::string command = "cd " + quote_arg(temp_dir) + " && " +
@@ -76,7 +84,7 @@ static void test_compile_only_vm_output() {
   assert(file_exists(output_path));
 
   std::string output = read_file(log_path);
-  assert(output.find("output written to out.mbc") != std::string::npos);
+  assert(output.find("output written to out.mplo") != std::string::npos);
   assert(output.find("executing VM bytecode from") == std::string::npos);
 }
 
@@ -101,7 +109,7 @@ static void test_custom_c_output() {
 static void test_custom_vm_output_runs() {
   std::string temp_dir = make_temp_dir();
   std::string log_path = temp_dir + "/custom_vm.log";
-  std::string output_path = temp_dir + "/custom_output.mbc";
+  std::string output_path = temp_dir + "/custom_output.mple";
   std::string source_path = std::string(MORPHL_SOURCE_DIR) + "/examples/minimal.mpl";
 
   std::string command = "cd " + quote_arg(temp_dir) + " && " +
@@ -114,6 +122,81 @@ static void test_custom_vm_output_runs() {
 
   std::string output = read_file(log_path);
   assert(output.find("executing VM bytecode from " + output_path) != std::string::npos);
+}
+
+static void test_vm_compile_links_import_graph() {
+  std::string temp_dir = make_temp_dir();
+  std::string dep_path = temp_dir + "/dep.mpl";
+  std::string root_path = temp_dir + "/root.mpl";
+  std::string exe_path = temp_dir + "/linked.mple";
+  std::string log_path = temp_dir + "/linked.log";
+
+  write_file(dep_path,
+             "$decl dep_func $func () {\n"
+             "  $ret 9;\n"
+             "};\n");
+  write_file(root_path,
+             std::string("$decl dep $import \"") + dep_path + "\";\n" +
+                 "$exit $call $member dep dep_func ();\n");
+
+  std::string command = "cd " + quote_arg(temp_dir) + " && " +
+                        quote_arg(MORPHLC_PATH) + " -o " +
+                        quote_arg(exe_path) + " " + quote_arg(root_path);
+  int exit_code = run_command_capture(command, log_path);
+
+  assert(exit_code == 9);
+  assert(file_exists(exe_path));
+
+  std::string output = read_file(log_path);
+  assert(output.find("output written to " + exe_path) != std::string::npos);
+  assert(output.find("executing VM bytecode from " + exe_path) != std::string::npos);
+}
+
+static void test_mplvm_runs_executable() {
+  std::string temp_dir = make_temp_dir();
+  std::string source_path = temp_dir + "/prog.mpl";
+  std::string exe_path = temp_dir + "/prog.mple";
+  std::string compile_log = temp_dir + "/compile.log";
+  std::string run_log = temp_dir + "/run.log";
+
+  write_file(source_path, "$exit 7;\n");
+
+  std::string compile_command =
+      "cd " + quote_arg(temp_dir) + " && " + quote_arg(MORPHLC_PATH) +
+      " -o " + quote_arg(exe_path) + " " + quote_arg(source_path);
+  int compile_exit = run_command_capture(compile_command, compile_log);
+  assert(compile_exit == 7);
+  assert(file_exists(exe_path));
+
+  std::string run_command =
+      quote_arg(MPLVM_PATH) + " " + quote_arg(exe_path);
+  int run_exit = run_command_capture(run_command, run_log);
+  assert(run_exit == 7);
+}
+
+static void test_mplinsp_reads_object_file() {
+  std::string temp_dir = make_temp_dir();
+  std::string source_path = temp_dir + "/prog.mpl";
+  std::string object_path = temp_dir + "/prog.mplo";
+  std::string compile_log = temp_dir + "/compile.log";
+  std::string insp_log = temp_dir + "/insp.log";
+
+  write_file(source_path, "$decl value 1;\n");
+
+  std::string compile_command =
+      "cd " + quote_arg(temp_dir) + " && " + quote_arg(MORPHLC_PATH) +
+      " -c -o " + quote_arg(object_path) + " " + quote_arg(source_path);
+  int compile_exit = run_command_capture(compile_command, compile_log);
+  assert(compile_exit == 0);
+  assert(file_exists(object_path));
+
+  std::string insp_command =
+      quote_arg(MPLINSP_PATH) + " " + quote_arg(object_path);
+  int insp_exit = run_command_capture(insp_command, insp_log);
+  assert(insp_exit == 0);
+
+  std::string output = read_file(insp_log);
+  assert(output.find("Artifact:      object") != std::string::npos);
 }
 
 static void test_c_backend_is_compile_only() {
@@ -170,6 +253,9 @@ int main() {
   test_compile_only_vm_output();
   test_custom_c_output();
   test_custom_vm_output_runs();
+  test_vm_compile_links_import_graph();
+  test_mplvm_runs_executable();
+  test_mplinsp_reads_object_file();
   test_c_backend_is_compile_only();
   test_missing_output_filename();
   test_run_flag_removed();

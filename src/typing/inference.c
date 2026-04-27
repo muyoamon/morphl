@@ -45,18 +45,6 @@ static bool is_truthy_condition_type(const MorphlType* t) {
   return t && (t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_INT);
 }
 
-static bool is_main_signature(const MorphlType* t) {
-  t = unwrap_ref((MorphlType*)t);
-  if (!t || t->kind != MORPHL_TYPE_FUNC || !t->data.func.return_type ||
-      t->data.func.return_type->kind != MORPHL_TYPE_INT ||
-      t->data.func.param_count != 1 || !t->data.func.param_types) {
-    return false;
-  }
-  MorphlType* params = unwrap_ref(t->data.func.param_types[0]);
-  return params && params->kind == MORPHL_TYPE_GROUP &&
-         params->data.group.elem_count == 0;
-}
-
 static bool is_string_literal(TypeContext* ctx, const AstNode* node) {
   if (!ctx || !node || node->kind != AST_LITERAL || !node->op) return false;
   Sym string_sym = interns_intern(ctx->interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
@@ -1420,41 +1408,12 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         return NULL;
       }
 
-      Str decl_name = interns_lookup(ctx->interns, var_sym);
-      if (decl_name.len == 4 && memcmp(decl_name.ptr, "main", 4) == 0) {
-        MorphlType* current_this = type_context_get_this(ctx);
-        bool is_toplevel_decl =
-            (ctx->file_type == NULL && current_this == NULL) ||
-            (ctx->file_type != NULL && current_this == ctx->file_type);
-        if (!is_toplevel_decl) {
-          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
-                                          "'main' must be declared at top level");
-          morphl_error_emit(NULL, &err);
-          return NULL;
-        }
-        if (!is_main_signature(init_type)) {
-          MorphlError err = MORPHL_ERR_AT(
-              node, MORPHL_E_TYPE,
-              "'main' must have signature () => i32 with no explicit arguments");
-          morphl_error_emit(NULL, &err);
-          return NULL;
-        }
-      }
-
       apply_storage_metadata(ctx, init_node, var_sym, init_type);
       node->contributes_to_shape = init_node->contributes_to_shape;
       node->contributes_to_layout = init_node->contributes_to_layout;
       node->storage_is_mutable = init_node->storage_is_mutable;
       node->storage_residence = init_node->storage_residence;
       node->extern_symbol = default_extern_symbol(init_node);
-
-      if (decl_name.len == 4 && memcmp(decl_name.ptr, "main", 4) == 0 &&
-          node->storage_residence == MORPHL_STORAGE_STATIC) {
-        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
-                                        "'main' cannot use $static storage");
-        morphl_error_emit(NULL, &err);
-        return NULL;
-      }
 
       ForwardEntry* forward = pending_forward;
       if (forward && !forward->resolved) {
