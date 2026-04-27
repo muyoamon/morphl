@@ -113,6 +113,22 @@ static bool bytes_push_i64_le(VmBytes* b, int64_t v) {
   return bytes_push(b, raw, 8);
 }
 
+static bool bytes_push_len_string(VmBytes* b, Str s) {
+  uint32_t slen = (uint32_t)(s.ptr ? s.len : 0);
+  char nul = '\0';
+  return bytes_push_u32_le(b, slen) &&
+         (slen == 0 || bytes_push(b, s.ptr, slen)) &&
+         bytes_push(b, &nul, 1);
+}
+
+static bool path_has_suffix(const char* path, const char* suffix) {
+  if (!path || !suffix) return false;
+  size_t path_len = strlen(path);
+  size_t suffix_len = strlen(suffix);
+  if (path_len < suffix_len) return false;
+  return memcmp(path + path_len - suffix_len, suffix, suffix_len) == 0;
+}
+
 static bool bytes_push_f64_le(VmBytes* b, double v) {
   uint64_t u;
   memcpy(&u, &v, 8);
@@ -190,6 +206,8 @@ typedef struct {
   Str name;           /* import variable name (e.g. "m") */
   size_t global_slot; /* byte offset in the global frame where this slot lives
                          (32, 40, ...) */
+  Str module_path;
+  AstNode* module_root;
 } ImportSlot;
 
 typedef struct {
@@ -204,6 +222,9 @@ typedef struct {
   const StaticSlot* slot;
   ptrdiff_t byte_offset;
   const MorphlType* value_type;
+  bool is_external_import;
+  Str module_path;
+  Str symbol_name;
 } StaticAccess;
 
 typedef struct {
@@ -252,6 +273,7 @@ typedef struct VmEmitter {
   bool in_function;
   /* function table index of top-level 'main', or SIZE_MAX if not declared */
   size_t main_func_fidx;
+  bool emit_object;
   /* global frame: 32 bytes fixed ($argc,$argv,$env,$entry) + 8 bytes per
    * $import */
   size_t global_frame_size;
@@ -301,7 +323,24 @@ typedef struct VmEmitter {
     char* saved_lexical_path;  /* lexical scope path at registration time */
   } * deferred_cleanups;
   size_t deferred_cleanup_count, deferred_cleanup_capacity;
+  MorphlVmRelocation* object_relocs;
+  size_t object_reloc_count, object_reloc_capacity;
 } VmEmitter;
+
+typedef struct {
+  Str name;
+  uint16_t kind;
+  uint16_t flags;
+  uint32_t symbol_value;
+} VmObjectExport;
+
+typedef struct {
+  Str binding_name;
+  Str path;
+  size_t global_slot;
+  Str* required_funcs;
+  size_t required_func_count;
+} VmObjectImport;
 
 /* ── opcode helpers ─────────────────────────────────────────────────────── */
 
@@ -313,12 +352,154 @@ static bool emit_op_u32(VmEmitter* e, uint8_t op, uint32_t imm) {
   return emit_op(e, op) && bytes_push_u32_le(&e->code, imm);
 }
 
+static bool emit_object_reloc(VmEmitter* e, uint16_t kind, size_t code_offset) {
+  if (!e || !e->emit_object) return true;
+  if (e->object_reloc_count >= e->object_reloc_capacity) {
+    if (!vm_grow((void**)&e->object_relocs, &e->object_reloc_capacity,
+                 sizeof(MorphlVmRelocation), e->object_reloc_count + 1)) {
+      return false;
+    }
+  }
+  e->object_relocs[e->object_reloc_count++] = (MorphlVmRelocation){
+      .kind = kind,
+      .code_offset = (uint32_t)code_offset,
+      .module_path = NULL,
+      .symbol_name = NULL,
+  };
+  return true;
+}
+
+static bool emit_external_func_reloc(VmEmitter* e, uint16_t kind, size_t code_offset,
+                                     Str module_path, Str symbol_name) {
+  if (!e || !e->emit_object) return true;
+  if (e->object_reloc_count >= e->object_reloc_capacity) {
+    if (!vm_grow((void**)&e->object_relocs, &e->object_reloc_capacity,
+                 sizeof(MorphlVmRelocation), e->object_reloc_count + 1)) {
+      return false;
+    }
+  }
+  char* path_copy = (char*)malloc(module_path.len + 1);
+  char* sym_copy = (char*)malloc(symbol_name.len + 1);
+  if (!path_copy || !sym_copy) {
+    free(path_copy);
+    free(sym_copy);
+    return false;
+  }
+  memcpy(path_copy, module_path.ptr, module_path.len);
+  path_copy[module_path.len] = '\0';
+  memcpy(sym_copy, symbol_name.ptr, symbol_name.len);
+  sym_copy[symbol_name.len] = '\0';
+  e->object_relocs[e->object_reloc_count++] = (MorphlVmRelocation){
+      .kind = kind,
+      .code_offset = (uint32_t)code_offset,
+      .module_path = path_copy,
+      .symbol_name = sym_copy,
+  };
+  return true;
+}
+
 static bool emit_op_i32(VmEmitter* e, uint8_t op, int32_t imm) {
   return emit_op(e, op) && bytes_push_i32_le(&e->code, imm);
 }
 
 static bool emit_iconst(VmEmitter* e, int64_t v) {
   return emit_op(e, VM_OP_ICONST) && bytes_push_i64_le(&e->code, v);
+}
+
+static bool emit_global_offset_i32(VmEmitter* e, uint8_t op, size_t off) {
+  if (!emit_op(e, op)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_i32_le(&e->code, (int32_t)off)) return false;
+  if (e && e->emit_object && off >= 32) {
+    return emit_object_reloc(e, MORPHL_VM_RELOC_GLOBAL_DATA_I32, operand_off);
+  }
+  return true;
+}
+
+static bool emit_global_offset_iconst(VmEmitter* e, size_t off) {
+  if (!emit_op(e, VM_OP_ICONST)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_i64_le(&e->code, (int64_t)off)) return false;
+  if (e && e->emit_object && off >= 32) {
+    return emit_object_reloc(e, MORPHL_VM_RELOC_GLOBAL_DATA_I64, operand_off);
+  }
+  return true;
+}
+
+static bool emit_module_frame_base_iconst(VmEmitter* e, int64_t base) {
+  if (!emit_op(e, VM_OP_ICONST)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_i64_le(&e->code, base)) return false;
+  if (e && e->emit_object) {
+    return emit_object_reloc(e, MORPHL_VM_RELOC_MODULE_FRAME_BASE_I64,
+                             operand_off);
+  }
+  return true;
+}
+
+static bool emit_func_index_u32(VmEmitter* e, uint8_t op, uint32_t fidx) {
+  if (!emit_op(e, op)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_u32_le(&e->code, fidx)) return false;
+  return emit_object_reloc(e, MORPHL_VM_RELOC_FUNC_INDEX_U32, operand_off);
+}
+
+static bool emit_func_index_iconst(VmEmitter* e, uint32_t fidx) {
+  if (!emit_op(e, VM_OP_ICONST)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_i64_le(&e->code, (int64_t)fidx)) return false;
+  return emit_object_reloc(e, MORPHL_VM_RELOC_FUNC_INDEX_I64, operand_off);
+}
+
+static const ImportSlot* emitter_find_import_slot(const VmEmitter* e, Str name) {
+  if (!e) return NULL;
+  for (size_t i = 0; i < e->import_slot_count; ++i) {
+    if (str_eq(e->import_slots[i].name, name)) return &e->import_slots[i];
+  }
+  return NULL;
+}
+
+static const MorphlType* import_module_decl_type(const ImportSlot* slot,
+                                                 Str symbol_name) {
+  if (!slot || !slot->module_root) return NULL;
+  AstNode* root = slot->module_root;
+  if (root->kind != AST_FILE && root->kind != AST_BLOCK) return NULL;
+  for (size_t i = 0; i < root->child_count; ++i) {
+    AstNode* node = root->children[i];
+    if (!node || node->kind != AST_DECL || node->child_count < 2 ||
+        !node->children[0] || node->children[0]->kind != AST_IDENT) {
+      continue;
+    }
+    if (str_eq(node->children[0]->value, symbol_name)) {
+      return node->type;
+    }
+  }
+  return NULL;
+}
+
+static bool emit_external_func_call(VmEmitter* e, Str module_path, Str func_name) {
+  if (!emit_op(e, VM_OP_CALL)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_u32_le(&e->code, 0)) return false;
+  return emit_external_func_reloc(e, MORPHL_VM_RELOC_EXTERN_FUNC_U32,
+                                  operand_off, module_path, func_name);
+}
+
+static bool emit_external_func_iconst(VmEmitter* e, Str module_path, Str func_name) {
+  if (!emit_op(e, VM_OP_ICONST)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_i64_le(&e->code, 0)) return false;
+  return emit_external_func_reloc(e, MORPHL_VM_RELOC_EXTERN_FUNC_I64,
+                                  operand_off, module_path, func_name);
+}
+
+static bool emit_external_data_offset_i32(VmEmitter* e, uint8_t op,
+                                          Str module_path, Str symbol_name) {
+  if (!emit_op(e, op)) return false;
+  size_t operand_off = e->code.len;
+  if (!bytes_push_i32_le(&e->code, 0)) return false;
+  return emit_external_func_reloc(e, MORPHL_VM_RELOC_EXTERN_DATA_I32,
+                                  operand_off, module_path, symbol_name);
 }
 
 static bool emit_fconst(VmEmitter* e, double v) {
@@ -682,6 +863,137 @@ static AstNode* import_module_root(const AstNode* node) {
   return module_file;
 }
 
+static bool collect_object_exports(VmEmitter* e, AstNode* root,
+                                   VmObjectExport** out_items,
+                                   size_t* out_count) {
+  if (!e || !root || !out_items || !out_count) return false;
+  *out_items = NULL;
+  *out_count = 0;
+  size_t cap = 0;
+  if (root->kind != AST_FILE && root->kind != AST_BLOCK) return true;
+  for (size_t i = 0; i < root->child_count; ++i) {
+    AstNode* node = root->children[i];
+    if (!node || node->kind != AST_DECL || node->child_count < 2 ||
+        !node->children[0] || node->children[0]->kind != AST_IDENT) {
+      continue;
+    }
+    if (*out_count >= cap) {
+      size_t new_cap = cap ? cap * 2 : 8;
+      if (!vm_grow((void**)out_items, &cap, sizeof(VmObjectExport),
+                   *out_count + 1)) {
+        free(*out_items);
+        *out_items = NULL;
+        *out_count = 0;
+        return false;
+      }
+      if (new_cap > cap) cap = new_cap;
+    }
+    const MorphlType* t = node->type ? unwrap_ref(node->type) : NULL;
+    uint16_t kind =
+        (t && t->kind == MORPHL_TYPE_FUNC) ? MORPHL_VM_EXPORT_FUNCTION
+                                           : MORPHL_VM_EXPORT_VALUE;
+    uint16_t flags = 0;
+    uint32_t symbol_value = UINT32_MAX;
+    if (node->storage_residence == MORPHL_STORAGE_STATIC)
+      flags |= MORPHL_VM_EXPORT_FLAG_STATIC;
+    if (node->storage_residence == MORPHL_STORAGE_IMPORT)
+      flags |= MORPHL_VM_EXPORT_FLAG_IMPORT;
+    if (node->storage_residence == MORPHL_STORAGE_EXTERN)
+      flags |= MORPHL_VM_EXPORT_FLAG_EXTERN;
+    if (kind == MORPHL_VM_EXPORT_FUNCTION) {
+      for (size_t di = 0; di < e->deferred_count; ++di) {
+        if (str_eq(e->deferred[di].name, node->children[0]->value) &&
+            (!e->deferred[di].file_root.ptr || e->deferred[di].file_root.len == 0)) {
+          symbol_value = (uint32_t)e->deferred[di].func_idx;
+          break;
+        }
+      }
+      if (symbol_value == UINT32_MAX) kind = MORPHL_VM_EXPORT_VALUE;
+    } else if (node->storage_residence == MORPHL_STORAGE_STATIC) {
+      const StaticSlot* slot = static_slot_lookup(e, node->children[0]->value);
+      if (slot) symbol_value = (uint32_t)slot->global_slot;
+    } else if (node->storage_residence == MORPHL_STORAGE_IMPORT) {
+      const ImportSlot* import_slot =
+          emitter_find_import_slot(e, node->children[0]->value);
+      if (import_slot) symbol_value = (uint32_t)import_slot->global_slot;
+    }
+    (*out_items)[(*out_count)++] = (VmObjectExport){
+        .name = node->children[0]->value,
+        .kind = kind,
+        .flags = flags,
+        .symbol_value = symbol_value,
+    };
+  }
+  return true;
+}
+
+static bool collect_object_imports(const VmEmitter* e, AstNode* root,
+                                   VmObjectImport** out_items,
+                                   size_t* out_count) {
+  if (!e || !root || !out_items || !out_count) return false;
+  *out_items = NULL;
+  *out_count = 0;
+  size_t cap = 0;
+  if (root->kind != AST_FILE && root->kind != AST_BLOCK) return true;
+  for (size_t i = 0; i < root->child_count; ++i) {
+    AstNode* node = root->children[i];
+    if (!node || node->kind != AST_DECL || node->child_count < 2) continue;
+    AstNode* rhs = node->children[1];
+    if (!rhs || import_module_root(rhs) == NULL || rhs->child_count < 1 ||
+        !rhs->children[0] || !rhs->children[0]->import_path.ptr) {
+      continue;
+    }
+    Str import_path = rhs->children[0]->import_path;
+    if (*out_count >= cap) {
+      size_t new_cap = cap ? cap * 2 : 4;
+      if (!vm_grow((void**)out_items, &cap, sizeof(VmObjectImport),
+                   *out_count + 1)) {
+        free(*out_items);
+        *out_items = NULL;
+        *out_count = 0;
+        return false;
+      }
+      if (new_cap > cap) cap = new_cap;
+    }
+    VmObjectImport* entry = &(*out_items)[(*out_count)++];
+    entry->binding_name = node->children[0]->value;
+    entry->path = import_path;
+    entry->global_slot = 0;
+    entry->required_funcs = NULL;
+    entry->required_func_count = 0;
+    {
+      const ImportSlot* slot = emitter_find_import_slot(e, entry->binding_name);
+      if (slot) entry->global_slot = slot->global_slot;
+    }
+    AstNode* module_root = import_module_root(rhs);
+    if (!module_root || (module_root->kind != AST_FILE && module_root->kind != AST_BLOCK))
+      continue;
+    size_t req_cap = 0;
+    for (size_t mi = 0; mi < module_root->child_count; ++mi) {
+      AstNode* mnode = module_root->children[mi];
+      if (!mnode || mnode->kind != AST_DECL || mnode->child_count < 2 ||
+          !mnode->children[0] || mnode->children[0]->kind != AST_IDENT) {
+        continue;
+      }
+      if (mnode->storage_residence == MORPHL_STORAGE_EXTERN) continue;
+      const MorphlType* mt = mnode->type ? unwrap_ref(mnode->type) : NULL;
+      if (!mt || mt->kind != MORPHL_TYPE_FUNC) continue;
+      if (entry->required_func_count >= req_cap) {
+        if (!vm_grow((void**)&entry->required_funcs, &req_cap, sizeof(Str),
+                     entry->required_func_count + 1)) {
+          free(entry->required_funcs);
+          entry->required_funcs = NULL;
+          entry->required_func_count = 0;
+          return false;
+        }
+      }
+      entry->required_funcs[entry->required_func_count++] =
+          mnode->children[0]->value;
+    }
+  }
+  return true;
+}
+
 static Str current_file_root_prefix(const VmEmitter* e) {
   Str empty = {NULL, 0};
   if (!e) return empty;
@@ -789,7 +1101,22 @@ static bool resolve_static_access_chain(const VmEmitter* e, const AstNode* node,
       break;
     }
   }
-  if (!slot) return false;
+  if (!slot) {
+    if (e->emit_object && segment_count == path_start + 1) {
+      const ImportSlot* import_slot = emitter_find_import_slot(e, root_prefix);
+      const MorphlType* import_symbol_type =
+          import_module_decl_type(import_slot, segments[path_start]);
+      if (!import_slot || !import_symbol_type) return false;
+      out->slot = NULL;
+      out->byte_offset = 0;
+      out->value_type = unwrap_ref(import_symbol_type);
+      out->is_external_import = true;
+      out->module_path = import_slot->module_path;
+      out->symbol_name = segments[path_start];
+      return true;
+    }
+    return false;
+  }
 
   ptrdiff_t extra_off = 0;
   const MorphlType* cur_type = unwrap_ref(slot->type);
@@ -824,35 +1151,56 @@ static bool resolve_static_access_chain(const VmEmitter* e, const AstNode* node,
   out->slot = slot;
   out->byte_offset = extra_off;
   out->value_type = cur_type;
+  out->is_external_import = false;
+  out->module_path = str_from("", 0);
+  out->symbol_name = str_from("", 0);
   return true;
 }
 
 static bool emit_static_access_load(VmEmitter* e, const AstNode* node,
                                     const StaticAccess* access) {
-  if (!e || !node || !access || !access->slot || !access->value_type)
+  if (!e || !node || !access || !access->value_type)
     return false;
+  if (access->is_external_import) {
+    const MorphlType* t = unwrap_ref(access->value_type);
+    if (t && (t->kind == MORPHL_TYPE_BLOCK || t->kind == MORPHL_TYPE_ARRAY ||
+              t->kind == MORPHL_TYPE_UNION)) {
+      VM_ERR(node,
+             "imported module static aggregate access is not supported in object mode");
+      return false;
+    }
+    return emit_op(e, VM_OP_GLOBAL) &&
+           emit_external_data_offset_i32(e, VM_OP_ALOAD, access->module_path,
+                                         access->symbol_name);
+  }
+  if (!access->slot) return false;
   const MorphlType* t = unwrap_ref(access->value_type);
   size_t abs_off = access->slot->global_slot + (size_t)access->byte_offset;
   if (t && (t->kind == MORPHL_TYPE_BLOCK || t->kind == MORPHL_TYPE_ARRAY ||
             t->kind == MORPHL_TYPE_UNION)) {
-    return emit_iconst(e, (int64_t)abs_off);
+    return emit_global_offset_iconst(e, abs_off);
   }
-  return emit_op(e, VM_OP_GLOBAL) &&
-         emit_op_i32(e, VM_OP_ALOAD, (int32_t)abs_off);
+  return emit_op(e, VM_OP_GLOBAL) && emit_global_offset_i32(e, VM_OP_ALOAD, abs_off);
 }
 
 static bool emit_static_access_store(VmEmitter* e, const AstNode* target,
                                      const StaticAccess* access,
                                      AstNode* value) {
-  if (!e || !target || !access || !access->slot || !value) return false;
+  if (!e || !target || !access || !value) return false;
+  if (access->is_external_import) {
+    return emit_op(e, VM_OP_GLOBAL) && emit_node(e, value) &&
+           emit_external_data_offset_i32(e, VM_OP_ASTORE, access->module_path,
+                                         access->symbol_name);
+  }
+  if (!access->slot) return false;
   if (access->byte_offset < 0) {
     VM_ERR(target, "negative offset into static storage is not supported");
     return false;
   }
   return emit_op(e, VM_OP_GLOBAL) && emit_node(e, value) &&
-         emit_op_i32(e, VM_OP_ASTORE,
-                     (int32_t)(access->slot->global_slot +
-                               (size_t)access->byte_offset));
+         emit_global_offset_i32(e, VM_OP_ASTORE,
+                                access->slot->global_slot +
+                                    (size_t)access->byte_offset);
 }
 
 /* ── type helpers ───────────────────────────────────────────────────────── */
@@ -1974,7 +2322,8 @@ static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
     free(full_name);
     if (!slot) return false;
     return emit_op(e, VM_OP_GLOBAL) &&
-           emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)extra));
+           emit_global_offset_i32(e, VM_OP_ALOAD,
+                                  slot->global_slot + (size_t)extra);
   }
   if (builtin_is_name(e, node, "$member") && node->child_count >= 2 &&
       node->children[0] && node->children[1]) {
@@ -2013,7 +2362,8 @@ static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
       free(full_name);
       if (!slot) return false;
       return emit_op(e, VM_OP_GLOBAL) &&
-             emit_op_i32(e, VM_OP_ALOAD, (int32_t)(slot->global_slot + (size_t)field_offset));
+             emit_global_offset_i32(e, VM_OP_ALOAD,
+                                    slot->global_slot + (size_t)field_offset);
     }
     /* Non-ident target (nested $member or other ref-yielding expr): recursively
      * obtain the base handle then offset into the ref field. */
@@ -2137,6 +2487,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       /* resolve compile-time $ref aliases; accumulate any extra byte offset */
       ptrdiff_t extra = 0;
       Str resolved = alias_resolve_full(e, node->value, &extra);
+      const ImportSlot* import_slot =
+          (e->emit_object && extra == 0) ? emitter_find_import_slot(e, resolved)
+                                         : NULL;
+      if (import_slot) {
+        const MorphlType* t = unwrap_ref(node->type);
+        if (!t || (t->kind != MORPHL_TYPE_BLOCK && t->kind != MORPHL_TYPE_ARRAY &&
+                   t->kind != MORPHL_TYPE_UNION)) {
+          VM_ERR(node, "cannot load imported identifier '%.*s' directly",
+                 (int)node->value.len, node->value.ptr);
+          return false;
+        }
+        return emit_op(e, VM_OP_GLOBAL) &&
+               emit_global_offset_i32(e, VM_OP_ALOAD, import_slot->global_slot);
+      }
       ptrdiff_t base_off = morphl_backend_find_offset(&e->frameInfo, resolved);
       if (base_off == PTRDIFF_MAX) {
         const StaticSlot* slot = static_slot_lookup_scoped(e, resolved);
@@ -2151,8 +2515,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return false;
           }
           return emit_op(e, VM_OP_GLOBAL) &&
-                 emit_op_i32(e, VM_OP_ALOAD,
-                             (int32_t)(slot->global_slot + (size_t)extra));
+                 emit_global_offset_i32(e, VM_OP_ALOAD,
+                                        slot->global_slot + (size_t)extra);
         }
       }
       if (base_off == PTRDIFF_MAX) {
@@ -2328,7 +2692,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
         e->functions.items[fidx].param_size = param_sz;
         e->functions.items[fidx].frame_size = 0;
-        if (!emit_iconst(e, (int64_t)fidx)) return false;
+        if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
         return emit_op_i32(e, VM_OP_ISTORE, (int32_t)existing_off);
       }
 
@@ -2354,7 +2718,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         size_t done_lbl = label_new(e);
         if (done_lbl == SIZE_MAX) return false;
         if (!emit_op(e, VM_OP_GLOBAL)) return false;
-        if (!emit_op_i32(e, VM_OP_ALOAD, (int32_t)slot->guard_slot))
+        if (!emit_global_offset_i32(e, VM_OP_ALOAD, slot->guard_slot))
           return false;
         if (!emit_jump(e, VM_OP_JIF, done_lbl)) return false;
         if (!emit_op(e, VM_OP_GLOBAL)) return false;
@@ -2368,15 +2732,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           }
           e->deferred[e->deferred_count++] =
               (DeferredFunc){rhs, fidx, name, current_file_root_prefix(e)};
-          if (!emit_iconst(e, (int64_t)fidx)) return false;
+          if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
         } else {
           if (!emit_node(e, rhs)) return false;
         }
-        if (!emit_op_i32(e, VM_OP_ASTORE, (int32_t)slot->global_slot))
+        if (!emit_global_offset_i32(e, VM_OP_ASTORE, slot->global_slot))
           return false;
         if (!emit_op(e, VM_OP_GLOBAL)) return false;
         if (!emit_iconst(e, 1)) return false;
-        if (!emit_op_i32(e, VM_OP_ASTORE, (int32_t)slot->guard_slot))
+        if (!emit_global_offset_i32(e, VM_OP_ASTORE, slot->guard_slot))
           return false;
         if (t && t->kind == MORPHL_TYPE_BLOCK && rhs && rhs->kind == AST_BLOCK &&
             block_has_defer(e, rhs)) {
@@ -2441,9 +2805,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               return false;
           }
           import_slot_before = e->import_slot_count;
+          Str import_path = (rhs->child_count >= 1 && rhs->children[0])
+                                ? rhs->children[0]->import_path
+                                : str_from("", 0);
+          AstNode* module_root = import_module_root(rhs);
           e->import_slots[import_slot_before] = (ImportSlot){
               .name = name,
               .global_slot = 32 + 8 * import_slot_before,
+              .module_path = import_path,
+              .module_root = module_root,
           };
           e->import_slot_count++;
         }
@@ -2487,7 +2857,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         e->functions.items[fidx].frame_size = 0;
         /* store function table index as i64 in the variable's frame slot */
         if (!node->contributes_to_layout) return true;
-        if (!emit_iconst(e, (int64_t)fidx)) return false;
+        if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
         return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
       }
 
@@ -2525,7 +2895,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 (DeferredFunc){stub, fidx, name, current_file_root_prefix(e)};
           }
           if (!node->contributes_to_layout) return true;
-          if (!emit_iconst(e, (int64_t)fidx)) return false;
+          if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
           return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
         }
       }
@@ -2557,7 +2927,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
         /* store function table index as i64 in frame */
         if (!node->contributes_to_layout) return true;
-        if (!emit_iconst(e, (int64_t)fidx)) return false;
+        if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
         return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
       }
 
@@ -2583,7 +2953,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               if (thunk_fidx == SIZE_MAX) return false;
               /* attach cleanup thunk to this allocation via runtime SET_CLEANUP */
               if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)off)) return false;
-              if (!emit_op_u32(e, VM_OP_SET_CLEANUP, (uint32_t)thunk_fidx)) return false;
+              if (!emit_func_index_u32(e, VM_OP_SET_CLEANUP, (uint32_t)thunk_fidx)) return false;
               /* record thunk for deferred emission */
               if (e->deferred_cleanup_count >= e->deferred_cleanup_capacity) {
                 if (!vm_grow((void**)&e->deferred_cleanups, &e->deferred_cleanup_capacity,
@@ -2982,9 +3352,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (str_eq(pn, prop_name_d)) {
                   /* GLOBAL; ICONST fidx; ASTORE (entry_prop_off + pi*8) */
                   if (!emit_op(e, VM_OP_GLOBAL)) return false;
-                  if (!emit_iconst(e, (int64_t)fidx_d)) return false;
-                  if (!emit_op_i32(e, VM_OP_ASTORE,
-                                   (int32_t)(entry_prop_off + pi * 8)))
+                  if (!emit_func_index_iconst(e, (uint32_t)fidx_d)) return false;
+                  if (!emit_global_offset_i32(e, VM_OP_ASTORE,
+                                              entry_prop_off + pi * 8))
                     return false;
                   break;
                 }
@@ -3011,24 +3381,27 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       bool rhs_is_import =
           builtin_is_name(e, rhs, "$import") && import_module_root(rhs) != NULL;
       if (rhs_is_import) {
-        if (!lexical_scope_push_named(e, name)) return false;
-        bool ok = emit_node(e, rhs);
-        lexical_scope_pop(e);
-        if (!ok) return false;
+        if (!e->emit_object) {
+          if (!lexical_scope_push_named(e, name)) return false;
+          bool ok = emit_node(e, rhs);
+          lexical_scope_pop(e);
+          if (!ok) return false;
+        }
       } else {
         if (!emit_node(e, rhs)) return false;
       }
 
       /* if this was a $import, populate the $modules global slot now that the
        * module's frame has been pushed (so frame offsets are stable) */
-      if (import_slot_before != SIZE_MAX) {
+      if (import_slot_before != SIZE_MAX && !e->emit_object) {
         ImportSlot* sl = &e->import_slots[import_slot_before];
         ptrdiff_t m_off = morphl_backend_find_offset(&e->frameInfo, sl->name);
         if (m_off != PTRDIFF_MAX) {
           int64_t mod_frame_base =
               (int64_t)e->global_frame_size + (int64_t)m_off;
-          if (!emit_op(e, VM_OP_GLOBAL) || !emit_iconst(e, mod_frame_base) ||
-              !emit_op_i32(e, VM_OP_ASTORE, (int32_t)sl->global_slot))
+          if (!emit_op(e, VM_OP_GLOBAL) ||
+              !emit_module_frame_base_iconst(e, mod_frame_base) ||
+              !emit_global_offset_i32(e, VM_OP_ASTORE, sl->global_slot))
             return false;
         }
       }
@@ -3229,7 +3602,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
         e->deferred[e->deferred_count++] = (DeferredFunc){
             callee, fidx, str_from("", 0), current_file_root_prefix(e)};
-        return emit_op_u32(e, VM_OP_CALL, (uint32_t)fidx);
+        return emit_func_index_u32(e, VM_OP_CALL, (uint32_t)fidx);
       }
 
       if (callee->kind == AST_IDENT) {
@@ -3268,9 +3641,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return false;
           }
 
+          const MorphlType* field_type = NULL;
           ptrdiff_t field_offset = block_layout_field_offset(
-              target_btype, e->interns, field_name, NULL);
-          if (field_offset == PTRDIFF_MAX) {
+              target_btype, e->interns, field_name, &field_type);
+          if (field_offset == PTRDIFF_MAX || !field_type) {
             VM_ERR(node, "$call $member: field not found");
             return false;
           }
@@ -3280,6 +3654,14 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             return false;
           }
           Str target_name = alias_resolve(e, target->value);
+          const ImportSlot* import_slot =
+              emitter_find_import_slot(e, target_name);
+          const MorphlType* field_ft = unwrap_ref(field_type);
+          if (e->emit_object && import_slot && field_ft &&
+              field_ft->kind == MORPHL_TYPE_FUNC) {
+            return emit_external_func_call(e, import_slot->module_path,
+                                           field_name);
+          }
           ptrdiff_t target_off =
               morphl_backend_find_offset(&e->frameInfo, target_name);
           if (target_off == PTRDIFF_MAX) {
@@ -3517,7 +3899,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
           e->functions.items[fidx].param_size = param_sz;
           e->functions.items[fidx].frame_size = 0;
-          if (!emit_iconst(e, (int64_t)fidx)) return false;
+          if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
           return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
         }
       }
@@ -3544,8 +3926,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                    "negative offset into static storage is not supported");
             return false;
           }
-          return emit_op_i32(e, VM_OP_ASTORE,
-                             (int32_t)(slot->global_slot + (size_t)textra));
+          return emit_global_offset_i32(e, VM_OP_ASTORE,
+                                        slot->global_slot + (size_t)textra);
         }
       }
       if (off == PTRDIFF_MAX + textra) {
@@ -3902,11 +4284,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           const MorphlType* ft = unwrap_ref(field_type);
           if (ft && ft->kind == MORPHL_TYPE_BLOCK) {
             /* Return address of the sub-block section in the global frame */
-            return emit_iconst(e, (int64_t)field_offset);
+            return emit_global_offset_iconst(e, (size_t)field_offset);
           }
           /* Scalar: push global base (0) and ALOAD field_off */
           return emit_op(e, VM_OP_GLOBAL) &&
-                 emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+                 emit_global_offset_i32(e, VM_OP_ALOAD, (size_t)field_offset);
         }
 
         /* computed expression target (e.g. $member $global $modules, or module
@@ -3924,6 +4306,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return false;
         }
         Str target_name = alias_resolve(e, target->value);
+        const MorphlType* ft_unwrapped = unwrap_ref(field_type);
+        const ImportSlot* import_slot = emitter_find_import_slot(e, target_name);
+        if (e->emit_object && import_slot && ft_unwrapped &&
+            ft_unwrapped->kind == MORPHL_TYPE_FUNC) {
+          return emit_external_func_iconst(e, import_slot->module_path, field_name);
+        }
         ptrdiff_t target_off =
             morphl_backend_find_offset(&e->frameInfo, target_name);
         if (target_off == PTRDIFF_MAX) {
@@ -3939,18 +4327,19 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               ft = ft->data.ref.target;
             if (ft && ft->kind == MORPHL_TYPE_REF && ft->data.ref.is_ref) {
               return emit_op(e, VM_OP_GLOBAL) &&
-                     emit_op_i32(e, VM_OP_ALOAD,
-                                 (int32_t)(slot->global_slot + (size_t)field_offset));
+                     emit_global_offset_i32(e, VM_OP_ALOAD,
+                                            slot->global_slot +
+                                                (size_t)field_offset);
             }
             return emit_op(e, VM_OP_GLOBAL) &&
-                   emit_op_i32(e, VM_OP_ALOAD,
-                               (int32_t)(slot->global_slot + (size_t)field_offset));
+                   emit_global_offset_i32(e, VM_OP_ALOAD,
+                                          slot->global_slot +
+                                              (size_t)field_offset);
           }
           VM_ERR(target, "$member: undefined variable '%.*s'",
                  (int)target_name.len, target_name.ptr);
           return false;
         }
-        const MorphlType* ft_unwrapped = unwrap_ref(field_type);
         if (ft_unwrapped &&
             (ft_unwrapped->kind == MORPHL_TYPE_BLOCK ||
              ft_unwrapped->kind == MORPHL_TYPE_ARRAY ||
@@ -4050,7 +4439,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* determine block size from the function's frame */
         uint32_t block_sz = (uint32_t)(e->functions.items[fidx].frame_size);
         if (!emit_op_u32(e, VM_OP_RESERVE, block_sz)) return false;
-        return emit_op_u32(e, VM_OP_CALL, fidx);
+        return emit_func_index_u32(e, VM_OP_CALL, fidx);
         /* NOTE: when child_count == 2, the initializer (child[1]) is
          * intentionally not emitted here.  The parent AST_DECL handler
          * intercepts $new nodes with an initializer when the target type is
@@ -4487,6 +4876,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * parent AST_DECL handler; we find its frame offset and use
        * global_frame_size + m_off as the slot value. */
       if (OP_IS("$import")) {
+        if (e->emit_object) return true;
         struct AstNode* module_file = import_module_root(node);
         if (!module_file) return false;
         /* emit the module's initialization code; the parent AST_DECL handler
@@ -4518,7 +4908,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             node, fidx, {NULL, 0},
               current_file_root_prefix(e)
         };
-        return emit_iconst(e, (int64_t)fidx);
+        return emit_func_index_iconst(e, (uint32_t)fidx);
       }
 
     default:
@@ -4861,6 +5251,11 @@ static void emitter_free(VmEmitter* e) {
   for (size_t i = 0; i < e->deferred_cleanup_count; i++)
     free(e->deferred_cleanups[i].saved_lexical_path);
   free(e->deferred_cleanups);
+  for (size_t i = 0; i < e->object_reloc_count; ++i) {
+    free(e->object_relocs[i].module_path);
+    free(e->object_relocs[i].symbol_name);
+  }
+  free(e->object_relocs);
   morphl_backend_frame_free(&e->frameInfo);
   memset(e, 0, sizeof(*e));
 }
@@ -5300,6 +5695,7 @@ static bool collect_static_slots(VmEmitter* e, struct AstNode* node) {
       if (node->child_count >= 2 && node->children[0] &&
           node->children[0]->kind == AST_IDENT &&
           builtin_is_name(e, node->children[1], "$import")) {
+        if (e->emit_object) return true;
         AstNode* module_root = import_module_root(node->children[1]);
         if (module_root) {
           if (!lexical_scope_push_named(e, node->children[0]->value))
@@ -5367,6 +5763,7 @@ static bool collect_static_slots(VmEmitter* e, struct AstNode* node) {
 
 bool morphl_backend_func_vm(MorphlBackendContext* context) {
   if (!context || !context->out_file || !context->tree) return false;
+  bool emit_object = path_has_suffix(context->out_file, ".mplo");
 
   struct AstNode* emit_root = context->tree;
   struct AstNode* wrapper_root = NULL;
@@ -5385,6 +5782,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
 
   VmEmitter e;
   memset(&e, 0, sizeof(e));
+  e.emit_object = emit_object;
   e.interns = context->type_context ? context->type_context->interns : NULL;
   e.type_ctx = context->type_context;
   e.main_func_fidx = SIZE_MAX;
@@ -5442,7 +5840,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
   /* emit global frame initialization: write $entry = global_frame_size to
    * global[24] */
   e.functions.items[main_idx].entry_point = (uint32_t)e.code.len;
-  {
+  if (!emit_object) {
     /* GLOBAL; ICONST global_frame_size; ASTORE 24 */
     bool ok = emit_op(&e, VM_OP_GLOBAL) &&
               emit_iconst(&e, (int64_t)e.global_frame_size) &&
@@ -5473,7 +5871,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     return false;
   }
   /* if a top-level 'main : () => i32' was declared, auto-call it and exit */
-  if (e.main_func_fidx != SIZE_MAX) {
+  if (!emit_object && e.main_func_fidx != SIZE_MAX) {
     /* RESERVE 8 (i32 return slot), ADDREF 0 (hidden parent), CALL main, EXIT */
     if (!emit_op_u32(&e, VM_OP_RESERVE, 8) ||
         !emit_op_i32(&e, VM_OP_ADDREF, 0) ||
@@ -5487,20 +5885,22 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     }
   }
 
-  for (size_t i = e.static_cleanup_count; i > 0; --i) {
-    BindingCleanup cleanup = e.static_cleanups[i - 1];
-    if (!emit_binding_cleanup_block(&e, cleanup.binding_name, cleanup.block,
-                                    cleanup.block_type, cleanup.binding_type)) {
-      emitter_free(&e);
-      if (wrapper_root) {
-        wrapper_root->child_count = 0;
-        ast_free(wrapper_root);
+  if (!emit_object) {
+    for (size_t i = e.static_cleanup_count; i > 0; --i) {
+      BindingCleanup cleanup = e.static_cleanups[i - 1];
+      if (!emit_binding_cleanup_block(&e, cleanup.binding_name, cleanup.block,
+                                      cleanup.block_type, cleanup.binding_type)) {
+        emitter_free(&e);
+        if (wrapper_root) {
+          wrapper_root->child_count = 0;
+          ast_free(wrapper_root);
+        }
+        return false;
       }
-      return false;
     }
   }
 
-  if (e.main_func_fidx != SIZE_MAX) {
+  if (!emit_object && e.main_func_fidx != SIZE_MAX) {
     if (!emit_op(&e, VM_OP_EXIT)) {
       emitter_free(&e);
       if (wrapper_root) {
@@ -5511,13 +5911,24 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     }
   }
 
-  if (!emit_op(&e, VM_OP_HALT)) {
-    emitter_free(&e);
-    if (wrapper_root) {
-      wrapper_root->child_count = 0;
-      ast_free(wrapper_root);
+  if (emit_object) {
+    if (!emit_op(&e, VM_OP_RET)) {
+      emitter_free(&e);
+      if (wrapper_root) {
+        wrapper_root->child_count = 0;
+        ast_free(wrapper_root);
+      }
+      return false;
     }
-    return false;
+  } else {
+    if (!emit_op(&e, VM_OP_HALT)) {
+      emitter_free(&e);
+      if (wrapper_root) {
+        wrapper_root->child_count = 0;
+        ast_free(wrapper_root);
+      }
+      return false;
+    }
   }
   e.functions.items[main_idx].frame_size =
       0; /* top-level has no single frame */
@@ -5571,12 +5982,25 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
 
   VmBytes file = {0};
   bool ok = true;
+  VmObjectExport* obj_exports = NULL;
+  size_t obj_export_count = 0;
+  VmObjectImport* obj_imports = NULL;
+  size_t obj_import_count = 0;
+
+  if (emit_object) {
+    ok = ok && collect_object_exports(&e, emit_root, &obj_exports,
+                                      &obj_export_count);
+    ok = ok && collect_object_imports(&e, emit_root, &obj_imports,
+                                      &obj_import_count);
+  }
 
   /* header */
   ok = ok && bytes_push(&file, MORPHL_VM_MAGIC, 4);
   ok = ok && bytes_push_u16_le(&file, MORPHL_VM_VERSION_MAJOR);
   ok = ok && bytes_push_u16_le(&file, MORPHL_VM_VERSION_MINOR);
-  ok = ok && bytes_push_u16_le(&file, MORPHL_VM_ARTIFACT_EXECUTABLE);
+  ok = ok && bytes_push_u16_le(&file, emit_object
+                                          ? MORPHL_VM_ARTIFACT_OBJECT
+                                          : MORPHL_VM_ARTIFACT_EXECUTABLE);
   ok = ok && bytes_push_u32_le(
                  &file, (uint32_t)e.global_frame_size); /* global_frame_size */
 
@@ -5614,10 +6038,59 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
                           nlen + 1); /* +1 for NUL */
   }
 
+  if (emit_object) {
+    Str module_path =
+        emit_root->filename ? str_from(emit_root->filename, strlen(emit_root->filename))
+                            : str_from("", 0);
+    ok = ok && bytes_push_len_string(&file, module_path);
+    ok = ok && bytes_push_u32_le(&file, (uint32_t)main_idx); /* module_init */
+    ok = ok && bytes_push_u32_le(&file, (uint32_t)obj_export_count);
+    for (size_t i = 0; ok && i < obj_export_count; ++i) {
+      ok = ok && bytes_push_u16_le(&file, obj_exports[i].kind);
+      ok = ok && bytes_push_u16_le(&file, obj_exports[i].flags);
+      ok = ok && bytes_push_u32_le(&file, obj_exports[i].symbol_value);
+      ok = ok && bytes_push_len_string(&file, obj_exports[i].name);
+    }
+    ok = ok && bytes_push_u32_le(&file, (uint32_t)obj_import_count);
+    for (size_t i = 0; ok && i < obj_import_count; ++i) {
+      ok = ok && bytes_push_len_string(&file, obj_imports[i].binding_name);
+      ok = ok && bytes_push_len_string(&file, obj_imports[i].path);
+      ok = ok && bytes_push_u32_le(&file, (uint32_t)obj_imports[i].global_slot);
+      ok = ok && bytes_push_u32_le(&file, (uint32_t)obj_imports[i].required_func_count);
+      for (size_t fi = 0; ok && fi < obj_imports[i].required_func_count; ++fi) {
+        ok = ok && bytes_push_len_string(&file, obj_imports[i].required_funcs[fi]);
+      }
+    }
+    ok = ok && bytes_push_u32_le(&file, (uint32_t)e.object_reloc_count);
+    for (size_t i = 0; ok && i < e.object_reloc_count; ++i) {
+      ok = ok && bytes_push_u16_le(&file, e.object_relocs[i].kind);
+      ok = ok && bytes_push_u32_le(&file, e.object_relocs[i].code_offset);
+      if (e.object_relocs[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 ||
+          e.object_relocs[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 ||
+          e.object_relocs[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+        ok = ok && bytes_push_len_string(
+                       &file,
+                       str_from(e.object_relocs[i].module_path,
+                                strlen(e.object_relocs[i].module_path)));
+        ok = ok && bytes_push_len_string(
+                       &file,
+                       str_from(e.object_relocs[i].symbol_name,
+                                strlen(e.object_relocs[i].symbol_name)));
+      }
+    }
+  }
+
   if (ok) ok = (fwrite(file.data, 1, file.len, out) == file.len);
 
   fclose(out);
   free(file.data);
+  free(obj_exports);
+  if (obj_imports) {
+    for (size_t i = 0; i < obj_import_count; ++i) {
+      free(obj_imports[i].required_funcs);
+    }
+  }
+  free(obj_imports);
   emitter_free(&e);
   if (wrapper_root) {
     wrapper_root->child_count = 0;

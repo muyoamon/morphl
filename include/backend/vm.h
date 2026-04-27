@@ -14,6 +14,33 @@ typedef enum {
   MORPHL_VM_ARTIFACT_OBJECT = 1,
 } MorphlVmArtifactKind;
 
+typedef enum {
+  MORPHL_VM_EXPORT_VALUE = 0,
+  MORPHL_VM_EXPORT_FUNCTION = 1,
+} MorphlVmExportKind;
+
+typedef enum {
+  MORPHL_VM_RELOC_FUNC_INDEX_U32 = 0,
+  MORPHL_VM_RELOC_FUNC_INDEX_I64 = 1,
+  MORPHL_VM_RELOC_EXTERN_FUNC_U32 = 2,
+  MORPHL_VM_RELOC_EXTERN_FUNC_I64 = 3,
+  MORPHL_VM_RELOC_GLOBAL_DATA_I32 = 4,
+  MORPHL_VM_RELOC_GLOBAL_DATA_I64 = 5,
+  MORPHL_VM_RELOC_MODULE_FRAME_BASE_I64 = 6,
+  MORPHL_VM_RELOC_EXTERN_DATA_I32 = 7,
+} MorphlVmRelocKind;
+
+typedef struct {
+  uint16_t kind;
+  uint32_t code_offset;
+  char* module_path;
+  char* symbol_name;
+} MorphlVmRelocation;
+
+#define MORPHL_VM_EXPORT_FLAG_STATIC 0x01u
+#define MORPHL_VM_EXPORT_FLAG_IMPORT 0x02u
+#define MORPHL_VM_EXPORT_FLAG_EXTERN 0x04u
+
 /*
  * Opcode encoding
  * ---------------

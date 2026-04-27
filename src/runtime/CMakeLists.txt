@@ -1,5 +1,6 @@
 add_library(morphl_runtime
   vm_runtime.c
+  vm_linker.c
   vm_native.c
   vm_stdlib_io.c
 )

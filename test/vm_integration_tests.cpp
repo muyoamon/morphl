@@ -22,6 +22,15 @@ extern "C" {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static int counter_g = 0;
+static int64_t vm_link_init_counter_g = 0;
+
+static int64_t native_vm_link_tick(uint8_t* stack, size_t frame_base, size_t param_size) {
+    (void)stack;
+    (void)frame_base;
+    (void)param_size;
+    vm_link_init_counter_g += 1;
+    return vm_link_init_counter_g;
+}
 
 static std::string temp_path(const char* ext) {
     const char* tmpdir = std::getenv("TMPDIR");
@@ -38,6 +47,288 @@ static std::string write_temp_source(const char* source) {
     f << source;
     f.close();
     return path;
+}
+
+static bool read_u16_le(const uint8_t* buf, size_t len, size_t* pos, uint16_t* out) {
+    if (*pos + 2 > len) return false;
+    *out = (uint16_t)((uint16_t)buf[*pos] | ((uint16_t)buf[*pos + 1] << 8));
+    *pos += 2;
+    return true;
+}
+
+static bool read_u32_le(const uint8_t* buf, size_t len, size_t* pos, uint32_t* out) {
+    if (*pos + 4 > len) return false;
+    *out = (uint32_t)buf[*pos]
+         | ((uint32_t)buf[*pos + 1] << 8)
+         | ((uint32_t)buf[*pos + 2] << 16)
+         | ((uint32_t)buf[*pos + 3] << 24);
+    *pos += 4;
+    return true;
+}
+
+static uint32_t read_u32_le_at(const uint8_t* buf, size_t off) {
+    return (uint32_t)buf[off]
+         | ((uint32_t)buf[off + 1] << 8)
+         | ((uint32_t)buf[off + 2] << 16)
+         | ((uint32_t)buf[off + 3] << 24);
+}
+
+static uint64_t read_u64_le_at(const uint8_t* buf, size_t off) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v |= ((uint64_t)buf[off + i]) << (8 * i);
+    return v;
+}
+
+static bool read_bytes(const uint8_t* buf, size_t len, size_t* pos, void* out, size_t n) {
+    if (*pos + n > len) return false;
+    std::memcpy(out, buf + *pos, n);
+    *pos += n;
+    return true;
+}
+
+static std::string read_len_string(const uint8_t* buf, size_t len, size_t* pos) {
+    uint32_t slen = 0;
+    if (!read_u32_le(buf, len, pos, &slen)) return std::string();
+    std::vector<char> bytes(slen + 1, '\0');
+    if (!read_bytes(buf, len, pos, bytes.data(), slen + 1)) return std::string();
+    return std::string(bytes.data(), slen);
+}
+
+typedef struct {
+    std::string name;
+    uint16_t kind;
+    uint16_t flags;
+    uint32_t symbol_value;
+} TestVmObjectExport;
+
+typedef struct {
+    uint16_t kind;
+    uint32_t code_offset;
+    std::string module_path;
+    std::string symbol_name;
+} TestVmObjectRelocation;
+
+typedef struct {
+    std::string binding_name;
+    std::string path;
+    uint32_t global_slot;
+    std::vector<std::string> required_funcs;
+} TestVmObjectImport;
+
+typedef struct {
+    uint16_t artifact_kind;
+    uint32_t global_frame_size;
+    uint32_t func_count;
+    std::vector<VmFunctionMeta> functions;
+    std::vector<uint8_t> code;
+    std::string module_path;
+    uint32_t module_init_func_idx;
+    std::vector<TestVmObjectExport> exports;
+    std::vector<TestVmObjectImport> imports;
+    uint32_t relocation_count;
+    std::vector<TestVmObjectRelocation> relocations;
+} TestVmObjectFile;
+
+static bool parse_vm_binary_file(const std::string& path, TestVmObjectFile* out) {
+    if (!out) return false;
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return false;
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+    if (buf.size() < 4) return false;
+    size_t pos = 0;
+    uint8_t magic[4];
+    if (!read_bytes(buf.data(), buf.size(), &pos, magic, 4)) return false;
+    if (std::memcmp(magic, MORPHL_VM_MAGIC, 4) != 0) return false;
+    uint16_t vmaj = 0, vmin = 0;
+    if (!read_u16_le(buf.data(), buf.size(), &pos, &vmaj) ||
+        !read_u16_le(buf.data(), buf.size(), &pos, &vmin) ||
+        !read_u16_le(buf.data(), buf.size(), &pos, &out->artifact_kind) ||
+        !read_u32_le(buf.data(), buf.size(), &pos, &out->global_frame_size) ||
+        !read_u32_le(buf.data(), buf.size(), &pos, &out->func_count)) {
+        return false;
+    }
+    out->functions.resize(out->func_count);
+    for (uint32_t i = 0; i < out->func_count; ++i) {
+        if (!read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].entry_point) ||
+            !read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].frame_size) ||
+            !read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].param_size) ||
+            !read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].flags)) {
+            return false;
+        }
+    }
+    uint32_t code_len = 0;
+    if (!read_u32_le(buf.data(), buf.size(), &pos, &code_len)) return false;
+    out->code.resize(code_len);
+    if (code_len > 0 && !read_bytes(buf.data(), buf.size(), &pos, out->code.data(), code_len)) return false;
+
+    uint32_t str_count = 0;
+    if (!read_u32_le(buf.data(), buf.size(), &pos, &str_count)) return false;
+    for (uint32_t i = 0; i < str_count; ++i) {
+        (void)read_len_string(buf.data(), buf.size(), &pos);
+    }
+    uint32_t native_count = 0;
+    if (!read_u32_le(buf.data(), buf.size(), &pos, &native_count)) return false;
+    for (uint32_t i = 0; i < native_count; ++i) {
+        (void)read_len_string(buf.data(), buf.size(), &pos);
+    }
+
+    if (out->artifact_kind != MORPHL_VM_ARTIFACT_OBJECT) {
+        out->module_path.clear();
+        out->module_init_func_idx = 0;
+        out->exports.clear();
+        out->imports.clear();
+        out->relocation_count = 0;
+        out->relocations.clear();
+        return true;
+    }
+
+    out->module_path = read_len_string(buf.data(), buf.size(), &pos);
+    if (!read_u32_le(buf.data(), buf.size(), &pos, &out->module_init_func_idx)) return false;
+
+    uint32_t export_count = 0;
+    if (!read_u32_le(buf.data(), buf.size(), &pos, &export_count)) return false;
+    out->exports.resize(export_count);
+    for (uint32_t i = 0; i < export_count; ++i) {
+        uint32_t name_len = 0;
+        if (!read_u16_le(buf.data(), buf.size(), &pos, &out->exports[i].kind) ||
+            !read_u16_le(buf.data(), buf.size(), &pos, &out->exports[i].flags) ||
+            !read_u32_le(buf.data(), buf.size(), &pos, &out->exports[i].symbol_value) ||
+            !read_u32_le(buf.data(), buf.size(), &pos, &name_len)) {
+            return false;
+        }
+        std::vector<char> bytes(name_len + 1, '\0');
+        if (!read_bytes(buf.data(), buf.size(), &pos, bytes.data(), name_len + 1)) return false;
+        out->exports[i].name.assign(bytes.data(), name_len);
+    }
+
+    uint32_t import_count = 0;
+    if (!read_u32_le(buf.data(), buf.size(), &pos, &import_count)) return false;
+    out->imports.resize(import_count);
+    for (uint32_t i = 0; i < import_count; ++i) {
+        out->imports[i].binding_name = read_len_string(buf.data(), buf.size(), &pos);
+        out->imports[i].path = read_len_string(buf.data(), buf.size(), &pos);
+        if (!read_u32_le(buf.data(), buf.size(), &pos, &out->imports[i].global_slot)) {
+            return false;
+        }
+        uint32_t required_func_count = 0;
+        if (!read_u32_le(buf.data(), buf.size(), &pos, &required_func_count)) return false;
+        out->imports[i].required_funcs.resize(required_func_count);
+        for (uint32_t fi = 0; fi < required_func_count; ++fi) {
+            out->imports[i].required_funcs[fi] = read_len_string(buf.data(), buf.size(), &pos);
+        }
+    }
+
+    if (!read_u32_le(buf.data(), buf.size(), &pos, &out->relocation_count)) return false;
+    out->relocations.resize(out->relocation_count);
+    for (uint32_t i = 0; i < out->relocation_count; ++i) {
+        if (!read_u16_le(buf.data(), buf.size(), &pos, &out->relocations[i].kind) ||
+            !read_u32_le(buf.data(), buf.size(), &pos, &out->relocations[i].code_offset)) {
+            return false;
+        }
+        if (out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 ||
+            out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 ||
+            out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+            out->relocations[i].module_path = read_len_string(buf.data(), buf.size(), &pos);
+            out->relocations[i].symbol_name = read_len_string(buf.data(), buf.size(), &pos);
+        }
+    }
+    return true;
+}
+
+static bool parse_vm_object_file(const std::string& path, TestVmObjectFile* out) {
+    if (!parse_vm_binary_file(path, out)) return false;
+    return out->artifact_kind == MORPHL_VM_ARTIFACT_OBJECT;
+}
+
+static bool compile_file_to_artifact(const std::string& src_path, const std::string& out_path) {
+    InternTable* interns = interns_new();
+    if (!interns) return false;
+
+    if (!operator_registry_init(interns)) {
+        interns_free(interns);
+        return false;
+    }
+
+    Arena arena;
+    arena_init(&arena, 65536);
+
+    ScopedParserContext parser_ctx;
+    if (!scoped_parser_init(&parser_ctx, interns, &arena, src_path.c_str())) {
+        arena_free(&arena);
+        interns_free(interns);
+        return false;
+    }
+
+    char* source_buffer = NULL;
+    size_t source_len = 0;
+    if (!morphl_file_read_all(src_path.c_str(), &source_buffer, &source_len)) {
+        scoped_parser_free(&parser_ctx);
+        arena_free(&arena);
+        interns_free(interns);
+        return false;
+    }
+
+    struct token* tokens = NULL;
+    size_t token_count = 0;
+    if (!lexer_tokenize(src_path.c_str(), str_from(source_buffer, source_len),
+                        interns, &tokens, &token_count)) {
+        free(source_buffer);
+        scoped_parser_free(&parser_ctx);
+        arena_free(&arena);
+        interns_free(interns);
+        return false;
+    }
+
+    AstNode* root = NULL;
+    bool accepted = scoped_parse_ast(&parser_ctx, tokens, token_count, &root);
+    bool ok = false;
+    if (accepted) {
+        MorphlBackendContext backend_ctx;
+        backend_ctx.tree = root;
+        backend_ctx.out_file = out_path.c_str();
+        backend_ctx.type_context = parser_ctx.type_context;
+        ok = morphl_register_backend(MORPHL_BACKEND_TYPE_VM) &&
+             morphl_compile(&backend_ctx);
+        ast_free(root);
+    }
+
+    free(tokens);
+    free(source_buffer);
+    scoped_parser_free(&parser_ctx);
+    arena_free(&arena);
+    interns_free(interns);
+    return ok;
+}
+
+static bool compile_source_to_artifact(const char* source, const std::string& out_path) {
+    std::string src_path = write_temp_source(source);
+    bool ok = compile_file_to_artifact(src_path, out_path);
+    std::remove(src_path.c_str());
+    return ok;
+}
+
+static int compile_link_and_run(const char* source) {
+    std::string obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    if (!compile_source_to_artifact(source, obj_path)) {
+        std::remove(obj_path.c_str());
+        std::remove(exe_path.c_str());
+        return -1;
+    }
+    const char* inputs[] = {obj_path.c_str()};
+    if (!morphl_vm_link_files(exe_path.c_str(), inputs, 1, stderr)) {
+        std::remove(obj_path.c_str());
+        std::remove(exe_path.c_str());
+        return -1;
+    }
+    FILE* dev_null = fopen("/dev/null", "w");
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    std::remove(obj_path.c_str());
+    std::remove(exe_path.c_str());
+    return rc;
 }
 
 /*
@@ -682,6 +973,503 @@ static void test_e2e_import_nested_member_chain() {
     std::remove(mod_path.c_str());
     assert(rc == 42);
     printf("PASS test_e2e_import_nested_member_chain\n");
+}
+
+static void test_e2e_vm_object_metadata() {
+    std::string dep_path = write_temp_source(
+        "$decl dep_value 7;\n"
+    );
+    std::string obj_path = temp_path(".mplo");
+    std::string src =
+        std::string("$decl dep $import \"") + dep_path + "\";\n" +
+        "$decl foo 42;\n" +
+        "$decl bar $func () 0;\n";
+
+    assert(compile_source_to_artifact(src.c_str(), obj_path));
+
+    TestVmObjectFile obj = {};
+    assert(parse_vm_object_file(obj_path, &obj));
+    assert(obj.artifact_kind == MORPHL_VM_ARTIFACT_OBJECT);
+    assert(obj.module_init_func_idx == 0);
+    assert(!obj.code.empty());
+    assert(obj.code.back() == VM_OP_RET);
+    assert(obj.imports.size() == 1);
+    assert(obj.imports[0].path == dep_path);
+    assert(obj.imports[0].required_funcs.empty());
+
+    bool saw_dep = false;
+    bool saw_foo = false;
+    bool saw_bar = false;
+    uint32_t bar_symbol_value = UINT32_MAX;
+    for (const auto& ex : obj.exports) {
+        if (ex.name == "dep") saw_dep = true;
+        if (ex.name == "foo" && ex.kind == MORPHL_VM_EXPORT_VALUE) saw_foo = true;
+        if (ex.name == "bar" && ex.kind == MORPHL_VM_EXPORT_FUNCTION) {
+            saw_bar = true;
+            bar_symbol_value = ex.symbol_value;
+        }
+    }
+    assert(saw_dep);
+    assert(saw_foo);
+    assert(saw_bar);
+    assert(bar_symbol_value != UINT32_MAX);
+    assert(obj.relocation_count >= 1);
+    bool saw_func_i64_reloc = false;
+    for (const auto& reloc : obj.relocations) {
+        if (reloc.kind == MORPHL_VM_RELOC_FUNC_INDEX_I64) {
+            saw_func_i64_reloc = true;
+        }
+    }
+    assert(saw_func_i64_reloc);
+
+    std::remove(dep_path.c_str());
+    std::remove(obj_path.c_str());
+    printf("PASS test_e2e_vm_object_metadata\n");
+}
+
+static void test_e2e_vm_link_single_object() {
+    int rc = compile_link_and_run(
+        "$decl x 40;\n"
+        "$exit $add x 2;\n"
+    );
+    assert(rc == 42);
+    printf("PASS test_e2e_vm_link_single_object\n");
+}
+
+static void test_e2e_vm_link_accepts_function_relocs() {
+    std::string obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    assert(compile_source_to_artifact(
+        "$decl foo $func () 40;\n"
+        "$decl x $call foo ();\n"
+        "$exit $add x 2;\n",
+        obj_path));
+    TestVmObjectFile obj = {};
+    assert(parse_vm_object_file(obj_path, &obj));
+    bool saw_i64_reloc = false;
+    for (const auto& reloc : obj.relocations) {
+        if (reloc.kind == MORPHL_VM_RELOC_FUNC_INDEX_I64) saw_i64_reloc = true;
+    }
+    assert(obj.relocation_count >= 1);
+    assert(saw_i64_reloc);
+    const char* inputs[] = {obj_path.c_str()};
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 1, stderr));
+    std::remove(obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_accepts_function_relocs\n");
+}
+
+static void test_e2e_vm_link_dedups_duplicate_object_inputs() {
+    std::string obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    assert(compile_source_to_artifact(
+        "$decl x 20;\n"
+        "$exit $mul x 2;\n",
+        obj_path));
+    const char* inputs[] = {obj_path.c_str(), obj_path.c_str()};
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2, stderr));
+    FILE* dev_null = fopen("/dev/null", "w");
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    assert(rc == 40);
+    std::remove(obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_dedups_duplicate_object_inputs\n");
+}
+
+static void test_e2e_vm_link_rejects_executable_input() {
+    std::string exe_input_path = temp_path(".mbc");
+    std::string exe_output_path = temp_path(".mple");
+    assert(compile_source_to_artifact(
+        "$exit 1;\n",
+        exe_input_path));
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {exe_input_path.c_str()};
+    assert(!morphl_vm_link_files(exe_output_path.c_str(), inputs, 1,
+                                 dev_null ? dev_null : stderr));
+    if (dev_null) fclose(dev_null);
+    std::remove(exe_input_path.c_str());
+    std::remove(exe_output_path.c_str());
+    printf("PASS test_e2e_vm_link_rejects_executable_input\n");
+}
+
+static void test_e2e_vm_link_accepts_dependency_object() {
+    std::string dep_src_path = write_temp_source(
+        "$decl dep_func $func () {\n"
+        "  $ret 11;\n"
+        "};\n"
+    );
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string root_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
+        "$decl f $member dep dep_func;\n" +
+        "$exit $add $call f () 2;\n";
+    assert(compile_source_to_artifact(
+        root_src.c_str(),
+        root_obj_path));
+    {
+        std::ofstream f(dep_src_path, std::ios::trunc);
+        assert(f.is_open());
+        f << "$decl dep_func $func () {\n"
+             "  $ret 40;\n"
+             "};\n";
+    }
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {root_obj_path.c_str(), dep_obj_path.c_str()};
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2,
+                                dev_null ? dev_null : stderr));
+    TestVmObjectFile root_obj = {};
+    TestVmObjectFile dep_obj = {};
+    TestVmObjectFile linked_exe = {};
+    assert(parse_vm_object_file(root_obj_path, &root_obj));
+    assert(parse_vm_object_file(dep_obj_path, &dep_obj));
+    assert(root_obj.imports.size() == 1);
+    assert(root_obj.imports[0].path == dep_src_path);
+    bool saw_dep_func_requirement = false;
+    for (const auto& name : root_obj.imports[0].required_funcs) {
+        if (name == "dep_func") saw_dep_func_requirement = true;
+    }
+    assert(saw_dep_func_requirement);
+    bool saw_external_func_i64 = false;
+    for (const auto& reloc : root_obj.relocations) {
+        if (reloc.kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 &&
+            reloc.module_path == dep_src_path &&
+            reloc.symbol_name == "dep_func") {
+            saw_external_func_i64 = true;
+        }
+    }
+    assert(saw_external_func_i64);
+    assert(parse_vm_binary_file(exe_path, &linked_exe));
+    assert(linked_exe.artifact_kind == MORPHL_VM_ARTIFACT_EXECUTABLE);
+    assert(linked_exe.func_count == root_obj.func_count + dep_obj.func_count + 1);
+    assert(linked_exe.code.size() > root_obj.code.size());
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    assert(rc == 42);
+    std::remove(dep_src_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_accepts_dependency_object\n");
+}
+
+static void test_e2e_vm_link_relocates_global_layout() {
+    std::string dep_src_path = write_temp_source(
+        "$decl dep_static $static 5;\n"
+        "$decl dep_func $func () {\n"
+        "  $ret 40;\n"
+        "};\n"
+    );
+    std::string root_obj_path = temp_path(".mplo");
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl root_static $static 7;\n") +
+        "$decl dep $import \"" + dep_src_path + "\";\n" +
+        "$exit $add $call $member dep dep_func () root_static;\n";
+    assert(compile_source_to_artifact(root_src.c_str(), root_obj_path));
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+
+    TestVmObjectFile root_obj = {};
+    TestVmObjectFile dep_obj = {};
+    TestVmObjectFile linked_exe = {};
+    assert(parse_vm_object_file(root_obj_path, &root_obj));
+    assert(parse_vm_object_file(dep_obj_path, &dep_obj));
+    assert(root_obj.global_frame_size > 32);
+    assert(dep_obj.global_frame_size > 32);
+
+    const TestVmObjectRelocation* root_global_reloc = nullptr;
+    for (const auto& reloc : root_obj.relocations) {
+        if (!root_global_reloc &&
+            (reloc.kind == MORPHL_VM_RELOC_GLOBAL_DATA_I32 ||
+             reloc.kind == MORPHL_VM_RELOC_GLOBAL_DATA_I64)) {
+            root_global_reloc = &reloc;
+        }
+    }
+    assert(root_global_reloc != nullptr);
+
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {root_obj_path.c_str(), dep_obj_path.c_str()};
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2,
+                                dev_null ? dev_null : stderr));
+    assert(parse_vm_binary_file(exe_path, &linked_exe));
+
+    uint32_t dep_extra = dep_obj.global_frame_size - 32;
+    uint32_t expected_global_frame =
+        32 + (root_obj.global_frame_size - 32) + dep_extra;
+    assert(linked_exe.global_frame_size == expected_global_frame);
+
+    size_t root_code_base = dep_obj.code.size();
+    if (root_global_reloc->kind == MORPHL_VM_RELOC_GLOBAL_DATA_I32) {
+        uint32_t orig = read_u32_le_at(root_obj.code.data(),
+                                       root_global_reloc->code_offset);
+        uint32_t patched = read_u32_le_at(linked_exe.code.data(),
+                                          root_code_base +
+                                              root_global_reloc->code_offset);
+        assert(patched == orig + dep_extra);
+    } else {
+        uint64_t orig = read_u64_le_at(root_obj.code.data(),
+                                       root_global_reloc->code_offset);
+        uint64_t patched = read_u64_le_at(linked_exe.code.data(),
+                                          root_code_base +
+                                              root_global_reloc->code_offset);
+        assert(patched == orig + dep_extra);
+    }
+
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    assert(rc == 47);
+    std::remove(dep_src_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_relocates_global_layout\n");
+}
+
+static void test_e2e_vm_link_initializes_modules_once() {
+    vm_link_init_counter_g = 0;
+    assert(morphl_register_native("vm_link_tick", native_vm_link_tick));
+    std::string dep_src_path = write_temp_source(
+        "$decl tick $extern \"vm_link_tick\" $func () 0;\n"
+        "$decl touched $call tick ();\n"
+    );
+    std::string root_obj_path = temp_path(".mplo");
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl dep_a $import \"") + dep_src_path + "\";\n" +
+        "$decl dep_b $import \"" + dep_src_path + "\";\n" +
+        "$exit 0;\n";
+
+    assert(compile_source_to_artifact(root_src.c_str(), root_obj_path));
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+
+    TestVmObjectFile root_obj = {};
+    TestVmObjectFile dep_obj = {};
+    TestVmObjectFile linked_exe = {};
+    assert(parse_vm_object_file(root_obj_path, &root_obj));
+    assert(parse_vm_object_file(dep_obj_path, &dep_obj));
+    assert(root_obj.imports.size() == 2);
+    assert(root_obj.imports[0].binding_name == "dep_a");
+    assert(root_obj.imports[0].path == dep_src_path);
+    assert(root_obj.imports[1].binding_name == "dep_b");
+    assert(root_obj.imports[1].path == dep_src_path);
+
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {
+        root_obj_path.c_str(), dep_obj_path.c_str()
+    };
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2,
+                                dev_null ? dev_null : stderr));
+    assert(parse_vm_binary_file(exe_path, &linked_exe));
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    assert(rc == 0);
+    assert(vm_link_init_counter_g == 1);
+    std::remove(dep_src_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_initializes_modules_once\n");
+}
+
+static void test_e2e_vm_link_shares_imported_module_statics() {
+    std::string dep_src_path = write_temp_source(
+        "$decl cached $static $mut 7;\n"
+    );
+    std::string root_obj_path = temp_path(".mplo");
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl dep_a $import \"") + dep_src_path + "\";\n" +
+        "$decl dep_b $import \"" + dep_src_path + "\";\n" +
+        "$decl before $member $member dep_a $$statics cached;\n" +
+        "$set $member $member dep_b $$statics cached $add before 5;\n" +
+        "$decl after_alias $member $member dep_a $$statics cached;\n" +
+        "$decl after_global $member $member $member $member $global $modules dep_b $$statics cached;\n" +
+        "$exit $add after_alias after_global;\n";
+
+    assert(compile_source_to_artifact(root_src.c_str(), root_obj_path));
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+
+    TestVmObjectFile root_obj = {};
+    assert(parse_vm_object_file(root_obj_path, &root_obj));
+    assert(root_obj.imports.size() == 2);
+    assert(root_obj.imports[0].binding_name == "dep_a");
+    assert(root_obj.imports[1].binding_name == "dep_b");
+    assert(root_obj.imports[0].path == dep_src_path);
+    assert(root_obj.imports[1].path == dep_src_path);
+    assert(root_obj.imports[0].global_slot != root_obj.imports[1].global_slot);
+
+    bool saw_external_data_reloc = false;
+    for (const auto& reloc : root_obj.relocations) {
+        if (reloc.kind == MORPHL_VM_RELOC_EXTERN_DATA_I32 &&
+            reloc.module_path == dep_src_path &&
+            reloc.symbol_name == "cached") {
+            saw_external_data_reloc = true;
+        }
+    }
+    assert(saw_external_data_reloc);
+
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {root_obj_path.c_str(), dep_obj_path.c_str()};
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2,
+                                dev_null ? dev_null : stderr));
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    assert(rc == 24);
+    std::remove(dep_src_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_shares_imported_module_statics\n");
+}
+
+static void test_e2e_vm_link_rejects_missing_dependency_function_export() {
+    std::string dep_src_path = write_temp_source(
+        "$decl dep_func $func () {\n"
+        "  $ret 11;\n"
+        "};\n"
+    );
+    std::string root_obj_path = temp_path(".mplo");
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
+        "$exit $call $member dep dep_func ();\n";
+    assert(compile_source_to_artifact(root_src.c_str(), root_obj_path));
+
+    {
+        std::ofstream f(dep_src_path, std::ios::trunc);
+        assert(f.is_open());
+        f << "$decl dep_value 11;\n";
+    }
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {root_obj_path.c_str(), dep_obj_path.c_str()};
+    assert(!morphl_vm_link_files(exe_path.c_str(), inputs, 2,
+                                 dev_null ? dev_null : stderr));
+    if (dev_null) fclose(dev_null);
+    std::remove(dep_src_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_rejects_missing_dependency_function_export\n");
+}
+
+static void test_e2e_vm_link_accepts_direct_imported_function_call() {
+    std::string dep_src_path = write_temp_source(
+        "$decl dep_func $func () {\n"
+        "  $ret 9;\n"
+        "};\n"
+    );
+    std::string root_obj_path = temp_path(".mplo");
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
+        "$exit $add $call $member dep dep_func () 2;\n";
+    assert(compile_source_to_artifact(root_src.c_str(), root_obj_path));
+    {
+        std::ofstream f(dep_src_path, std::ios::trunc);
+        assert(f.is_open());
+        f << "$decl dep_func $func () {\n"
+             "  $ret 40;\n"
+             "};\n";
+    }
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+
+    TestVmObjectFile root_obj = {};
+    assert(parse_vm_object_file(root_obj_path, &root_obj));
+    bool saw_external_func_u32 = false;
+    for (const auto& reloc : root_obj.relocations) {
+        if (reloc.kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 &&
+            reloc.module_path == dep_src_path &&
+            reloc.symbol_name == "dep_func") {
+            saw_external_func_u32 = true;
+        }
+    }
+    assert(saw_external_func_u32);
+
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {root_obj_path.c_str(), dep_obj_path.c_str()};
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2,
+                                dev_null ? dev_null : stderr));
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    assert(rc == 42);
+    std::remove(dep_src_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_accepts_direct_imported_function_call\n");
+}
+
+static void test_e2e_vm_link_rejects_missing_dependency_object() {
+    std::string dep_src_path = write_temp_source(
+        "$decl dep_value 11;\n"
+    );
+    std::string root_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
+        "$exit $member dep dep_value;\n";
+    assert(compile_source_to_artifact(
+        root_src.c_str(),
+        root_obj_path));
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {root_obj_path.c_str()};
+    assert(!morphl_vm_link_files(exe_path.c_str(), inputs, 1,
+                                 dev_null ? dev_null : stderr));
+    if (dev_null) fclose(dev_null);
+    std::remove(dep_src_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_rejects_missing_dependency_object\n");
+}
+
+static void test_e2e_vm_link_rejects_unrelated_object() {
+    std::string dep_src_path = write_temp_source(
+        "$decl dep_value 7;\n"
+    );
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string root_obj_path = temp_path(".mplo");
+    std::string unrelated_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+    std::string root_src =
+        std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
+        "$exit $member dep dep_value;\n";
+    assert(compile_source_to_artifact(
+        root_src.c_str(),
+        root_obj_path));
+    assert(compile_source_to_artifact(
+        "$decl unrelated 9;\n"
+        "$exit unrelated;\n",
+        unrelated_obj_path));
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {
+        root_obj_path.c_str(), dep_obj_path.c_str(), unrelated_obj_path.c_str()
+    };
+    assert(!morphl_vm_link_files(exe_path.c_str(), inputs, 3,
+                                 dev_null ? dev_null : stderr));
+    if (dev_null) fclose(dev_null);
+    std::remove(dep_src_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(unrelated_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_rejects_unrelated_object\n");
 }
 
 /* compile_and_run variant that forwards a custom argc to $global.$argc */
@@ -1734,6 +2522,19 @@ int main(void) {
     test_e2e_import_basic();
     test_e2e_import_single_decl_module();
     test_e2e_import_nested_member_chain();
+    test_e2e_vm_object_metadata();
+    test_e2e_vm_link_single_object();
+    test_e2e_vm_link_accepts_function_relocs();
+    test_e2e_vm_link_dedups_duplicate_object_inputs();
+    test_e2e_vm_link_rejects_executable_input();
+    test_e2e_vm_link_accepts_dependency_object();
+    test_e2e_vm_link_relocates_global_layout();
+    test_e2e_vm_link_initializes_modules_once();
+    test_e2e_vm_link_shares_imported_module_statics();
+    test_e2e_vm_link_accepts_direct_imported_function_call();
+    test_e2e_vm_link_rejects_missing_dependency_function_export();
+    test_e2e_vm_link_rejects_missing_dependency_object();
+    test_e2e_vm_link_rejects_unrelated_object();
     test_e2e_global_argc();
     test_e2e_global_entry();
     test_e2e_global_modules_slot();

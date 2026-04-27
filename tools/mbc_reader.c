@@ -111,6 +111,28 @@ static const OpcodeInfo opcode_table[256] = {
 /* ─── parsed file ──────────────────────────────────────────────────────────── */
 
 typedef struct {
+    char*           name;
+    uint16_t        kind;
+    uint16_t        flags;
+    uint32_t        symbol_value;
+} MbcExport;
+
+typedef struct {
+    char*           binding_name;
+    char*           path;
+    uint32_t        global_slot;
+    char**          required_funcs;
+    uint32_t        required_func_count;
+} MbcImport;
+
+typedef struct {
+    uint16_t        kind;
+    uint32_t        code_offset;
+    char*           module_path;
+    char*           symbol_name;
+} MbcRelocation;
+
+typedef struct {
     uint16_t        version_major;
     uint16_t        version_minor;
     uint16_t        artifact_kind;
@@ -123,6 +145,14 @@ typedef struct {
     uint32_t        str_count;
     char          **native_syms;
     uint32_t        native_sym_count;
+    char*           module_path;
+    uint32_t        module_init_func_idx;
+    MbcExport      *exports;
+    uint32_t        export_count;
+    MbcImport      *imports;
+    uint32_t        import_count;
+    uint32_t        relocation_count;
+    MbcRelocation  *relocations;
 } MbcFile;
 
 static void mbc_free(MbcFile *mbc) {
@@ -132,6 +162,23 @@ static void mbc_free(MbcFile *mbc) {
     free(mbc->strings);
     for (uint32_t i = 0; i < mbc->native_sym_count; i++) free(mbc->native_syms[i]);
     free(mbc->native_syms);
+    free(mbc->module_path);
+    for (uint32_t i = 0; i < mbc->export_count; ++i) free(mbc->exports[i].name);
+    free(mbc->exports);
+    for (uint32_t i = 0; i < mbc->import_count; ++i) {
+        free(mbc->imports[i].binding_name);
+        free(mbc->imports[i].path);
+        for (uint32_t j = 0; j < mbc->imports[i].required_func_count; ++j) {
+            free(mbc->imports[i].required_funcs[j]);
+        }
+        free(mbc->imports[i].required_funcs);
+    }
+    free(mbc->imports);
+    for (uint32_t i = 0; i < mbc->relocation_count; ++i) {
+        free(mbc->relocations[i].module_path);
+        free(mbc->relocations[i].symbol_name);
+    }
+    free(mbc->relocations);
 }
 
 static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
@@ -255,6 +302,146 @@ static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
         }
     }
 
+    if (mbc->artifact_kind == MORPHL_VM_ARTIFACT_OBJECT) {
+        uint32_t path_len = 0;
+        if (!read_u32_le(buf, len, &pos, &path_len)) {
+            fprintf(stderr, "error: truncated object module path length\n");
+            return false;
+        }
+        mbc->module_path = malloc(path_len + 1);
+        if (!mbc->module_path) { fprintf(stderr, "error: out of memory\n"); return false; }
+        if (!read_bytes(buf, len, &pos, mbc->module_path, path_len + 1)) {
+            fprintf(stderr, "error: truncated object module path\n");
+            return false;
+        }
+        if (!read_u32_le(buf, len, &pos, &mbc->module_init_func_idx)) {
+            fprintf(stderr, "error: truncated module init function index\n");
+            return false;
+        }
+        if (!read_u32_le(buf, len, &pos, &mbc->export_count)) {
+            fprintf(stderr, "error: truncated export count\n");
+            return false;
+        }
+        if (mbc->export_count > 0) {
+            mbc->exports = calloc(mbc->export_count, sizeof(MbcExport));
+            if (!mbc->exports) { fprintf(stderr, "error: out of memory\n"); return false; }
+            for (uint32_t i = 0; i < mbc->export_count; ++i) {
+                uint32_t name_len = 0;
+                if (!read_u16_le(buf, len, &pos, &mbc->exports[i].kind) ||
+                    !read_u16_le(buf, len, &pos, &mbc->exports[i].flags) ||
+                    !read_u32_le(buf, len, &pos, &mbc->exports[i].symbol_value) ||
+                    !read_u32_le(buf, len, &pos, &name_len)) {
+                    fprintf(stderr, "error: truncated export entry %u\n", i);
+                    return false;
+                }
+                mbc->exports[i].name = malloc(name_len + 1);
+                if (!mbc->exports[i].name) { fprintf(stderr, "error: out of memory\n"); return false; }
+                if (!read_bytes(buf, len, &pos, mbc->exports[i].name, name_len + 1)) {
+                    fprintf(stderr, "error: truncated export name %u\n", i);
+                    return false;
+                }
+            }
+        }
+        if (!read_u32_le(buf, len, &pos, &mbc->import_count)) {
+            fprintf(stderr, "error: truncated import count\n");
+            return false;
+        }
+        if (mbc->import_count > 0) {
+            mbc->imports = calloc(mbc->import_count, sizeof(MbcImport));
+            if (!mbc->imports) { fprintf(stderr, "error: out of memory\n"); return false; }
+            for (uint32_t i = 0; i < mbc->import_count; ++i) {
+                uint32_t binding_len = 0;
+                if (!read_u32_le(buf, len, &pos, &binding_len)) {
+                    fprintf(stderr, "error: truncated import binding length %u\n", i);
+                    return false;
+                }
+                mbc->imports[i].binding_name = malloc(binding_len + 1);
+                if (!mbc->imports[i].binding_name) { fprintf(stderr, "error: out of memory\n"); return false; }
+                if (!read_bytes(buf, len, &pos, mbc->imports[i].binding_name, binding_len + 1)) {
+                    fprintf(stderr, "error: truncated import binding %u\n", i);
+                    return false;
+                }
+                uint32_t path_len2 = 0;
+                if (!read_u32_le(buf, len, &pos, &path_len2)) {
+                    fprintf(stderr, "error: truncated import path length %u\n", i);
+                    return false;
+                }
+                mbc->imports[i].path = malloc(path_len2 + 1);
+                if (!mbc->imports[i].path) { fprintf(stderr, "error: out of memory\n"); return false; }
+                if (!read_bytes(buf, len, &pos, mbc->imports[i].path, path_len2 + 1)) {
+                    fprintf(stderr, "error: truncated import path %u\n", i);
+                    return false;
+                }
+                if (!read_u32_le(buf, len, &pos, &mbc->imports[i].global_slot)) {
+                    fprintf(stderr, "error: truncated import global slot %u\n", i);
+                    return false;
+                }
+                if (!read_u32_le(buf, len, &pos, &mbc->imports[i].required_func_count)) {
+                    fprintf(stderr, "error: truncated import required func count %u\n", i);
+                    return false;
+                }
+                if (mbc->imports[i].required_func_count > 0) {
+                    mbc->imports[i].required_funcs =
+                        calloc(mbc->imports[i].required_func_count, sizeof(char*));
+                    if (!mbc->imports[i].required_funcs) { fprintf(stderr, "error: out of memory\n"); return false; }
+                    for (uint32_t j = 0; j < mbc->imports[i].required_func_count; ++j) {
+                        uint32_t flen = 0;
+                        if (!read_u32_le(buf, len, &pos, &flen)) {
+                            fprintf(stderr, "error: truncated required func name length %u/%u\n", i, j);
+                            return false;
+                        }
+                        mbc->imports[i].required_funcs[j] = malloc(flen + 1);
+                        if (!mbc->imports[i].required_funcs[j]) { fprintf(stderr, "error: out of memory\n"); return false; }
+                        if (!read_bytes(buf, len, &pos, mbc->imports[i].required_funcs[j], flen + 1)) {
+                            fprintf(stderr, "error: truncated required func name %u/%u\n", i, j);
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        if (!read_u32_le(buf, len, &pos, &mbc->relocation_count)) {
+            fprintf(stderr, "error: truncated relocation count\n");
+            return false;
+        }
+        if (mbc->relocation_count > 0) {
+            mbc->relocations = calloc(mbc->relocation_count, sizeof(MbcRelocation));
+            if (!mbc->relocations) { fprintf(stderr, "error: out of memory\n"); return false; }
+            for (uint32_t i = 0; i < mbc->relocation_count; ++i) {
+                if (!read_u16_le(buf, len, &pos, &mbc->relocations[i].kind) ||
+                    !read_u32_le(buf, len, &pos, &mbc->relocations[i].code_offset)) {
+                    fprintf(stderr, "error: truncated relocation entry %u\n", i);
+                    return false;
+                }
+                if (mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 ||
+                    mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 ||
+                    mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+                    uint32_t slen = 0;
+                    if (!read_u32_le(buf, len, &pos, &slen)) {
+                        fprintf(stderr, "error: truncated relocation module path length %u\n", i);
+                        return false;
+                    }
+                    mbc->relocations[i].module_path = malloc(slen + 1);
+                    if (!mbc->relocations[i].module_path) { fprintf(stderr, "error: out of memory\n"); return false; }
+                    if (!read_bytes(buf, len, &pos, mbc->relocations[i].module_path, slen + 1)) {
+                        fprintf(stderr, "error: truncated relocation module path %u\n", i);
+                        return false;
+                    }
+                    if (!read_u32_le(buf, len, &pos, &slen)) {
+                        fprintf(stderr, "error: truncated relocation symbol name length %u\n", i);
+                        return false;
+                    }
+                    mbc->relocations[i].symbol_name = malloc(slen + 1);
+                    if (!mbc->relocations[i].symbol_name) { fprintf(stderr, "error: out of memory\n"); return false; }
+                    if (!read_bytes(buf, len, &pos, mbc->relocations[i].symbol_name, slen + 1)) {
+                        fprintf(stderr, "error: truncated relocation symbol name %u\n", i);
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
     return true;
 }
 
@@ -269,6 +456,60 @@ static void print_header(const MbcFile *mbc) {
     printf("  Artifact:      %s (%u)\n", artifact_name,
            (unsigned)mbc->artifact_kind);
     printf("  Global frame:  %u bytes\n", mbc->global_frame_size);
+    printf("\n");
+}
+
+static void print_object_metadata(const MbcFile *mbc) {
+    if (mbc->artifact_kind != MORPHL_VM_ARTIFACT_OBJECT) return;
+    printf("--- Object Metadata ---\n");
+    printf("  Module path:    %s\n", mbc->module_path ? mbc->module_path : "");
+    printf("  Module init:    %u\n", mbc->module_init_func_idx);
+    printf("  Exports:        %u\n", mbc->export_count);
+    for (uint32_t i = 0; i < mbc->export_count; ++i) {
+        const char* kind =
+            mbc->exports[i].kind == MORPHL_VM_EXPORT_FUNCTION ? "function" : "value";
+        printf("    - %s (%s, flags=0x%04x, symbol=%u)\n", mbc->exports[i].name,
+               kind, (unsigned)mbc->exports[i].flags,
+               (unsigned)mbc->exports[i].symbol_value);
+    }
+    printf("  Imports:        %u\n", mbc->import_count);
+    for (uint32_t i = 0; i < mbc->import_count; ++i) {
+        printf("    - %s -> %s @ global[%u]\n",
+               mbc->imports[i].binding_name ? mbc->imports[i].binding_name : "",
+               mbc->imports[i].path ? mbc->imports[i].path : "",
+               (unsigned)mbc->imports[i].global_slot);
+        for (uint32_t j = 0; j < mbc->imports[i].required_func_count; ++j) {
+            printf("      func %s\n", mbc->imports[i].required_funcs[j]);
+        }
+    }
+    printf("  Relocations:    %u\n", mbc->relocation_count);
+    for (uint32_t i = 0; i < mbc->relocation_count; ++i) {
+        const char* kind = "unknown";
+        if (mbc->relocations[i].kind == MORPHL_VM_RELOC_FUNC_INDEX_U32)
+            kind = "func_u32";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_FUNC_INDEX_I64)
+            kind = "func_i64";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32)
+            kind = "extern_func_u32";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64)
+            kind = "extern_func_i64";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_GLOBAL_DATA_I32)
+            kind = "global_data_i32";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_GLOBAL_DATA_I64)
+            kind = "global_data_i64";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_MODULE_FRAME_BASE_I64)
+            kind = "module_frame_base_i64";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32)
+            kind = "extern_data_i32";
+        printf("    - off=0x%08x kind=%s (%u)\n",
+               mbc->relocations[i].code_offset, kind,
+               (unsigned)mbc->relocations[i].kind);
+        if (mbc->relocations[i].module_path || mbc->relocations[i].symbol_name) {
+            printf("      target %s::%s\n",
+                   mbc->relocations[i].module_path ? mbc->relocations[i].module_path : "",
+                   mbc->relocations[i].symbol_name ? mbc->relocations[i].symbol_name : "");
+        }
+    }
     printf("\n");
 }
 
@@ -508,6 +749,7 @@ int main(int argc, char *argv[]) {
 
     printf("=== MBC File: %s ===\n\n", path);
     print_header(&mbc);
+    print_object_metadata(&mbc);
     print_functions(&mbc);
     print_disassembly(&mbc);
     print_strings(&mbc);

@@ -8,9 +8,17 @@
 
 [x] - Add compile-session imported-module caching and canonical-path identity tracking so repeated imports of the same module reuse one analyzed module unit and one link-time module identity.
 
-[] - Emit `.mplo` from the VM backend with module-local code/function/global metadata, import/export tables, relocation records, and module-init metadata.
+[x] - Emit `.mplo` from the VM backend with module-local code/function/global metadata, import/export tables, relocation records, and module-init metadata.
 
-[] - Add a static VM linker (`mpll`) that consumes `.mplo` inputs, resolves/deduplicates modules by canonical path, assigns final executable-wide indices/offsets, and writes `.mple`.
+[x] - Finish `mpll` object-graph validation and startup synthesis so linked executables enter through a synthesized wrapper, reject missing module objects, and prepare for once-only module init ordering.
+
+[x] - Resolve cross-object function symbols in `mpll` using object export metadata plus relocation records so imported module functions can be linked by canonical module identity instead of remaining local-only.
+
+[x] - Add linker support for executable-wide global/static/module-slot layout and the corresponding relocation kinds so distinct objects can share one finalized global frame safely.
+
+[x] - Switch VM module init from inline-import behavior to true once-only linked module initialization, with dependency-ordered startup and no duplicate imported-module side effects.
+
+[x] - Finish linker/runtime integration for shared module instances so `$global.$modules` and imported module bindings resolve to the same linked module base offset and shared statics.
 
 [] - Synthesize linked startup/module initialization so each deduplicated module initializes once in dependency order before root top-level execution or `main` dispatch.
 
