@@ -28,6 +28,7 @@ typedef enum {
   MORPHL_VM_RELOC_GLOBAL_DATA_I64 = 5,
   MORPHL_VM_RELOC_MODULE_FRAME_BASE_I64 = 6,
   MORPHL_VM_RELOC_EXTERN_DATA_I32 = 7,
+  MORPHL_VM_RELOC_MODULE_SLOT_I32 = 8,
 } MorphlVmRelocKind;
 
 typedef struct {
@@ -159,7 +160,7 @@ enum VmOpcode {
 /*
  * Function table entry.
  * The binary file's function table is an array of these, ordered by index.
- * Function 0 is always the top-level program body (implicit "main").
+ * Function 0 is the executable entry function.
  */
 typedef struct {
   uint32_t entry_point;  // byte offset into the code section (or native sym index if NATIVE flag set)

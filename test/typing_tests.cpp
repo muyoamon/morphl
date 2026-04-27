@@ -799,37 +799,78 @@ static void test_import_cache_reuses_analyzed_module() {
 
   const char* module_src = "$decl foo 1; $decl bar 2;";
   std::string module_path = write_temp_file(module_src);
+  std::string source =
+      std::string("$decl dep_a $import \"") + module_path + "\";\n" +
+      std::string("$decl dep_b $import \"") + module_path + "\";\n";
 
   ScopedParserContext parser_ctx;
-  assert(scoped_parser_init(&parser_ctx, interns, &arena, NULL));
+  AstNode* root = parse_source(interns, &arena, source.c_str(), &parser_ctx);
+  assert(root != NULL);
+  assert(root->kind == AST_FILE);
+  assert(root->child_count == 2);
 
-  std::string quoted_path = "\"" + module_path + "\"";
-  Sym import_sym = interns_intern(interns, str_from("$import", 7));
-  const OperatorInfo* import_info = operator_info_lookup(import_sym);
-  assert(import_info != NULL && import_info->func != NULL);
-
-  AstNode* first_arg = make_literal_with_kind(interns, quoted_path.c_str(), LEXER_KIND_STRING);
-  AstNode* first_args[] = {first_arg};
-  import_info->func(import_info, &parser_ctx, NULL, first_args, 1);
-  assert(first_args[0] != NULL);
-  assert(first_args[0]->import_module != NULL);
-
-  AstNode* second_arg = make_literal_with_kind(interns, quoted_path.c_str(), LEXER_KIND_STRING);
-  AstNode* second_args[] = {second_arg};
-  import_info->func(import_info, &parser_ctx, NULL, second_args, 1);
-  assert(second_args[0] != NULL);
-  assert(second_args[0]->import_module != NULL);
-
-  assert(first_args[0]->import_module == second_args[0]->import_module);
+  AstNode* first_arg = root->children[0]->children[1]->children[0];
+  AstNode* second_arg = root->children[1]->children[1]->children[0];
+  assert(first_arg != NULL && second_arg != NULL);
+  assert(first_arg->import_module != NULL);
+  assert(second_arg->import_module != NULL);
+  assert(first_arg->import_path.ptr != NULL);
+  assert(second_arg->import_path.ptr != NULL);
+  assert(std::strcmp(first_arg->import_path.ptr, module_path.c_str()) == 0);
+  assert(std::strcmp(second_arg->import_path.ptr, module_path.c_str()) == 0);
+  assert(first_arg->import_module == second_arg->import_module);
   assert(parser_ctx.import_cache_count == 1);
 
-  ast_free(first_args[0]);
-  ast_free(second_args[0]);
+  ast_free(root);
   scoped_parser_free(&parser_ctx);
   interns_free(interns);
   arena_free(&arena);
   std::remove(module_path.c_str());
   printf("\u2713 test_import_cache_reuses_analyzed_module passed\n");
+}
+
+static void test_global_modules_member_inference_for_duplicate_imports() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  std::string module_path = write_temp_file("$decl foo 42;\n");
+  std::string source =
+      std::string("$decl dep_a $import \"") + module_path + "\";\n" +
+      std::string("$decl dep_b $import \"") + module_path + "\";\n"
+      "$decl via_import $member dep_a foo;\n"
+      "$decl via_global $member $member $member $global $modules dep_b foo;\n";
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(interns, &arena, source.c_str(), &parser_ctx);
+  assert(root != NULL);
+  assert(root->kind == AST_FILE);
+  assert(root->child_count == 4);
+  assert(parser_ctx.import_cache_count == 1);
+
+  MorphlType* file_type = morphl_infer_type_of_ast(parser_ctx.type_context, root);
+  assert(file_type != NULL);
+
+  AstNode* via_import_decl = root->children[2];
+  AstNode* via_global_decl = root->children[3];
+  assert(via_import_decl->kind == AST_DECL);
+  assert(via_global_decl->kind == AST_DECL);
+  assert(via_import_decl->type != NULL);
+  assert(via_global_decl->type != NULL);
+  assert(via_import_decl->type->kind == MORPHL_TYPE_INT);
+  assert(via_global_decl->type->kind == MORPHL_TYPE_INT);
+
+  AstNode* first_import_arg = root->children[0]->children[1]->children[0];
+  AstNode* second_import_arg = root->children[1]->children[1]->children[0];
+  assert(first_import_arg->import_module != NULL);
+  assert(first_import_arg->import_module == second_import_arg->import_module);
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  std::remove(module_path.c_str());
+  printf("\u2713 test_global_modules_member_inference_for_duplicate_imports passed\n");
 }
 
 static void test_alias_substitution_parse() {
@@ -1567,6 +1608,7 @@ int main() {
   test_pp_member();
   test_import_block_fields();
   test_import_cache_reuses_analyzed_module();
+  test_global_modules_member_inference_for_duplicate_imports();
   test_alias_substitution_parse();
   test_storage_shape_and_extern_metadata();
   test_inline_decl_storage_metadata();

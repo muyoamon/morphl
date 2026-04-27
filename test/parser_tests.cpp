@@ -50,6 +50,32 @@ static std::string write_temp_file(const char* contents) {
   return std::string();
 }
 
+static AstNode* parse_scoped_source(InternTable* interns,
+                                    Arena* arena,
+                                    const std::string& path,
+                                    ScopedParserContext* out_ctx) {
+  assert(scoped_parser_init(out_ctx, interns, arena, path.c_str()));
+
+  std::ifstream in(path, std::ios::binary);
+  assert(in.is_open());
+  std::stringstream buffer;
+  buffer << in.rdbuf();
+  std::string source = buffer.str();
+
+  struct token* tokens = NULL;
+  size_t token_count = 0;
+  assert(lexer_tokenize(path.c_str(),
+                        str_from(source.c_str(), source.size()),
+                        interns,
+                        &tokens,
+                        &token_count));
+
+  AstNode* root = NULL;
+  assert(scoped_parse_ast(out_ctx, tokens, token_count, &root));
+  free(tokens);
+  return root;
+}
+
 static void test_grammar_loading() {
   const char* grammar_src = R"GRAM(rule expr:
     $expr lhs "+" %IDENT rhs => $extend lhs rhs
@@ -250,12 +276,67 @@ static void test_scoped_builtin_ast_locations() {
   interns_free(interns);
 }
 
+static void test_scoped_import_preserves_literal_and_reuses_cache() {
+  std::string module_path = write_temp_file("$decl value 42;\n");
+  std::string source =
+      std::string("$decl dep_a $import \"") + module_path + "\";\n" +
+      std::string("$decl dep_b $import \"") + module_path + "\";\n";
+  std::string source_path = write_temp_file(source.c_str());
+
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+  assert(operator_registry_init(interns));
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  ScopedParserContext ctx;
+  AstNode* root = parse_scoped_source(interns, &arena, source_path, &ctx);
+  assert(root != NULL);
+  assert(root->kind == AST_FILE);
+  assert(root->child_count == 2);
+  assert(ctx.import_cache_count == 1);
+
+  AstNode* first_decl = root->children[0];
+  AstNode* second_decl = root->children[1];
+  assert(first_decl->kind == AST_DECL && first_decl->child_count >= 2);
+  assert(second_decl->kind == AST_DECL && second_decl->child_count >= 2);
+
+  AstNode* first_import = first_decl->children[1];
+  AstNode* second_import = second_decl->children[1];
+  assert(first_import->kind == AST_BUILTIN);
+  assert(second_import->kind == AST_BUILTIN);
+  assert(first_import->child_count == 1);
+  assert(second_import->child_count == 1);
+
+  AstNode* first_arg = first_import->children[0];
+  AstNode* second_arg = second_import->children[0];
+  assert(first_arg->kind == AST_LITERAL);
+  assert(second_arg->kind == AST_LITERAL);
+  assert(first_arg->import_path.ptr != NULL);
+  assert(second_arg->import_path.ptr != NULL);
+  assert(std::strcmp(first_arg->import_path.ptr, module_path.c_str()) == 0);
+  assert(std::strcmp(second_arg->import_path.ptr, module_path.c_str()) == 0);
+  assert(first_arg->import_module != NULL);
+  assert(second_arg->import_module != NULL);
+  assert(first_arg->import_module == second_arg->import_module);
+  assert(first_arg->import_module->kind == AST_FILE);
+
+  ast_free(root);
+  scoped_parser_free(&ctx);
+  arena_free(&arena);
+  interns_free(interns);
+  std::remove(source_path.c_str());
+  std::remove(module_path.c_str());
+}
+
 int main() {
   test_grammar_loading();
   test_parser_accept_reject();
   test_parser_ast_build();
   test_float_literal_token_kind();
   test_scoped_builtin_ast_locations();
+  test_scoped_import_preserves_literal_and_reuses_cache();
   std::puts("All parser tests passed.");
   return 0;
 }

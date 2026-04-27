@@ -44,6 +44,7 @@ typedef struct {
   uint32_t func_base;
   uint32_t code_base;
   uint32_t global_data_delta;
+  uint32_t module_slot_offset;
 } LinkedObject;
 
 static bool resolve_exported_function_index(const LinkedObject* objects,
@@ -56,6 +57,10 @@ static bool resolve_exported_data_offset(const LinkedObject* objects,
                                          const char* module_path,
                                          const char* symbol_name,
                                          uint32_t* out);
+static bool resolve_module_slot_offset(const LinkedObject* objects,
+                                       size_t object_count,
+                                       const char* module_path,
+                                       uint32_t* out);
 
 static bool read_bytes(const uint8_t* buf, size_t len, size_t* pos, void* out,
                        size_t n) {
@@ -439,7 +444,8 @@ static bool vm_object_load(const char* path, VmObjectFile* out, FILE* err) {
       }
       if (out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 ||
           out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 ||
-          out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+          out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32 ||
+          out->relocations[i].kind == MORPHL_VM_RELOC_MODULE_SLOT_I32) {
         if (!read_reloc_extra_strings(buf, len, &pos, &out->relocations[i])) {
           free(buf);
           vm_object_free(out);
@@ -451,7 +457,8 @@ static bool vm_object_load(const char* path, VmObjectFile* out, FILE* err) {
                  out->relocations[i].kind != MORPHL_VM_RELOC_GLOBAL_DATA_I64 &&
                  out->relocations[i].kind !=
                      MORPHL_VM_RELOC_MODULE_FRAME_BASE_I64 &&
-                 out->relocations[i].kind != MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+                 out->relocations[i].kind != MORPHL_VM_RELOC_EXTERN_DATA_I32 &&
+                 out->relocations[i].kind != MORPHL_VM_RELOC_MODULE_SLOT_I32) {
         fprintf(err ? err : stderr,
                 "mpll: unsupported relocation kind %u in '%s'\n",
                 (unsigned)out->relocations[i].kind, path);
@@ -673,7 +680,10 @@ static bool build_linked_image(VmObjectFile* out, LinkedObject* objects,
     out->func_count += obj->func_count;
     out->code_len += obj->code_len;
   }
-  out->global_frame_size = 32 + total_global_extra;
+  for (size_t i = 0; i < object_count; ++i) {
+    objects[i].module_slot_offset = 32 + total_global_extra + (uint32_t)(i * 8);
+  }
+  out->global_frame_size = 32 + total_global_extra + (uint32_t)(object_count * 8);
 
   out->functions =
       (VmFunctionMeta*)calloc(out->func_count, sizeof(VmFunctionMeta));
@@ -840,6 +850,25 @@ static bool build_linked_image(VmObjectFile* out, LinkedObject* objects,
           return false;
         }
         write_u32_le_at(out->code, final_off, resolved_off);
+      } else if (reloc.kind == MORPHL_VM_RELOC_MODULE_SLOT_I32) {
+        uint32_t resolved_off = UINT32_MAX;
+        if (!resolve_module_slot_offset(objects, object_count,
+                                        reloc.module_path, &resolved_off)) {
+          fprintf(err ? err : stderr,
+                  "mpll: unresolved module slot '%s'\n",
+                  reloc.module_path ? reloc.module_path : "<unknown>");
+          free(string_map);
+          free(native_map);
+          vm_object_free(out);
+          return false;
+        }
+        if (final_off + 4 > out->code_len) {
+          free(string_map);
+          free(native_map);
+          vm_object_free(out);
+          return false;
+        }
+        write_u32_le_at(out->code, final_off, resolved_off);
       }
     }
 
@@ -865,12 +894,8 @@ static bool build_linked_image(VmObjectFile* out, LinkedObject* objects,
 
   {
     uint32_t wrapper_entry = out->code_len;
-    size_t import_init_count = 0;
-    for (size_t i = 0; i < object_count; ++i) {
-      import_init_count += objects[i].image.import_count;
-    }
     size_t wrapper_cap = 1 + 1 + 8 + 1 + 4 +
-                         import_init_count * (1 + 1 + 8 + 1 + 4) +
+                         object_count * (1 + 1 + 8 + 1 + 4) +
                          object_count * (1 + 4 + 1 + 4) + 1;
     uint8_t* wrapper = (uint8_t*)malloc(wrapper_cap);
     size_t wp = 0;
@@ -902,31 +927,14 @@ static bool build_linked_image(VmObjectFile* out, LinkedObject* objects,
     write_u32_le_at(wrapper, (uint32_t)wp, 24);
     wp += 4;
     for (size_t i = 0; i < object_count; ++i) {
-      const VmObjectFile* obj = &objects[i].image;
-      for (uint32_t ii = 0; ii < obj->import_count; ++ii) {
-        ptrdiff_t dep_idx = -1;
-        for (size_t j = 0; j < object_count; ++j) {
-          if (objects[j].image.module_path && obj->imports[ii].path &&
-              strcmp(objects[j].image.module_path, obj->imports[ii].path) == 0) {
-            dep_idx = (ptrdiff_t)j;
-            break;
-          }
-        }
-        if (dep_idx < 0) {
-          free(wrapper);
-          vm_object_free(out);
-          return false;
-        }
-        uint32_t module_base = objects[(size_t)dep_idx].global_data_delta + 32;
-        uint32_t module_slot = objects[i].global_data_delta + obj->imports[ii].global_slot;
-        wrapper[wp++] = VM_OP_GLOBAL;
-        wrapper[wp++] = VM_OP_ICONST;
-        write_u64_le_at(wrapper, (uint32_t)wp, module_base);
-        wp += 8;
-        wrapper[wp++] = VM_OP_ASTORE;
-        write_u32_le_at(wrapper, (uint32_t)wp, module_slot);
-        wp += 4;
-      }
+      uint32_t module_base = objects[i].global_data_delta + 32;
+      wrapper[wp++] = VM_OP_GLOBAL;
+      wrapper[wp++] = VM_OP_ICONST;
+      write_u64_le_at(wrapper, (uint32_t)wp, module_base);
+      wp += 8;
+      wrapper[wp++] = VM_OP_ASTORE;
+      write_u32_le_at(wrapper, (uint32_t)wp, objects[i].module_slot_offset);
+      wp += 4;
     }
     for (size_t i = 0; i < object_count; ++i) {
       uint32_t init_idx = objects[i].func_base + objects[i].image.module_init_func_idx;
@@ -1027,6 +1035,22 @@ static bool resolve_exported_data_offset(const LinkedObject* objects,
         return true;
       }
     }
+  }
+  return false;
+}
+
+static bool resolve_module_slot_offset(const LinkedObject* objects,
+                                       size_t object_count,
+                                       const char* module_path,
+                                       uint32_t* out) {
+  if (!objects || !module_path || !out) return false;
+  for (size_t i = 0; i < object_count; ++i) {
+    if (!objects[i].image.module_path ||
+        strcmp(objects[i].image.module_path, module_path) != 0) {
+      continue;
+    }
+    *out = objects[i].module_slot_offset;
+    return true;
   }
   return false;
 }

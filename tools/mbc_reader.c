@@ -415,7 +415,8 @@ static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
                 }
                 if (mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 ||
                     mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 ||
-                    mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+                    mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32 ||
+                    mbc->relocations[i].kind == MORPHL_VM_RELOC_MODULE_SLOT_I32) {
                     uint32_t slen = 0;
                     if (!read_u32_le(buf, len, &pos, &slen)) {
                         fprintf(stderr, "error: truncated relocation module path length %u\n", i);
@@ -501,6 +502,8 @@ static void print_object_metadata(const MbcFile *mbc) {
             kind = "module_frame_base_i64";
         else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32)
             kind = "extern_data_i32";
+        else if (mbc->relocations[i].kind == MORPHL_VM_RELOC_MODULE_SLOT_I32)
+            kind = "module_slot_i32";
         printf("    - off=0x%08x kind=%s (%u)\n",
                mbc->relocations[i].code_offset, kind,
                (unsigned)mbc->relocations[i].kind);

@@ -228,7 +228,8 @@ static bool parse_vm_binary_file(const std::string& path, TestVmObjectFile* out)
         }
         if (out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 ||
             out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 ||
-            out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+            out->relocations[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32 ||
+            out->relocations[i].kind == MORPHL_VM_RELOC_MODULE_SLOT_I32) {
             out->relocations[i].module_path = read_len_string(buf.data(), buf.size(), &pos);
             out->relocations[i].symbol_name = read_len_string(buf.data(), buf.size(), &pos);
         }
@@ -284,7 +285,7 @@ static bool compile_file_to_artifact(const std::string& src_path, const std::str
     bool accepted = scoped_parse_ast(&parser_ctx, tokens, token_count, &root);
     bool ok = false;
     if (accepted) {
-        MorphlBackendContext backend_ctx;
+        MorphlBackendContext backend_ctx = {};
         backend_ctx.tree = root;
         backend_ctx.out_file = out_path.c_str();
         backend_ctx.type_context = parser_ctx.type_context;
@@ -387,7 +388,7 @@ static int compile_and_run(const char* source) {
         return -1;
     }
 
-    MorphlBackendContext backend_ctx;
+    MorphlBackendContext backend_ctx = {};
     backend_ctx.tree         = root;
     backend_ctx.out_file     = out_path.c_str();
     backend_ctx.type_context = parser_ctx.type_context;
@@ -711,10 +712,10 @@ static void test_e2e_main_is_not_autocalled() {
 
 static void test_e2e_main_is_ordinary_binding() {
     int rc = compile_and_run(
-        "$decl main $static $func ($decl argc 0) {\n"
+        "$decl main $func ($decl argc 0) {\n"
         "    $ret argc;\n"
         "};\n"
-        "$exit $call $member $member $file $$statics main 9;\n"
+        "$exit $call main 9;\n"
     );
     assert(rc == 9);
     printf("PASS test_e2e_main_is_ordinary_binding\n");
@@ -1180,7 +1181,7 @@ static void test_e2e_vm_link_relocates_global_layout() {
 
     uint32_t dep_extra = dep_obj.global_frame_size - 32;
     uint32_t expected_global_frame =
-        32 + (root_obj.global_frame_size - 32) + dep_extra;
+        32 + (root_obj.global_frame_size - 32) + dep_extra + 16;
     assert(linked_exe.global_frame_size == expected_global_frame);
 
     size_t root_code_base = dep_obj.code.size();
@@ -1310,6 +1311,64 @@ static void test_e2e_vm_link_shares_imported_module_statics() {
     std::remove(dep_obj_path.c_str());
     std::remove(exe_path.c_str());
     printf("PASS test_e2e_vm_link_shares_imported_module_statics\n");
+}
+
+static void test_e2e_vm_link_deduplicates_module_slot_offsets() {
+    std::string dep_src_path = write_temp_source(
+        "$decl value 9;\n"
+    );
+    std::string root_obj_path = temp_path(".mplo");
+    std::string dep_obj_path = temp_path(".mplo");
+    std::string exe_path = temp_path(".mple");
+    std::string root_src =
+        std::string("$decl dep_a $import \"") + dep_src_path + "\";\n" +
+        "$decl dep_b $import \"" + dep_src_path + "\";\n" +
+        "$decl via_a $member dep_a value;\n" +
+        "$decl via_b $member dep_b value;\n" +
+        "$exit 0;\n";
+
+    assert(compile_source_to_artifact(root_src.c_str(), root_obj_path));
+    assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
+
+    TestVmObjectFile root_obj = {};
+    TestVmObjectFile dep_obj = {};
+    TestVmObjectFile linked_exe = {};
+    assert(parse_vm_object_file(root_obj_path, &root_obj));
+    assert(parse_vm_object_file(dep_obj_path, &dep_obj));
+
+    std::vector<uint32_t> module_slot_relocs;
+    for (const auto& reloc : root_obj.relocations) {
+      if (reloc.kind == MORPHL_VM_RELOC_MODULE_SLOT_I32 &&
+          reloc.module_path == dep_src_path) {
+        module_slot_relocs.push_back(reloc.code_offset);
+      }
+    }
+    assert(module_slot_relocs.size() >= 2);
+
+    FILE* dev_null = fopen("/dev/null", "w");
+    const char* inputs[] = {root_obj_path.c_str(), dep_obj_path.c_str()};
+    assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2,
+                                dev_null ? dev_null : stderr));
+    assert(parse_vm_binary_file(exe_path, &linked_exe));
+
+    uint32_t root_code_base = (uint32_t)dep_obj.code.size();
+    uint32_t canonical_slot = UINT32_MAX;
+    for (uint32_t code_off : module_slot_relocs) {
+      uint32_t patched =
+          read_u32_le_at(linked_exe.code.data(), root_code_base + code_off);
+      if (canonical_slot == UINT32_MAX) canonical_slot = patched;
+      assert(patched == canonical_slot);
+    }
+
+    int rc = (int)morphl_vm_run_file(exe_path.c_str(), 1, nullptr, nullptr,
+                                     dev_null ? dev_null : stderr);
+    if (dev_null) fclose(dev_null);
+    assert(rc == 0);
+    std::remove(dep_src_path.c_str());
+    std::remove(root_obj_path.c_str());
+    std::remove(dep_obj_path.c_str());
+    std::remove(exe_path.c_str());
+    printf("PASS test_e2e_vm_link_deduplicates_module_slot_offsets\n");
 }
 
 static void test_e2e_vm_link_rejects_missing_dependency_function_export() {
@@ -1489,7 +1548,7 @@ static int compile_and_run_argc(const char* source, int vm_argc) {
         arena_free(&arena); interns_free(interns); return -1;
     }
 
-    MorphlBackendContext backend_ctx;
+    MorphlBackendContext backend_ctx = {};
     backend_ctx.tree         = root;
     backend_ctx.out_file     = out_path.c_str();
     backend_ctx.type_context = parser_ctx.type_context;
@@ -2012,10 +2071,8 @@ static void test_e2e_array_type_name() {
 /* $decl s $union 0 0.0 — frame is zero-initialized; $$tag starts at 0 */
 static void test_e2e_union_zero_tag() {
     const char* src =
-        "$decl main $func () {\n"
-        "    $decl s $union 0 0.0;\n"
-        "    $ret $member s $$tag;\n"
-        "};\n";
+        "$decl s $union 0 0.0;\n"
+        "$exit $member s $$tag;\n";
     int rc = compile_and_run(src);
     assert(rc == 0);
     printf("PASS test_e2e_union_zero_tag\n");
@@ -2025,10 +2082,8 @@ static void test_e2e_union_zero_tag() {
 static void test_e2e_union_named_type() {
     const char* src =
         "$decl Shape $union 0 0.0;\n"
-        "$decl main $func () {\n"
-        "    $decl s Shape;\n"
-        "    $ret $member s $$tag;\n"
-        "};\n";
+        "$decl s Shape;\n"
+        "$exit $member s $$tag;\n";
     int rc = compile_and_run(src);
     assert(rc == 0);
     printf("PASS test_e2e_union_named_type\n");
@@ -2038,11 +2093,9 @@ static void test_e2e_union_named_type() {
  * A zero-initialized union reinterpreted as int should produce 0. */
 static void test_e2e_union_data_first_layout() {
     const char* src =
-        "$decl main $func () {\n"
-        "    $decl s $union 0 0.0;\n"
-        "    $decl v $as s 0;\n"   /* data-first: payload at offset 0 */
-        "    $ret v;\n"
-        "};\n";
+        "$decl s $union 0 0.0;\n"
+        "$decl v $as s 0;\n"   /* data-first: payload at offset 0 */
+        "$exit v;\n";
     int rc = compile_and_run(src);
     assert(rc == 0);
     printf("PASS test_e2e_union_data_first_layout\n");
@@ -2051,11 +2104,9 @@ static void test_e2e_union_data_first_layout() {
 /* $as as a pure type annotation — wrapping an integer expression */
 static void test_e2e_as_identity() {
     const char* src =
-        "$decl main $func () {\n"
-        "    $decl x 42;\n"
-        "    $decl y $as x 0;\n"
-        "    $ret y;\n"
-        "};\n";
+        "$decl x 42;\n"
+        "$decl y $as x 0;\n"
+        "$exit y;\n";
     int rc = compile_and_run(src);
     assert(rc == 42);
     printf("PASS test_e2e_as_identity\n");
@@ -2078,8 +2129,21 @@ static void test_e2e_block_field_init_second() {
         "$decl p { $decl x 10; $decl y 30; };\n"
         "$exit $member p y;\n";
     int rc = compile_and_run(src);
-    assert(rc == 30);
-    printf("PASS test_e2e_block_field_init_second\n");
+  assert(rc == 30);
+  printf("PASS test_e2e_block_field_init_second\n");
+}
+
+static void test_e2e_block_function_field_updates_parent() {
+    int rc = compile_and_run(
+        "$decl x {\n"
+        "  $decl a $mut 10;\n"
+        "  $decl f $func ($decl n 0) $set $member $parent a n;\n"
+        "};\n"
+        "$call $member x f 42;\n"
+        "$exit $member x a;\n"
+    );
+    assert(rc == 42);
+    printf("PASS test_e2e_block_function_field_updates_parent\n");
 }
 
 /* Phase 3: $ref on a $member lvalue — read through the alias */
@@ -2508,6 +2572,7 @@ int main(void) {
     test_e2e_vm_link_relocates_global_layout();
     test_e2e_vm_link_initializes_modules_once();
     test_e2e_vm_link_shares_imported_module_statics();
+    test_e2e_vm_link_deduplicates_module_slot_offsets();
     test_e2e_vm_link_accepts_direct_imported_function_call();
     test_e2e_vm_link_rejects_missing_dependency_function_export();
     test_e2e_vm_link_rejects_missing_dependency_object();
@@ -2554,6 +2619,7 @@ int main(void) {
     test_e2e_as_identity();
     test_e2e_block_field_init();
     test_e2e_block_field_init_second();
+    test_e2e_block_function_field_updates_parent();
     test_e2e_ref_member();
     test_e2e_ref_index();
     test_e2e_set_member_field();

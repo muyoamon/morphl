@@ -26,9 +26,9 @@
 
 [x] - Make VM CLI/tooling follow the new split: `morphlc -c` compiles only to `.mplo`, `morphlc` remains compile+link+run sugar, `mplvm` runs `.mple`, and `mbc_reader` is renamed to `mplinsp`.
 
-[] - Rework `$global.$modules` and imported module access so all import sites of the same canonical module resolve to the same linked module slot/base offset and shared module statics.
+[x] - Rework `$global.$modules` and imported module access so all import sites of the same canonical module resolve to the same linked module slot/base offset and shared module statics.
 
-[] - Add parser, typing, linker, runtime, and CLI regression coverage for object/executable separation, once-only module initialization, canonical-path deduplication, and the new VM tools.
+[x] - Add parser, typing, linker, runtime, and CLI regression coverage for object/executable separation, once-only module initialization, canonical-path deduplication, and the new VM tools.
 
 ## In Spec Features (High Priority):
 

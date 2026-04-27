@@ -104,6 +104,7 @@ target_include_directories(cli_tests PRIVATE
 
 target_compile_definitions(cli_tests PRIVATE
   MORPHLC_PATH="$<TARGET_FILE:morphlc>"
+  MPLL_PATH="$<TARGET_FILE:mpll>"
   MPLVM_PATH="$<TARGET_FILE:mplvm>"
   MPLINSP_PATH="$<TARGET_FILE:mplinsp>"
   MORPHL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

@@ -396,6 +396,15 @@ static bool emit_external_func_reloc(VmEmitter* e, uint16_t kind, size_t code_of
   return true;
 }
 
+static const ImportSlot* import_slot_by_global_slot(const VmEmitter* e,
+                                                    size_t global_slot) {
+  if (!e) return NULL;
+  for (size_t i = 0; i < e->import_slot_count; ++i) {
+    if (e->import_slots[i].global_slot == global_slot) return &e->import_slots[i];
+  }
+  return NULL;
+}
+
 static bool emit_op_i32(VmEmitter* e, uint8_t op, int32_t imm) {
   return emit_op(e, op) && bytes_push_i32_le(&e->code, imm);
 }
@@ -409,6 +418,12 @@ static bool emit_global_offset_i32(VmEmitter* e, uint8_t op, size_t off) {
   size_t operand_off = e->code.len;
   if (!bytes_push_i32_le(&e->code, (int32_t)off)) return false;
   if (e && e->emit_object && off >= 32) {
+    const ImportSlot* import_slot = import_slot_by_global_slot(e, off);
+    if (import_slot) {
+      return emit_external_func_reloc(e, MORPHL_VM_RELOC_MODULE_SLOT_I32,
+                                      operand_off, import_slot->module_path,
+                                      str_from("", 0));
+    }
     return emit_object_reloc(e, MORPHL_VM_RELOC_GLOBAL_DATA_I32, operand_off);
   }
   return true;
@@ -2046,16 +2061,21 @@ static bool emit_block_value_into_slot(VmEmitter* e,
         continue;
       }
       if (child->child_count >= 2 && child->children[1]) {
-        AstNode* value = ast_clone(child->children[1]);
-        if (!value) {
-          ok = false;
-          break;
+        AstNode* value = child->children[1];
+        AstNode* owned_value = NULL;
+        if (value->kind != AST_FUNC) {
+          owned_value = ast_clone(value);
+          if (!owned_value) {
+            ok = false;
+            break;
+          }
+          value = owned_value;
+          Str shadowed[128];
+          ok = inline_substitute_node(e, value, local_bindings,
+                                      local_binding_count, shadowed, 0);
         }
-        Str shadowed[128];
-        ok = inline_substitute_node(e, value, local_bindings,
-                                    local_binding_count, shadowed, 0);
         if (ok) ok = emit_node(e, value);
-        ast_free(value);
+        if (owned_value) ast_free(owned_value);
         if (!ok) break;
         uint8_t sop = store_op(unwrap_ref(field_type));
         if (sop != 0xFF &&
@@ -2540,15 +2560,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       struct AstNode* heap_init =
           (heap_rhs && heap_rhs->child_count > 0) ? heap_rhs->children[0] : NULL;
       struct AstNode* extern_rhs = unwrap_extern_expr(rhs, e->interns);
+      bool rhs_is_import =
+          builtin_is_name(e, rhs, "$import") && import_module_root(rhs) != NULL;
       if (!name_node || name_node->kind != AST_IDENT) return false;
 
       Str name = name_node->value;
-      if (!e->in_function && name.len == 4 && memcmp(name.ptr, "main", 4) == 0 &&
-          node->storage_residence == MORPHL_STORAGE_STATIC) {
-        VM_ERR(node, "'main' cannot use $static storage");
-        return false;
-      }
-
       /* handle compile-time $ref alias BEFORE any frame registration.
        * Supports any lvalue: identifier, $member, $index (literal), $as. */
       if (rhs && rhs->kind == AST_BUILTIN) {
@@ -2751,7 +2767,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
            rhs && rhs->kind == AST_IDENT);
 
       ptrdiff_t off = PTRDIFF_MAX;
-      if (node->contributes_to_layout) {
+      bool bind_has_frame_storage =
+          node->contributes_to_layout && !(rhs_is_import && e->emit_object);
+      if (bind_has_frame_storage) {
         /* insert alignment padding before the variable, then register in frame
          * tracker */
         /* Trait variable (no fields, only props, RHS is an ident): fat-block =
@@ -3351,8 +3369,6 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       }
 
       /* emit RHS expression */
-      bool rhs_is_import =
-          builtin_is_name(e, rhs, "$import") && import_module_root(rhs) != NULL;
       if (rhs_is_import) {
         if (!e->emit_object) {
           if (!lexical_scope_push_named(e, name)) return false;
@@ -3379,7 +3395,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
       }
 
-      if (!node->contributes_to_layout) {
+      if (!bind_has_frame_storage) {
         return true;
       }
 
@@ -4285,6 +4301,34 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             ft_unwrapped->kind == MORPHL_TYPE_FUNC) {
           return emit_external_func_iconst(e, import_slot->module_path, field_name);
         }
+        if (e->emit_object && import_slot) {
+          const MorphlType* ft_ref = field_type;
+          while (ft_ref && ft_ref->kind == MORPHL_TYPE_REF &&
+                 !ft_ref->data.ref.is_ref) {
+            ft_ref = ft_ref->data.ref.target;
+          }
+          if (ft_unwrapped &&
+              (ft_unwrapped->kind == MORPHL_TYPE_BLOCK ||
+               ft_unwrapped->kind == MORPHL_TYPE_ARRAY ||
+               ft_unwrapped->kind == MORPHL_TYPE_UNION)) {
+            if (ft_ref && ft_ref->kind == MORPHL_TYPE_REF &&
+                ft_ref->data.ref.is_ref) {
+              return emit_op(e, VM_OP_GLOBAL) &&
+                     emit_global_offset_i32(e, VM_OP_ALOAD,
+                                            import_slot->global_slot) &&
+                     emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+            }
+            return emit_op(e, VM_OP_GLOBAL) &&
+                   emit_global_offset_i32(e, VM_OP_ALOAD,
+                                          import_slot->global_slot) &&
+                   emit_iconst(e, (int64_t)field_offset) &&
+                   emit_op(e, VM_OP_IADD);
+          }
+          return emit_op(e, VM_OP_GLOBAL) &&
+                 emit_global_offset_i32(e, VM_OP_ALOAD,
+                                        import_slot->global_slot) &&
+                 emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+        }
         ptrdiff_t target_off =
             morphl_backend_find_offset(&e->frameInfo, target_name);
         if (target_off == PTRDIFF_MAX) {
@@ -4965,8 +5009,14 @@ static bool emit_func_body_defers(VmEmitter* e) {
 
 static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
                                size_t func_idx, Str func_name, Str file_root) {
-  if (!func_node || func_node->kind != AST_FUNC) return false;
-  if (func_node->child_count < 2) return false;
+  if (!func_node || func_node->kind != AST_FUNC) {
+    VM_ERR(func_node, "internal error: deferred function body is not AST_FUNC");
+    return false;
+  }
+  if (func_node->child_count < 2) {
+    VM_ERR(func_node, "internal error: deferred function body missing children");
+    return false;
+  }
   bool saved_in_function = e->in_function;
   size_t saved_scope_depth = e->scope_depth;
   int32_t saved_return_slot_offset = e->return_slot_offset;
@@ -5031,7 +5081,10 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
   e->return_slot_offset = -(int32_t)(param_sz + 8 + ret_sz);
 
   /* push param scope */
-  if (!morphl_backend_push_frame(&e->frameInfo)) return false;
+  if (!morphl_backend_push_frame(&e->frameInfo)) {
+    VM_ERR(func_node, "internal error: failed to push function param frame");
+    return false;
+  }
 
   /* register parameters in frame */
   for (size_t i = 0; i < param_count; i++) {
@@ -5129,6 +5182,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
           }
           e->func_defers[e->func_defer_count++] = child->children[0];
         } else if (!emit_node(e, child)) {
+          VM_ERR(child, "internal error: failed emitting function body statement");
           lexical_scope_pop(e);
           lexical_scope_pop(e);
           if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
@@ -5151,6 +5205,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
       lexical_scope_pop(e);
     } else {
       if (!emit_node(e, body)) {
+        VM_ERR(body, "internal error: failed emitting non-block function body");
         lexical_scope_pop(e);
         if (body_scope_sz > 0) morphl_backend_pop_frame(&e->frameInfo);
         morphl_backend_pop_frame(&e->frameInfo);
@@ -6015,7 +6070,8 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
       ok = ok && bytes_push_u32_le(&file, e.object_relocs[i].code_offset);
       if (e.object_relocs[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 ||
           e.object_relocs[i].kind == MORPHL_VM_RELOC_EXTERN_FUNC_I64 ||
-          e.object_relocs[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32) {
+          e.object_relocs[i].kind == MORPHL_VM_RELOC_EXTERN_DATA_I32 ||
+          e.object_relocs[i].kind == MORPHL_VM_RELOC_MODULE_SLOT_I32) {
         ok = ok && bytes_push_len_string(
                        &file,
                        str_from(e.object_relocs[i].module_path,

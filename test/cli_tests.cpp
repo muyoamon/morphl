@@ -199,6 +199,132 @@ static void test_mplinsp_reads_object_file() {
   assert(output.find("Artifact:      object") != std::string::npos);
 }
 
+static void test_mplinsp_reads_executable_file() {
+  std::string temp_dir = make_temp_dir();
+  std::string source_path = temp_dir + "/prog.mpl";
+  std::string exe_path = temp_dir + "/prog.mple";
+  std::string compile_log = temp_dir + "/compile.log";
+  std::string insp_log = temp_dir + "/insp.log";
+
+  write_file(source_path, "$exit 3;\n");
+
+  std::string compile_command =
+      "cd " + quote_arg(temp_dir) + " && " + quote_arg(MORPHLC_PATH) +
+      " -o " + quote_arg(exe_path) + " " + quote_arg(source_path);
+  int compile_exit = run_command_capture(compile_command, compile_log);
+  assert(compile_exit == 3);
+  assert(file_exists(exe_path));
+
+  std::string insp_command =
+      quote_arg(MPLINSP_PATH) + " " + quote_arg(exe_path);
+  int insp_exit = run_command_capture(insp_command, insp_log);
+  assert(insp_exit == 0);
+
+  std::string output = read_file(insp_log);
+  assert(output.find("Artifact:      executable") != std::string::npos);
+}
+
+static void test_mplvm_rejects_object_file() {
+  std::string temp_dir = make_temp_dir();
+  std::string source_path = temp_dir + "/prog.mpl";
+  std::string object_path = temp_dir + "/prog.mplo";
+  std::string compile_log = temp_dir + "/compile.log";
+  std::string run_log = temp_dir + "/run.log";
+
+  write_file(source_path, "$decl value 1;\n");
+
+  std::string compile_command =
+      "cd " + quote_arg(temp_dir) + " && " + quote_arg(MORPHLC_PATH) +
+      " -c -o " + quote_arg(object_path) + " " + quote_arg(source_path);
+  int compile_exit = run_command_capture(compile_command, compile_log);
+  assert(compile_exit == 0);
+  assert(file_exists(object_path));
+
+  std::string run_command =
+      quote_arg(MPLVM_PATH) + " " + quote_arg(object_path);
+  int run_exit = run_command_capture(run_command, run_log);
+  assert(run_exit != 0);
+
+  std::string output = read_file(run_log);
+  assert(output.find("not a runnable VM executable") != std::string::npos);
+}
+
+static void test_mpll_links_objects_and_mplinsp_reads_executable() {
+  std::string temp_dir = make_temp_dir();
+  std::string dep_path = temp_dir + "/dep.mpl";
+  std::string root_path = temp_dir + "/root.mpl";
+  std::string dep_obj = temp_dir + "/dep.mplo";
+  std::string root_obj = temp_dir + "/root.mplo";
+  std::string exe_path = temp_dir + "/linked.mple";
+  std::string dep_log = temp_dir + "/dep.log";
+  std::string root_log = temp_dir + "/root.log";
+  std::string link_log = temp_dir + "/link.log";
+  std::string insp_log = temp_dir + "/insp.log";
+
+  write_file(dep_path,
+             "$decl dep_func $func () {\n"
+             "  $ret 11;\n"
+             "};\n");
+  write_file(root_path,
+             std::string("$decl dep $import \"") + dep_path + "\";\n" +
+                 "$exit $call $member dep dep_func ();\n");
+
+  int dep_exit = run_command_capture(
+      "cd " + quote_arg(temp_dir) + " && " + quote_arg(MORPHLC_PATH) +
+      " -c -o " + quote_arg(dep_obj) + " " + quote_arg(dep_path),
+      dep_log);
+  int root_exit = run_command_capture(
+      "cd " + quote_arg(temp_dir) + " && " + quote_arg(MORPHLC_PATH) +
+      " -c -o " + quote_arg(root_obj) + " " + quote_arg(root_path),
+      root_log);
+  assert(dep_exit == 0);
+  assert(root_exit == 0);
+  assert(file_exists(dep_obj));
+  assert(file_exists(root_obj));
+
+  int link_exit = run_command_capture(
+      quote_arg(MPLL_PATH) + " " + quote_arg(exe_path) + " " +
+      quote_arg(root_obj) + " " + quote_arg(dep_obj),
+      link_log);
+  assert(link_exit == 0);
+  assert(file_exists(exe_path));
+
+  int insp_exit = run_command_capture(
+      quote_arg(MPLINSP_PATH) + " " + quote_arg(exe_path),
+      insp_log);
+  assert(insp_exit == 0);
+
+  std::string output = read_file(insp_log);
+  assert(output.find("Artifact:      executable") != std::string::npos);
+}
+
+static void test_mpll_rejects_executable_input() {
+  std::string temp_dir = make_temp_dir();
+  std::string source_path = temp_dir + "/prog.mpl";
+  std::string exe_input = temp_dir + "/prog.mple";
+  std::string exe_output = temp_dir + "/linked.mple";
+  std::string compile_log = temp_dir + "/compile.log";
+  std::string link_log = temp_dir + "/link.log";
+
+  write_file(source_path, "$exit 0;\n");
+
+  int compile_exit = run_command_capture(
+      "cd " + quote_arg(temp_dir) + " && " + quote_arg(MORPHLC_PATH) +
+      " -o " + quote_arg(exe_input) + " " + quote_arg(source_path),
+      compile_log);
+  assert(compile_exit == 0);
+  assert(file_exists(exe_input));
+
+  int link_exit = run_command_capture(
+      quote_arg(MPLL_PATH) + " " + quote_arg(exe_output) + " " +
+      quote_arg(exe_input),
+      link_log);
+  assert(link_exit != 0);
+
+  std::string output = read_file(link_log);
+  assert(output.find("is not a VM object file") != std::string::npos);
+}
+
 static void test_c_backend_is_compile_only() {
   std::string temp_dir = make_temp_dir();
   std::string log_path = temp_dir + "/c_backend.log";
@@ -256,6 +382,10 @@ int main() {
   test_vm_compile_links_import_graph();
   test_mplvm_runs_executable();
   test_mplinsp_reads_object_file();
+  test_mplinsp_reads_executable_file();
+  test_mplvm_rejects_object_file();
+  test_mpll_links_objects_and_mplinsp_reads_executable();
+  test_mpll_rejects_executable_input();
   test_c_backend_is_compile_only();
   test_missing_output_filename();
   test_run_flag_removed();
