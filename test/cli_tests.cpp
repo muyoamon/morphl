@@ -55,7 +55,7 @@ static std::string quote_arg(const std::string& value) {
 static void test_default_vm_output() {
   std::string temp_dir = make_temp_dir();
   std::string log_path = temp_dir + "/default.log";
-  std::string output_path = temp_dir + "/out.mple";
+  std::string output_path = temp_dir + "/out.mplx";
   std::string source_path = std::string(MORPHL_SOURCE_DIR) + "/examples/minimal.mpl";
 
   std::string command = "cd " + quote_arg(temp_dir) + " && " +
@@ -66,8 +66,8 @@ static void test_default_vm_output() {
   assert(file_exists(output_path));
 
   std::string output = read_file(log_path);
-  assert(output.find("output written to out.mple") != std::string::npos);
-  assert(output.find("executing VM bytecode from out.mple") != std::string::npos);
+  assert(output.find("output written to out.mplx") != std::string::npos);
+  assert(output.find("executing VM bytecode from out.mplx") != std::string::npos);
 }
 
 static void test_compile_only_vm_output() {
@@ -109,7 +109,7 @@ static void test_custom_c_output() {
 static void test_custom_vm_output_runs() {
   std::string temp_dir = make_temp_dir();
   std::string log_path = temp_dir + "/custom_vm.log";
-  std::string output_path = temp_dir + "/custom_output.mple";
+  std::string output_path = temp_dir + "/custom_output.mplx";
   std::string source_path = std::string(MORPHL_SOURCE_DIR) + "/examples/minimal.mpl";
 
   std::string command = "cd " + quote_arg(temp_dir) + " && " +
@@ -128,7 +128,7 @@ static void test_vm_compile_links_import_graph() {
   std::string temp_dir = make_temp_dir();
   std::string dep_path = temp_dir + "/dep.mpl";
   std::string root_path = temp_dir + "/root.mpl";
-  std::string exe_path = temp_dir + "/linked.mple";
+  std::string exe_path = temp_dir + "/linked.mplx";
   std::string log_path = temp_dir + "/linked.log";
 
   write_file(dep_path,
@@ -155,7 +155,7 @@ static void test_vm_compile_links_import_graph() {
 static void test_mplvm_runs_executable() {
   std::string temp_dir = make_temp_dir();
   std::string source_path = temp_dir + "/prog.mpl";
-  std::string exe_path = temp_dir + "/prog.mple";
+  std::string exe_path = temp_dir + "/prog.mplx";
   std::string compile_log = temp_dir + "/compile.log";
   std::string run_log = temp_dir + "/run.log";
 
@@ -202,7 +202,7 @@ static void test_mplinsp_reads_object_file() {
 static void test_mplinsp_reads_executable_file() {
   std::string temp_dir = make_temp_dir();
   std::string source_path = temp_dir + "/prog.mpl";
-  std::string exe_path = temp_dir + "/prog.mple";
+  std::string exe_path = temp_dir + "/prog.mplx";
   std::string compile_log = temp_dir + "/compile.log";
   std::string insp_log = temp_dir + "/insp.log";
 
@@ -255,7 +255,7 @@ static void test_mpll_links_objects_and_mplinsp_reads_executable() {
   std::string root_path = temp_dir + "/root.mpl";
   std::string dep_obj = temp_dir + "/dep.mplo";
   std::string root_obj = temp_dir + "/root.mplo";
-  std::string exe_path = temp_dir + "/linked.mple";
+  std::string exe_path = temp_dir + "/linked.mplx";
   std::string dep_log = temp_dir + "/dep.log";
   std::string root_log = temp_dir + "/root.log";
   std::string link_log = temp_dir + "/link.log";
@@ -301,8 +301,8 @@ static void test_mpll_links_objects_and_mplinsp_reads_executable() {
 static void test_mpll_rejects_executable_input() {
   std::string temp_dir = make_temp_dir();
   std::string source_path = temp_dir + "/prog.mpl";
-  std::string exe_input = temp_dir + "/prog.mple";
-  std::string exe_output = temp_dir + "/linked.mple";
+  std::string exe_input = temp_dir + "/prog.mplx";
+  std::string exe_output = temp_dir + "/linked.mplx";
   std::string compile_log = temp_dir + "/compile.log";
   std::string link_log = temp_dir + "/link.log";
 

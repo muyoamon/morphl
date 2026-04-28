@@ -100,7 +100,8 @@ enum Operator{
   ARRAY,
   INDEX,
   UNION,
-  AS
+  AS,
+  OVERLOAD,
 };
 
 struct OperatorInfo {

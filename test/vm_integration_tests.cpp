@@ -311,7 +311,7 @@ static bool compile_source_to_artifact(const char* source, const std::string& ou
 
 static int compile_link_and_run(const char* source) {
     std::string obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     if (!compile_source_to_artifact(source, obj_path)) {
         std::remove(obj_path.c_str());
         std::remove(exe_path.c_str());
@@ -1018,7 +1018,7 @@ static void test_e2e_vm_link_single_object() {
 
 static void test_e2e_vm_link_accepts_function_relocs() {
     std::string obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     assert(compile_source_to_artifact(
         "$decl foo $func () 40;\n"
         "$decl x $call foo ();\n"
@@ -1041,7 +1041,7 @@ static void test_e2e_vm_link_accepts_function_relocs() {
 
 static void test_e2e_vm_link_dedups_duplicate_object_inputs() {
     std::string obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     assert(compile_source_to_artifact(
         "$decl x 20;\n"
         "$exit $mul x 2;\n",
@@ -1060,7 +1060,7 @@ static void test_e2e_vm_link_dedups_duplicate_object_inputs() {
 
 static void test_e2e_vm_link_rejects_executable_input() {
     std::string exe_input_path = temp_path(".mbc");
-    std::string exe_output_path = temp_path(".mple");
+    std::string exe_output_path = temp_path(".mplx");
     assert(compile_source_to_artifact(
         "$exit 1;\n",
         exe_input_path));
@@ -1082,7 +1082,7 @@ static void test_e2e_vm_link_accepts_dependency_object() {
     );
     std::string dep_obj_path = temp_path(".mplo");
     std::string root_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
         "$decl f $member dep dep_func;\n" +
@@ -1147,7 +1147,7 @@ static void test_e2e_vm_link_relocates_global_layout() {
     );
     std::string root_obj_path = temp_path(".mplo");
     std::string dep_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl root_static $static 7;\n") +
         "$decl dep $import \"" + dep_src_path + "\";\n" +
@@ -1221,7 +1221,7 @@ static void test_e2e_vm_link_initializes_modules_once() {
     );
     std::string root_obj_path = temp_path(".mplo");
     std::string dep_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl dep_a $import \"") + dep_src_path + "\";\n" +
         "$decl dep_b $import \"" + dep_src_path + "\";\n" +
@@ -1266,7 +1266,7 @@ static void test_e2e_vm_link_shares_imported_module_statics() {
     );
     std::string root_obj_path = temp_path(".mplo");
     std::string dep_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl dep_a $import \"") + dep_src_path + "\";\n" +
         "$decl dep_b $import \"" + dep_src_path + "\";\n" +
@@ -1319,7 +1319,7 @@ static void test_e2e_vm_link_deduplicates_module_slot_offsets() {
     );
     std::string root_obj_path = temp_path(".mplo");
     std::string dep_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl dep_a $import \"") + dep_src_path + "\";\n" +
         "$decl dep_b $import \"" + dep_src_path + "\";\n" +
@@ -1379,7 +1379,7 @@ static void test_e2e_vm_link_rejects_missing_dependency_function_export() {
     );
     std::string root_obj_path = temp_path(".mplo");
     std::string dep_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
         "$exit $call $member dep dep_func ();\n";
@@ -1412,7 +1412,7 @@ static void test_e2e_vm_link_accepts_direct_imported_function_call() {
     );
     std::string root_obj_path = temp_path(".mplo");
     std::string dep_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
         "$exit $add $call $member dep dep_func () 2;\n";
@@ -1458,7 +1458,7 @@ static void test_e2e_vm_link_rejects_missing_dependency_object() {
         "$decl dep_value 11;\n"
     );
     std::string root_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     std::string root_src =
         std::string("$decl dep $import \"") + dep_src_path + "\";\n" +
         "$exit $member dep dep_value;\n";
@@ -1483,7 +1483,7 @@ static void test_e2e_vm_link_rejects_unrelated_object() {
     std::string dep_obj_path = temp_path(".mplo");
     std::string root_obj_path = temp_path(".mplo");
     std::string unrelated_obj_path = temp_path(".mplo");
-    std::string exe_path = temp_path(".mple");
+    std::string exe_path = temp_path(".mplx");
     assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
     std::string root_src =
         std::string("$decl dep $import \"") + dep_src_path + "\";\n" +

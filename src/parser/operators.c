@@ -1,4 +1,5 @@
 #include "parser/operators.h"
+#include "ast/ast.h"
 #include "parser/scoped_parser.h"
 #include "lexer/lexer.h"
 #include "typing/typing.h"
@@ -7,6 +8,7 @@
 #include "util/error.h"
 #include "util/file.h"
 #include "util/fs.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -891,7 +893,7 @@ static OperatorRow kBuiltinOps[] = {
   {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, THIS},
   {"$parent", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, PARENT},
   {"$file",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, FILE_},
-  {"$global",  AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, GLOBAL},
+  {"$global", AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, GLOBAL},
   {"$ref",    AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, REF},
   {"$null",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, NULLREF},
   {"$new",    AST_BUILTIN,false, 1, 2,          NULL,              0, OP_PP_KEEP_NODE, NEW},
@@ -967,6 +969,9 @@ static OperatorRow kBuiltinOps[] = {
   // Union types and reinterpret cast
   {"$union",  AST_BUILTIN, true, 1, (size_t)-1,  pp_action_union,   0, OP_PP_KEEP_NODE, UNION},
   {"$as",     AST_BUILTIN,false, 2, 2,           pp_action_as,      0, OP_PP_KEEP_NODE, AS},
+
+  // overload type 
+  {"$overload",AST_BUILTIN,false, 1, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE, OVERLOAD},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

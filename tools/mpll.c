@@ -4,7 +4,7 @@
 #include "runtime/runtime.h"
 
 static void print_usage(const char* program) {
-  fprintf(stderr, "usage: %s <out.mple> <input.mplo> [more-inputs.mplo ...]\n",
+  fprintf(stderr, "usage: %s <out.mplx> <input.mplo> [more-inputs.mplo ...]\n",
           program);
 }
 

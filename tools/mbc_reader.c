@@ -711,7 +711,7 @@ static void print_native_syms(const MbcFile *mbc) {
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
-        fprintf(stderr, "usage: mplinsp <file.mplo|file.mple>\n");
+        fprintf(stderr, "usage: mplinsp <file.mplo|file.mplx>\n");
         return 1;
     }
     const char *path = argv[1];

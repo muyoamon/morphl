@@ -18,7 +18,7 @@
 static void print_usage(const char* program_name) {
   fprintf(stderr, "usage: %s [--backend c|vm] [-c] [-o <filename>] [grammar-file] <source-file>\n", program_name);
   fprintf(stderr, "  If grammar-file is omitted, uses builtin operators only.\n");
-  fprintf(stderr, "  VM backend compiles to .mplo with -c, otherwise compiles, links, and runs .mple output.\n");
+  fprintf(stderr, "  VM backend compiles to .mplo with -c, otherwise compiles, links, and runs .mplx output.\n");
   fprintf(stderr, "  Use $syntax \"file\" directive within source to load custom grammars.\n");
 }
 
@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
     const char* final_output_path =
         output_path ? output_path
                     : ((backend_type == MORPHL_BACKEND_TYPE_VM)
-                           ? (compile_only ? "out.mplo" : "out.mple")
+                           ? (compile_only ? "out.mplo" : "out.mplx")
                            : "out.c");
 
     if (!morphl_register_backend(backend_type)) {

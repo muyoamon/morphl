@@ -50,7 +50,7 @@ void morphl_stdlib_register(void);
 /// Load a MorphL VM bytecode program from disk (out.mbc format).
 bool morphl_vm_program_load(const char* path, MorphlVmProgram** out_program);
 
-/// Link one or more MorphL VM object files (.mplo) into one runnable executable (.mple).
+/// Link one or more MorphL VM object files (.mplo) into one runnable executable (.mplx).
 /// Returns false on parse/link/write failure.
 bool morphl_vm_link_files(const char* out_path,
                           const char* const* input_paths,

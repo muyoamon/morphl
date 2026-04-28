@@ -3,7 +3,7 @@
 #include "runtime/runtime.h"
 
 static void print_usage(const char* program) {
-  fprintf(stderr, "usage: %s <file.mple> [program-args...]\n", program);
+  fprintf(stderr, "usage: %s <file.mplx> [program-args...]\n", program);
 }
 
 int main(int argc, char** argv) {

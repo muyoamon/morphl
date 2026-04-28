@@ -57,9 +57,9 @@ It contains:
 
 `.mplo` preserves module-local numbering and layout where possible. It does not commit to final executable-wide function indices or global offsets.
 
-### `.mple` - MorphL VM Executable
+### `.mplx` - MorphL VM Executable
 
-`.mple` is the runnable linked VM artifact.
+`.mplx` is the runnable linked VM artifact.
 
 It contains:
 
@@ -70,7 +70,7 @@ It contains:
 - linked startup/init sequence
 - merged string and native symbol tables
 
-The VM runtime loads `.mple` only.
+The VM runtime loads `.mplx` only.
 
 ---
 
@@ -187,8 +187,8 @@ This proposal adds explicit compile and link steps for VM builds, while keeping 
 Recommended workflow:
 
 - compile source file to object with `morphlc -c`: `.mplo`
-- link one or more objects to executable with `mpll`: `.mple`
-- run `.mple` with `mplvm`
+- link one or more objects to executable with `mpll`: `.mplx`
+- run `.mplx` with `mplvm`
 
 The main `morphlc` executable should remain the one-shot convenience path that internally performs:
 
@@ -198,8 +198,8 @@ The main `morphlc` executable should remain the one-shot convenience path that i
 
 Additional convenience tools:
 
-- `mpll`: link `.mplo` inputs into a `.mple`
-- `mplvm`: execute a `.mple`
+- `mpll`: link `.mplo` inputs into a `.mplx`
+- `mplvm`: execute a `.mplx`
 - `mplinsp`: inspect VM bytecode artifacts
 
 `mplinsp` is the renamed successor to the current `mbc_reader` tool.
@@ -220,7 +220,7 @@ Source compatibility is preserved:
 Backend/runtime behavior does change:
 
 - `.mplo` is introduced as a new non-runnable VM artifact
-- `.mple` becomes the runnable VM artifact
+- `.mplx` becomes the runnable VM artifact
 - the runtime should reject `.mplo`
 - the current VM output path defaults should move toward artifact-specific extensions
 - `morphlc -c` for the VM backend becomes object-only compilation
@@ -269,7 +269,7 @@ The intended implementation shape is:
   - patch relocations
   - synthesize once-only module init ordering
 - runtime:
-  - load `.mple` only
+  - load `.mplx` only
 
 ---
 
@@ -281,6 +281,6 @@ The chosen defaults are:
 
 - static linking only
 - explicit compile/link CLI modes, with one-shot `morphlc` flow retained as sugar
-- `.mplo` object files and `.mple` executable files
+- `.mplo` object files and `.mplx` executable files
 - `morphlc -c` means compile-only for VM
 - `mpll`, `mplvm`, and `mplinsp` are provided as convenience tools

@@ -28,7 +28,7 @@
 
 ## Completed
 
-[x] - Split VM artifacts into non-runnable `.mplo` object files and runnable `.mple` executables, including header-level kind/version validation and runtime rejection of `.mplo` inputs.
+[x] - Split VM artifacts into non-runnable `.mplo` object files and runnable `.mplx` executables, including header-level kind/version validation and runtime rejection of `.mplo` inputs.
 
 [x] - Change VM import lowering so `$import` keeps canonical-path/type-analysis metadata without replacing the importer-visible node with an embedded `AST_FILE` for runtime emission.
 
@@ -50,7 +50,7 @@
 
 [x] - Remove implicit VM `main` dispatch support so linked and direct VM execution use explicit root top-level execution only, with any future entry selection handled by build configuration rather than backend synthesis.
 
-[x] - Make VM CLI/tooling follow the new split: `morphlc -c` compiles only to `.mplo`, `morphlc` remains compile+link+run sugar, `mplvm` runs `.mple`, and `mbc_reader` is renamed to `mplinsp`.
+[x] - Make VM CLI/tooling follow the new split: `morphlc -c` compiles only to `.mplo`, `morphlc` remains compile+link+run sugar, `mplvm` runs `.mplx`, and `mbc_reader` is renamed to `mplinsp`.
 
 [x] - Rework `$global.$modules` and imported module access so all import sites of the same canonical module resolve to the same linked module slot/base offset and shared module statics.
 
