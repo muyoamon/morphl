@@ -164,6 +164,32 @@ MorphlType* morphl_type_group(Arena* arena,
   return t;
 }
 
+MorphlType* morphl_type_overload(Arena* arena,
+                                 MorphlType** candidate_types,
+                                 size_t candidate_count) {
+  if (!arena) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_OVERLOAD;
+  t->size = 0;
+  t->align = 1;
+  if (candidate_count > 0 && candidate_types) {
+    MorphlType** candidates =
+        arena_alloc(arena, candidate_count * sizeof(MorphlType*));
+    if (!candidates) return NULL;
+    for (size_t i = 0; i < candidate_count; ++i) {
+      candidates[i] = candidate_types[i];
+    }
+    t->data.overload.candidate_types = candidates;
+    t->data.overload.candidate_count = candidate_count;
+  } else {
+    t->data.overload.candidate_types = NULL;
+    t->data.overload.candidate_count = 0;
+  }
+  return t;
+}
+
 // Block type constructor
 MorphlType* morphl_type_block(Arena* arena,
                               Sym* field_names,
@@ -359,6 +385,20 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
       }
       t->data.group.elem_types = elems;
     }
+  } else if (t->kind == MORPHL_TYPE_OVERLOAD) {
+    if (t->data.overload.candidate_count > 0 &&
+        t->data.overload.candidate_types) {
+      MorphlType** candidates =
+          arena_alloc(arena, t->data.overload.candidate_count *
+                                 sizeof(MorphlType*));
+      if (!candidates) return NULL;
+      for (size_t i = 0; i < t->data.overload.candidate_count; ++i) {
+        candidates[i] = morphl_type_clone(
+            arena, t->data.overload.candidate_types[i]);
+        if (!candidates[i]) return NULL;
+      }
+      t->data.overload.candidate_types = candidates;
+    }
   } else if (t->kind == MORPHL_TYPE_BLOCK) {
     if (t->data.block.field_count > 0 && t->data.block.field_types && t->data.block.field_names) {
       Sym* names = arena_alloc(arena, t->data.block.field_count * sizeof(Sym));
@@ -456,6 +496,18 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
     if (a->data.group.elem_count != b->data.group.elem_count) return false;
     for (size_t i = 0; i < a->data.group.elem_count; ++i) {
       if (!morphl_type_equals(a->data.group.elem_types[i], b->data.group.elem_types[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (a->kind == MORPHL_TYPE_OVERLOAD) {
+    if (a->data.overload.candidate_count != b->data.overload.candidate_count)
+      return false;
+    for (size_t i = 0; i < a->data.overload.candidate_count; ++i) {
+      if (!morphl_type_equals(a->data.overload.candidate_types[i],
+                              b->data.overload.candidate_types[i])) {
         return false;
       }
     }
@@ -578,6 +630,19 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         result = new_cstr(buf);
         break;
       }
+      case MORPHL_TYPE_OVERLOAD: {
+        size_t offset = 0;
+        offset += snprintf(buf + offset, sizeof(buf) - offset, "$overload");
+        for (size_t i = 0; i < type->data.overload.candidate_count; ++i) {
+          Str elem_str = morphl_type_to_string(
+              type->data.overload.candidate_types[i], interns);
+          offset += snprintf(buf + offset, sizeof(buf) - offset, " %.*s",
+                             (int)elem_str.len, elem_str.ptr);
+          free((void*)elem_str.ptr);
+        }
+        result = new_cstr(buf);
+        break;
+      }
       case MORPHL_TYPE_BLOCK: {
         // Print in format: {<name>:<type>, ...}($<prop>:<type>, ...)
         snprintf(buf, sizeof(buf), "{");
@@ -686,6 +751,9 @@ bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super) {
   }
   if (sub->kind == MORPHL_TYPE_ARRAY) {
     // Arrays are exact-match only (no prefix subtyping)
+    return morphl_type_equals(sub, super);
+  }
+  if (sub->kind == MORPHL_TYPE_OVERLOAD) {
     return morphl_type_equals(sub, super);
   }
   if (sub->kind == MORPHL_TYPE_UNION) {

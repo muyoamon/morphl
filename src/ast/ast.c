@@ -56,6 +56,9 @@ AstNode* ast_clone(const AstNode* node) {
   clone->storage_residence = node->storage_residence;
   clone->extern_symbol = node->extern_symbol;
   clone->import_module_shared = node->import_module_shared;
+  clone->overload_has_selection = node->overload_has_selection;
+  clone->overload_select_self = node->overload_select_self;
+  clone->overload_selected_index = node->overload_selected_index;
   if (node->import_path.ptr && node->import_path.len > 0) {
     char* path_copy = (char*)malloc(node->import_path.len + 1);
     if (!path_copy) {

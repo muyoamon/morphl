@@ -25,7 +25,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
 ### 2.1 Single-`$` Keywords 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`, `$overload`.
 
 ### 2.2 Double-`$$` Directives
 `$$`-prefixed name are compiler directives - They are as-early-as-possible resolutions. The compiler substitute them at compile time whenever it can determine the value statically. If it cannot, resolution defers to runtime
@@ -923,6 +923,48 @@ Both `$as s Circle` and `$as ($member s $$data) Circle` are safe and produce the
 
 Accessing the payload without a preceding `$$tag` check is allowed but unsafe — the programmer asserts knowledge of the active variant.
 
+### 7.5 `$overload` - First-Class Overload Aggregate
+
+`$overload` stores multiple candidate expressions in one value:
+
+```morphl
+$overload <expr>+
+```
+
+It is a first-class aggregate value with group-like storage:
+
+- one slot per candidate, in lexical order
+- candidate selection happens at each use site during typing
+- the compiler first tries the overload object itself when the surrounding
+  context accepts overload type directly
+- otherwise it tries candidates left-to-right and picks the first compatible
+  candidate
+
+Examples:
+
+```morphl
+$decl x $overload 0 0.0;
+$add x 1;      // resolves x as int
+$fadd x 1.0;   // resolves x as float
+
+$decl y $mut $overload 0 0.0;
+$set y 10;                   // writes int slot
+$set y $overload 11 11.0;    // whole-object assignment
+```
+
+Overload type identity is positional and exact: two overload values have the
+same type iff they have the same candidate count and each corresponding
+candidate type is equal.
+
+Whole-object operations such as `$set lhs rhs` may resolve both sides as
+overload objects directly. If whole-object compatibility fails, typing falls
+back to candidate projection.
+
+> **Implementation status**: the VM pipeline supports stored source-level
+> `$overload` values, candidate projection, and whole-object assignment. The C
+> backend currently rejects source-level `$overload`. Lazy `$inline $overload`
+> behavior is not yet implemented.
+
 ---
 
 ## 8. Array Types 
@@ -1720,6 +1762,11 @@ $expr[1] lhs "+" $expr[2] rhs => $add lhs rhs | $fadd lhs rhs
 
 This produces an `AST_OVERLOAD` node; the type inference pass resolves it to `$add` (integers) or `$fadd` (floats) based on the operand types.
 
+This internal grammar-template overload mechanism is distinct from the
+source-level `$overload` keyword. Template alternatives produce a transient
+`AST_OVERLOAD` selection node; source `$overload` creates a first-class runtime
+value.
+
 **Using `$$spread` with repetition:**
 
 ```
@@ -2040,6 +2087,7 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$index` | 2 | Array element access: `$index arr i`. |
 | `$union` | 1–∞ | Tagged union type: `$union V1 V2 ...`. |
 | `$as` | 2 | Reinterpret cast: `$as expr TargetType`. |
+| `$overload` | 1–∞ | First-class overload aggregate: `$overload expr1 expr2 ...`. |
 | **Arithmetic** | | |
 | `$add` | 2 | Integer addition. |
 | `$sub` | 2 | Integer subtraction. |

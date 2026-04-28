@@ -2,7 +2,7 @@
 
 ## Implementing Features (Highest Priority):
 
-[] - `$overload` keyword as fist class construct.
+[] - Finish `$overload` follow-up work: lazy `$inline $overload` semantics and C backend support.
 
 ## In Spec Features (High Priority):
 
@@ -76,4 +76,5 @@
 
 [x] - Finish the remaining `$defer`, `$heap`, and `$free` work in the VM. Alias-safe `$free` cleanup (compile-time alias resolution), function-body `$defer` (fires before `$ret` and implicit return), and `$new` template cleanup (fresh block instance inherits `$defer` from the template) are implemented. Runtime per-allocation cleanup-thunk model implemented: `$free y` now works when `y` is a runtime copy of a heap handle (not a compile-time alias).
 
+[x] - Add first-class source-level `$overload` support in the VM pipeline. Parser accepts builtin `$overload`; typing builds overload types, resolves projected candidates at use sites, supports whole-object `$set`, and VM lowering handles stored overload values plus selected-candidate loads/stores. C backend currently rejects source-level `$overload`, and lazy `$inline $overload` semantics remain follow-up work.
 

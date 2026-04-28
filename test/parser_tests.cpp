@@ -330,6 +330,39 @@ static void test_scoped_import_preserves_literal_and_reuses_cache() {
   std::remove(module_path.c_str());
 }
 
+static void test_source_overload_parses_as_builtin() {
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+  assert(operator_registry_init(interns));
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  const char* source = "$decl x $overload 0 0.0;\n";
+  std::string source_path = write_temp_file(source);
+
+  ScopedParserContext ctx;
+  AstNode* root = parse_scoped_source(interns, &arena, source_path, &ctx);
+  assert(root != nullptr);
+  assert(root->kind == AST_FILE);
+  assert(root->child_count == 1);
+  AstNode* decl = root->children[0];
+  assert(decl->kind == AST_DECL);
+  assert(decl->child_count >= 2);
+  AstNode* rhs = decl->children[1];
+  assert(rhs->kind == AST_BUILTIN);
+  assert(rhs->op == interns_intern(interns, str_from("$overload", 9)));
+  assert(rhs->child_count == 2);
+  assert(rhs->children[0]->kind == AST_LITERAL);
+  assert(rhs->children[1]->kind == AST_LITERAL);
+
+  ast_free(root);
+  scoped_parser_free(&ctx);
+  arena_free(&arena);
+  interns_free(interns);
+  std::remove(source_path.c_str());
+}
+
 int main() {
   test_grammar_loading();
   test_parser_accept_reject();
@@ -337,6 +370,7 @@ int main() {
   test_float_literal_token_kind();
   test_scoped_builtin_ast_locations();
   test_scoped_import_preserves_literal_and_reuses_cache();
+  test_source_overload_parses_as_builtin();
   std::puts("All parser tests passed.");
   return 0;
 }

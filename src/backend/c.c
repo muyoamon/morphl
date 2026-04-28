@@ -629,9 +629,11 @@ static bool contains_unsupported_c_storage(const AstNode* node) {
     if (!node) return false;
     if (node->storage_residence == MORPHL_STORAGE_STATIC ||
         node->storage_residence == MORPHL_STORAGE_HEAP) return true;
+    if (node->type && node->type->kind == MORPHL_TYPE_OVERLOAD) return true;
     if (node->kind == AST_BUILTIN && node->value.ptr) {
         if ((node->value.len == 6 && strncmp(node->value.ptr, "$defer", 6) == 0) ||
-            (node->value.len == 5 && strncmp(node->value.ptr, "$free", 5) == 0)) {
+            (node->value.len == 5 && strncmp(node->value.ptr, "$free", 5) == 0) ||
+            (node->value.len == 9 && strncmp(node->value.ptr, "$overload", 9) == 0)) {
             return true;
         }
     }
@@ -674,6 +676,7 @@ static const char *find_decl_type(AstNode *value) {
 bool morphl_backend_func_c(MorphlBackendContext* context) {
     if (!context || !context->tree || !context->out_file) return false;
     if (contains_unsupported_c_storage(context->tree)) {
+        fprintf(stderr, "C backend does not support source-level $overload yet\n");
         return false;
     }
 

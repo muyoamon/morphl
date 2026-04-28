@@ -15,6 +15,11 @@ assigned like any other value.
 This is intended to generalize the existing grammar-template overload mechanism
 into an ordinary source-level construct.
 
+> **Implementation note**: the current VM implementation supports stored
+> source-level overload values, projected candidate resolution, and whole-object
+> assignment. Lazy `$inline $overload` behavior and C backend support remain
+> follow-up work.
+
 ---
 
 ## 2. Syntax

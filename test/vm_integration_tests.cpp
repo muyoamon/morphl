@@ -1569,6 +1569,23 @@ static int compile_and_run_argc(const char* source, int vm_argc) {
     return result;
 }
 
+static void test_e2e_overload_arithmetic_resolution() {
+    int rc = compile_and_run(
+        "$decl x $overload 41 1.0;\n"
+        "$exit $add x 1;\n");
+    assert(rc == 42);
+    printf("PASS test_e2e_overload_arithmetic_resolution\n");
+}
+
+static void test_e2e_overload_whole_object_assignment() {
+    int rc = compile_and_run(
+        "$decl x $mut $overload 0 0.0;\n"
+        "$set x $overload 41 41.0;\n"
+        "$exit $add x 1;\n");
+    assert(rc == 42);
+    printf("PASS test_e2e_overload_whole_object_assignment\n");
+}
+
 /* $global.$argc — program receives argc via the global frame */
 static void test_e2e_global_argc() {
     /* Pass vm_argc=3; program exits with that value.
@@ -2652,6 +2669,8 @@ int main(void) {
     test_e2e_inline_func_multiple_uses();
     test_e2e_inline_func_block_body_ret();
     test_e2e_inline_func_block_body_no_ret();
+    test_e2e_overload_arithmetic_resolution();
+    test_e2e_overload_whole_object_assignment();
     printf("All integration tests passed.\n");
     return 0;
 }

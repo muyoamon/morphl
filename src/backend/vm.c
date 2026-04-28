@@ -675,6 +675,7 @@ static Str alias_resolve(VmEmitter* e, Str name) {
 static size_t align_up(size_t offset, size_t align);
 static size_t type_frame_align(const MorphlType* t);
 static size_t type_frame_size(const MorphlType* t);
+static size_t overload_candidate_offset(const MorphlType* t, size_t index);
 
 static const char* lexical_current_path(const VmEmitter* e) {
   if (!e || e->lexical_scope_count == 0) return "";
@@ -1256,9 +1257,37 @@ static size_t type_frame_align(const MorphlType* t) {
                                      : 1;
     case MORPHL_TYPE_UNION:
       return 8; /* tag slot is i64 */
+    case MORPHL_TYPE_OVERLOAD: {
+      size_t max_align = 1;
+      for (size_t i = 0; i < t->data.overload.candidate_count; ++i) {
+        const MorphlType* candidate =
+            unwrap_ref(t->data.overload.candidate_types[i]);
+        size_t fa = type_frame_align(candidate);
+        if (fa > max_align) max_align = fa;
+      }
+      return max_align;
+    }
     default:
       return 1;
   }
+}
+
+static size_t overload_candidate_offset(const MorphlType* t, size_t index) {
+  if (!t || t->kind != MORPHL_TYPE_OVERLOAD ||
+      index >= t->data.overload.candidate_count) {
+    return 0;
+  }
+  size_t offset = 0;
+  for (size_t i = 0; i < index; ++i) {
+    const MorphlType* candidate =
+        unwrap_ref(t->data.overload.candidate_types[i]);
+    size_t fa = type_frame_align(candidate);
+    offset = align_up(offset, fa);
+    offset += type_frame_size(candidate);
+  }
+  const MorphlType* candidate =
+      unwrap_ref(t->data.overload.candidate_types[index]);
+  return align_up(offset, type_frame_align(candidate));
 }
 
 static size_t type_frame_size(const MorphlType* t) {
@@ -1300,6 +1329,17 @@ static size_t type_frame_size(const MorphlType* t) {
       return t->data.array.count * type_frame_size(t->data.array.elem_type);
     case MORPHL_TYPE_UNION:
       return t->size; /* pre-computed: 8 (tag slot) + max(variant sizes) */
+    case MORPHL_TYPE_OVERLOAD: {
+      size_t offset = 0;
+      for (size_t i = 0; i < t->data.overload.candidate_count; ++i) {
+        const MorphlType* candidate =
+            unwrap_ref(t->data.overload.candidate_types[i]);
+        size_t fa = type_frame_align(candidate);
+        offset = align_up(offset, fa);
+        offset += type_frame_size(candidate);
+      }
+      return align_up(offset, type_frame_align(t));
+    }
     default:
       return 0;
   }
@@ -2419,6 +2459,9 @@ static size_t func_alloc(VmEmitter* e) {
 
 /* ── forward declaration ────────────────────────────────────────────────── */
 static bool emit_node(VmEmitter* e, struct AstNode* node);
+static bool emit_block_value_into_slot(VmEmitter* e, const MorphlType* block_t,
+                                       struct AstNode* block_ref, Str binding_name,
+                                       ptrdiff_t off);
 
 /* ── pre-scan block to compute its total $decl byte size ─────────────────── */
 /* Local variables on the frame are laid out in declaration order with natural
@@ -2446,6 +2489,52 @@ static size_t block_scope_size(struct AstNode* block) {
     }
   }
   return offset;
+}
+
+static bool emit_expr_into_known_slot(VmEmitter* e, AstNode* expr,
+                                      const MorphlType* t, ptrdiff_t off,
+                                      Str binding_name) {
+  if (!e || !expr || !t) return false;
+  const MorphlType* ut = unwrap_ref(t);
+  if (!ut) return false;
+  if (expr->kind == AST_FUNC) {
+    size_t fidx = func_alloc(e);
+    if (fidx == SIZE_MAX) return false;
+    if (e->deferred_count >= e->deferred_capacity) {
+      if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
+                   sizeof(DeferredFunc), e->deferred_count + 1))
+        return false;
+    }
+    e->deferred[e->deferred_count++] =
+        (DeferredFunc){expr, fidx, binding_name, current_file_root_prefix(e)};
+    if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
+    return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
+  }
+  if (ut->kind == MORPHL_TYPE_BLOCK && expr->kind == AST_BLOCK) {
+    return emit_block_value_into_slot(e, ut, expr, binding_name, off);
+  }
+  if (!emit_node(e, expr)) return false;
+  uint8_t sop = store_op(ut);
+  if (sop == 0xFF) return false;
+  return emit_op_i32(e, sop, (int32_t)off);
+}
+
+static bool emit_overload_value_into_slot(VmEmitter* e, const MorphlType* overload_t,
+                                          AstNode* overload_expr,
+                                          ptrdiff_t off, Str binding_name) {
+  if (!e || !overload_t || overload_t->kind != MORPHL_TYPE_OVERLOAD ||
+      !overload_expr || overload_expr->child_count != overload_t->data.overload.candidate_count) {
+    return false;
+  }
+  for (size_t i = 0; i < overload_t->data.overload.candidate_count; ++i) {
+    ptrdiff_t cand_off = off + (ptrdiff_t)overload_candidate_offset(overload_t, i);
+    if (!emit_expr_into_known_slot(e, overload_expr->children[i],
+                                   overload_t->data.overload.candidate_types[i],
+                                   cand_off, binding_name)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /* ── emit a single AST node ─────────────────────────────────────────────── */
@@ -2541,6 +2630,27 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         while (t && t->kind == MORPHL_TYPE_REF) t = t->data.ref.target;
       } else {
         t = unwrap_ref(node->type);
+      }
+      if (t && t->kind == MORPHL_TYPE_OVERLOAD) {
+        if (!node->overload_has_selection || node->overload_select_self) {
+          VM_ERR(node, "plain access to overload object is not supported here");
+          return false;
+        }
+        if (node->overload_selected_index >= t->data.overload.candidate_count) {
+          VM_ERR(node, "invalid overload candidate selection");
+          return false;
+        }
+        const MorphlType* candidate = unwrap_ref(
+            t->data.overload.candidate_types[node->overload_selected_index]);
+        ptrdiff_t candidate_off =
+            off + (ptrdiff_t)overload_candidate_offset(
+                          t, node->overload_selected_index);
+        uint8_t op = load_op(candidate);
+        if (op == 0xFF) {
+          VM_ERR(node, "cannot load selected overload candidate");
+          return false;
+        }
+        return emit_op_i32(e, op, (int32_t)candidate_off);
       }
       uint8_t op = load_op(t);
       if (op == 0xFF) {
@@ -3368,6 +3478,38 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
       }
 
+      if (t && t->kind == MORPHL_TYPE_OVERLOAD) {
+        if (!bind_has_frame_storage) return true;
+        AstNode* overload_rhs = unwrap_storage_builtin(e, rhs, "$overload");
+        if (overload_rhs && overload_rhs->child_count > 0) {
+          return emit_overload_value_into_slot(e, t, overload_rhs, off, name);
+        }
+        if (rhs && rhs->kind == AST_IDENT) {
+          ptrdiff_t src_extra = 0;
+          Str src_name = alias_resolve_full(e, rhs->value, &src_extra);
+          ptrdiff_t src_off =
+              morphl_backend_find_offset(&e->frameInfo, src_name) + src_extra;
+          if (src_off != PTRDIFF_MAX + src_extra) {
+            for (size_t i = 0; i < t->data.overload.candidate_count; ++i) {
+              const MorphlType* candidate =
+                  unwrap_ref(t->data.overload.candidate_types[i]);
+              size_t cand_off = overload_candidate_offset(t, i);
+              uint8_t lop = load_op(candidate);
+              uint8_t sop = store_op(candidate);
+              if (lop == 0xFF || sop == 0xFF) {
+                VM_ERR(rhs, "cannot copy overload candidate");
+                return false;
+              }
+              if (!emit_op_i32(e, lop, (int32_t)(src_off + (ptrdiff_t)cand_off)) ||
+                  !emit_op_i32(e, sop, (int32_t)(off + (ptrdiff_t)cand_off))) {
+                return false;
+              }
+            }
+            return true;
+          }
+        }
+      }
+
       /* emit RHS expression */
       if (rhs_is_import) {
         if (!e->emit_object) {
@@ -3924,6 +4066,74 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                (int)target->value.len, target->value.ptr);
         return false;
       }
+      const MorphlType* target_overload = unwrap_ref(target->type);
+      if (target_overload && target_overload->kind == MORPHL_TYPE_OVERLOAD) {
+        if (target->overload_has_selection && target->overload_select_self &&
+            value->overload_has_selection && value->overload_select_self) {
+          const MorphlType* value_overload = unwrap_ref(value->type);
+          if (!value_overload ||
+              value_overload->kind != MORPHL_TYPE_OVERLOAD ||
+              !morphl_type_equals(target_overload, value_overload)) {
+            VM_ERR(node, "$set: overload type mismatch in assignment");
+            return false;
+          }
+          if (value->kind == AST_IDENT) {
+            ptrdiff_t src_extra = 0;
+            Str src_name = alias_resolve_full(e, value->value, &src_extra);
+            ptrdiff_t src_off =
+                morphl_backend_find_offset(&e->frameInfo, src_name) + src_extra;
+            if (src_off == PTRDIFF_MAX + src_extra) {
+              VM_ERR(value, "undefined overload source '%.*s'",
+                     (int)value->value.len, value->value.ptr);
+              return false;
+            }
+            for (size_t i = 0; i < target_overload->data.overload.candidate_count;
+                 ++i) {
+              const MorphlType* candidate = unwrap_ref(
+                  target_overload->data.overload.candidate_types[i]);
+              size_t cand_off = overload_candidate_offset(target_overload, i);
+              uint8_t lop = load_op(candidate);
+              uint8_t sop = store_op(candidate);
+              if (lop == 0xFF || sop == 0xFF) {
+                VM_ERR(node, "$set: cannot copy overload candidate");
+                return false;
+              }
+              if (!emit_op_i32(e, lop, (int32_t)(src_off + (ptrdiff_t)cand_off)) ||
+                  !emit_op_i32(e, sop, (int32_t)(off + (ptrdiff_t)cand_off))) {
+                return false;
+              }
+            }
+            return true;
+          }
+          if (value->kind == AST_BUILTIN && e->interns && value->op) {
+            Str value_op = interns_lookup(e->interns, value->op);
+            if (value_op.len == 9 && memcmp(value_op.ptr, "$overload", 9) == 0) {
+              return emit_overload_value_into_slot(e, target_overload, value, off,
+                                                   target_name);
+            }
+          }
+          VM_ERR(value, "$set: unsupported whole-overload source");
+          return false;
+        }
+        if (target->overload_has_selection && !target->overload_select_self) {
+          size_t idx = target->overload_selected_index;
+          if (idx >= target_overload->data.overload.candidate_count) {
+            VM_ERR(target, "invalid overload candidate selection");
+            return false;
+          }
+          const MorphlType* candidate = unwrap_ref(
+              target_overload->data.overload.candidate_types[idx]);
+          ptrdiff_t cand_off =
+              off + (ptrdiff_t)overload_candidate_offset(target_overload, idx);
+          if (!emit_node(e, value)) return false;
+          uint8_t sop = store_op(candidate);
+          if (sop == 0xFF) {
+            VM_ERR(node, "$set: cannot store overload candidate");
+            return false;
+          }
+          return emit_op_i32(e, sop, (int32_t)cand_off);
+        }
+      }
       if (target_slot_type && target_slot_type->kind == MORPHL_TYPE_REF &&
           target_slot_type->data.ref.is_ref && !direct_rebinding &&
           str_eq(target_name, target->value) && textra == 0) {
@@ -4008,6 +4218,18 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 #define OP_IS(s) \
   (op_name.len == sizeof(s) - 1 && memcmp(op_name.ptr, s, sizeof(s) - 1) == 0)
 
+      if (OP_IS("$overload")) {
+        if (!node->overload_has_selection || node->overload_select_self) {
+          VM_ERR(node, "plain runtime access to overload object is not supported");
+          return false;
+        }
+        if (node->overload_selected_index >= node->child_count) {
+          VM_ERR(node, "invalid overload candidate selection");
+          return false;
+        }
+        return emit_node(e, node->children[node->overload_selected_index]);
+      }
+
       /* $ret */
       if (OP_IS("$ret")) {
         if (node->child_count > 0 && node->children[0]) {
@@ -4028,6 +4250,16 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * transparent storage qualifiers */
       if (OP_IS("$mut") || OP_IS("$const") || OP_IS("$inline") ||
           OP_IS("$static") || OP_IS("$ref") || OP_IS("$heap")) {
+        if (node->overload_has_selection && !node->overload_select_self &&
+            node->child_count > 0 && node->children[0]) {
+          AstNode* child = node->children[0];
+          if (child->kind == AST_BUILTIN && e->interns && child->op &&
+              interns_lookup(e->interns, child->op).len == 9 &&
+              memcmp(interns_lookup(e->interns, child->op).ptr, "$overload", 9) == 0 &&
+              node->overload_selected_index < child->child_count) {
+            return emit_node(e, child->children[node->overload_selected_index]);
+          }
+        }
         return node->child_count > 0 ? emit_node(e, node->children[0]) : true;
       }
 

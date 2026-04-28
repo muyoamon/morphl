@@ -1270,6 +1270,90 @@ static void test_overload_resolution() {
   printf("\u2713 test_overload_resolution passed\n");
 }
 
+static void test_source_overload_type_and_arithmetic_resolution() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+      interns, &arena,
+      "$decl x $overload 0 0.0;\n"
+      "$decl y $add x 1;\n"
+      "$decl z $fadd x 1.0;\n",
+      &parser_ctx);
+  assert(root != NULL);
+
+  MorphlType* file_type = morphl_infer_type_of_ast(parser_ctx.type_context, root);
+  assert(file_type != NULL);
+
+  AstNode* x_decl = root->children[0];
+  AstNode* y_decl = root->children[1];
+  AstNode* z_decl = root->children[2];
+  assert(x_decl->type != NULL);
+  assert(x_decl->type->kind == MORPHL_TYPE_OVERLOAD);
+  assert(x_decl->type->data.overload.candidate_count == 2);
+  assert(x_decl->type->data.overload.candidate_types[0]->kind == MORPHL_TYPE_INT);
+  assert(x_decl->type->data.overload.candidate_types[1]->kind == MORPHL_TYPE_FLOAT);
+
+  AstNode* y_rhs = y_decl->children[1];
+  AstNode* z_rhs = z_decl->children[1];
+  assert(y_rhs->children[0]->overload_has_selection);
+  assert(!y_rhs->children[0]->overload_select_self);
+  assert(y_rhs->children[0]->overload_selected_index == 0);
+  assert(z_rhs->children[0]->overload_has_selection);
+  assert(!z_rhs->children[0]->overload_select_self);
+  assert(z_rhs->children[0]->overload_selected_index == 1);
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_source_overload_type_and_arithmetic_resolution passed\n");
+}
+
+static void test_source_overload_call_and_set_resolution() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+      interns, &arena,
+      "$decl f $overload $func ($decl n 0) n \"hello\";\n"
+      "$decl y $overload 10 \"str\";\n"
+      "$decl r $call f y;\n"
+      "$decl x $mut $overload 0 0.0;\n"
+      "$set x $overload 99 99.0;\n",
+      &parser_ctx);
+  assert(root != NULL);
+
+  MorphlType* file_type = morphl_infer_type_of_ast(parser_ctx.type_context, root);
+  assert(file_type != NULL);
+
+  AstNode* call_decl = root->children[2];
+  AstNode* call_rhs = call_decl->children[1];
+  assert(call_rhs->children[0]->overload_has_selection);
+  assert(!call_rhs->children[0]->overload_select_self);
+  assert(call_rhs->children[0]->overload_selected_index == 0);
+  assert(call_rhs->children[1]->overload_has_selection);
+  assert(!call_rhs->children[1]->overload_select_self);
+  assert(call_rhs->children[1]->overload_selected_index == 0);
+
+  AstNode* set_expr = root->children[4];
+  assert(set_expr->overload_has_selection == false);
+  assert(set_expr->children[0]->overload_has_selection);
+  assert(set_expr->children[0]->overload_select_self);
+  assert(set_expr->children[1]->overload_has_selection);
+  assert(set_expr->children[1]->overload_select_self);
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_source_overload_call_and_set_resolution passed\n");
+}
+
 // ============================================================================
 // Test: $prop nodes go into prop_names/prop_types, not field_names/field_types
 // ============================================================================
@@ -1616,6 +1700,8 @@ int main() {
   test_pp_call_group_param();
   test_pp_while();
   test_overload_resolution();
+  test_source_overload_type_and_arithmetic_resolution();
+  test_source_overload_call_and_set_resolution();
   test_pp_prop();
   test_prop_not_in_structural_fields();
   test_impl_type_mismatch_error();

@@ -19,6 +19,7 @@ typedef enum {
   MORPHL_TYPE_PRIMITIVE, // (Deprecated) Primitive type placeholder
   MORPHL_TYPE_BLOCK,     // Block type (struct-like)
   MORPHL_TYPE_GROUP,     // Group type (tuple-like)
+  MORPHL_TYPE_OVERLOAD,  // Overload type ($overload T1 T2 ...)
   MORPHL_TYPE_TRAIT,     // Trait type (interface-like)
   MORPHL_TYPE_ARRAY,     // Fixed-size array type [T * N]
   MORPHL_TYPE_UNION,     // Tagged union type $union V1 V2 ...
@@ -57,6 +58,11 @@ typedef struct {
   MorphlType** elem_types;
   size_t elem_count;
 } MorphlGroupType;
+
+typedef struct {
+  MorphlType** candidate_types;
+  size_t candidate_count;
+} MorphlOverloadType;
 
 // Block type metadata: fields declared in the block scope
 typedef struct {
@@ -106,6 +112,7 @@ typedef struct MorphlType {
   union {
     MorphlFuncType func;    // kind == MORPHL_TYPE_FUNC
     MorphlGroupType group;  // kind == MORPHL_TYPE_GROUP
+    MorphlOverloadType overload; // kind == MORPHL_TYPE_OVERLOAD
     MorphlBlockType block;  // kind == MORPHL_TYPE_BLOCK
     MorphlRefType ref;       // kind == MORPHL_TYPE_REF
     MorphlArrayType array;   // kind == MORPHL_TYPE_ARRAY
@@ -133,6 +140,9 @@ MorphlType* morphl_type_ref(Arena* arena,
 MorphlType* morphl_type_group(Arena* arena,
                               MorphlType** elem_types,
                               size_t elem_count);
+MorphlType* morphl_type_overload(Arena* arena,
+                                 MorphlType** candidate_types,
+                                 size_t candidate_count);
 MorphlType* morphl_type_block(Arena* arena,
                               Sym* field_names,
                               MorphlType** field_types,

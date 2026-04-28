@@ -45,6 +45,74 @@ static bool is_truthy_condition_type(const MorphlType* t) {
   return t && (t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_INT);
 }
 
+static void clear_overload_selection(AstNode* node) {
+  if (!node) return;
+  node->overload_has_selection = false;
+  node->overload_select_self = false;
+  node->overload_selected_index = 0;
+}
+
+static void set_overload_selection(AstNode* node, bool select_self,
+                                   size_t candidate_index) {
+  if (!node) return;
+  node->overload_has_selection = true;
+  node->overload_select_self = select_self;
+  node->overload_selected_index = candidate_index;
+}
+
+static bool type_matches_expected(MorphlType* actual, MorphlType* expected) {
+  actual = unwrap_ref(actual);
+  expected = unwrap_ref(expected);
+  if (!actual || !expected) return false;
+  return morphl_type_equals(actual, expected) ||
+         morphl_type_is_subtype(actual, expected);
+}
+
+static MorphlType* resolve_overload_to_expected(TypeContext* ctx,
+                                                AstNode* node,
+                                                MorphlType* expected,
+                                                bool allow_self,
+                                                bool emit_errors) {
+  if (!ctx || !node || !expected) return NULL;
+  clear_overload_selection(node);
+  MorphlType* raw = morphl_infer_type_of_ast(ctx, node);
+  MorphlType* unwrapped = unwrap_ref(raw);
+  MorphlType* expected_unwrapped = unwrap_ref(expected);
+  if (!unwrapped || !expected_unwrapped) return NULL;
+
+  if (unwrapped->kind != MORPHL_TYPE_OVERLOAD) {
+    if (type_matches_expected(unwrapped, expected_unwrapped)) return unwrapped;
+    if (emit_errors) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                      "expression does not match expected type");
+      morphl_error_emit(NULL, &err);
+    }
+    return NULL;
+  }
+
+  if (allow_self && expected_unwrapped->kind == MORPHL_TYPE_OVERLOAD &&
+      morphl_type_equals(unwrapped, expected_unwrapped)) {
+    set_overload_selection(node, true, 0);
+    return unwrapped;
+  }
+
+  for (size_t i = 0; i < unwrapped->data.overload.candidate_count; ++i) {
+    MorphlType* candidate = unwrap_ref(
+        unwrapped->data.overload.candidate_types[i]);
+    if (type_matches_expected(candidate, expected_unwrapped)) {
+      set_overload_selection(node, false, i);
+      return candidate;
+    }
+  }
+
+  if (emit_errors) {
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                    "no overload candidate matches expected type");
+    morphl_error_emit(NULL, &err);
+  }
+  return NULL;
+}
+
 static bool is_string_literal(TypeContext* ctx, const AstNode* node) {
   if (!ctx || !node || node->kind != AST_LITERAL || !node->op) return false;
   Sym string_sym = interns_intern(ctx->interns, str_from(LEXER_KIND_STRING, strlen(LEXER_KIND_STRING)));
@@ -809,8 +877,21 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     
-    MorphlType* left = unwrap_ref(arg_types[0]);
-    MorphlType* right = unwrap_ref(arg_types[1]);
+    MorphlType* expected = morphl_type_int(ctx->arena);
+    AstNode* left_node =
+        (node && node->child_count > 0) ? node->children[0] : NULL;
+    AstNode* right_node =
+        (node && node->child_count > 1) ? node->children[1] : NULL;
+    MorphlType* left = left_node
+                           ? resolve_overload_to_expected(ctx, left_node,
+                                                          expected, false, false)
+                           : NULL;
+    MorphlType* right = right_node
+                            ? resolve_overload_to_expected(ctx, right_node,
+                                                           expected, false, false)
+                            : NULL;
+    if (!left) left = unwrap_ref(arg_types[0]);
+    if (!right) right = unwrap_ref(arg_types[1]);
     if (!left || left->kind != MORPHL_TYPE_INT ||
         !right || right->kind != MORPHL_TYPE_INT) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
@@ -833,8 +914,21 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     
-    MorphlType* left = unwrap_ref(arg_types[0]);
-    MorphlType* right = unwrap_ref(arg_types[1]);
+    MorphlType* expected = morphl_type_float(ctx->arena);
+    AstNode* left_node =
+        (node && node->child_count > 0) ? node->children[0] : NULL;
+    AstNode* right_node =
+        (node && node->child_count > 1) ? node->children[1] : NULL;
+    MorphlType* left = left_node
+                           ? resolve_overload_to_expected(ctx, left_node,
+                                                          expected, false, false)
+                           : NULL;
+    MorphlType* right = right_node
+                            ? resolve_overload_to_expected(ctx, right_node,
+                                                           expected, false, false)
+                            : NULL;
+    if (!left) left = unwrap_ref(arg_types[0]);
+    if (!right) right = unwrap_ref(arg_types[1]);
     if (!left || left->kind != MORPHL_TYPE_FLOAT ||
         !right || right->kind != MORPHL_TYPE_FLOAT) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be float", op_name);
@@ -908,6 +1002,29 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
   
   // Structural operators: $group and $block have void type
+  if (op_sym == interns_intern(ctx->interns, str_from("$overload", 9))) {
+    if (arg_count == 0) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                      "$overload expects at least 1 argument");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType** candidates =
+        (MorphlType**)malloc(arg_count * sizeof(MorphlType*));
+    if (!candidates) return NULL;
+    for (size_t i = 0; i < arg_count; ++i) {
+      candidates[i] = arg_types[i];
+      if (!candidates[i]) {
+        free(candidates);
+        return NULL;
+      }
+    }
+    MorphlType* overload_type =
+        morphl_type_overload(ctx->arena, candidates, arg_count);
+    free(candidates);
+    return overload_type;
+  }
+
   if (op_sym == interns_intern(ctx->interns, str_from("$group", 6)) ||
       op_sym == interns_intern(ctx->interns, str_from("$block", 6))) {
     return morphl_type_void(ctx->arena);
@@ -931,7 +1048,15 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    MorphlType* exit_arg = unwrap_ref(arg_types[0]);
+    MorphlType* exit_arg = arg_types[0];
+    if (node && node->child_count > 0 && node->children[0] &&
+        unwrap_ref(exit_arg)->kind == MORPHL_TYPE_OVERLOAD) {
+      exit_arg = resolve_overload_to_expected(ctx, node->children[0],
+                                              morphl_type_int(ctx->arena),
+                                              false, true);
+      if (!exit_arg) return NULL;
+    }
+    exit_arg = unwrap_ref(exit_arg);
     if (!exit_arg || exit_arg->kind != MORPHL_TYPE_INT) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$exit: argument must be of type i32 (integer)");
       morphl_error_emit(NULL, &err);
@@ -1064,6 +1189,15 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
+    if (node && node->child_count > 0 && node->children[0] &&
+        ret_type && unwrap_ref(ret_type)->kind == MORPHL_TYPE_OVERLOAD &&
+        ctx->expected_return_type &&
+        unwrap_ref(ctx->expected_return_type)->kind != MORPHL_TYPE_UNKNOWN) {
+      ret_type = resolve_overload_to_expected(ctx, node->children[0],
+                                              ctx->expected_return_type, true,
+                                              true);
+      if (!ret_type) return NULL;
+    }
     if (ret_type && ret_type->kind != MORPHL_TYPE_UNKNOWN) {
       MorphlType* current_func = type_context_get_current_func(ctx);
       if (ctx->expected_return_type->kind == MORPHL_TYPE_UNKNOWN) {
@@ -1088,17 +1222,48 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    // Function call: first arg is function type
+    AstNode* callee_node =
+        node && node->child_count > 0 ? node->children[0] : NULL;
+    AstNode* arg_node = node && node->child_count > 1 ? node->children[1] : NULL;
     MorphlType* func_type = unwrap_ref(arg_types[0]);
     // Unwrap a single-element GROUP (e.g. callee wrapped in parentheses: ($member v $greet))
     if (func_type && func_type->kind == MORPHL_TYPE_GROUP &&
         func_type->data.group.elem_count == 1) {
       func_type = unwrap_ref(func_type->data.group.elem_types[0]);
     }
+    if (func_type && func_type->kind == MORPHL_TYPE_OVERLOAD) {
+      MorphlType* overload_type = func_type;
+      func_type = NULL;
+      clear_overload_selection(callee_node);
+      for (size_t i = 0; i < overload_type->data.overload.candidate_count; ++i) {
+        MorphlType* candidate = unwrap_ref(
+            overload_type->data.overload.candidate_types[i]);
+        if (!candidate || candidate->kind != MORPHL_TYPE_FUNC ||
+            candidate->data.func.param_count == 0 ||
+            !candidate->data.func.param_types[0]) {
+          continue;
+        }
+        if (!resolve_overload_to_expected(ctx, arg_node,
+                                          candidate->data.func.param_types[0],
+                                          true, false)) {
+          continue;
+        }
+        set_overload_selection(callee_node, false, i);
+        func_type = candidate;
+        break;
+      }
+    }
     if (!func_type || func_type->kind != MORPHL_TYPE_FUNC) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$call: first argument must be a function");
       morphl_error_emit(NULL, &err);
       return NULL;
+    }
+    if (func_type->data.func.param_count > 0 && func_type->data.func.param_types[0]) {
+      if (!resolve_overload_to_expected(ctx, arg_node,
+                                        func_type->data.func.param_types[0],
+                                        true, true)) {
+        return NULL;
+      }
     }
     return func_type->data.func.return_type;
   }
@@ -1951,6 +2116,47 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           value_type = morphl_infer_type_of_ast(ctx, node->children[1]);
         }
         if (!target_type || !value_type) return NULL;
+        MorphlType* target_unwrapped = unwrap_ref(target_type);
+        MorphlType* value_unwrapped = unwrap_ref(value_type);
+        if (target_unwrapped && target_unwrapped->kind == MORPHL_TYPE_OVERLOAD) {
+          MorphlType* resolved_value = NULL;
+          if (value_unwrapped && value_unwrapped->kind == MORPHL_TYPE_OVERLOAD) {
+            resolved_value = resolve_overload_to_expected(
+                ctx, node->children[1], target_unwrapped, true, false);
+            if (resolved_value) {
+              target_type = resolve_overload_to_expected(
+                  ctx, node->children[0], target_unwrapped, true, true);
+              if (!target_type) return NULL;
+              value_type = resolved_value;
+              target_unwrapped = unwrap_ref(target_type);
+              value_unwrapped = unwrap_ref(value_type);
+            }
+          }
+          if (!resolved_value) {
+            clear_overload_selection(node->children[0]);
+            for (size_t i = 0; i < target_unwrapped->data.overload.candidate_count; ++i) {
+              MorphlType* candidate =
+                  target_unwrapped->data.overload.candidate_types[i];
+              MorphlType* resolved_candidate = resolve_overload_to_expected(
+                  ctx, node->children[1], candidate, true, false);
+              if (!resolved_candidate) continue;
+              set_overload_selection(node->children[0], false, i);
+              target_type = candidate;
+              value_type = resolved_candidate;
+              target_unwrapped = unwrap_ref(target_type);
+              value_unwrapped = unwrap_ref(value_type);
+              break;
+            }
+          }
+          if (!resolved_value && target_unwrapped &&
+              target_unwrapped->kind == MORPHL_TYPE_OVERLOAD) {
+            MorphlError err = MORPHL_ERR_AT(
+                node, MORPHL_E_TYPE,
+                "$set: no overload candidate matches the assignment");
+            morphl_error_emit(NULL, &err);
+            return NULL;
+          }
+        }
         // Check const-declared ident targets (non-ref path)
         if (node->children[0]->kind == AST_IDENT && target_type->kind != MORPHL_TYPE_REF) {
           Sym target_sym = node->children[0]->op;

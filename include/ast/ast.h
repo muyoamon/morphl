@@ -52,6 +52,9 @@ typedef struct AstNode {
   Str import_path;
   struct AstNode* import_module;
   bool import_module_shared;
+  bool overload_has_selection;
+  bool overload_select_self;
+  size_t overload_selected_index;
 } AstNode;
 
 AstNode* ast_new(AstKind kind);
