@@ -2,6 +2,32 @@
 
 ## Implementing Features (Highest Priority):
 
+[] - `$overload` keyword as fist class construct.
+
+## In Spec Features (High Priority):
+
+## Good to have features (Medium Priority, Not in Spec yet)
+
+[] - Unify ABI: rather than use C type for external library, use morphl ABI type system, e.g., morphl_i64, morphl_str
+
+[] - Make error code specific. Currently, only error code has mode: [MXXX] the last three digits is unused.
+
+[] - `$comment` and/or `//` treat the following tokens as comments (drop node) until new line.
+
+## Out of Spec Features (Low Priority, Not in order):
+
+[] - `mpldb` morphl debugger, a tool to debug the program.
+
+[] - `$comptime` construct; Evaluate expression at compile-time.
+
+[] - `$extend` keyword. compile-time compound-type extending keyword, does not modify inplace e.g., `$decl new_block $extend block1 block2;` If block2 contains fields with same name in block1, shadow them. The type of new block should be {...block1, ....block2}. Therefore, the shadowed field should be accessible if the new_block is reinterpreted as block1 type. If block2 contains properties that block1 also has, override them.
+
+[] - Expand standard libraries
+
+[] - `$build` keyword, buildsystem as first class construct. `$build <global-expr>` Allowing user to create their own `$global` construct, Therefore allowing user to control the program memory layout.
+
+## Completed
+
 [x] - Split VM artifacts into non-runnable `.mplo` object files and runnable `.mple` executables, including header-level kind/version validation and runtime rejection of `.mplo` inputs.
 
 [x] - Change VM import lowering so `$import` keeps canonical-path/type-analysis metadata without replacing the importer-visible node with an embedded `AST_FILE` for runtime emission.
@@ -30,8 +56,6 @@
 
 [x] - Add parser, typing, linker, runtime, and CLI regression coverage for object/executable separation, once-only module initialization, canonical-path deduplication, and the new VM tools.
 
-## In Spec Features (High Priority):
-
 [x] - Make `$inline` a true non-storage storage descriptor. VM-side `$member $inline { ... } <fieldname>` collapse works for declaration-only blocks/imports, including `$alias <name> $inline $import "<mod-path>"`, and it can resolve dependencies on earlier declarations statically. Runtime-dependent inline logic emits a warning before the hard failure. Direct `$decl x $inline expr` remains ordinary storage as specified.
 
 [x] - Allowing `$static` specifier on function type. Just a function table index inside the static storage. Mutability depend on the operand mutability descriptor e.g., `$decl static_func $static $mut $func () {...};`
@@ -52,22 +76,4 @@
 
 [x] - Finish the remaining `$defer`, `$heap`, and `$free` work in the VM. Alias-safe `$free` cleanup (compile-time alias resolution), function-body `$defer` (fires before `$ret` and implicit return), and `$new` template cleanup (fresh block instance inherits `$defer` from the template) are implemented. Runtime per-allocation cleanup-thunk model implemented: `$free y` now works when `y` is a runtime copy of a heap handle (not a compile-time alias).
 
-## Good to have features (Medium Priority, Not in Spec yet)
 
-[] - Unify ABI: rather than use C type for external library, use morphl ABI type system, e.g., morphl_i64, morphl_str
-
-[] - Make error code specific. Currently, only error code has mode: [MXXX] the last three digits is unused.
-
-[] - `$comment` and/or `//` treat the following tokens as comments (drop node) until new line.
-
-## Out of Spec Features (Low Priority, Not in order):
-
-[] - `mpldb` morphl debugger, a tool to debug the program.
-
-[] - `$comptime` construct; Evaluate expression at compile-time.
-
-[] - `$extend` keyword. compile-time compound-type extending keyword, does not modify inplace e.g., `$decl new_block $extend block1 block2;` If block2 contains fields with same name in block1, shadow them. The type of new block should be {...block1, ....block2}. Therefore, the shadowed field should be accessible if the new_block is reinterpreted as block1 type. If block2 contains properties that block1 also has, override them.
-
-[] - Expand standard libraries
-
-[] - `$build` keyword, buildsystem as first class construct. `$build <global-expr>` Allowing user to create their own `$global` construct, Therefore allowing user to control the program memory layout.

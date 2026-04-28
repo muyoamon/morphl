@@ -1,5 +1,7 @@
 # Feature Proposal: VM Object/Executable Separation and Link-Time Module Imports
 
+**Status**: Implemented
+
 ---
 
 ## 1. Problem Statement

@@ -1,5 +1,8 @@
 # Feature Proposal: Dynamic Storage and Deferred Cleanup
 
+
+**Status**: Implemented
+
 ---
 
 ## 1. Design Goals
