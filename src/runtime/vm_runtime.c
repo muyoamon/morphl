@@ -546,6 +546,56 @@ static bool read_frame_i64_checked(MorphlVm* vm, int32_t offset, int64_t* out,
     return true;
 }
 
+static int64_t normalize_int_value(int64_t value, size_t width,
+                                   bool is_unsigned) {
+    switch (width) {
+        case 1:
+            if (is_unsigned) return (int64_t)(uint8_t)value;
+            return (int64_t)(int8_t)value;
+        case 2:
+            if (is_unsigned) return (int64_t)(uint16_t)value;
+            return (int64_t)(int16_t)value;
+        case 4:
+            if (is_unsigned) return (int64_t)(uint32_t)value;
+            return (int64_t)(int32_t)value;
+        default:
+            return value;
+    }
+}
+
+static bool read_frame_int_checked(MorphlVm* vm, int32_t offset, size_t width,
+                                   bool is_unsigned, int64_t* out,
+                                   FILE* err, const char* opname) {
+    if (!vm || !out) return false;
+    size_t addr = vm->call_frames[vm->call_frame_count - 1].frame_base + (ptrdiff_t)offset;
+    if ((ptrdiff_t)addr < 0 || addr + width > vm->stack.top) {
+        RT_ERR(err, "vm: %s frame access OOB (off=%d width=%zu top=%zu)", opname, offset, width, vm->stack.top);
+        return false;
+    }
+    int64_t raw = 0;
+    memcpy(&raw, vm->stack.data + addr, width);
+    *out = normalize_int_value(raw, width, is_unsigned);
+    return true;
+}
+
+static bool write_frame_int_checked(MorphlVm* vm, int32_t offset, size_t width,
+                                    int64_t value, FILE* err, const char* opname) {
+    if (!vm) return false;
+    size_t addr = vm->call_frames[vm->call_frame_count - 1].frame_base + (ptrdiff_t)offset;
+    if ((ptrdiff_t)addr < 0 || addr + width > vm->stack.top) {
+        RT_ERR(err, "vm: %s frame access OOB (off=%d width=%zu top=%zu)", opname, offset, width, vm->stack.top);
+        return false;
+    }
+    memcpy(vm->stack.data + addr, &value, width);
+    return true;
+}
+
+static int64_t read_int_from_ptr(const uint8_t* ptr, size_t width, bool is_unsigned) {
+    int64_t raw = 0;
+    memcpy(&raw, ptr, width);
+    return normalize_int_value(raw, width, is_unsigned);
+}
+
 static bool write_frame_i64_checked(MorphlVm* vm, int32_t offset, int64_t value,
                                     FILE* err, const char* opname) {
     ptrdiff_t addr = 0;
@@ -728,6 +778,16 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             if (b == 0) { RT_ERR(err, "vm: integer modulo by zero"); return 1; }
             PUSH_I64(a % b); break;
         }
+        case VM_OP_IUDIV: {
+            int64_t b, a; POP_I64(b); POP_I64(a);
+            if ((uint64_t)b == 0) { RT_ERR(err, "vm: integer division by zero"); return 1; }
+            PUSH_I64((int64_t)((uint64_t)a / (uint64_t)b)); break;
+        }
+        case VM_OP_IUMOD: {
+            int64_t b, a; POP_I64(b); POP_I64(a);
+            if ((uint64_t)b == 0) { RT_ERR(err, "vm: integer modulo by zero"); return 1; }
+            PUSH_I64((int64_t)((uint64_t)a % (uint64_t)b)); break;
+        }
 
         /* ── integer bitwise ── */
         case VM_OP_IBAND:   { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a & b);  break; }
@@ -736,6 +796,10 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_IBNOT:   { int64_t a;    POP_I64(a);              PUSH_I64(~a);     break; }
         case VM_OP_ILSHIFT: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a << b); break; }
         case VM_OP_IRSHIFT: { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a >> b); break; }
+        case VM_OP_IURSHIFT: {
+            int64_t b, a; POP_I64(b); POP_I64(a);
+            PUSH_I64((int64_t)((uint64_t)a >> b)); break;
+        }
 
         /* ── reference equality ── */
         case VM_OP_REQ:  { int64_t b, a; POP_I64(b); POP_I64(a); PUSH_I64(a == b ? 1 : 0); break; }
@@ -754,6 +818,10 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
         case VM_OP_IGT:  { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a> b?1:0); break; }
         case VM_OP_ILTE: { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a<=b?1:0); break; }
         case VM_OP_IGTE: { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64(a>=b?1:0); break; }
+        case VM_OP_IULT:  { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64((uint64_t)a < (uint64_t)b ? 1 : 0); break; }
+        case VM_OP_IUGT:  { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64((uint64_t)a > (uint64_t)b ? 1 : 0); break; }
+        case VM_OP_IULTE: { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64((uint64_t)a <= (uint64_t)b ? 1 : 0); break; }
+        case VM_OP_IUGTE: { int64_t b,a; POP_I64(b); POP_I64(a); PUSH_I64((uint64_t)a >= (uint64_t)b ? 1 : 0); break; }
 
         /* ── float comparison ── */
         case VM_OP_FEQ:  { double b,a; POP_F64(b); POP_F64(a); PUSH_I64(a==b?1:0); break; }
@@ -828,6 +896,44 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             int32_t off; READ_I32(off);
             int64_t v; POP_I64(v);
             if (!write_frame_i64_checked(vm, off, v, err, "RSTORE")) return 1;
+            break;
+        }
+        case VM_OP_ILOAD1S:
+        case VM_OP_ILOAD1U:
+        case VM_OP_ILOAD2S:
+        case VM_OP_ILOAD2U:
+        case VM_OP_ILOAD4S:
+        case VM_OP_ILOAD4U: {
+            int32_t off; READ_I32(off);
+            size_t width = (op == VM_OP_ILOAD1S || op == VM_OP_ILOAD1U) ? 1 :
+                           (op == VM_OP_ILOAD2S || op == VM_OP_ILOAD2U) ? 2 : 4;
+            bool is_unsigned = (op == VM_OP_ILOAD1U || op == VM_OP_ILOAD2U ||
+                                op == VM_OP_ILOAD4U);
+            int64_t v;
+            if (!read_frame_int_checked(vm, off, width, is_unsigned, &v, err, "ILOADN")) return 1;
+            PUSH_I64(v);
+            break;
+        }
+        case VM_OP_ISTORE1:
+        case VM_OP_ISTORE2:
+        case VM_OP_ISTORE4: {
+            int32_t off; READ_I32(off);
+            size_t width = (op == VM_OP_ISTORE1) ? 1 : (op == VM_OP_ISTORE2 ? 2 : 4);
+            int64_t v; POP_I64(v);
+            if (!write_frame_int_checked(vm, off, width, v, err, "ISTOREN")) return 1;
+            break;
+        }
+        case VM_OP_INORM1S:
+        case VM_OP_INORM1U:
+        case VM_OP_INORM2S:
+        case VM_OP_INORM2U:
+        case VM_OP_INORM4S:
+        case VM_OP_INORM4U: {
+            int64_t v; POP_I64(v);
+            size_t width = (op == VM_OP_INORM1S || op == VM_OP_INORM1U) ? 1 :
+                           (op == VM_OP_INORM2S || op == VM_OP_INORM2U) ? 2 : 4;
+            bool is_unsigned = (op == VM_OP_INORM1U || op == VM_OP_INORM2U || op == VM_OP_INORM4U);
+            PUSH_I64(normalize_int_value(v, width, is_unsigned));
             break;
         }
 
@@ -1178,6 +1284,22 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             PUSH_I64(v);
             break;
         }
+        case VM_OP_ALOAD1S:
+        case VM_OP_ALOAD1U:
+        case VM_OP_ALOAD2S:
+        case VM_OP_ALOAD2U:
+        case VM_OP_ALOAD4S:
+        case VM_OP_ALOAD4U: {
+            int32_t off; READ_I32(off);
+            int64_t base; POP_I64(base);
+            size_t width = (op == VM_OP_ALOAD1S || op == VM_OP_ALOAD1U) ? 1 :
+                           (op == VM_OP_ALOAD2S || op == VM_OP_ALOAD2U) ? 2 : 4;
+            bool is_unsigned = (op == VM_OP_ALOAD1U || op == VM_OP_ALOAD2U || op == VM_OP_ALOAD4U);
+            uint8_t* ptr = NULL;
+            if (!checked_ref_addr(vm, base, off, width, &ptr, err, "ALOADN")) return 1;
+            PUSH_I64(read_int_from_ptr(ptr, width, is_unsigned));
+            break;
+        }
         case VM_OP_ASTORE: {
             /* pop i64 val, pop base handle, store val → base + off */
             int32_t off; READ_I32(off);
@@ -1186,6 +1308,18 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             uint8_t* ptr = NULL;
             if (!checked_ref_addr(vm, base, off, 8, &ptr, err, "ASTORE")) return 1;
             memcpy(ptr, &v, 8);
+            break;
+        }
+        case VM_OP_ASTORE1:
+        case VM_OP_ASTORE2:
+        case VM_OP_ASTORE4: {
+            int32_t off; READ_I32(off);
+            int64_t v; POP_I64(v);
+            int64_t base; POP_I64(base);
+            size_t width = (op == VM_OP_ASTORE1) ? 1 : (op == VM_OP_ASTORE2 ? 2 : 4);
+            uint8_t* ptr = NULL;
+            if (!checked_ref_addr(vm, base, off, width, &ptr, err, "ASTOREN")) return 1;
+            memcpy(ptr, &v, width);
             break;
         }
 

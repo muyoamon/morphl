@@ -258,12 +258,19 @@ static bool parse_builtin_expr(const struct token* tokens,
   if (!node) return false;
   
   if (kind == AST_LITERAL || kind == AST_IDENT) {
-    node->value = tok->lexeme;
+    Sym value_sym = interns_intern(interns, tok->lexeme);
+    if (!value_sym) {
+      ast_free(node);
+      return false;
+    }
+    node->value = interns_lookup(interns, value_sym);
     node->filename = tok->filename;
     node->row = tok->row;
     node->col = tok->col;
     if (kind == AST_LITERAL) {
       node->op = tok->kind;
+    } else {
+      node->op = value_sym;
     }
   }
 

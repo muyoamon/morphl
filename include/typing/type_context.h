@@ -24,6 +24,7 @@ typedef struct {
   Sym name;
   MorphlType* type;
   bool is_const;
+  MorphlReprInfo repr;
 } VarEntry;
 
 // Scope frame containing variable definitions
@@ -89,6 +90,8 @@ bool type_context_define_const_var(TypeContext* ctx, Sym name, MorphlType* type)
 bool type_context_is_const_var(TypeContext* ctx, Sym name);
 bool type_context_update_var(TypeContext* ctx, Sym name, MorphlType* type);
 MorphlType* type_context_lookup_var(TypeContext* ctx, Sym name);
+bool type_context_lookup_var_repr(TypeContext* ctx, Sym name, MorphlReprInfo* out);
+bool type_context_update_var_repr(TypeContext* ctx, Sym name, MorphlReprInfo repr);
 bool type_context_check_duplicate_var(TypeContext* ctx, Sym name);
 
 // Function registry

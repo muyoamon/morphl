@@ -972,6 +972,17 @@ static OperatorRow kBuiltinOps[] = {
 
   // overload type 
   {"$overload",AST_BUILTIN,false, 1, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE, OVERLOAD},
+  {"$size",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, SIZEOF_REPR},
+  {"$align",  AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, ALIGNOF_REPR},
+  {"$signed", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, SIGNED_REPR},
+  {"$unsigned",AST_BUILTIN,false,1, 1,           NULL,              0, OP_PP_KEEP_NODE, UNSIGNED_REPR},
+  {"$udiv",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, UDIV},
+  {"$umod",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, UMOD},
+  {"$ult",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, ULT},
+  {"$ugt",    AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, UGT},
+  {"$ulte",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, ULTE},
+  {"$ugte",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, UGTE},
+  {"$ushr",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, USHR},
 };
 static const size_t kBuiltinOpCount = sizeof(kBuiltinOps) / sizeof(kBuiltinOps[0]);
 

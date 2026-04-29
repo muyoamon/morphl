@@ -216,6 +216,7 @@ typedef struct {
   size_t global_slot;
   size_t size;
   size_t guard_slot;
+  MorphlReprInfo repr;
 } StaticSlot;
 
 typedef struct {
@@ -788,8 +789,9 @@ static const StaticSlot* static_slot_register(VmEmitter* e, Str name,
   size_t guard_off = align_up(e->static_slot_ptr, 8);
   size_t slot_off = align_up(guard_off + 8, static_slot_align(t));
   size_t slot_size = static_slot_size(t);
+  MorphlReprInfo repr = {0};
   e->static_slots[e->static_slot_count++] =
-      (StaticSlot){name, t, slot_off, slot_size, guard_off};
+      (StaticSlot){name, t, slot_off, slot_size, guard_off, repr};
   e->static_slot_ptr = slot_off + slot_size;
   return &e->static_slots[e->static_slot_count - 1];
 }
@@ -1230,7 +1232,17 @@ static size_t align_up(size_t offset, size_t align) {
 }
 
 /* Natural alignment requirement for a type (power of 2). */
+static size_t type_frame_align_with_repr(const MorphlType* t,
+                                         const MorphlReprInfo* repr);
+static size_t type_frame_size_with_repr(const MorphlType* t,
+                                        const MorphlReprInfo* repr);
+
 static size_t type_frame_align(const MorphlType* t) {
+  return type_frame_align_with_repr(t, NULL);
+}
+
+static size_t type_frame_align_with_repr(const MorphlType* t,
+                                         const MorphlReprInfo* repr) {
   if (!t) return 1;
   switch (t->kind) {
     case MORPHL_TYPE_INT:
@@ -1238,6 +1250,10 @@ static size_t type_frame_align(const MorphlType* t) {
     case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_STRING:
     case MORPHL_TYPE_FUNC:
+      if (t->kind == MORPHL_TYPE_INT && repr && repr->has_align)
+        return repr->align_bytes;
+      if (t->kind == MORPHL_TYPE_INT && repr && repr->has_size)
+        return repr->size_bytes;
       return 8;
     case MORPHL_TYPE_REF:
       if (t->data.ref.is_ref) return 8;
@@ -1246,7 +1262,11 @@ static size_t type_frame_align(const MorphlType* t) {
       size_t max_align = 1;
       for (size_t i = 0; i < t->data.block.layout_field_count; i++) {
         if (t->data.block.layout_field_types[i]) {
-          size_t fa = type_frame_align(t->data.block.layout_field_types[i]);
+          size_t fa = type_frame_align_with_repr(
+              t->data.block.layout_field_types[i],
+              t->data.block.layout_field_storage
+                  ? &t->data.block.layout_field_storage[i].repr
+                  : NULL);
           if (fa > max_align) max_align = fa;
         }
       }
@@ -1291,9 +1311,16 @@ static size_t overload_candidate_offset(const MorphlType* t, size_t index) {
 }
 
 static size_t type_frame_size(const MorphlType* t) {
+  return type_frame_size_with_repr(t, NULL);
+}
+
+static size_t type_frame_size_with_repr(const MorphlType* t,
+                                        const MorphlReprInfo* repr) {
   if (!t) return 0;
   switch (t->kind) {
     case MORPHL_TYPE_INT:
+      if (repr && repr->has_size) return repr->size_bytes;
+      return 8;
     case MORPHL_TYPE_FLOAT:
     case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_STRING:
@@ -1317,9 +1344,15 @@ static size_t type_frame_size(const MorphlType* t) {
         const MorphlType* ft = t->data.block.layout_field_types[i];
         if (!ft) continue;
         const MorphlType* uft = unwrap_ref(ft);
-        size_t fa = type_frame_align(uft);
+        size_t fa = type_frame_align_with_repr(
+            uft, t->data.block.layout_field_storage
+                     ? &t->data.block.layout_field_storage[i].repr
+                     : NULL);
         offset = align_up(offset, fa);
-        offset += type_frame_size(uft);
+        offset += type_frame_size_with_repr(
+            uft, t->data.block.layout_field_storage
+                     ? &t->data.block.layout_field_storage[i].repr
+                     : NULL);
       }
       /* pad total size to struct's own alignment */
       size_t sa = type_frame_align(t);
@@ -1382,6 +1415,77 @@ static uint8_t store_op(const MorphlType* t) {
     default:
       return 0xFF;
   }
+}
+
+static bool repr_is_unsigned(const MorphlReprInfo* repr) {
+  return repr && repr->signedness == MORPHL_INT_SIGNEDNESS_UNSIGNED;
+}
+
+static uint8_t load_op_repr(const MorphlType* t, const MorphlReprInfo* repr) {
+  if (!t) return 0xFF;
+  t = unwrap_ref((MorphlType*)t);
+  if (!repr || !repr->has_size || t->kind != MORPHL_TYPE_INT) return load_op(t);
+  bool is_unsigned = repr_is_unsigned(repr);
+  switch (repr->size_bytes) {
+    case 1: return is_unsigned ? VM_OP_ILOAD1U : VM_OP_ILOAD1S;
+    case 2: return is_unsigned ? VM_OP_ILOAD2U : VM_OP_ILOAD2S;
+    case 4: return is_unsigned ? VM_OP_ILOAD4U : VM_OP_ILOAD4S;
+    case 8: return VM_OP_ILOAD;
+    default: return 0xFF;
+  }
+}
+
+static uint8_t store_op_repr(const MorphlType* t, const MorphlReprInfo* repr) {
+  if (!t) return 0xFF;
+  t = unwrap_ref((MorphlType*)t);
+  if (!repr || !repr->has_size || t->kind != MORPHL_TYPE_INT) return store_op(t);
+  switch (repr->size_bytes) {
+    case 1: return VM_OP_ISTORE1;
+    case 2: return VM_OP_ISTORE2;
+    case 4: return VM_OP_ISTORE4;
+    case 8: return VM_OP_ISTORE;
+    default: return 0xFF;
+  }
+}
+
+static uint8_t aload_op_repr(const MorphlType* t, const MorphlReprInfo* repr) {
+  if (!t) return 0xFF;
+  t = unwrap_ref((MorphlType*)t);
+  if (!repr || !repr->has_size || t->kind != MORPHL_TYPE_INT) return VM_OP_ALOAD;
+  bool is_unsigned = repr_is_unsigned(repr);
+  switch (repr->size_bytes) {
+    case 1: return is_unsigned ? VM_OP_ALOAD1U : VM_OP_ALOAD1S;
+    case 2: return is_unsigned ? VM_OP_ALOAD2U : VM_OP_ALOAD2S;
+    case 4: return is_unsigned ? VM_OP_ALOAD4U : VM_OP_ALOAD4S;
+    case 8: return VM_OP_ALOAD;
+    default: return 0xFF;
+  }
+}
+
+static uint8_t astore_op_repr(const MorphlType* t, const MorphlReprInfo* repr) {
+  if (!t) return 0xFF;
+  t = unwrap_ref((MorphlType*)t);
+  if (!repr || !repr->has_size || t->kind != MORPHL_TYPE_INT) return VM_OP_ASTORE;
+  switch (repr->size_bytes) {
+    case 1: return VM_OP_ASTORE1;
+    case 2: return VM_OP_ASTORE2;
+    case 4: return VM_OP_ASTORE4;
+    case 8: return VM_OP_ASTORE;
+    default: return 0xFF;
+  }
+}
+
+static bool emit_repr_normalize(VmEmitter* e, const MorphlReprInfo* repr) {
+  if (!e || !repr || !repr->has_size || repr->size_bytes >= 8) return true;
+  bool is_unsigned = repr_is_unsigned(repr);
+  uint8_t op = 0xFF;
+  switch (repr->size_bytes) {
+    case 1: op = is_unsigned ? VM_OP_INORM1U : VM_OP_INORM1S; break;
+    case 2: op = is_unsigned ? VM_OP_INORM2U : VM_OP_INORM2S; break;
+    case 4: op = is_unsigned ? VM_OP_INORM4U : VM_OP_INORM4S; break;
+    default: return false;
+  }
+  return emit_op(e, op);
 }
 
 static Str metadata_op_string(const VmEmitter* e, const AstNode* node) {
@@ -1994,6 +2098,10 @@ static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
   if (!block_type || block_type->kind != MORPHL_TYPE_BLOCK) return PTRDIFF_MAX;
   ptrdiff_t offset = 0;
   for (size_t i = 0; i < block_type->data.block.layout_field_count; ++i) {
+    const MorphlReprInfo* repr =
+        block_type->data.block.layout_field_storage
+            ? &block_type->data.block.layout_field_storage[i].repr
+            : NULL;
     Str name = {NULL, 0};
     if (interns && block_type->data.block.layout_field_names[i]) {
       name =
@@ -2002,12 +2110,35 @@ static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
     if (str_eq(name, field_name)) {
       if (out_field_type)
         *out_field_type = block_type->data.block.layout_field_types[i];
-      return offset;
+      return (ptrdiff_t)align_up((size_t)offset,
+                                 type_frame_align_with_repr(
+                                     unwrap_ref(block_type->data.block.layout_field_types[i]),
+                                     repr));
     }
-    offset += (ptrdiff_t)type_frame_size(
-        unwrap_ref(block_type->data.block.layout_field_types[i]));
+    offset = (ptrdiff_t)align_up((size_t)offset,
+                                 type_frame_align_with_repr(
+                                     unwrap_ref(block_type->data.block.layout_field_types[i]),
+                                     repr));
+    offset += (ptrdiff_t)type_frame_size_with_repr(
+        unwrap_ref(block_type->data.block.layout_field_types[i]), repr);
   }
   return PTRDIFF_MAX;
+}
+
+static const MorphlMemberStorage* block_layout_field_storage(
+    const MorphlType* block_type, InternTable* interns, Str field_name) {
+  if (!block_type || block_type->kind != MORPHL_TYPE_BLOCK ||
+      !block_type->data.block.layout_field_storage) {
+    return NULL;
+  }
+  for (size_t i = 0; i < block_type->data.block.layout_field_count; ++i) {
+    Str name = {NULL, 0};
+    if (interns && block_type->data.block.layout_field_names[i]) {
+      name = interns_lookup(interns, block_type->data.block.layout_field_names[i]);
+    }
+    if (str_eq(name, field_name)) return &block_type->data.block.layout_field_storage[i];
+  }
+  return NULL;
 }
 
 static bool emit_block_decl_initializers_into_slot(VmEmitter* e,
@@ -2433,8 +2564,9 @@ static size_t frame_current_size(MorphlBackendFrameInfo* fi) {
 /* Insert alignment padding before registering a variable of the given type.
  * Padding is recorded as an anonymous entry so offset arithmetic stays correct.
  */
-static bool frame_align_for_type(VmEmitter* e, const MorphlType* t) {
-  size_t fa = type_frame_align(t);
+static bool frame_align_for_type_repr(VmEmitter* e, const MorphlType* t,
+                                      const MorphlReprInfo* repr) {
+  size_t fa = type_frame_align_with_repr(t, repr);
   if (fa <= 1) return true;
   size_t cur = frame_current_size(&e->frameInfo);
   size_t aligned = align_up(cur, fa);
@@ -2482,9 +2614,9 @@ static size_t block_scope_size(struct AstNode* block) {
         offset = align_up(offset, 8);
         offset += 16;
       } else {
-        size_t fa = type_frame_align(t);
+        size_t fa = type_frame_align_with_repr(t, &ch->repr);
         offset = align_up(offset, fa);
-        offset += type_frame_size(t);
+        offset += type_frame_size_with_repr(t, &ch->repr);
       }
     }
   }
@@ -2514,7 +2646,7 @@ static bool emit_expr_into_known_slot(VmEmitter* e, AstNode* expr,
     return emit_block_value_into_slot(e, ut, expr, binding_name, off);
   }
   if (!emit_node(e, expr)) return false;
-  uint8_t sop = store_op(ut);
+  uint8_t sop = store_op_repr(ut, &expr->repr);
   if (sop == 0xFF) return false;
   return emit_op_i32(e, sop, (int32_t)off);
 }
@@ -2652,7 +2784,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
         return emit_op_i32(e, op, (int32_t)candidate_off);
       }
-      uint8_t op = load_op(t);
+      uint8_t op = load_op_repr(t, &node->repr);
       if (op == 0xFF) {
         VM_ERR(node, "cannot load type for '%.*s'", (int)node->value.len,
                node->value.ptr);
@@ -2894,11 +3026,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             if (!morphl_backend_append_offset(&e->frameInfo, pad)) return false;
           }
         } else {
-          if (t && !frame_align_for_type(e, t)) return false;
+          if (t && !frame_align_for_type_repr(e, t, &node->repr)) return false;
         }
         struct MorphlBackendFrameOffset foff = {
             .name = name,
-            .size = is_trait_var ? 16 : (t ? type_frame_size(t) : 0)};
+            .size = is_trait_var ? 16 : (t ? type_frame_size_with_repr(t, &node->repr) : 0)};
         if (!morphl_backend_append_offset(&e->frameInfo, foff)) return false;
 
         /* find the offset we just registered */
@@ -3192,7 +3324,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               (t->kind == MORPHL_TYPE_INT || t->kind == MORPHL_TYPE_FLOAT ||
                t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_STRING)) {
             if (!emit_node(e, init_node)) return false;
-            return emit_op_i32(e, store_op(t), (int32_t)off);
+            return emit_op_i32(e, store_op_repr(t, &node->repr), (int32_t)off);
           }
           /* Block type: apply positional or named field overrides */
           if (t && t->kind == MORPHL_TYPE_BLOCK) {
@@ -3250,13 +3382,22 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                   }
                   if (!handled) {
                     if (!emit_node(e, gv)) return false;
-                    uint8_t sop = store_op(ft);
+                    const MorphlReprInfo* field_repr =
+                        (t->data.block.layout_field_storage &&
+                         fi < t->data.block.layout_field_count)
+                            ? &t->data.block.layout_field_storage[fi].repr
+                            : NULL;
+                    uint8_t sop = store_op_repr(ft, field_repr);
                     if (sop != 0xFF &&
                         !emit_op_i32(e, sop, (int32_t)(off + field_byte_off)))
                       return false;
                   }
                 }
-                field_byte_off += type_frame_size(ft);
+                field_byte_off += type_frame_size_with_repr(
+                    ft, (t->data.block.layout_field_storage &&
+                         fi < t->data.block.layout_field_count)
+                            ? &t->data.block.layout_field_storage[fi].repr
+                            : NULL);
               }
             } else if (init_node->kind == AST_BLOCK) {
               for (size_t ci = 0; ci < init_node->child_count; ci++) {
@@ -3276,7 +3417,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 if (layout_off != PTRDIFF_MAX) foff2 = (size_t)layout_off;
                 if (!ftype2) continue;
                 if (!emit_node(e, fv)) return false;
-                uint8_t sop = store_op(unwrap_ref(ftype2));
+                const MorphlMemberStorage* field_storage2 =
+                    block_layout_field_storage(t, e->interns, fname);
+                uint8_t sop = store_op_repr(
+                    unwrap_ref(ftype2),
+                    field_storage2 ? &field_storage2->repr : NULL);
                 if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)(off + foff2)))
                   return false;
               }
@@ -3334,15 +3479,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                    fi++) {
                 const MorphlType* ft =
                     unwrap_ref(variant_t->data.block.layout_field_types[fi]);
+                const MorphlReprInfo* field_repr =
+                    (variant_t->data.block.layout_field_storage &&
+                     fi < variant_t->data.block.layout_field_count)
+                        ? &variant_t->data.block.layout_field_storage[fi].repr
+                        : NULL;
                 struct AstNode* gv = init_node->children[fi];
                 if (gv) {
                   if (!emit_node(e, gv)) return false;
-                  uint8_t sop = store_op(ft);
+                  uint8_t sop = store_op_repr(ft, field_repr);
                   if (sop != 0xFF &&
                       !emit_op_i32(e, sop, (int32_t)(off + field_byte_off)))
                     return false;
                 }
-                field_byte_off += type_frame_size(ft);
+                field_byte_off += type_frame_size_with_repr(ft, field_repr);
               }
             } else if (init_t) {
               /* Single-value init (scalar variant) */
@@ -3542,7 +3692,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       }
 
       /* store result to frame */
-      uint8_t sop = store_op(t);
+      uint8_t sop = store_op_repr(t, &node->repr);
       if (sop == 0xFF) {
         /* void / block / array / union / unknown — nothing to store (frame
          * already reserved and zeroed by ENTER, or filled by the RHS emitter
@@ -3862,6 +4012,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             const MorphlType* field_type = NULL;
             ptrdiff_t field_off = block_layout_field_offset(ttype, e->interns,
                                                             fname, &field_type);
+            const MorphlMemberStorage* field_storage =
+                block_layout_field_storage(ttype, e->interns, fname);
             if (field_off == PTRDIFF_MAX || !field_type) {
               VM_ERR(fnd, "$set $member: field '%.*s' not found",
                      (int)fname.len, fname.ptr);
@@ -3871,8 +4023,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             if (tgt->kind == AST_BUILTIN && e->interns && tgt->op) {
               Str tname2 = interns_lookup(e->interns, tgt->op);
               if (tname2.len == 7 && memcmp(tname2.ptr, "$parent", 7) == 0) {
+                if (!emit_op_i32(e, VM_OP_ILOAD, 0)) return false;
                 if (!emit_node(e, value)) return false;
-                return emit_op_i32(e, VM_OP_PSTORE, (int32_t)field_off);
+                return emit_op_i32(e,
+                                   astore_op_repr(field_type, field_storage ? &field_storage->repr : NULL),
+                                   (int32_t)field_off);
               }
             }
             if (tgt->kind != AST_IDENT) return false;
@@ -3881,7 +4036,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             ptrdiff_t toff =
                 morphl_backend_find_offset(&e->frameInfo, tname) + extra;
             if (!emit_node(e, value)) return false;
-            uint8_t sop = store_op(unwrap_ref(field_type));
+            uint8_t sop = store_op_repr(unwrap_ref(field_type),
+                                        field_storage ? &field_storage->repr : NULL);
             if (sop == 0xFF) return false;
             return emit_op_i32(e, sop, (int32_t)(toff + field_off));
           }
@@ -4147,7 +4303,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       }
       if (!emit_node(e, value)) return false;
       const MorphlType* t = unwrap_ref(value->type ? value->type : node->type);
-      uint8_t sop = store_op(t);
+      uint8_t sop = store_op_repr(t, &target->repr);
       if (sop == 0xFF) return false;
       return emit_op_i32(e, sop, (int32_t)off);
     }
@@ -4261,6 +4417,18 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           }
         }
         return node->child_count > 0 ? emit_node(e, node->children[0]) : true;
+      }
+
+      if (OP_IS("$size") || OP_IS("$signed") || OP_IS("$unsigned")) {
+        size_t value_index = node->child_count > 1 ? 1 : 0;
+        if (node->child_count <= value_index || !node->children[value_index]) return false;
+        if (!emit_node(e, node->children[value_index])) return false;
+        return emit_repr_normalize(e, &node->repr);
+      }
+
+      if (OP_IS("$align")) {
+        if (node->child_count < 2 || !node->children[1]) return false;
+        return emit_node(e, node->children[1]);
       }
 
       if (OP_IS("$defer")) {
@@ -4471,6 +4639,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         const MorphlType* field_type = NULL;
         ptrdiff_t field_offset = block_layout_field_offset(
             target_btype, e->interns, field_name, &field_type);
+        const MorphlMemberStorage* field_storage =
+            block_layout_field_storage(target_btype, e->interns, field_name);
         if (field_offset == PTRDIFF_MAX || !field_type) {
           VM_ERR(field_nd, "$member: field '%.*s' not found",
                  (int)field_name.len, field_name.ptr);
@@ -4491,6 +4661,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (is_parent_target) {
           /* PLOAD: load from (parent_base + field_offset) where parent_base is
            * frame[0] */
+          if (field_storage && field_storage->repr.has_size &&
+              field_storage->repr.size_bytes < 8) {
+            if (!emit_op_i32(e, VM_OP_ILOAD, 0)) return false;
+            return emit_op_i32(e, aload_op_repr(field_type, &field_storage->repr),
+                               (int32_t)field_offset);
+          }
           return emit_op_i32(e, VM_OP_PLOAD, (int32_t)field_offset);
         }
 
@@ -4509,7 +4685,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           }
           /* Scalar: push global base (0) and ALOAD field_off */
           return emit_op(e, VM_OP_GLOBAL) &&
-                 emit_global_offset_i32(e, VM_OP_ALOAD, (size_t)field_offset);
+                 emit_global_offset_i32(e,
+                                        aload_op_repr(field_type, field_storage ? &field_storage->repr : NULL),
+                                        (size_t)field_offset);
         }
 
         /* computed expression target (e.g. $member $global $modules, or module
@@ -4517,7 +4695,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
          * then ALOAD field_off. */
         if (target->kind == AST_BUILTIN) {
           if (!emit_node(e, target)) return false;
-          return emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+          return emit_op_i32(e,
+                             aload_op_repr(field_type, field_storage ? &field_storage->repr : NULL),
+                             (int32_t)field_offset);
         }
 
         /* regular local block field access: ILOAD at (target_frame_offset +
@@ -4559,7 +4739,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return emit_op(e, VM_OP_GLOBAL) &&
                  emit_global_offset_i32(e, VM_OP_ALOAD,
                                         import_slot->global_slot) &&
-                 emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+                 emit_op_i32(e,
+                             aload_op_repr(field_type, field_storage ? &field_storage->repr : NULL),
+                             (int32_t)field_offset);
         }
         ptrdiff_t target_off =
             morphl_backend_find_offset(&e->frameInfo, target_name);
@@ -4605,7 +4787,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return emit_op_i32(e, VM_OP_ADDREF, (int32_t)(target_off + field_offset));
         }
 
-        uint8_t lop = load_op(ft_unwrapped);
+        uint8_t lop = load_op_repr(ft_unwrapped, field_storage ? &field_storage->repr : NULL);
         if (lop == 0xFF) {
           VM_ERR(field_nd, "$member: unsupported field type for load");
           return false;
@@ -5057,12 +5239,18 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           {   "$mul",    VM_OP_IMUL, VM_OP_FMUL},
           {   "$div",    VM_OP_IDIV, VM_OP_FDIV},
           {   "$mod",    VM_OP_IMOD,       0xFF},
+          {  "$udiv",   VM_OP_IUDIV,       0xFF},
+          {  "$umod",   VM_OP_IUMOD,       0xFF},
           {    "$eq",     VM_OP_IEQ,  VM_OP_FEQ},
           {   "$neq",    VM_OP_INEQ, VM_OP_FNEQ},
           {    "$lt",     VM_OP_ILT,  VM_OP_FLT},
           {    "$gt",     VM_OP_IGT,  VM_OP_FGT},
           {   "$lte",    VM_OP_ILTE, VM_OP_FLTE},
           {   "$gte",    VM_OP_IGTE, VM_OP_FGTE},
+          {   "$ult",    VM_OP_IULT,       0xFF},
+          {   "$ugt",    VM_OP_IUGT,       0xFF},
+          {  "$ulte",   VM_OP_IULTE,       0xFF},
+          {  "$ugte",   VM_OP_IUGTE,       0xFF},
           /* float-specific aliases (produced by grammar overload resolution) */
           {  "$fadd",          0xFF, VM_OP_FADD},
           {  "$fsub",          0xFF, VM_OP_FSUB},
@@ -5074,6 +5262,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           {  "$bxor",   VM_OP_IBXOR,       0xFF},
           {"$lshift", VM_OP_ILSHIFT,       0xFF},
           {"$rshift", VM_OP_IRSHIFT,       0xFF},
+          {"$ushr", VM_OP_IURSHIFT,       0xFF},
           /* reference equality (treat operands as i64 addresses, not typed) */
           {   "$req",     VM_OP_REQ,       0xFF},
           {  "$rneq",    VM_OP_RNEQ,       0xFF},

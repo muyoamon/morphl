@@ -25,7 +25,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
 ### 2.1 Single-`$` Keywords 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`, `$overload`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`, `$overload`, `$size`, `$align`, `$signed`, `$unsigned`, `$udiv`, `$umod`, `$ult`, `$ugt`, `$ulte`, `$ugte`, `$ushr`.
 
 ### 2.2 Double-`$$` Directives
 `$$`-prefixed name are compiler directives - They are as-early-as-possible resolutions. The compiler substitute them at compile time whenever it can determine the value statically. If it cannot, resolution defers to runtime
@@ -965,6 +965,38 @@ back to candidate projection.
 > backend currently rejects source-level `$overload`. Lazy `$inline $overload`
 > behavior is not yet implemented.
 
+### 7.6 Integer Representation Descriptors
+
+morphl supports expression-attached integer representation descriptors:
+
+```morphl
+$size <bytes> <expr>
+$align <bytes> <expr>
+$signed <expr>
+$unsigned <expr>
+```
+
+Current implementation rules:
+
+- `$size`, `$signed`, and `$unsigned` apply to integer expressions only.
+- `$align` may wrap any expression, but only affects storage/layout-sensitive
+  contexts.
+- morphl `int` remains the default VM-native signed 64-bit integer type.
+- descriptors do not create distinct integer types.
+
+`$size` and signedness normalize the wrapped integer expression before it
+participates in enclosing computation:
+
+```morphl
+$add ($size 1 $unsigned 1000) 2;   // equivalent to 232 + 2
+$signed $size 1 255;               // equivalent to -1
+```
+
+Supported widths in the current implementation are `1`, `2`, `4`, and `8`.
+
+`$align` does not change pure value evaluation. It only contributes alignment
+requirements when the wrapped value is materialized into storage.
+
 ---
 
 ## 8. Array Types 
@@ -1850,9 +1882,18 @@ The VM uses **typed opcodes** — the operand type and size are encoded in the o
 
 ```
 ILOAD  <offset>    — load i64 from frame offset
+ILOAD1S <offset>   — load i8 from frame offset, sign-extend to i64
+ILOAD1U <offset>   — load i8 from frame offset, zero-extend to i64
+ILOAD2S <offset>   — load i16 from frame offset, sign-extend to i64
+ILOAD2U <offset>   — load i16 from frame offset, zero-extend to i64
+ILOAD4S <offset>   — load i32 from frame offset, sign-extend to i64
+ILOAD4U <offset>   — load i32 from frame offset, zero-extend to i64
 FLOAD  <offset>    — load f64 from frame offset
 RLOAD  <offset>    — load i64 reference handle ($ref) from frame offset
 ISTORE <offset>    — store i64 to frame offset
+ISTORE1 <offset>   — truncate/store low 1 byte
+ISTORE2 <offset>   — truncate/store low 2 bytes
+ISTORE4 <offset>   — truncate/store low 4 bytes
 FSTORE <offset>    — store f64 to frame offset
 RSTORE <offset>    — store i64 reference handle to frame offset
 ```
@@ -1869,6 +1910,7 @@ RNULL              — push $null reference (absolute address 0)
 
 ```
 IADD  ISUB  IMUL  IDIV  IMOD   — i64 arithmetic
+IUDIV IUMOD                   — unsigned i64 division / modulo
 FADD  FSUB  FMUL  FDIV         — f64 arithmetic
 ```
 
@@ -1876,6 +1918,7 @@ FADD  FSUB  FMUL  FDIV         — f64 arithmetic
 
 ```
 IEQ  INEQ  ILT  IGT  ILTE  IGTE   — i64 comparisons, push bool
+IULT IUGT IULTE IUGTE             — unsigned i64 comparisons, push bool
 FEQ  FNEQ  FLT  FGT  FLTE  FGTE   — f64 comparisons, push bool
 REQ  RNEQ                          — reference equality (compare two i64 absolute addresses)
 ```
@@ -1886,6 +1929,7 @@ REQ  RNEQ                          — reference equality (compare two i64 absol
 IBAND  IBOR  IBXOR          — i64 bitwise AND / OR / XOR  (binary)
 IBNOT                       — i64 bitwise NOT  (unary)
 ILSHIFT  IRSHIFT            — i64 left / right shift
+IURSHIFT                    — i64 logical right shift
 ```
 
 ### 13.5 Type Conversion
@@ -1925,6 +1969,10 @@ RNULL              — push $null (reference handle 0 in the current VM) as i64
 JNULL   <label>    — jump if top of stack is 0 ($null reference)
 PLOAD   <offset>   — load field from $parent frame at (parent_base + offset)
 PSTORE  <offset>   — store field to $parent frame at (parent_base + offset)
+ALOAD   <offset>   — load i64 from arbitrary base + offset
+ALOAD1S/U, ALOAD2S/U, ALOAD4S/U — load narrow integer from arbitrary base + offset and extend to i64
+ASTORE  <offset>   — store i64 to arbitrary base + offset
+ASTORE1/2/4        — truncate/store narrow integer to arbitrary base + offset
 ```
 
 ### 13.9 Block Instantiation
@@ -2088,12 +2136,18 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$union` | 1–∞ | Tagged union type: `$union V1 V2 ...`. |
 | `$as` | 2 | Reinterpret cast: `$as expr TargetType`. |
 | `$overload` | 1–∞ | First-class overload aggregate: `$overload expr1 expr2 ...`. |
+| `$size` | 2 | Integer representation width descriptor. |
+| `$align` | 2 | Storage/layout alignment descriptor. |
+| `$signed` | 1 | Signed integer interpretation descriptor. |
+| `$unsigned` | 1 | Unsigned integer interpretation descriptor. |
 | **Arithmetic** | | |
 | `$add` | 2 | Integer addition. |
 | `$sub` | 2 | Integer subtraction. |
 | `$mul` | 2 | Integer multiplication. |
 | `$div` | 2 | Integer division. |
 | `$mod` | 2 | Integer modulo (truncated). |
+| `$udiv` | 2 | Unsigned integer division. |
+| `$umod` | 2 | Unsigned integer modulo. |
 | `$rem` | 2 | Integer remainder (implementation extension; alias of `$mod`). |
 | `$fadd` | 2 | Float addition. |
 | `$fsub` | 2 | Float subtraction. |
@@ -2103,9 +2157,13 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$eq` | 2 | Integer equality. |
 | `$neq` | 2 | Integer inequality. |
 | `$lt` | 2 | Integer less-than. |
+| `$ult` | 2 | Unsigned integer less-than. |
 | `$gt` | 2 | Integer greater-than. |
+| `$ugt` | 2 | Unsigned integer greater-than. |
 | `$lte` | 2 | Integer less-than-or-equal. |
+| `$ulte` | 2 | Unsigned integer less-than-or-equal. |
 | `$gte` | 2 | Integer greater-than-or-equal. |
+| `$ugte` | 2 | Unsigned integer greater-than-or-equal. |
 | `$req` | 2 | Reference equality (compare storage-slot identity). |
 | `$rneq` | 2 | Reference inequality (compare storage-slot identity). |
 | **Logic** | | |
@@ -2119,6 +2177,7 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | `$bnot` | 1 | Bitwise NOT. |
 | `$lshift` | 2 | Left shift. |
 | `$rshift` | 2 | Right shift. |
+| `$ushr` | 2 | Logical unsigned right shift. |
 | **Type Conversion** | | |
 | `$i2f` | 1 | Convert i64 → f64. |
 | `$f2i` | 1 | Convert f64 → i64 (truncate). |

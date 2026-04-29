@@ -435,6 +435,42 @@ static void test_e2e_integer_arithmetic() {
     printf("PASS test_e2e_integer_arithmetic\n");
 }
 
+static void test_e2e_integer_repr_normalization() {
+    int rc = compile_and_run(
+        "$exit $add ($size 1 $unsigned 1000) 2;\n"
+    );
+    assert(rc == 234);
+    printf("PASS test_e2e_integer_repr_normalization\n");
+}
+
+static void test_e2e_integer_repr_signed() {
+    int rc = compile_and_run(
+        "$exit $add ($signed $size 1 255) 2;\n"
+    );
+    assert(rc == 1);
+    printf("PASS test_e2e_integer_repr_signed\n");
+}
+
+static void test_e2e_unsigned_ops() {
+    int rc1 = compile_and_run(
+        "$exit $if $ult ($signed $size 1 255) 1 1 0;\n"
+    );
+    int rc2 = compile_and_run("$exit $udiv ($unsigned $size 1 255) 2;\n");
+    assert(rc1 == 0);
+    assert(rc2 == 127);
+    printf("PASS test_e2e_unsigned_ops\n");
+}
+
+static void test_e2e_sized_store_round_trip() {
+    int rc = compile_and_run(
+        "$decl x $mut $size 1 $unsigned 0;\n"
+        "$set x 1000;\n"
+        "$exit x;\n"
+    );
+    assert(rc == 232);
+    printf("PASS test_e2e_sized_store_round_trip\n");
+}
+
 /* Spec §11.3: float arithmetic */
 static void test_e2e_float_arithmetic() {
     int rc = compile_and_run(
@@ -2537,6 +2573,10 @@ static void test_e2e_inline_func_block_body_no_ret() {
 int main(void) {
     test_e2e_integer_decl();
     test_e2e_integer_arithmetic();
+    test_e2e_integer_repr_normalization();
+    test_e2e_integer_repr_signed();
+    test_e2e_unsigned_ops();
+    test_e2e_sized_store_round_trip();
     test_e2e_float_arithmetic();
     test_e2e_comparison();
     test_e2e_mut_assign();

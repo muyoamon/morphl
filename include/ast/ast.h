@@ -55,6 +55,7 @@ typedef struct AstNode {
   bool overload_has_selection;
   bool overload_select_self;
   size_t overload_selected_index;
+  MorphlReprInfo repr;
 } AstNode;
 
 AstNode* ast_new(AstKind kind);

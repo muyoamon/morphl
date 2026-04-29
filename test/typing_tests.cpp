@@ -1354,6 +1354,39 @@ static void test_source_overload_call_and_set_resolution() {
   printf("\u2713 test_source_overload_call_and_set_resolution passed\n");
 }
 
+static void test_integer_representation_descriptors() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  ScopedParserContext parser_ctx;
+  const std::string source =
+      "$decl a $size 1 $unsigned 1000;\n"
+      "$decl b $align 4 $size 4 $signed 0;\n"
+      "$decl c $signed $size 1 255;\n";
+  AstNode* root = parse_source(interns, &arena, source.c_str(), &parser_ctx);
+  assert(root);
+  TypeContext* ctx = parser_ctx.type_context;
+  assert(ctx);
+  MorphlType* root_type = morphl_infer_type_of_ast(ctx, root);
+  assert(root_type != NULL);
+  assert(root->child_count >= 3);
+  AstNode* a = root->children[0];
+  AstNode* b = root->children[1];
+  AstNode* c = root->children[2];
+  assert(a->repr.has_size && a->repr.size_bytes == 1);
+  assert(a->repr.signedness == MORPHL_INT_SIGNEDNESS_UNSIGNED);
+  assert(b->repr.has_size && b->repr.size_bytes == 4);
+  assert(b->repr.has_align && b->repr.align_bytes == 4);
+  assert(b->repr.signedness == MORPHL_INT_SIGNEDNESS_SIGNED);
+  assert(c->repr.has_size && c->repr.size_bytes == 1);
+  assert(c->repr.signedness == MORPHL_INT_SIGNEDNESS_SIGNED);
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("\u2713 test_integer_representation_descriptors passed\n");
+}
+
 // ============================================================================
 // Test: $prop nodes go into prop_names/prop_types, not field_names/field_types
 // ============================================================================
@@ -1702,6 +1735,7 @@ int main() {
   test_overload_resolution();
   test_source_overload_type_and_arithmetic_resolution();
   test_source_overload_call_and_set_resolution();
+  test_integer_representation_descriptors();
   test_pp_prop();
   test_prop_not_in_structural_fields();
   test_impl_type_mismatch_error();

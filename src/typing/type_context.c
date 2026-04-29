@@ -150,6 +150,11 @@ bool type_context_define_var(TypeContext* ctx, Sym name, MorphlType* type) {
   current->vars[current->var_count].name = name;
   current->vars[current->var_count].type = type;
   current->vars[current->var_count].is_const = false;
+  current->vars[current->var_count].repr.has_size = false;
+  current->vars[current->var_count].repr.size_bytes = 0;
+  current->vars[current->var_count].repr.has_align = false;
+  current->vars[current->var_count].repr.align_bytes = 0;
+  current->vars[current->var_count].repr.signedness = MORPHL_INT_SIGNEDNESS_DEFAULT;
   current->var_count++;
   return true;
 }
@@ -202,6 +207,34 @@ MorphlType* type_context_lookup_var(TypeContext* ctx, Sym name) {
   }
   
   return NULL;  // Variable not found
+}
+
+bool type_context_lookup_var_repr(TypeContext* ctx, Sym name, MorphlReprInfo* out) {
+  if (!ctx || !name || !out) return false;
+  for (int i = (int)ctx->scope_count - 1; i >= 0; --i) {
+    Scope* scope = &ctx->scopes[i];
+    for (size_t j = 0; j < scope->var_count; ++j) {
+      if (scope->vars[j].name == name) {
+        *out = scope->vars[j].repr;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool type_context_update_var_repr(TypeContext* ctx, Sym name, MorphlReprInfo repr) {
+  if (!ctx || !name) return false;
+  for (int i = (int)ctx->scope_count - 1; i >= 0; --i) {
+    Scope* scope = &ctx->scopes[i];
+    for (size_t j = 0; j < scope->var_count; ++j) {
+      if (scope->vars[j].name == name) {
+        scope->vars[j].repr = repr;
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 bool type_context_check_duplicate_var(TypeContext* ctx, Sym name) {

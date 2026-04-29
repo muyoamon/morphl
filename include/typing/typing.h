@@ -39,11 +39,26 @@ typedef enum {
   MORPHL_STORAGE_INLINE,
 } MorphlStorageResidence;
 
+typedef enum {
+  MORPHL_INT_SIGNEDNESS_DEFAULT = 0,
+  MORPHL_INT_SIGNEDNESS_SIGNED,
+  MORPHL_INT_SIGNEDNESS_UNSIGNED,
+} MorphlIntSignedness;
+
+typedef struct {
+  bool has_size;
+  uint8_t size_bytes;
+  bool has_align;
+  uint8_t align_bytes;
+  MorphlIntSignedness signedness;
+} MorphlReprInfo;
+
 typedef struct {
   bool contributes_to_shape;
   bool contributes_to_layout;
   bool is_mutable;
   MorphlStorageResidence residence;
+  MorphlReprInfo repr;
 } MorphlMemberStorage;
 
 // Function type metadata: stores parameter and return types
@@ -189,6 +204,11 @@ static inline MorphlMemberStorage morphl_member_storage_make(bool shape,
   storage.contributes_to_layout = layout;
   storage.is_mutable = is_mutable;
   storage.residence = residence;
+  storage.repr.has_size = false;
+  storage.repr.size_bytes = 0;
+  storage.repr.has_align = false;
+  storage.repr.align_bytes = 0;
+  storage.repr.signedness = MORPHL_INT_SIGNEDNESS_DEFAULT;
   return storage;
 }
 

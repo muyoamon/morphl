@@ -40,6 +40,93 @@ static MorphlType* unwrap_ref(MorphlType* t) {
   return t;
 }
 
+static void reset_repr_info(MorphlReprInfo* repr) {
+  if (!repr) return;
+  repr->has_size = false;
+  repr->size_bytes = 0;
+  repr->has_align = false;
+  repr->align_bytes = 0;
+  repr->signedness = MORPHL_INT_SIGNEDNESS_DEFAULT;
+}
+
+static void set_repr_defaults(AstNode* node) {
+  if (!node) return;
+  reset_repr_info(&node->repr);
+}
+
+static bool is_integer_literal_bytes(const AstNode* node, uint8_t* out_value) {
+  if (!node || !node->value.ptr || !out_value) return false;
+  char buf[64];
+  size_t len = node->value.len < sizeof(buf) - 1 ? node->value.len : sizeof(buf) - 1;
+  memcpy(buf, node->value.ptr, len);
+  buf[len] = '\0';
+  char* end = NULL;
+  long long v = strtoll(buf, &end, 10);
+  if (!end || *end != '\0' || v < 0 || v > 255) return false;
+  *out_value = (uint8_t)v;
+  return true;
+}
+
+static bool repr_width_supported(uint8_t width) {
+  return width == 1 || width == 2 || width == 4 || width == 8;
+}
+
+static void apply_repr_metadata(TypeContext* ctx, AstNode* node) {
+  if (!ctx || !node) return;
+  if (node->kind != AST_BUILTIN || !node->op) return;
+  set_repr_defaults(node);
+
+  Sym size_sym = interns_intern(ctx->interns, str_from("$size", 5));
+  Sym align_sym = interns_intern(ctx->interns, str_from("$align", 6));
+  Sym signed_sym = interns_intern(ctx->interns, str_from("$signed", 7));
+  Sym unsigned_sym = interns_intern(ctx->interns, str_from("$unsigned", 9));
+
+  if (node->op == size_sym) {
+    if (node->child_count > 1 && node->children[1]) {
+      apply_repr_metadata(ctx, node->children[1]);
+      node->repr = node->children[1]->repr;
+    }
+    uint8_t width = 0;
+    if (!is_integer_literal_bytes(node->children[0], &width) ||
+        !repr_width_supported(width)) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                      "$size: width must be one of 1, 2, 4, 8");
+      morphl_error_emit(NULL, &err);
+      return;
+    }
+    node->repr.has_size = true;
+    node->repr.size_bytes = width;
+    return;
+  }
+  if (node->op == align_sym) {
+    if (node->child_count > 1 && node->children[1]) {
+      apply_repr_metadata(ctx, node->children[1]);
+      node->repr = node->children[1]->repr;
+    }
+    uint8_t align = 0;
+    if (!is_integer_literal_bytes(node->children[0], &align) ||
+        !repr_width_supported(align)) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                      "$align: alignment must be one of 1, 2, 4, 8");
+      morphl_error_emit(NULL, &err);
+      return;
+    }
+    node->repr.has_align = true;
+    node->repr.align_bytes = align;
+    return;
+  }
+  if (node->op == signed_sym || node->op == unsigned_sym) {
+    if (node->child_count > 0 && node->children[0]) {
+      apply_repr_metadata(ctx, node->children[0]);
+      node->repr = node->children[0]->repr;
+    }
+    node->repr.signedness = (node->op == signed_sym)
+                                ? MORPHL_INT_SIGNEDNESS_SIGNED
+                                : MORPHL_INT_SIGNEDNESS_UNSIGNED;
+    return;
+  }
+}
+
 static bool is_truthy_condition_type(const MorphlType* t) {
   t = unwrap_ref((MorphlType*)t);
   return t && (t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_INT);
@@ -415,6 +502,7 @@ static void apply_storage_metadata(TypeContext* ctx,
       decl_or_expr->storage_is_mutable = decl_or_expr->children[0]->storage_is_mutable;
       decl_or_expr->storage_residence = decl_or_expr->children[0]->storage_residence;
       decl_or_expr->extern_symbol = decl_or_expr->children[0]->extern_symbol;
+      decl_or_expr->repr = decl_or_expr->children[0]->repr;
     }
   }
 
@@ -963,7 +1051,8 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       op_sym == interns_intern(ctx->interns, str_from("$bor", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$bxor", 5)) ||
       op_sym == interns_intern(ctx->interns, str_from("$lshift", 7)) ||
-      op_sym == interns_intern(ctx->interns, str_from("$rshift", 7))) {
+      op_sym == interns_intern(ctx->interns, str_from("$rshift", 7)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$ushr", 5))) {
     
     if (arg_count != 2) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "bitwise %s expects 2 args, got %llu", op_name, (unsigned long long)arg_count);
@@ -980,6 +1069,46 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     
+    return morphl_type_int(ctx->arena);
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$size", 5))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$size expects 2 args");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* value_t = unwrap_ref(arg_types[1]);
+    if (!value_t || value_t->kind != MORPHL_TYPE_INT) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$size: value must be int");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return morphl_type_int(ctx->arena);
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$align", 6))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$align expects 2 args");
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    return arg_types[1];
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$signed", 7)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$unsigned", 9))) {
+    if (arg_count != 1) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s expects 1 arg", op_name);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* t = unwrap_ref(arg_types[0]);
+    if (!t || t->kind != MORPHL_TYPE_INT) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: argument must be int", op_name);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
     return morphl_type_int(ctx->arena);
   }
   
@@ -1063,6 +1192,34 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     return morphl_type_never(ctx->arena);
+  }
+
+  if (op_sym == interns_intern(ctx->interns, str_from("$udiv", 5)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$umod", 5)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$ult", 4)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$ugt", 4)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$ulte", 5)) ||
+      op_sym == interns_intern(ctx->interns, str_from("$ugte", 5))) {
+    if (arg_count != 2) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s expects 2 args", op_name);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    MorphlType* left = unwrap_ref(arg_types[0]);
+    MorphlType* right = unwrap_ref(arg_types[1]);
+    if (!left || left->kind != MORPHL_TYPE_INT ||
+        !right || right->kind != MORPHL_TYPE_INT) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be int", op_name);
+      morphl_error_emit(NULL, &err);
+      return NULL;
+    }
+    if (op_sym == interns_intern(ctx->interns, str_from("$ult", 4)) ||
+        op_sym == interns_intern(ctx->interns, str_from("$ugt", 4)) ||
+        op_sym == interns_intern(ctx->interns, str_from("$ulte", 5)) ||
+        op_sym == interns_intern(ctx->interns, str_from("$ugte", 5))) {
+      return morphl_type_bool(ctx->arena);
+    }
+    return morphl_type_int(ctx->arena);
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$impl", 5))) {
@@ -1526,9 +1683,11 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         node->storage_residence = stub_node->storage_residence;
         node->extern_symbol = default_extern_symbol(stub_node);
         type_context_define_var(ctx, var_sym, stub_type);
+        type_context_update_var_repr(ctx, var_sym, stub_node->repr);
         if (stub_type->kind == MORPHL_TYPE_FUNC) {
           type_context_define_func(ctx, var_sym, stub_type);
         }
+        node->repr = stub_node->repr;
         return stub_type;
       }
       bool declared_placeholder = false;
@@ -1579,6 +1738,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       node->storage_is_mutable = init_node->storage_is_mutable;
       node->storage_residence = init_node->storage_residence;
       node->extern_symbol = default_extern_symbol(init_node);
+      node->repr = init_node->repr;
 
       ForwardEntry* forward = pending_forward;
       if (forward && !forward->resolved) {
@@ -1596,6 +1756,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
 
       if (declared_placeholder) {
         (void)type_context_update_var(ctx, var_sym, init_type);
+        (void)type_context_update_var_repr(ctx, var_sym, init_node->repr);
         (void)type_context_update_func(ctx, var_sym, init_type);
         return init_type;
       }
@@ -1619,8 +1780,10 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         } else {
           type_context_define_var(ctx, var_sym, init_type);
         }
+        type_context_update_var_repr(ctx, var_sym, init_node->repr);
       } else {
         type_context_define_var(ctx, var_sym, init_type);
+        type_context_update_var_repr(ctx, var_sym, init_node->repr);
       }
       return init_type;
     }
@@ -1737,6 +1900,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
               stmt->contributes_to_layout,
               stmt->storage_is_mutable,
               stmt->storage_residence);
+            field_storage[field_count].repr = stmt->repr;
             field_count++;
           }
           if (stmt->contributes_to_layout) {
@@ -1760,6 +1924,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
               stmt->contributes_to_layout,
               stmt->storage_is_mutable,
               stmt->storage_residence);
+            layout_field_storage[layout_field_count].repr = stmt->repr;
             layout_field_count++;
           }
           Sym* names = field_count ? (Sym*)arena_push(ctx->arena, NULL, field_count * sizeof(Sym)) : NULL;
@@ -2246,6 +2411,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         morphl_error_emit(NULL, &err);
         return NULL;
       }
+      (void)type_context_lookup_var_repr(ctx, sym, &node->repr);
       return var_type;
     }
     
@@ -2377,6 +2543,9 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
 
 MorphlType* morphl_infer_type_of_ast(TypeContext* ctx, AstNode* node) {
   MorphlType* t = morphl_infer_type_of_ast_inner(ctx, node);
-  if (node) node->type = t;
+  if (node) {
+    node->type = t;
+    apply_repr_metadata(ctx, node);
+  }
   return t;
 }

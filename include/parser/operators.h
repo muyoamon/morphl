@@ -102,6 +102,17 @@ enum Operator{
   UNION,
   AS,
   OVERLOAD,
+  SIZEOF_REPR,
+  ALIGNOF_REPR,
+  SIGNED_REPR,
+  UNSIGNED_REPR,
+  UDIV,
+  UMOD,
+  ULT,
+  UGT,
+  ULTE,
+  UGTE,
+  USHR,
 };
 
 struct OperatorInfo {

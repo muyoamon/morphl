@@ -559,9 +559,22 @@ static bool patch_sconst_indices(uint8_t* code, uint32_t code_len,
       case VM_OP_IBNOT:
       case VM_OP_ILSHIFT:
       case VM_OP_IRSHIFT:
+      case VM_OP_IUDIV:
+      case VM_OP_IUMOD:
+      case VM_OP_IULT:
+      case VM_OP_IUGT:
+      case VM_OP_IULTE:
+      case VM_OP_IUGTE:
+      case VM_OP_IURSHIFT:
       case VM_OP_REQ:
       case VM_OP_RNEQ:
       case VM_OP_GLOBAL:
+      case VM_OP_INORM1S:
+      case VM_OP_INORM1U:
+      case VM_OP_INORM2S:
+      case VM_OP_INORM2U:
+      case VM_OP_INORM4S:
+      case VM_OP_INORM4U:
         break;
       case VM_OP_ICONST:
       case VM_OP_FCONST:
@@ -582,13 +595,31 @@ static bool patch_sconst_indices(uint8_t* code, uint32_t code_len,
       case VM_OP_PLOAD:
       case VM_OP_PSTORE:
       case VM_OP_ILOAD:
+      case VM_OP_ILOAD1S:
+      case VM_OP_ILOAD1U:
+      case VM_OP_ILOAD2S:
+      case VM_OP_ILOAD2U:
+      case VM_OP_ILOAD4S:
+      case VM_OP_ILOAD4U:
       case VM_OP_FLOAD:
       case VM_OP_RLOAD:
       case VM_OP_ISTORE:
+      case VM_OP_ISTORE1:
+      case VM_OP_ISTORE2:
+      case VM_OP_ISTORE4:
       case VM_OP_FSTORE:
       case VM_OP_RSTORE:
       case VM_OP_ALOAD:
+      case VM_OP_ALOAD1S:
+      case VM_OP_ALOAD1U:
+      case VM_OP_ALOAD2S:
+      case VM_OP_ALOAD2U:
+      case VM_OP_ALOAD4S:
+      case VM_OP_ALOAD4U:
       case VM_OP_ASTORE:
+      case VM_OP_ASTORE1:
+      case VM_OP_ASTORE2:
+      case VM_OP_ASTORE4:
         if (ip + 4 > code_len) goto truncated;
         ip += 4;
         break;
