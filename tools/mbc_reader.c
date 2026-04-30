@@ -232,6 +232,7 @@ static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
             if (!read_u32_le(buf, len, &pos, &fn->entry_point) ||
                 !read_u32_le(buf, len, &pos, &fn->frame_size)  ||
                 !read_u32_le(buf, len, &pos, &fn->param_size)  ||
+                !read_u32_le(buf, len, &pos, &fn->return_size) ||
                 !read_u32_le(buf, len, &pos, &fn->flags)) {
                 fprintf(stderr, "error: truncated function table at entry %u\n", i);
                 return false;
@@ -529,8 +530,8 @@ static void print_functions(const MbcFile *mbc) {
                 printf("  native_sym=%-4u", fn->entry_point);
             else
                 printf("  entry=0x%08x", fn->entry_point);
-            printf("  frame=%-5u params=%-5u flags=%s\n",
-                   fn->frame_size, fn->param_size,
+            printf("  frame=%-5u params=%-5u ret=%-5u flags=%s\n",
+                   fn->frame_size, fn->param_size, fn->return_size,
                    is_native ? "native" : "none");
         }
     }

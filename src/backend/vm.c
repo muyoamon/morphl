@@ -5,10 +5,10 @@
  * SPEC.md Section 11.  Only the "core" opcode subset is emitted; reference
  * and block-instantiation opcodes are stubbed (see vm.h TODO list).
  *
- * Binary file layout (format version 0.2):
+ * Binary file layout (format version 0.3):
  *   [Header]         4 bytes magic + u16 major + u16 minor + u32 flags
  *   [Function Table] u32 count; then per-function: entry_point, frame_size,
- *                    param_size, flags (all u32 LE)
+ *                    param_size, return_size, flags (all u32 LE)
  *   [Code Section]   u32 code_len; then code_len bytes
  */
 
@@ -349,6 +349,11 @@ static bool emit_op(VmEmitter* e, uint8_t op) {
 
 static bool emit_op_u32(VmEmitter* e, uint8_t op, uint32_t imm) {
   return emit_op(e, op) && bytes_push_u32_le(&e->code, imm);
+}
+
+static bool emit_vstore(VmEmitter* e, int32_t off, uint32_t size) {
+  return emit_op(e, VM_OP_VSTORE) && bytes_push_i32_le(&e->code, off) &&
+         bytes_push_u32_le(&e->code, size);
 }
 
 static bool emit_object_reloc(VmEmitter* e, uint16_t kind, size_t code_offset) {
@@ -1312,6 +1317,15 @@ static size_t overload_candidate_offset(const MorphlType* t, size_t index) {
 
 static size_t type_frame_size(const MorphlType* t) {
   return type_frame_size_with_repr(t, NULL);
+}
+
+static uint32_t func_return_size_u32(const MorphlType* fn_type) {
+  const MorphlType* unwrapped = unwrap_ref(fn_type);
+  if (!unwrapped || unwrapped->kind != MORPHL_TYPE_FUNC ||
+      !unwrapped->data.func.return_type) {
+    return 0;
+  }
+  return (uint32_t)type_frame_size(unwrap_ref(unwrapped->data.func.return_type));
 }
 
 static size_t type_frame_size_with_repr(const MorphlType* t,
@@ -2918,6 +2932,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           param_sz = (uint32_t)type_frame_size(
               unwrap_ref(fn_type->data.func.param_types[0]));
         }
+        uint32_t ret_sz = func_return_size_u32(fn_type);
         if (e->native_sym_count >= e->native_sym_capacity) {
           if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
                        sizeof(char*), e->native_sym_count + 1))
@@ -2935,6 +2950,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         e->functions.items[fidx].entry_point = (uint32_t)native_idx;
         e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
         e->functions.items[fidx].param_size = param_sz;
+        e->functions.items[fidx].return_size = ret_sz;
         e->functions.items[fidx].frame_size = 0;
         if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
         return emit_op_i32(e, VM_OP_ISTORE, (int32_t)existing_off);
@@ -3078,6 +3094,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
         /* grow native_syms array and record NUL-terminated copy of symbol name
          */
+        uint32_t ret_sz = func_return_size_u32(fn_type);
         if (e->native_sym_count >= e->native_sym_capacity) {
           if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
                        sizeof(char*), e->native_sym_count + 1))
@@ -3100,6 +3117,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         e->functions.items[fidx].entry_point = (uint32_t)native_idx;
         e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
         e->functions.items[fidx].param_size = param_sz;
+        e->functions.items[fidx].return_size = ret_sz;
         e->functions.items[fidx].frame_size = 0;
         /* store function table index as i64 in the variable's frame slot */
         if (!node->contributes_to_layout) return true;
@@ -3693,6 +3711,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
       /* store result to frame */
       uint8_t sop = store_op_repr(t, &node->repr);
+      if (sop == 0xFF && rhs && rhs->kind == AST_CALL && t) {
+        return emit_vstore(e, (int32_t)off, (uint32_t)type_frame_size(t));
+      }
       if (sop == 0xFF) {
         /* void / block / array / union / unknown — nothing to store (frame
          * already reserved and zeroed by ENTER, or filled by the RHS emitter
@@ -4167,6 +4188,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             param_sz = (uint32_t)type_frame_size(
                 unwrap_ref(fn_type->data.func.param_types[0]));
           }
+          uint32_t ret_sz = func_return_size_u32(fn_type);
           if (e->native_sym_count >= e->native_sym_capacity) {
             if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
                          sizeof(char*), e->native_sym_count + 1))
@@ -4185,6 +4207,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           e->functions.items[fidx].entry_point = (uint32_t)native_idx;
           e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
           e->functions.items[fidx].param_size = param_sz;
+          e->functions.items[fidx].return_size = ret_sz;
           e->functions.items[fidx].frame_size = 0;
           if (!emit_func_index_iconst(e, (uint32_t)fidx)) return false;
           return emit_op_i32(e, VM_OP_ISTORE, (int32_t)off);
@@ -4304,6 +4327,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (!emit_node(e, value)) return false;
       const MorphlType* t = unwrap_ref(value->type ? value->type : node->type);
       uint8_t sop = store_op_repr(t, &target->repr);
+      if (sop == 0xFF && value->kind == AST_CALL && t) {
+        return emit_vstore(e, (int32_t)off, (uint32_t)type_frame_size(t));
+      }
       if (sop == 0xFF) return false;
       return emit_op_i32(e, sop, (int32_t)off);
     }
@@ -4395,6 +4421,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           uint8_t sop = store_op(t);
           if (sop != 0xFF) {
             if (!emit_op_i32(e, sop, e->return_slot_offset)) return false;
+          } else if (node->children[0]->kind == AST_CALL && t) {
+            if (!emit_vstore(e, e->return_slot_offset,
+                             (uint32_t)type_frame_size(t)))
+              return false;
           }
         }
         /* run pending function-body $defer statements before returning */
@@ -5499,6 +5529,7 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
       fn_type->data.func.return_type) {
     ret_sz = type_frame_size(unwrap_ref(fn_type->data.func.return_type));
   }
+  e->functions.items[func_idx].return_size = (uint32_t)ret_sz;
   e->return_slot_offset = -(int32_t)(param_sz + 8 + ret_sz);
 
   /* push param scope */
@@ -6435,6 +6466,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     ok = ok && bytes_push_u32_le(&file, fn->entry_point);
     ok = ok && bytes_push_u32_le(&file, fn->frame_size);
     ok = ok && bytes_push_u32_le(&file, fn->param_size);
+    ok = ok && bytes_push_u32_le(&file, fn->return_size);
     ok = ok && bytes_push_u32_le(&file, fn->flags);
   }
 

@@ -566,11 +566,15 @@ The value is loaded from the native symbol at program load time.
 // my_module.c  →  compile to  my_module.so
 #include "runtime/runtime.h"
 
-static int64_t my_add(uint8_t* stack, size_t frame_base, size_t param_size) {
-    int64_t a, b;
+static bool my_add(uint8_t* stack, size_t frame_base, size_t param_size,
+                   uint8_t* ret_ptr, size_t ret_size) {
+    int64_t a, b, result;
     memcpy(&b, stack + frame_base - 8,  8);
     memcpy(&a, stack + frame_base - 16, 8);
-    return a + b;
+    result = a + b;
+    if (ret_size != sizeof(result)) return false;
+    memcpy(ret_ptr, &result, sizeof(result));
+    return true;
 }
 
 void morphl_module_register(MorphlRegisterFn reg) {
@@ -583,10 +587,11 @@ Place `my_module.so` next to `my_module.mpl`. The runtime locates it automatical
 **Native function signature:**
 
 ```c
-typedef int64_t (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_size);
+typedef bool (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_size,
+                               uint8_t* ret_ptr, size_t ret_size);
 ```
 
-Arguments sit below `frame_base` in declaration order, 8 bytes each. The last argument is at `stack[frame_base - 8]`. The return value should be returned as `int64_t`.
+Arguments sit below `frame_base` in declaration order, 8 bytes each. The last argument is at `stack[frame_base - 8]`. The caller reserves the return slot and passes it as `ret_ptr`; native code must write exactly `ret_size` bytes matching the declared morphl return type and return `true` on success.
 
 ### 5.7 `$static` - Static Storage Transformer
 

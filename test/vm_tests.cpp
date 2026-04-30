@@ -24,6 +24,7 @@ class BytecodeBuilder {
         uint32_t entry_point;
         uint32_t frame_size;
         uint32_t param_size;
+        uint32_t return_size;
         uint32_t flags;
     };
     std::vector<FuncEntry> extra_funcs_;  // additional functions beyond func 0
@@ -34,12 +35,12 @@ public:
 
     // Add an extra function (entry_point = offset from start of code section)
     void add_extra_func(uint32_t entry_point, uint32_t frame_sz, uint32_t param_sz = 0) {
-        extra_funcs_.push_back({entry_point, frame_sz, param_sz, 0});
+        extra_funcs_.push_back({entry_point, frame_sz, param_sz, 0, 0});
     }
 
     void add_extra_func_with_flags(uint32_t entry_point, uint32_t frame_sz,
                                    uint32_t param_sz, uint32_t flags) {
-        extra_funcs_.push_back({entry_point, frame_sz, param_sz, flags});
+        extra_funcs_.push_back({entry_point, frame_sz, param_sz, 0, flags});
     }
 
     void add_native_symbol(const char* symbol) {
@@ -117,12 +118,14 @@ public:
         write_u32(0);           // entry_point
         write_u32(frame_size_); // frame_size
         write_u32(0);           // param_size
+        write_u32(0);           // return_size
         write_u32(0);           // flags
         // extra funcs
         for (auto& ef : extra_funcs_) {
             write_u32(ef.entry_point);
             write_u32(ef.frame_size);
             write_u32(ef.param_size);
+            write_u32(ef.return_size);
             write_u32(ef.flags);
         }
 
@@ -238,6 +241,7 @@ static void write_valid_empty_header(std::ofstream& f) {
     write_u32(0); // entry_point
     write_u32(0); // frame_size
     write_u32(0); // param_size
+    write_u32(0); // return_size
     write_u32(0); // flags
     write_u32(1); // code_len
     uint8_t halt = VM_OP_HALT;

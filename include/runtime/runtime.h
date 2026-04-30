@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "interface/abi.h"
 #include "backend/vm.h"
@@ -12,15 +13,108 @@
 typedef struct MorphlVmProgram MorphlVmProgram;
 typedef struct MorphlVm MorphlVm;
 
+/* ABI-level scalar storage aliases for morphl native modules. */
+typedef int64_t   morphl_i64_t;
+typedef double    morphl_f64_t;
+typedef int64_t   morphl_bool_t;
+typedef uintptr_t morphl_ref_t;
+typedef uintptr_t morphl_str_handle_t;
+
+#define MORPHL_I64  morphl_i64_t
+#define MORPHL_F64  morphl_f64_t
+#define MORPHL_BOOL morphl_bool_t
+#define MORPHL_REF  morphl_ref_t
+#define MORPHL_STR  morphl_str_handle_t
+
+#define MORPHL_CONCAT_INNER(a, b) a##b
+#define MORPHL_CONCAT(a, b) MORPHL_CONCAT_INNER(a, b)
+
+#define MORPHL_ARG_PTR(stack, frame_base, offset) \
+  ((uint8_t*)(stack) + ((frame_base) - (offset)))
+
+#define MORPHL_RET_PTR_AS(type, ret_ptr) ((type*)(void*)(ret_ptr))
+
+#define MORPHL_READ_ARG(type, stack, frame_base, offset) \
+  MORPHL_CONCAT(morphl_read_arg_impl_, type)((stack), (frame_base), (offset))
+
+#define MORPHL_WRITE_RET(type, ret_ptr, value) \
+  MORPHL_CONCAT(morphl_write_ret_impl_, type)((ret_ptr), (value))
+
+#define MORPHL_WRITE_RET_BYTES(ret_ptr, src, size) \
+  memcpy((ret_ptr), (src), (size))
+
+static inline morphl_i64_t morphl_read_arg_impl_morphl_i64_t(
+    const uint8_t* stack, size_t frame_base, size_t offset) {
+  morphl_i64_t value = 0;
+  memcpy(&value, MORPHL_ARG_PTR(stack, frame_base, offset), sizeof(value));
+  return value;
+}
+
+static inline morphl_f64_t morphl_read_arg_impl_morphl_f64_t(
+    const uint8_t* stack, size_t frame_base, size_t offset) {
+  morphl_f64_t value = 0.0;
+  memcpy(&value, MORPHL_ARG_PTR(stack, frame_base, offset), sizeof(value));
+  return value;
+}
+
+static inline morphl_bool_t morphl_read_arg_impl_morphl_bool_t(
+    const uint8_t* stack, size_t frame_base, size_t offset) {
+  morphl_bool_t value = 0;
+  memcpy(&value, MORPHL_ARG_PTR(stack, frame_base, offset), sizeof(value));
+  return value;
+}
+
+static inline morphl_ref_t morphl_read_arg_impl_morphl_ref_t(
+    const uint8_t* stack, size_t frame_base, size_t offset) {
+  morphl_ref_t value = 0;
+  memcpy(&value, MORPHL_ARG_PTR(stack, frame_base, offset), sizeof(value));
+  return value;
+}
+
+static inline morphl_str_handle_t morphl_read_arg_impl_morphl_str_handle_t(
+    const uint8_t* stack, size_t frame_base, size_t offset) {
+  morphl_str_handle_t value = 0;
+  memcpy(&value, MORPHL_ARG_PTR(stack, frame_base, offset), sizeof(value));
+  return value;
+}
+
+static inline void morphl_write_ret_impl_morphl_i64_t(uint8_t* ret_ptr,
+                                                       morphl_i64_t value) {
+  memcpy(ret_ptr, &value, sizeof(value));
+}
+
+static inline void morphl_write_ret_impl_morphl_f64_t(uint8_t* ret_ptr,
+                                                       morphl_f64_t value) {
+  memcpy(ret_ptr, &value, sizeof(value));
+}
+
+static inline void morphl_write_ret_impl_morphl_bool_t(uint8_t* ret_ptr,
+                                                        morphl_bool_t value) {
+  memcpy(ret_ptr, &value, sizeof(value));
+}
+
+static inline void morphl_write_ret_impl_morphl_ref_t(uint8_t* ret_ptr,
+                                                       morphl_ref_t value) {
+  memcpy(ret_ptr, &value, sizeof(value));
+}
+
+static inline void morphl_write_ret_impl_morphl_str_handle_t(
+    uint8_t* ret_ptr, morphl_str_handle_t value) {
+  memcpy(ret_ptr, &value, sizeof(value));
+}
+
 /**
  * Signature for native functions callable from morphl.
  *
  * @param stack      Raw VM stack byte buffer.
  * @param frame_base vm->stack.top at CALL time (points just past the last arg).
  * @param param_size Total bytes of arguments: args are at stack[frame_base-param_size..frame_base-1].
- * @return           i64 result; the dispatcher writes it to stack[frame_base-8] (the last arg slot).
+ * @param ret_ptr    Pointer to the caller-reserved return slot.
+ * @param ret_size   Size in bytes of the declared morphl return type.
+ * @return           true on success, false to raise a VM runtime error.
  */
-typedef int64_t (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_size);
+typedef bool (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_size,
+                               uint8_t* ret_ptr, size_t ret_size);
 
 /**
  * Callback passed to morphl_module_register by the runtime.

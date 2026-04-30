@@ -267,6 +267,7 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
             if (!read_u32_le(buf, len, &pos, &fn->entry_point) ||
                 !read_u32_le(buf, len, &pos, &fn->frame_size)  ||
                 !read_u32_le(buf, len, &pos, &fn->param_size)  ||
+                !read_u32_le(buf, len, &pos, &fn->return_size) ||
                 !read_u32_le(buf, len, &pos, &fn->flags))
                 goto err;
         }
@@ -632,6 +633,35 @@ static bool validate_program_functions(MorphlVmProgram* prog) {
     return true;
 }
 
+static bool invoke_native(MorphlVm* vm, const VmFunctionMeta* fn,
+                          const char* opname, FILE* err) {
+    if (!vm || !fn) return false;
+    size_t fb = vm->stack.top;
+    size_t needed = (size_t)fn->param_size + 8 + (size_t)fn->return_size;
+    if (fn->entry_point >= vm->program->native_sym_count) {
+        RT_ERR(err, "vm: %s native index %u out of range", opname, fn->entry_point);
+        return false;
+    }
+    if (fb < needed) {
+        RT_ERR(err, "vm: native %s stack underflow", opname);
+        return false;
+    }
+    size_t ret_addr = fb - needed;
+    if (!vm->program->native_fns[fn->entry_point](
+            vm->stack.data, fb, fn->param_size,
+            vm->stack.data + ret_addr, fn->return_size)) {
+        const char* sym = NULL;
+        if (fn->entry_point < vm->program->native_sym_count) {
+            sym = vm->program->native_sym_names[fn->entry_point];
+        }
+        if (sym) RT_ERR(err, "vm: native %s failed for symbol '%s'", opname, sym);
+        else RT_ERR(err, "vm: native %s failed", opname);
+        return false;
+    }
+    vm->stack.top = fb - ((size_t)fn->param_size + 8);
+    return true;
+}
+
 static bool prepare_call_frame(MorphlVm* vm, uint32_t idx, const VmFunctionMeta* fn,
                                VmCallFrame* out_cf, FILE* err, const char* opname) {
     size_t frame_base = vm->stack.top;
@@ -973,19 +1003,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             }
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
-                size_t fb = vm->stack.top;
-                if (fn->entry_point >= vm->program->native_sym_count) {
-                    RT_ERR(err, "vm: CALL native index %u out of range", fn->entry_point);
-                    return 1;
-                }
-                if (fb < (size_t)fn->param_size + 16) {
-                    RT_ERR(err, "vm: native CALL stack underflow"); return 1;
-                }
-                size_t ret_addr = fb - ((size_t)fn->param_size + 16);
-                int64_t result = vm->program->native_fns[fn->entry_point](
-                    vm->stack.data, fb, fn->param_size);
-                memcpy(vm->stack.data + ret_addr, &result, 8);
-                vm->stack.top = fb - ((size_t)fn->param_size + 8);
+                if (!invoke_native(vm, fn, "CALL", err)) return 1;
                 break;
             }
             VmCallFrame cf;
@@ -1113,19 +1131,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             }
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
-                size_t fb = vm->stack.top;
-                if (fn->entry_point >= vm->program->native_sym_count) {
-                    RT_ERR(err, "vm: CALLF native index %u out of range", fn->entry_point);
-                    return 1;
-                }
-                if (fb < (size_t)fn->param_size + 16) {
-                    RT_ERR(err, "vm: native CALLF stack underflow"); return 1;
-                }
-                size_t ret_addr = fb - ((size_t)fn->param_size + 16);
-                int64_t result = vm->program->native_fns[fn->entry_point](
-                    vm->stack.data, fb, fn->param_size);
-                memcpy(vm->stack.data + ret_addr, &result, 8);
-                vm->stack.top = fb - ((size_t)fn->param_size + 8);
+                if (!invoke_native(vm, fn, "CALLF", err)) return 1;
                 break;
             }
             VmCallFrame cf;
@@ -1150,19 +1156,7 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             }
             VmFunctionMeta* fn = &vm->program->functions[idx];
             if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
-                size_t fb = vm->stack.top;
-                if (fn->entry_point >= vm->program->native_sym_count) {
-                    RT_ERR(err, "vm: CALLX native index %u out of range", fn->entry_point);
-                    return 1;
-                }
-                if (fb < (size_t)fn->param_size + 16) {
-                    RT_ERR(err, "vm: native CALLX stack underflow"); return 1;
-                }
-                size_t ret_addr = fb - ((size_t)fn->param_size + 16);
-                int64_t result = vm->program->native_fns[fn->entry_point](
-                    vm->stack.data, fb, fn->param_size);
-                memcpy(vm->stack.data + ret_addr, &result, 8);
-                vm->stack.top = fb - ((size_t)fn->param_size + 8);
+                if (!invoke_native(vm, fn, "CALLX", err)) return 1;
                 break;
             }
             VmCallFrame cf;
@@ -1320,6 +1314,19 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
             uint8_t* ptr = NULL;
             if (!checked_ref_addr(vm, base, off, width, &ptr, err, "ASTOREN")) return 1;
             memcpy(ptr, &v, width);
+            break;
+        }
+        case VM_OP_VSTORE: {
+            int32_t off; READ_I32(off);
+            uint32_t sz; READ_U32(sz);
+            ptrdiff_t addr = 0;
+            if (!checked_frame_addr(vm, off, sz, &addr, err, "VSTORE")) return 1;
+            if (vm->stack.top < (size_t)sz) {
+                RT_ERR(err, "vm: VSTORE stack underflow");
+                return 1;
+            }
+            memcpy(vm->stack.data + addr, vm->stack.data + vm->stack.top - sz, sz);
+            vm->stack.top -= sz;
             break;
         }
 

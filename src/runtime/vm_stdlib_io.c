@@ -5,9 +5,8 @@
  * (uintptr_t) to a NUL-terminated C string.  VM_OP_SCONST stores string
  * literals as (int64_t)(uintptr_t)ptr, so the cast below is safe.
  *
- * Return convention: the dispatcher writes the i64 return value to
- * stack[frame_base - 8], which is always the last slot pushed before CALL.
- * All IO functions return 0 on success.
+ * Return convention: the dispatcher passes a pointer to the caller-reserved
+ * return slot. All IO functions write i64 zero on success.
  */
 
 #include "runtime/runtime.h"
@@ -24,47 +23,58 @@ static inline int64_t read_i64(uint8_t* stack, size_t frame_base, size_t offset)
     return v;
 }
 
+static inline bool write_i64_result(uint8_t* ret_ptr, size_t ret_size, int64_t value) {
+    if (ret_size != sizeof(value)) return false;
+    memcpy(ret_ptr, &value, sizeof(value));
+    return true;
+}
+
 /* ── print functions ──────────────────────────────────────────────────────── */
 
-static int64_t io_print(uint8_t* stack, size_t frame_base, size_t param_size) {
+static bool io_print(uint8_t* stack, size_t frame_base, size_t param_size,
+                     uint8_t* ret_ptr, size_t ret_size) {
     (void)param_size;
     int64_t raw = read_i64(stack, frame_base, 8); /* single string arg at frame[-8] */
     const char* s = (const char*)(uintptr_t)raw;
     if (s) fputs(s, stdout);
-    return 0;
+    return write_i64_result(ret_ptr, ret_size, 0);
 }
 
-static int64_t io_println(uint8_t* stack, size_t frame_base, size_t param_size) {
+static bool io_println(uint8_t* stack, size_t frame_base, size_t param_size,
+                       uint8_t* ret_ptr, size_t ret_size) {
     (void)param_size;
     int64_t raw = read_i64(stack, frame_base, 8);
     const char* s = (const char*)(uintptr_t)raw;
     if (s) fputs(s, stdout);
     fputc('\n', stdout);
-    return 0;
+    return write_i64_result(ret_ptr, ret_size, 0);
 }
 
-static int64_t io_print_int(uint8_t* stack, size_t frame_base, size_t param_size) {
+static bool io_print_int(uint8_t* stack, size_t frame_base, size_t param_size,
+                         uint8_t* ret_ptr, size_t ret_size) {
     (void)param_size;
     int64_t n = read_i64(stack, frame_base, 8);
     printf("%lld", (long long)n);
-    return 0;
+    return write_i64_result(ret_ptr, ret_size, 0);
 }
 
-static int64_t io_eprint(uint8_t* stack, size_t frame_base, size_t param_size) {
+static bool io_eprint(uint8_t* stack, size_t frame_base, size_t param_size,
+                      uint8_t* ret_ptr, size_t ret_size) {
     (void)param_size;
     int64_t raw = read_i64(stack, frame_base, 8);
     const char* s = (const char*)(uintptr_t)raw;
     if (s) fputs(s, stderr);
-    return 0;
+    return write_i64_result(ret_ptr, ret_size, 0);
 }
 
-static int64_t io_eprintln(uint8_t* stack, size_t frame_base, size_t param_size) {
+static bool io_eprintln(uint8_t* stack, size_t frame_base, size_t param_size,
+                        uint8_t* ret_ptr, size_t ret_size) {
     (void)param_size;
     int64_t raw = read_i64(stack, frame_base, 8);
     const char* s = (const char*)(uintptr_t)raw;
     if (s) fputs(s, stderr);
     fputc('\n', stderr);
-    return 0;
+    return write_i64_result(ret_ptr, ret_size, 0);
 }
 
 /* ── registration ─────────────────────────────────────────────────────────── */

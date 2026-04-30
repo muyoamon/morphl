@@ -7,7 +7,7 @@
 
 #define MORPHL_VM_MAGIC        "MVMB"
 #define MORPHL_VM_VERSION_MAJOR 0         // Major Version 0 never guarantee backward compatibility
-#define MORPHL_VM_VERSION_MINOR 2
+#define MORPHL_VM_VERSION_MINOR 3
 
 typedef enum {
   MORPHL_VM_ARTIFACT_EXECUTABLE = 0,
@@ -159,6 +159,7 @@ enum VmOpcode {
   VM_OP_ASTORE1 = 0x6D,
   VM_OP_ASTORE2 = 0x6E,
   VM_OP_ASTORE4 = 0x6F,
+  VM_OP_VSTORE  = 0x73,  // [i32 off][u32 size] copy top <size> bytes into frame[off], then pop them
 
   /* ── String operations ── */
   VM_OP_SCONST  = 0x70,  // [u32 idx]  push pointer (as i64) to string table entry <idx>
@@ -197,6 +198,7 @@ typedef struct {
   uint32_t entry_point;  // byte offset into the code section (or native sym index if NATIVE flag set)
   uint32_t frame_size;   // total bytes needed for this function's frame (params + locals)
   uint32_t param_size;   // bytes occupied by parameters at frame[0]
+  uint32_t return_size;  // bytes occupied by the caller-reserved return slot
   uint32_t flags;        // see MORPHL_FUNC_FLAG_* above
 } VmFunctionMeta;
 

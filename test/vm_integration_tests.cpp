@@ -24,12 +24,60 @@ extern "C" {
 static int counter_g = 0;
 static int64_t vm_link_init_counter_g = 0;
 
-static int64_t native_vm_link_tick(uint8_t* stack, size_t frame_base, size_t param_size) {
+static bool native_make_pair(uint8_t* stack, size_t frame_base, size_t param_size,
+                             uint8_t* ret_ptr, size_t ret_size) {
+    (void)stack;
+    (void)frame_base;
+    (void)param_size;
+    int64_t values[2] = {20, 22};
+    if (ret_size != sizeof(values)) return false;
+    std::memcpy(ret_ptr, values, sizeof(values));
+    return true;
+}
+
+static bool native_make_array3(uint8_t* stack, size_t frame_base, size_t param_size,
+                               uint8_t* ret_ptr, size_t ret_size) {
+    (void)stack;
+    (void)frame_base;
+    (void)param_size;
+    int64_t values[3] = {7, 8, 9};
+    if (ret_size != sizeof(values)) return false;
+    std::memcpy(ret_ptr, values, sizeof(values));
+    return true;
+}
+
+static bool native_make_union_int(uint8_t* stack, size_t frame_base, size_t param_size,
+                                  uint8_t* ret_ptr, size_t ret_size) {
+    (void)stack;
+    (void)frame_base;
+    (void)param_size;
+    if (ret_size != 16) return false;
+    int64_t payload = 11;
+    int64_t tag = 0;
+    std::memcpy(ret_ptr, &payload, sizeof(payload));
+    std::memcpy(ret_ptr + sizeof(payload), &tag, sizeof(tag));
+    return true;
+}
+
+static bool native_fail(uint8_t* stack, size_t frame_base, size_t param_size,
+                        uint8_t* ret_ptr, size_t ret_size) {
+    (void)stack;
+    (void)frame_base;
+    (void)param_size;
+    (void)ret_ptr;
+    (void)ret_size;
+    return false;
+}
+
+static bool native_vm_link_tick(uint8_t* stack, size_t frame_base, size_t param_size,
+                                uint8_t* ret_ptr, size_t ret_size) {
     (void)stack;
     (void)frame_base;
     (void)param_size;
     vm_link_init_counter_g += 1;
-    return vm_link_init_counter_g;
+    assert(ret_size == sizeof(vm_link_init_counter_g));
+    std::memcpy(ret_ptr, &vm_link_init_counter_g, sizeof(vm_link_init_counter_g));
+    return true;
 }
 
 static std::string temp_path(const char* ext) {
@@ -153,6 +201,7 @@ static bool parse_vm_binary_file(const std::string& path, TestVmObjectFile* out)
         if (!read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].entry_point) ||
             !read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].frame_size) ||
             !read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].param_size) ||
+            !read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].return_size) ||
             !read_u32_le(buf.data(), buf.size(), &pos, &out->functions[i].flags)) {
             return false;
         }
@@ -2030,6 +2079,51 @@ static void test_e2e_extern_return_value() {
     printf("PASS test_e2e_extern_return_value\n");
 }
 
+static void test_e2e_extern_block_return_value() {
+    assert(morphl_register_native("native_make_pair", native_make_pair));
+    const char* src =
+        "$decl Pair { $decl x 0; $decl y 0; };\n"
+        "$decl make_pair $extern \"native_make_pair\" $func () Pair;\n"
+        "$decl p $call make_pair ();\n"
+        "$exit $add ($member p x) ($member p y);\n";
+    int rc = compile_and_run(src);
+    assert(rc == 42);
+    printf("PASS test_e2e_extern_block_return_value\n");
+}
+
+static void test_e2e_extern_array_return_value() {
+    assert(morphl_register_native("native_make_array3", native_make_array3));
+    const char* src =
+        "$decl make_array $extern \"native_make_array3\" $func () $array 0 3;\n"
+        "$decl arr $call make_array ();\n"
+        "$exit $add ($index arr 0) ($add ($index arr 1) ($index arr 2));\n";
+    int rc = compile_and_run(src);
+    assert(rc == 24);
+    printf("PASS test_e2e_extern_array_return_value\n");
+}
+
+static void test_e2e_extern_union_return_value() {
+    assert(morphl_register_native("native_make_union_int", native_make_union_int));
+    const char* src =
+        "$decl make_union $extern \"native_make_union_int\" $func () $union 0 0.0;\n"
+        "$decl u $call make_union ();\n"
+        "$decl payload $as u 0;\n"
+        "$exit $add payload ($member u $$tag);\n";
+    int rc = compile_and_run(src);
+    assert(rc == 11);
+    printf("PASS test_e2e_extern_union_return_value\n");
+}
+
+static void test_e2e_extern_native_failure() {
+    assert(morphl_register_native("native_fail", native_fail));
+    const char* src =
+        "$decl failer $extern \"native_fail\" $func () 0;\n"
+        "$exit $call failer ();\n";
+    int rc = compile_and_run(src);
+    assert(rc != 0);
+    printf("PASS test_e2e_extern_native_failure\n");
+}
+
 /* Unregistered native symbol must cause load failure (rc != 0). */
 static void test_e2e_extern_unknown_sym() {
     /* Write a module with a symbol that is not in the static registry. */
@@ -2663,6 +2757,10 @@ int main(void) {
     test_e2e_extern_print();
     test_e2e_extern_print_int();
     test_e2e_extern_return_value();
+    test_e2e_extern_block_return_value();
+    test_e2e_extern_array_return_value();
+    test_e2e_extern_union_return_value();
+    test_e2e_extern_native_failure();
     test_e2e_extern_unknown_sym();
     test_e2e_extern_explicit_symbol();
     test_e2e_extern_rebind();

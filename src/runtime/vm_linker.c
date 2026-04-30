@@ -257,6 +257,7 @@ static bool vm_object_load(const char* path, VmObjectFile* out, FILE* err) {
       if (!read_u32_le(buf, len, &pos, &out->functions[i].entry_point) ||
           !read_u32_le(buf, len, &pos, &out->functions[i].frame_size) ||
           !read_u32_le(buf, len, &pos, &out->functions[i].param_size) ||
+          !read_u32_le(buf, len, &pos, &out->functions[i].return_size) ||
           !read_u32_le(buf, len, &pos, &out->functions[i].flags)) {
         free(buf);
         vm_object_free(out);
@@ -670,6 +671,7 @@ static bool vm_executable_write_from_object(const char* out_path,
     ok = ok && write_u32_le(f, obj->functions[i].entry_point);
     ok = ok && write_u32_le(f, obj->functions[i].frame_size);
     ok = ok && write_u32_le(f, obj->functions[i].param_size);
+    ok = ok && write_u32_le(f, obj->functions[i].return_size);
     ok = ok && write_u32_le(f, obj->functions[i].flags);
   }
   ok = ok && write_u32_le(f, obj->code_len);
