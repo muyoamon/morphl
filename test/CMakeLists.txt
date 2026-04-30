@@ -82,6 +82,10 @@ target_include_directories(vm_integration_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
 
+target_compile_definitions(vm_integration_tests PRIVATE
+  MORPHL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
 target_link_libraries(vm_integration_tests PRIVATE
   morphl_backend
   morphl_typing

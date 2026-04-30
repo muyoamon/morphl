@@ -287,4 +287,4 @@ $decl File {
 ## 9. Future Work
 
 - A dedicated spec section for `$heap`, `$free`, and `$defer` once the surface syntax and VM lowering are fully merged into `SPEC.md`
-- Optional higher-level ownership or resource-management libraries in stdlib built on top of these primitives
+- Optional higher-level ownership or resource-management libraries in std built on top of these primitives

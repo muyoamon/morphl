@@ -7,7 +7,7 @@
 
 #define MORPHL_VM_MAGIC        "MVMB"
 #define MORPHL_VM_VERSION_MAJOR 0         // Major Version 0 never guarantee backward compatibility
-#define MORPHL_VM_VERSION_MINOR 3
+#define MORPHL_VM_VERSION_MINOR 4
 
 typedef enum {
   MORPHL_VM_ARTIFACT_EXECUTABLE = 0,

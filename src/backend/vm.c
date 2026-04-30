@@ -243,6 +243,7 @@ typedef struct {
 } ImplEntry;
 
 typedef struct VmEmitter {
+  const AstNode* emit_root;
   VmBytes code;
   VmFunctionTable functions;
   VmPatchList patches;
@@ -296,6 +297,7 @@ typedef struct VmEmitter {
   /* native symbol table: names of $extern declarations, in order of allocation
    */
   char** native_syms;
+  char** native_sym_modules;
   size_t native_sym_count, native_sym_capacity;
   /* trait implementation property tables: stored in global frame after import
    * slots */
@@ -1029,6 +1031,55 @@ static Str current_file_root_prefix(const VmEmitter* e) {
     }
   }
   return empty;
+}
+
+static Str current_module_origin_path(const VmEmitter* e) {
+  Str empty = {NULL, 0};
+  if (!e) return empty;
+  Str root_prefix = current_file_root_prefix(e);
+  if (root_prefix.ptr) {
+    const ImportSlot* import_slot = emitter_find_import_slot(e, root_prefix);
+    if (import_slot && import_slot->module_path.ptr) return import_slot->module_path;
+  }
+  if (e->emit_root && e->emit_root->filename) {
+    return str_from(e->emit_root->filename, strlen(e->emit_root->filename));
+  }
+  return empty;
+}
+
+static bool add_native_symbol(VmEmitter* e, Str sym_str, Str module_path,
+                              size_t* out_index) {
+  if (!e || !sym_str.ptr) return false;
+  if (e->native_sym_count >= e->native_sym_capacity) {
+    if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
+                 sizeof(char*), e->native_sym_count + 1))
+      return false;
+    char** grown_modules = (char**)realloc(
+        e->native_sym_modules, e->native_sym_capacity * sizeof(char*));
+    if (!grown_modules) return false;
+    for (size_t i = e->native_sym_count; i < e->native_sym_capacity; ++i)
+      grown_modules[i] = NULL;
+    e->native_sym_modules = grown_modules;
+  }
+  char* sym_name = (char*)malloc(sym_str.len + 1);
+  if (!sym_name) return false;
+  memcpy(sym_name, sym_str.ptr, sym_str.len);
+  sym_name[sym_str.len] = '\0';
+  char* mod_name = NULL;
+  if (module_path.ptr) {
+    mod_name = (char*)malloc(module_path.len + 1);
+    if (!mod_name) {
+      free(sym_name);
+      return false;
+    }
+    memcpy(mod_name, module_path.ptr, module_path.len);
+    mod_name[module_path.len] = '\0';
+  }
+  e->native_syms[e->native_sym_count] = sym_name;
+  e->native_sym_modules[e->native_sym_count] = mod_name;
+  if (out_index) *out_index = e->native_sym_count;
+  e->native_sym_count++;
+  return true;
 }
 
 static char* join_static_path(Str root, const Str* segments, size_t start,
@@ -2933,18 +2984,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               unwrap_ref(fn_type->data.func.param_types[0]));
         }
         uint32_t ret_sz = func_return_size_u32(fn_type);
-        if (e->native_sym_count >= e->native_sym_capacity) {
-          if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
-                       sizeof(char*), e->native_sym_count + 1))
-            return false;
-        }
         Str sym_str = node->extern_symbol.ptr ? node->extern_symbol : name;
-        char* sym_name = (char*)malloc(sym_str.len + 1);
-        if (!sym_name) return false;
-        memcpy(sym_name, sym_str.ptr, sym_str.len);
-        sym_name[sym_str.len] = '\0';
-        e->native_syms[e->native_sym_count] = sym_name;
-        size_t native_idx = e->native_sym_count++;
+        size_t native_idx = SIZE_MAX;
+        if (!add_native_symbol(e, sym_str, current_module_origin_path(e),
+                               &native_idx))
+          return false;
         size_t fidx = func_alloc(e);
         if (fidx == SIZE_MAX) return false;
         e->functions.items[fidx].entry_point = (uint32_t)native_idx;
@@ -3095,22 +3139,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* grow native_syms array and record NUL-terminated copy of symbol name
          */
         uint32_t ret_sz = func_return_size_u32(fn_type);
-        if (e->native_sym_count >= e->native_sym_capacity) {
-          if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
-                       sizeof(char*), e->native_sym_count + 1))
-            return false;
-        }
         /* For imported modules, value.ptr is freed (pp_action_import frees
          * source_buffer). Fall back to the interned name via name_node->op. */
         Str sym_str = node->extern_symbol.ptr ? node->extern_symbol : name;
         if ((!sym_str.ptr || sym_str.len == 0) && e->interns && name_node->op)
           sym_str = interns_lookup(e->interns, name_node->op);
-        char* sym_name = (char*)malloc(sym_str.len + 1);
-        if (!sym_name) return false;
-        memcpy(sym_name, sym_str.ptr, sym_str.len);
-        sym_name[sym_str.len] = '\0';
-        e->native_syms[e->native_sym_count] = sym_name;
-        size_t native_idx = e->native_sym_count++;
+        size_t native_idx = SIZE_MAX;
+        if (!add_native_symbol(e, sym_str, current_module_origin_path(e),
+                               &native_idx))
+          return false;
         /* allocate a function table slot */
         size_t fidx = func_alloc(e);
         if (fidx == SIZE_MAX) return false;
@@ -4189,19 +4226,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 unwrap_ref(fn_type->data.func.param_types[0]));
           }
           uint32_t ret_sz = func_return_size_u32(fn_type);
-          if (e->native_sym_count >= e->native_sym_capacity) {
-            if (!vm_grow((void**)&e->native_syms, &e->native_sym_capacity,
-                         sizeof(char*), e->native_sym_count + 1))
-              return false;
-          }
           Str sym_str =
               value->extern_symbol.ptr ? value->extern_symbol : target->value;
-          char* sym_name = (char*)malloc(sym_str.len + 1);
-          if (!sym_name) return false;
-          memcpy(sym_name, sym_str.ptr, sym_str.len);
-          sym_name[sym_str.len] = '\0';
-          e->native_syms[e->native_sym_count] = sym_name;
-          size_t native_idx = e->native_sym_count++;
+          size_t native_idx = SIZE_MAX;
+          if (!add_native_symbol(e, sym_str, current_module_origin_path(e),
+                                 &native_idx))
+            return false;
           size_t fidx = func_alloc(e);
           if (fidx == SIZE_MAX) return false;
           e->functions.items[fidx].entry_point = (uint32_t)native_idx;
@@ -5724,8 +5754,12 @@ static void emitter_free(VmEmitter* e) {
   free(e->lexical_scopes);
   for (size_t i = 0; i < e->str_count; i++) free(e->str_table[i]);
   free(e->str_table);
-  for (size_t i = 0; i < e->native_sym_count; i++) free(e->native_syms[i]);
+  for (size_t i = 0; i < e->native_sym_count; i++) {
+    free(e->native_syms[i]);
+    free(e->native_sym_modules ? e->native_sym_modules[i] : NULL);
+  }
   free(e->native_syms);
+  free(e->native_sym_modules);
   free(e->impl_entries);
   free(e->block_decl_map);
   for (size_t i = 0; i < e->deferred_cleanup_count; i++)
@@ -6263,6 +6297,7 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
 
   VmEmitter e;
   memset(&e, 0, sizeof(e));
+  e.emit_root = emit_root;
   e.emit_object = emit_object;
   e.interns = context->type_context ? context->type_context->interns : NULL;
   e.type_ctx = context->type_context;
@@ -6492,6 +6527,11 @@ bool morphl_backend_func_vm(MorphlBackendContext* context) {
     ok = ok && bytes_push_u32_le(&file, nlen);
     ok = ok && bytes_push(&file, (const uint8_t*)e.native_syms[i],
                           nlen + 1); /* +1 for NUL */
+    Str module_path = e.native_sym_modules && e.native_sym_modules[i]
+                          ? str_from(e.native_sym_modules[i],
+                                     strlen(e.native_sym_modules[i]))
+                          : str_from("", 0);
+    ok = ok && bytes_push_len_string(&file, module_path);
   }
 
   if (emit_object) {

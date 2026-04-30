@@ -24,8 +24,10 @@ extern "C" {
 static int counter_g = 0;
 static int64_t vm_link_init_counter_g = 0;
 
-static bool native_make_pair(uint8_t* stack, size_t frame_base, size_t param_size,
+static bool native_make_pair(MorphlNativeCtx* ctx, uint8_t* stack,
+                             size_t frame_base, size_t param_size,
                              uint8_t* ret_ptr, size_t ret_size) {
+    (void)ctx;
     (void)stack;
     (void)frame_base;
     (void)param_size;
@@ -35,8 +37,10 @@ static bool native_make_pair(uint8_t* stack, size_t frame_base, size_t param_siz
     return true;
 }
 
-static bool native_make_array3(uint8_t* stack, size_t frame_base, size_t param_size,
+static bool native_make_array3(MorphlNativeCtx* ctx, uint8_t* stack,
+                               size_t frame_base, size_t param_size,
                                uint8_t* ret_ptr, size_t ret_size) {
+    (void)ctx;
     (void)stack;
     (void)frame_base;
     (void)param_size;
@@ -46,8 +50,10 @@ static bool native_make_array3(uint8_t* stack, size_t frame_base, size_t param_s
     return true;
 }
 
-static bool native_make_union_int(uint8_t* stack, size_t frame_base, size_t param_size,
+static bool native_make_union_int(MorphlNativeCtx* ctx, uint8_t* stack,
+                                  size_t frame_base, size_t param_size,
                                   uint8_t* ret_ptr, size_t ret_size) {
+    (void)ctx;
     (void)stack;
     (void)frame_base;
     (void)param_size;
@@ -59,8 +65,10 @@ static bool native_make_union_int(uint8_t* stack, size_t frame_base, size_t para
     return true;
 }
 
-static bool native_fail(uint8_t* stack, size_t frame_base, size_t param_size,
+static bool native_fail(MorphlNativeCtx* ctx, uint8_t* stack,
+                        size_t frame_base, size_t param_size,
                         uint8_t* ret_ptr, size_t ret_size) {
+    (void)ctx;
     (void)stack;
     (void)frame_base;
     (void)param_size;
@@ -69,8 +77,10 @@ static bool native_fail(uint8_t* stack, size_t frame_base, size_t param_size,
     return false;
 }
 
-static bool native_vm_link_tick(uint8_t* stack, size_t frame_base, size_t param_size,
+static bool native_vm_link_tick(MorphlNativeCtx* ctx, uint8_t* stack,
+                                size_t frame_base, size_t param_size,
                                 uint8_t* ret_ptr, size_t ret_size) {
+    (void)ctx;
     (void)stack;
     (void)frame_base;
     (void)param_size;
@@ -219,6 +229,7 @@ static bool parse_vm_binary_file(const std::string& path, TestVmObjectFile* out)
     uint32_t native_count = 0;
     if (!read_u32_le(buf.data(), buf.size(), &pos, &native_count)) return false;
     for (uint32_t i = 0; i < native_count; ++i) {
+        (void)read_len_string(buf.data(), buf.size(), &pos);
         (void)read_len_string(buf.data(), buf.size(), &pos);
     }
 
@@ -2040,8 +2051,24 @@ static std::string write_io_module(const char* extra = "") {
     return write_temp_source(src.c_str());
 }
 
+static bool native_io_stub(MorphlNativeCtx* ctx, uint8_t* stack, size_t frame_base,
+                           size_t param_size, uint8_t* ret_ptr, size_t ret_size) {
+    (void)ctx;
+    (void)stack;
+    (void)frame_base;
+    (void)param_size;
+    if (ret_size != sizeof(MORPHL_I64)) return false;
+    MORPHL_WRITE_RET(MORPHL_I64, ret_ptr, 0);
+    return true;
+}
+
 /* Call println; verify no crash and exit 0. */
 static void test_e2e_extern_print() {
+    assert(morphl_register_native("print", native_io_stub));
+    assert(morphl_register_native("println", native_io_stub));
+    assert(morphl_register_native("print_int", native_io_stub));
+    assert(morphl_register_native("eprint", native_io_stub));
+    assert(morphl_register_native("eprintln", native_io_stub));
     std::string io_path = write_io_module();
     std::string main_src =
         std::string("$decl io $import \"") + io_path + "\";\n"
@@ -2055,6 +2082,11 @@ static void test_e2e_extern_print() {
 
 /* Call print_int; verify no crash and exit 0. */
 static void test_e2e_extern_print_int() {
+    assert(morphl_register_native("print", native_io_stub));
+    assert(morphl_register_native("println", native_io_stub));
+    assert(morphl_register_native("print_int", native_io_stub));
+    assert(morphl_register_native("eprint", native_io_stub));
+    assert(morphl_register_native("eprintln", native_io_stub));
     std::string io_path = write_io_module();
     std::string main_src =
         std::string("$decl io $import \"") + io_path + "\";\n"
@@ -2068,6 +2100,11 @@ static void test_e2e_extern_print_int() {
 
 /* Use the return value of a native function in $exit. println returns 0. */
 static void test_e2e_extern_return_value() {
+    assert(morphl_register_native("print", native_io_stub));
+    assert(morphl_register_native("println", native_io_stub));
+    assert(morphl_register_native("print_int", native_io_stub));
+    assert(morphl_register_native("eprint", native_io_stub));
+    assert(morphl_register_native("eprintln", native_io_stub));
     std::string io_path = write_io_module();
     std::string main_src =
         std::string("$decl io $import \"") + io_path + "\";\n"
@@ -2143,6 +2180,7 @@ static void test_e2e_extern_unknown_sym() {
 
 /* Explicit extern symbol name in declaration. */
 static void test_e2e_extern_explicit_symbol() {
+    assert(morphl_register_native("println", native_io_stub));
     std::string main_src =
         "$decl writer $extern \"println\" $func ($decl s \"\") 0;\n"
         "$decl _ $call writer (\"explicit symbol\");\n"
@@ -2154,6 +2192,8 @@ static void test_e2e_extern_explicit_symbol() {
 
 /* Rebind a mutable extern by name-only extern in $set. */
 static void test_e2e_extern_rebind() {
+    assert(morphl_register_native("print", native_io_stub));
+    assert(morphl_register_native("println", native_io_stub));
     std::string main_src =
         "$decl writer $mut $extern \"print\" $func ($decl s \"\") 0;\n"
         "$set writer $extern \"println\";\n"
@@ -2166,6 +2206,7 @@ static void test_e2e_extern_rebind() {
 
 /* Resolve an extern after a forward declaration using name-only syntax. */
 static void test_e2e_extern_forward_resolve() {
+    assert(morphl_register_native("println", native_io_stub));
     std::string main_src =
         "$decl writer $forward $extern $func ($decl s \"\") 0;\n"
         "$decl writer $extern \"println\";\n"
@@ -2174,6 +2215,17 @@ static void test_e2e_extern_forward_resolve() {
     int rc = compile_and_run(main_src.c_str());
     assert(rc == 0);
     printf("PASS test_e2e_extern_forward_resolve\n");
+}
+
+static void test_e2e_std_io_companion_module() {
+    std::string main_src =
+        std::string("$decl io $import \"") + MORPHL_SOURCE_DIR + "/std/io.mpl\";\n"
+        "$decl _ $call $member io println (\"hello from std/io\");\n"
+        "$decl __ $call $member io print_int (42);\n"
+        "$exit 0;\n";
+    int rc = compile_and_run(main_src.c_str());
+    assert(rc == 0);
+    printf("PASS test_e2e_std_io_companion_module\n");
 }
 
 // ── Array tests ──────────────────────────────────────────────────────────────
@@ -2765,6 +2817,7 @@ int main(void) {
     test_e2e_extern_explicit_symbol();
     test_e2e_extern_rebind();
     test_e2e_extern_forward_resolve();
+    test_e2e_std_io_companion_module();
     test_e2e_array_zero_init();
     test_e2e_array_index_read();
     test_e2e_array_type_name();

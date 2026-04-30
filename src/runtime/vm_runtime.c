@@ -133,6 +133,11 @@ typedef struct {
     uint32_t cleanup_fidx;  /* 0 = none; non-zero = thunk fidx to call before free */
 } VmHeapAlloc;
 
+struct MorphlNativeCtx {
+    struct MorphlVm* vm;
+    FILE* err;
+};
+
 /* ── program and VM structs (opaque in runtime.h) ───────────────────────── */
 
 struct MorphlVmProgram {
@@ -151,6 +156,7 @@ struct MorphlVmProgram {
     /* native symbol table: resolved function pointers for $extern declarations */
     MorphlNativeFn* native_fns;         /* indexed by native symbol index */
     char**          native_sym_names;   /* NUL-terminated names (owned) */
+    char**          native_sym_modules; /* owning source module path per native symbol */
     uint32_t        native_sym_count;
     /* dlopen handles loaded during resolution (closed on program_free) */
     void**          dl_handles;
@@ -200,6 +206,126 @@ static bool read_u32_le(const uint8_t* buf, size_t len, size_t* pos, uint32_t* o
 }
 
 static bool validate_program_functions(MorphlVmProgram* prog);
+static bool load_native_module_file(MorphlVmProgram* prog, const char* lib_path);
+static bool resolve_native_symbol(MorphlVmProgram* prog, const char* exe_path,
+                                  const char* symbol_name,
+                                  const char* origin_module_path,
+                                  MorphlNativeFn* out_fn);
+
+#if defined(__APPLE__)
+#define MORPHL_NATIVE_LIB_EXT ".dylib"
+#else
+#define MORPHL_NATIVE_LIB_EXT ".so"
+#endif
+
+static char* replace_path_extension(const char* path, const char* ext) {
+    if (!path || !ext) return NULL;
+    const char* dot = strrchr(path, '.');
+    size_t base_len = dot ? (size_t)(dot - path) : strlen(path);
+    size_t ext_len = strlen(ext);
+    char* out = (char*)malloc(base_len + ext_len + 1);
+    if (!out) return NULL;
+    memcpy(out, path, base_len);
+    memcpy(out + base_len, ext, ext_len + 1);
+    return out;
+}
+
+static const char* path_basename_ptr(const char* path) {
+    if (!path) return NULL;
+    const char* slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+static char* basename_without_ext(const char* path) {
+    const char* base = path_basename_ptr(path);
+    if (!base) return NULL;
+    const char* dot = strrchr(base, '.');
+    size_t len = dot ? (size_t)(dot - base) : strlen(base);
+    char* out = (char*)malloc(len + 1);
+    if (!out) return NULL;
+    memcpy(out, base, len);
+    out[len] = '\0';
+    return out;
+}
+
+static bool path_mentions_std_root(const char* path) {
+    if (!path) return false;
+    return strstr(path, "/std/") != NULL ||
+           strncmp(path, "std/", 4) == 0 ||
+           strcmp(path, "std") == 0;
+}
+
+static bool load_native_module_file(MorphlVmProgram* prog, const char* lib_path) {
+    if (!prog || !lib_path || !lib_path[0]) return false;
+    void* handle = dlopen(lib_path, RTLD_LAZY | RTLD_LOCAL);
+    if (!handle) return false;
+    typedef void (*reg_entry_t)(MorphlRegisterFn);
+    reg_entry_t entry = (reg_entry_t)dlsym(handle, "morphl_module_register");
+    if (entry) entry(morphl_register_native);
+    void** new_handles = (void**)realloc(
+        prog->dl_handles, (prog->dl_handle_count + 1) * sizeof(void*));
+    if (!new_handles) {
+        dlclose(handle);
+        return false;
+    }
+    prog->dl_handles = new_handles;
+    prog->dl_handles[prog->dl_handle_count++] = handle;
+    return true;
+}
+
+static bool resolve_native_symbol(MorphlVmProgram* prog, const char* exe_path,
+                                  const char* symbol_name,
+                                  const char* origin_module_path,
+                                  MorphlNativeFn* out_fn) {
+    if (!prog || !symbol_name || !out_fn) return false;
+    *out_fn = morphl_native_registry_lookup(symbol_name);
+    if (*out_fn) return true;
+
+    char* candidate = NULL;
+    if (origin_module_path && origin_module_path[0]) {
+        candidate = replace_path_extension(origin_module_path, MORPHL_NATIVE_LIB_EXT);
+        if (candidate && load_native_module_file(prog, candidate)) {
+            *out_fn = morphl_native_registry_lookup(symbol_name);
+            free(candidate);
+            if (*out_fn) return true;
+        } else {
+            free(candidate);
+        }
+#ifdef MORPHL_STD_NATIVE_DIR
+        if (path_mentions_std_root(origin_module_path)) {
+            char* base = basename_without_ext(origin_module_path);
+            if (base) {
+                size_t len = strlen(MORPHL_STD_NATIVE_DIR) + 1 + strlen(base) +
+                             strlen(MORPHL_NATIVE_LIB_EXT) + 1;
+                candidate = (char*)malloc(len);
+                if (candidate) {
+                    snprintf(candidate, len, "%s/%s%s", MORPHL_STD_NATIVE_DIR,
+                             base, MORPHL_NATIVE_LIB_EXT);
+                    if (load_native_module_file(prog, candidate)) {
+                        *out_fn = morphl_native_registry_lookup(symbol_name);
+                        free(candidate);
+                        free(base);
+                        if (*out_fn) return true;
+                    } else {
+                        free(candidate);
+                    }
+                }
+                free(base);
+            }
+        }
+#endif
+    }
+
+    candidate = replace_path_extension(exe_path, MORPHL_NATIVE_LIB_EXT);
+    if (candidate && load_native_module_file(prog, candidate)) {
+        *out_fn = morphl_native_registry_lookup(symbol_name);
+        free(candidate);
+        if (*out_fn) return true;
+    } else {
+        free(candidate);
+    }
+    return false;
+}
 
 /* ── program loader ─────────────────────────────────────────────────────── */
 
@@ -318,9 +444,10 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
         if (!read_u32_le(buf, len, &pos, &prog->native_sym_count)) goto err;
         if (prog->native_sym_count > 0) {
             prog->native_sym_names = (char**)calloc(prog->native_sym_count, sizeof(char*));
+            prog->native_sym_modules = (char**)calloc(prog->native_sym_count, sizeof(char*));
             prog->native_fns       = (MorphlNativeFn*)calloc(
                                          prog->native_sym_count, sizeof(MorphlNativeFn));
-            if (!prog->native_sym_names || !prog->native_fns) goto err;
+            if (!prog->native_sym_names || !prog->native_sym_modules || !prog->native_fns) goto err;
             for (uint32_t i = 0; i < prog->native_sym_count; i++) {
                 uint32_t nlen;
                 if (!read_u32_le(buf, len, &pos, &nlen)) goto err;
@@ -331,45 +458,25 @@ bool morphl_vm_program_load(const char* path, MorphlVmProgram** out) {
                     RT_ERR(stderr, "vm: native symbol entry %u is not null-terminated", i);
                     goto err;
                 }
-            }
-            /* resolve each symbol: static registry first, then dlopen fallback */
-            for (uint32_t i = 0; i < prog->native_sym_count; i++) {
-                prog->native_fns[i] = morphl_native_registry_lookup(
-                                          prog->native_sym_names[i]);
-                if (!prog->native_fns[i]) {
-                    /* dlopen fallback: try <path_stem>.so alongside the bytecode file */
-                    /* Derive stem path: replace .mbc extension (or append .so) */
-                    const char* dot = strrchr(path, '.');
-                    size_t stem_len = dot ? (size_t)(dot - path) : strlen(path);
-                    char* so_path = (char*)malloc(stem_len + 4); /* stem + ".so\0" */
-                    if (so_path) {
-                        memcpy(so_path, path, stem_len);
-                        memcpy(so_path + stem_len, ".so", 4);
-                        void* handle = dlopen(so_path, RTLD_LAZY | RTLD_LOCAL);
-                        free(so_path);
-                        if (handle) {
-                            /* call morphl_module_register to populate the registry */
-                            typedef void (*reg_entry_t)(MorphlRegisterFn);
-                            reg_entry_t entry = (reg_entry_t)dlsym(handle, "morphl_module_register");
-                            if (entry) entry(morphl_register_native);
-                            /* track handle for cleanup */
-                            void** new_handles = (void**)realloc(
-                                prog->dl_handles,
-                                (prog->dl_handle_count + 1) * sizeof(void*));
-                            if (new_handles) {
-                                prog->dl_handles = new_handles;
-                                prog->dl_handles[prog->dl_handle_count++] = handle;
-                            } else {
-                                dlclose(handle);
-                            }
-                            prog->native_fns[i] = morphl_native_registry_lookup(
-                                                      prog->native_sym_names[i]);
-                        }
-                    }
+                uint32_t mlen;
+                if (!read_u32_le(buf, len, &pos, &mlen)) goto err;
+                prog->native_sym_modules[i] = (char*)malloc(mlen + 1);
+                if (!prog->native_sym_modules[i]) goto err;
+                if (!read_bytes(buf, len, &pos, prog->native_sym_modules[i], mlen + 1)) goto err;
+                if (prog->native_sym_modules[i][mlen] != '\0') {
+                    RT_ERR(stderr, "vm: native symbol module entry %u is not null-terminated", i);
+                    goto err;
                 }
+            }
+            /* resolve each symbol: registry first, then module-origin / std / executable fallback */
+            for (uint32_t i = 0; i < prog->native_sym_count; i++) {
+                resolve_native_symbol(prog, path, prog->native_sym_names[i],
+                                      prog->native_sym_modules[i],
+                                      &prog->native_fns[i]);
                 if (!prog->native_fns[i]) {
-                    RT_ERR(stderr, "morphl: unresolved native symbol: %s",
-                           prog->native_sym_names[i]);
+                    RT_ERR(stderr, "morphl: unresolved native symbol: %s (module %s)",
+                           prog->native_sym_names[i],
+                           prog->native_sym_modules[i] ? prog->native_sym_modules[i] : "");
                     goto err;
                 }
             }
@@ -392,6 +499,11 @@ err:
             free(prog->native_sym_names[i]);
         free(prog->native_sym_names);
     }
+    if (prog->native_sym_modules) {
+        for (uint32_t i = 0; i < prog->native_sym_count; i++)
+            free(prog->native_sym_modules[i]);
+        free(prog->native_sym_modules);
+    }
     free(prog->native_fns);
     if (prog->dl_handles) {
         for (uint32_t i = 0; i < prog->dl_handle_count; i++)
@@ -413,6 +525,11 @@ void morphl_vm_program_free(MorphlVmProgram* prog) {
         for (uint32_t i = 0; i < prog->native_sym_count; i++)
             free(prog->native_sym_names[i]);
         free(prog->native_sym_names);
+    }
+    if (prog->native_sym_modules) {
+        for (uint32_t i = 0; i < prog->native_sym_count; i++)
+            free(prog->native_sym_modules[i]);
+        free(prog->native_sym_modules);
     }
     free(prog->native_fns);
     if (prog->dl_handles) {
@@ -477,6 +594,10 @@ static bool heap_alloc_slot(MorphlVm* vm, size_t size, int64_t* out_handle, FILE
 static bool checked_stack_addr(MorphlVm* vm, ptrdiff_t base, int32_t offset, size_t width,
                                ptrdiff_t* out_addr, FILE* err, const char* opname);
 
+static bool native_ctx_valid(MorphlNativeCtx* ctx) {
+    return ctx && ctx->vm;
+}
+
 static bool checked_heap_addr(MorphlVm* vm, int64_t handle, int32_t offset, size_t width,
                               uint8_t** out_ptr, FILE* err, const char* opname) {
     if (handle >= 0) {
@@ -504,6 +625,113 @@ static bool checked_ref_addr(MorphlVm* vm, int64_t handle, int32_t offset, size_
     ptrdiff_t abs = 0;
     if (!checked_stack_addr(vm, (ptrdiff_t)handle, offset, width, &abs, err, opname)) return false;
     *out_ptr = vm->stack.data + abs;
+    return true;
+}
+
+bool morphl_native_heap_alloc(MorphlNativeCtx* ctx, size_t size,
+                              morphl_ref_t* out_handle) {
+    int64_t handle = 0;
+    if (!native_ctx_valid(ctx) || !out_handle) return false;
+    if (!heap_alloc_slot(ctx->vm, size, &handle, ctx->err ? ctx->err : stderr))
+        return false;
+    *out_handle = (morphl_ref_t)handle;
+    return true;
+}
+
+bool morphl_native_heap_free(MorphlNativeCtx* ctx, morphl_ref_t handle) {
+    if (!native_ctx_valid(ctx)) return false;
+    int64_t signed_handle = (int64_t)handle;
+    if (signed_handle >= 0) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native free expected heap handle, got %" PRId64,
+               signed_handle);
+        return false;
+    }
+    size_t idx = (size_t)(-signed_handle - 1);
+    if (idx >= ctx->vm->heap_alloc_count || !ctx->vm->heap_allocs[idx].live) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native free invalid heap handle %" PRId64,
+               signed_handle);
+        return false;
+    }
+    if (ctx->vm->heap_allocs[idx].cleanup_fidx != 0) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native free does not support heap handles with cleanup thunk");
+        return false;
+    }
+    ctx->vm->heap_allocs[idx].live = false;
+    free(ctx->vm->heap_allocs[idx].data);
+    ctx->vm->heap_allocs[idx].data = NULL;
+    ctx->vm->heap_allocs[idx].size = 0;
+    return true;
+}
+
+bool morphl_native_heap_read(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                             size_t offset, void* dst, size_t size) {
+    uint8_t* ptr = NULL;
+    if (!native_ctx_valid(ctx) || (!dst && size > 0)) return false;
+    if (!checked_heap_addr(ctx->vm, (int64_t)handle, (int32_t)offset, size, &ptr,
+                           ctx->err ? ctx->err : stderr, "NATIVE_HEAP_READ"))
+        return false;
+    if (size > 0) memcpy(dst, ptr, size);
+    return true;
+}
+
+bool morphl_native_heap_write(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                              size_t offset, const void* src, size_t size) {
+    uint8_t* ptr = NULL;
+    if (!native_ctx_valid(ctx) || (!src && size > 0)) return false;
+    if (!checked_heap_addr(ctx->vm, (int64_t)handle, (int32_t)offset, size, &ptr,
+                           ctx->err ? ctx->err : stderr, "NATIVE_HEAP_WRITE"))
+        return false;
+    if (size > 0) memcpy(ptr, src, size);
+    return true;
+}
+
+bool morphl_native_heap_size(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                             size_t* out_size) {
+    int64_t signed_handle = (int64_t)handle;
+    if (!native_ctx_valid(ctx) || !out_size) return false;
+    if (signed_handle >= 0) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native heap_size expected heap handle, got %" PRId64,
+               signed_handle);
+        return false;
+    }
+    size_t idx = (size_t)(-signed_handle - 1);
+    if (idx >= ctx->vm->heap_alloc_count || !ctx->vm->heap_allocs[idx].live) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native heap_size invalid heap handle %" PRId64,
+               signed_handle);
+        return false;
+    }
+    *out_size = ctx->vm->heap_allocs[idx].size;
+    return true;
+}
+
+bool morphl_native_set_cleanup(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                               uint32_t cleanup_fidx) {
+    int64_t signed_handle = (int64_t)handle;
+    if (!native_ctx_valid(ctx)) return false;
+    if (signed_handle >= 0) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native set_cleanup expected heap handle, got %" PRId64,
+               signed_handle);
+        return false;
+    }
+    size_t idx = (size_t)(-signed_handle - 1);
+    if (idx >= ctx->vm->heap_alloc_count || !ctx->vm->heap_allocs[idx].live) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native set_cleanup invalid heap handle %" PRId64,
+               signed_handle);
+        return false;
+    }
+    if (cleanup_fidx >= ctx->vm->program->func_count) {
+        RT_ERR(ctx->err ? ctx->err : stderr,
+               "vm: native set_cleanup fidx %u out of range", cleanup_fidx);
+        return false;
+    }
+    ctx->vm->heap_allocs[idx].cleanup_fidx = cleanup_fidx;
     return true;
 }
 
@@ -636,6 +864,7 @@ static bool validate_program_functions(MorphlVmProgram* prog) {
 static bool invoke_native(MorphlVm* vm, const VmFunctionMeta* fn,
                           const char* opname, FILE* err) {
     if (!vm || !fn) return false;
+    MorphlNativeCtx ctx = {.vm = vm, .err = err};
     size_t fb = vm->stack.top;
     size_t needed = (size_t)fn->param_size + 8 + (size_t)fn->return_size;
     if (fn->entry_point >= vm->program->native_sym_count) {
@@ -648,7 +877,7 @@ static bool invoke_native(MorphlVm* vm, const VmFunctionMeta* fn,
     }
     size_t ret_addr = fb - needed;
     if (!vm->program->native_fns[fn->entry_point](
-            vm->stack.data, fb, fn->param_size,
+            &ctx, vm->stack.data, fb, fn->param_size,
             vm->stack.data + ret_addr, fn->return_size)) {
         const char* sym = NULL;
         if (fn->entry_point < vm->program->native_sym_count) {
@@ -1344,7 +1573,6 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
 morphl_exit_code_t morphl_vm_run_file(const char* path,
                                       int argc, char** argv, char** envp,
                                       FILE* err) {
-    morphl_stdlib_register();
     MorphlVmProgram* prog = NULL;
     if (!morphl_vm_program_load(path, &prog)) return 1;
 

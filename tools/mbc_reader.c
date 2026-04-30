@@ -144,6 +144,7 @@ typedef struct {
     char          **strings;
     uint32_t        str_count;
     char          **native_syms;
+    char          **native_sym_modules;
     uint32_t        native_sym_count;
     char*           module_path;
     uint32_t        module_init_func_idx;
@@ -162,6 +163,11 @@ static void mbc_free(MbcFile *mbc) {
     free(mbc->strings);
     for (uint32_t i = 0; i < mbc->native_sym_count; i++) free(mbc->native_syms[i]);
     free(mbc->native_syms);
+    if (mbc->native_sym_modules) {
+        for (uint32_t i = 0; i < mbc->native_sym_count; i++)
+            free(mbc->native_sym_modules[i]);
+    }
+    free(mbc->native_sym_modules);
     free(mbc->module_path);
     for (uint32_t i = 0; i < mbc->export_count; ++i) free(mbc->exports[i].name);
     free(mbc->exports);
@@ -286,7 +292,11 @@ static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
         }
         if (mbc->native_sym_count > 0) {
             mbc->native_syms = calloc(mbc->native_sym_count, sizeof(char *));
-            if (!mbc->native_syms) { fprintf(stderr, "error: out of memory\n"); return false; }
+            mbc->native_sym_modules = calloc(mbc->native_sym_count, sizeof(char *));
+            if (!mbc->native_syms || !mbc->native_sym_modules) {
+                fprintf(stderr, "error: out of memory\n");
+                return false;
+            }
             for (uint32_t i = 0; i < mbc->native_sym_count; i++) {
                 uint32_t nlen;
                 if (!read_u32_le(buf, len, &pos, &nlen)) {
@@ -297,6 +307,17 @@ static bool parse_mbc(const uint8_t *buf, size_t len, MbcFile *mbc) {
                 if (!mbc->native_syms[i]) { fprintf(stderr, "error: out of memory\n"); return false; }
                 if (!read_bytes(buf, len, &pos, mbc->native_syms[i], nlen + 1)) {
                     fprintf(stderr, "error: truncated native symbol data at index %u\n", i);
+                    return false;
+                }
+                uint32_t mlen;
+                if (!read_u32_le(buf, len, &pos, &mlen)) {
+                    fprintf(stderr, "error: truncated native symbol module length at index %u\n", i);
+                    return false;
+                }
+                mbc->native_sym_modules[i] = malloc(mlen + 1);
+                if (!mbc->native_sym_modules[i]) { fprintf(stderr, "error: out of memory\n"); return false; }
+                if (!read_bytes(buf, len, &pos, mbc->native_sym_modules[i], mlen + 1)) {
+                    fprintf(stderr, "error: truncated native symbol module data at index %u\n", i);
                     return false;
                 }
             }
@@ -703,7 +724,10 @@ static void print_native_syms(const MbcFile *mbc) {
         printf("  (none)\n");
     } else {
         for (uint32_t i = 0; i < mbc->native_sym_count; i++)
-            printf("  [%u]  %s\n", i, mbc->native_syms[i]);
+            printf("  [%u]  %s  module=%s\n", i, mbc->native_syms[i],
+                   (mbc->native_sym_modules && mbc->native_sym_modules[i])
+                       ? mbc->native_sym_modules[i]
+                       : "");
     }
     printf("\n");
 }

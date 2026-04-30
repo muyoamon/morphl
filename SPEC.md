@@ -215,10 +215,10 @@ $add x x;    // expands to: $add ($add 1 2) ($add 1 2)
 When the aliased expression is an `$import`, the same rule applies: the alias substitutes the usage site with the import expression itself. It does **not** inline the imported file textually, and it does not introduce storage or shape into the current scope:
 
 ```
-$alias io $import "stdlib/io.mpl";
+$alias io $import "std/io.mpl";
 $call $member io println ("hello");
 // equivalent to:
-$call $member ($import "stdlib/io.mpl") println ("hello");
+$call $member ($import "std/io.mpl") println ("hello");
 ```
 
 `$alias` itself does not create a runtime binding. When an aliased expression is materialized into an unnamed runtime site, that site may still receive a compiler-generated lexical name such as `$anon$0` for diagnostics and debugging.
@@ -556,9 +556,10 @@ The value is loaded from the native symbol at program load time.
 
 **Resolution order** at program load:
 
-1. Built-in static registry — populated by `morphl_stdlib_register()`, called automatically before any user code runs.
-2. dlopen fallback — if the symbol is not in the static registry, the runtime looks for a shared library with the same base name as the importing `.mpl` file (`.so` on Linux, `.dylib` on macOS). If found, it calls `morphl_module_register` from that library to register additional symbols.
-3. If the symbol remains unresolved after both steps, loading fails with an error.
+1. Already-registered native symbols — modules may register symbols into the process registry before program load.
+2. Companion module lookup — the runtime first looks for a shared library with the same base name as the importing `.mpl` file (`.so` on Linux, `.dylib` on macOS). Standard modules under `std/` may also resolve from the configured std native directory.
+3. If found, the runtime calls `morphl_module_register` from that library to register additional symbols.
+4. If the symbol remains unresolved after both steps, loading fails with an error.
 
 **Writing a native module** (user-extensible FFI):
 
@@ -566,8 +567,10 @@ The value is loaded from the native symbol at program load time.
 // my_module.c  →  compile to  my_module.so
 #include "runtime/runtime.h"
 
-static bool my_add(uint8_t* stack, size_t frame_base, size_t param_size,
+static bool my_add(MorphlNativeCtx* ctx, uint8_t* stack, size_t frame_base,
+                   size_t param_size,
                    uint8_t* ret_ptr, size_t ret_size) {
+    (void)ctx;
     int64_t a, b, result;
     memcpy(&b, stack + frame_base - 8,  8);
     memcpy(&a, stack + frame_base - 16, 8);
@@ -587,7 +590,8 @@ Place `my_module.so` next to `my_module.mpl`. The runtime locates it automatical
 **Native function signature:**
 
 ```c
-typedef bool (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_size,
+typedef bool (*MorphlNativeFn)(MorphlNativeCtx* ctx,
+                               uint8_t* stack, size_t frame_base, size_t param_size,
                                uint8_t* ret_ptr, size_t ret_size);
 ```
 
@@ -1635,10 +1639,10 @@ Conceptually:
 
 ### 11.3 Standard Library
 
-The built-in IO stdlib is in `stdlib/io.mpl`. Import it to access basic IO functions:
+The standard IO module is in `std/io.mpl`. Import it to access basic IO functions:
 
 ```
-$decl io $import "stdlib/io.mpl";
+$decl io $import "std/io.mpl";
 $call $member io println ("hello, world");
 $call $member io print_int (42);
 ```

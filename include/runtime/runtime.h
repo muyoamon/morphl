@@ -12,6 +12,7 @@
 
 typedef struct MorphlVmProgram MorphlVmProgram;
 typedef struct MorphlVm MorphlVm;
+typedef struct MorphlNativeCtx MorphlNativeCtx;
 
 /* ABI-level scalar storage aliases for morphl native modules. */
 typedef int64_t   morphl_i64_t;
@@ -106,6 +107,7 @@ static inline void morphl_write_ret_impl_morphl_str_handle_t(
 /**
  * Signature for native functions callable from morphl.
  *
+ * @param ctx        Native runtime context for heap operations and cleanup registration.
  * @param stack      Raw VM stack byte buffer.
  * @param frame_base vm->stack.top at CALL time (points just past the last arg).
  * @param param_size Total bytes of arguments: args are at stack[frame_base-param_size..frame_base-1].
@@ -113,7 +115,8 @@ static inline void morphl_write_ret_impl_morphl_str_handle_t(
  * @param ret_size   Size in bytes of the declared morphl return type.
  * @return           true on success, false to raise a VM runtime error.
  */
-typedef bool (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_size,
+typedef bool (*MorphlNativeFn)(MorphlNativeCtx* ctx,
+                               uint8_t* stack, size_t frame_base, size_t param_size,
                                uint8_t* ret_ptr, size_t ret_size);
 
 /**
@@ -124,7 +127,7 @@ typedef bool (*MorphlNativeFn)(uint8_t* stack, size_t frame_base, size_t param_s
 typedef bool (*MorphlRegisterFn)(const char* name, MorphlNativeFn fn);
 
 /**
- * Register a native function in the global static registry.
+ * Register a native function in the process-native registry.
  * Must be called before morphl_vm_program_load for the symbol to resolve.
  */
 bool morphl_register_native(const char* name, MorphlNativeFn fn);
@@ -135,11 +138,17 @@ bool morphl_register_native(const char* name, MorphlNativeFn fn);
  */
 MorphlNativeFn morphl_native_registry_lookup(const char* name);
 
-/**
- * Register all built-in stdlib native functions.
- * Called automatically by morphl_vm_run_file before loading the program.
- */
-void morphl_stdlib_register(void);
+bool morphl_native_heap_alloc(MorphlNativeCtx* ctx, size_t size,
+                              morphl_ref_t* out_handle);
+bool morphl_native_heap_free(MorphlNativeCtx* ctx, morphl_ref_t handle);
+bool morphl_native_heap_read(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                             size_t offset, void* dst, size_t size);
+bool morphl_native_heap_write(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                              size_t offset, const void* src, size_t size);
+bool morphl_native_heap_size(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                             size_t* out_size);
+bool morphl_native_set_cleanup(MorphlNativeCtx* ctx, morphl_ref_t handle,
+                               uint32_t cleanup_fidx);
 
 /// Load a MorphL VM bytecode program from disk (out.mbc format).
 bool morphl_vm_program_load(const char* path, MorphlVmProgram** out_program);

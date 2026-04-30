@@ -2,16 +2,14 @@
  * src/runtime/vm_native.c — global native function registry for morphl FFI.
  *
  * Symbols registered here are resolved at morphl_vm_program_load time before
- * bytecode execution begins. The stdlib registers its symbols via
- * morphl_stdlib_register(), which morphl_vm_run_file() calls automatically.
+ * bytecode execution begins.
  *
- * For user-defined native modules, users call morphl_register_native() from a
- * morphl_module_register() entry point in a shared library loaded via dlopen.
+ * Companion native modules call morphl_register_native() from a
+ * morphl_module_register() entry point after being loaded via dlopen.
  */
 
 #include "runtime/runtime.h"
 
-#include <dlfcn.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -34,8 +32,8 @@ bool morphl_register_native(const char* name, MorphlNativeFn fn) {
 
 MorphlNativeFn morphl_native_registry_lookup(const char* name) {
     if (!name) return NULL;
-    for (size_t i = 0; i < s_count; i++) {
-        if (strcmp(s_registry[i].name, name) == 0) return s_registry[i].fn;
+    for (size_t i = s_count; i > 0; i--) {
+        if (strcmp(s_registry[i - 1].name, name) == 0) return s_registry[i - 1].fn;
     }
     return NULL;
 }

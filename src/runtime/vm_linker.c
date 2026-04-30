@@ -17,6 +17,7 @@ typedef struct {
   char** strings;
   uint32_t str_count;
   char** native_syms;
+  char** native_sym_modules;
   uint32_t native_sym_count;
   char* module_path;
   uint32_t module_init_func_idx;
@@ -141,6 +142,11 @@ static void vm_object_free(VmObjectFile* obj) {
       free(obj->native_syms[i]);
   }
   free(obj->native_syms);
+  if (obj->native_sym_modules) {
+    for (uint32_t i = 0; i < obj->native_sym_count; ++i)
+      free(obj->native_sym_modules[i]);
+  }
+  free(obj->native_sym_modules);
   if (obj->imports) {
     for (uint32_t i = 0; i < obj->import_count; ++i) {
       free(obj->imports[i].binding_name);
@@ -312,13 +318,15 @@ static bool vm_object_load(const char* path, VmObjectFile* out, FILE* err) {
   }
   if (out->native_sym_count > 0) {
     out->native_syms = (char**)calloc(out->native_sym_count, sizeof(char*));
-    if (!out->native_syms) {
+    out->native_sym_modules = (char**)calloc(out->native_sym_count, sizeof(char*));
+    if (!out->native_syms || !out->native_sym_modules) {
       free(buf);
       vm_object_free(out);
       return false;
     }
     for (uint32_t i = 0; i < out->native_sym_count; ++i) {
-      if (!read_len_string(buf, len, &pos, &out->native_syms[i])) {
+      if (!read_len_string(buf, len, &pos, &out->native_syms[i]) ||
+          !read_len_string(buf, len, &pos, &out->native_sym_modules[i])) {
         free(buf);
         vm_object_free(out);
         return false;
@@ -683,6 +691,7 @@ static bool vm_executable_write_from_object(const char* out_path,
   ok = ok && write_u32_le(f, obj->native_sym_count);
   for (uint32_t i = 0; ok && i < obj->native_sym_count; ++i) {
     ok = ok && write_len_string(f, obj->native_syms[i]);
+    ok = ok && write_len_string(f, obj->native_sym_modules[i] ? obj->native_sym_modules[i] : "");
   }
   fclose(f);
   if (!ok) {
@@ -756,6 +765,7 @@ static bool build_linked_image(VmObjectFile* out, LinkedObject* objects,
         return false;
       }
       for (uint32_t n = 0; n < obj->native_sym_count; ++n) {
+        uint32_t prev_count = out->native_sym_count;
         native_map[n] =
             intern_cstr(&out->native_syms, &out->native_sym_count, obj->native_syms[n]);
         if (native_map[n] == UINT32_MAX) {
@@ -763,6 +773,41 @@ static bool build_linked_image(VmObjectFile* out, LinkedObject* objects,
           free(native_map);
           vm_object_free(out);
           return false;
+        }
+        if (out->native_sym_modules == NULL) {
+          out->native_sym_modules = (char**)calloc(out->native_sym_count, sizeof(char*));
+          if (!out->native_sym_modules) {
+            free(string_map);
+            free(native_map);
+            vm_object_free(out);
+            return false;
+          }
+        } else {
+          uint32_t old_count = prev_count;
+          char** grown = (char**)realloc(out->native_sym_modules,
+                                         out->native_sym_count * sizeof(char*));
+          if (!grown) {
+            free(string_map);
+            free(native_map);
+            vm_object_free(out);
+            return false;
+          }
+          out->native_sym_modules = grown;
+          for (uint32_t gi = old_count; gi < out->native_sym_count; ++gi)
+            out->native_sym_modules[gi] = NULL;
+        }
+        size_t mapped_idx = native_map[n];
+        if (mapped_idx < out->native_sym_count &&
+            out->native_sym_modules[mapped_idx] == NULL &&
+            obj->native_sym_modules && obj->native_sym_modules[n]) {
+          out->native_sym_modules[mapped_idx] =
+              strdup(obj->native_sym_modules[n]);
+          if (!out->native_sym_modules[mapped_idx]) {
+            free(string_map);
+            free(native_map);
+            vm_object_free(out);
+            return false;
+          }
         }
       }
     }

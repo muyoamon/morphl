@@ -141,6 +141,8 @@ public:
         for (const std::string& symbol : native_symbols_) {
             write_u32((uint32_t)symbol.size());
             f.write(symbol.c_str(), (std::streamsize)symbol.size() + 1);
+            write_u32(0);
+            f.write("", 1);
         }
 
         f.close();
