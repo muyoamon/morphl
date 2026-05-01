@@ -131,7 +131,13 @@ static bool frontend_parse_file(const char* grammar_path,
     return false;
   }
 
-  arena_init(&out_unit->arena, 65536);
+  /*
+   * Imported modules share this arena with the root file so their AST/type
+   * allocations stay alive through the full compile. 64 KiB is too small for
+   * non-trivial imports such as std/io.mpl and causes later typing failures
+   * when arena_push starts returning NULL.
+   */
+  arena_init(&out_unit->arena, 1024 * 1024);
   out_unit->arena_inited = true;
 
   if (!scoped_parser_init(&out_unit->parser_ctx, out_unit->interns,

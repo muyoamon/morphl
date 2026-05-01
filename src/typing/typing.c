@@ -578,9 +578,42 @@ static char *new_cstr(const char *s) {
     return copy;
 }
 
+static bool type_str_append(char** buf, size_t* len, size_t* cap,
+                            const char* src, size_t src_len) {
+  if (!buf || !len || !cap || (!src && src_len != 0)) return false;
+  if (!*buf) {
+    size_t init_cap = src_len + 32;
+    if (init_cap < 64) init_cap = 64;
+    *buf = malloc(init_cap);
+    if (!*buf) return false;
+    (*buf)[0] = '\0';
+    *len = 0;
+    *cap = init_cap;
+  }
+  if (*len + src_len + 1 > *cap) {
+    size_t new_cap = *cap ? *cap : 64;
+    while (*len + src_len + 1 > new_cap) new_cap *= 2;
+    char* grown = realloc(*buf, new_cap);
+    if (!grown) return false;
+    *buf = grown;
+    *cap = new_cap;
+  }
+  if (src_len > 0) memcpy(*buf + *len, src, src_len);
+  *len += src_len;
+  (*buf)[*len] = '\0';
+  return true;
+}
+
+static bool type_str_append_cstr(char** buf, size_t* len, size_t* cap,
+                                 const char* src) {
+  return type_str_append(buf, len, cap, src, src ? strlen(src) : 0);
+}
+
 // Display type as string
 Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
-  char buf[512] = {0};
+  char* buf = NULL;
+  size_t len = 0;
+  size_t cap = 0;
   const char* result = NULL;
   
   if (!type) {
@@ -609,66 +642,94 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         // Print in format: <params> => <return>
         Str param_str = morphl_type_to_string(type->data.func.param_types[0], interns);
         Str return_str = morphl_type_to_string(type->data.func.return_type, interns);
-        snprintf(buf, sizeof(buf), "(%.*s) => %.*s",
-                  (int)param_str.len, param_str.ptr,
-                  (int)return_str.len, return_str.ptr);
-        result = new_cstr(buf);
+        if (!type_str_append_cstr(&buf, &len, &cap, "(") ||
+            !type_str_append(&buf, &len, &cap, param_str.ptr, param_str.len) ||
+            !type_str_append_cstr(&buf, &len, &cap, ") => ") ||
+            !type_str_append(&buf, &len, &cap, return_str.ptr, return_str.len)) {
+          free(buf);
+          buf = NULL;
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
+        free((void*)param_str.ptr);
+        free((void*)return_str.ptr);
         break;
       }
       case MORPHL_TYPE_GROUP: {
         // Print in format: (<elem1>, <elem2>, ...)
-        snprintf(buf, sizeof(buf), "(");
-        size_t offset = strlen(buf);
+        bool ok = type_str_append_cstr(&buf, &len, &cap, "(");
         for (size_t i = 0; i < type->data.group.elem_count; ++i) {
           Str elem_str = morphl_type_to_string(type->data.group.elem_types[i], interns);
-          int written = snprintf(buf + offset, sizeof(buf) - offset, "%.*s%s",
-                                 (int)elem_str.len, elem_str.ptr,
-                                 (i + 1 < type->data.group.elem_count) ? ", " : "");
-          offset += written;
+          ok = ok && type_str_append(&buf, &len, &cap, elem_str.ptr, elem_str.len);
+          if (i + 1 < type->data.group.elem_count) {
+            ok = ok && type_str_append_cstr(&buf, &len, &cap, ", ");
+          }
+          free((void*)elem_str.ptr);
         }
-        snprintf(buf + offset, sizeof(buf) - offset, ")");
-        result = new_cstr(buf);
+        ok = ok && type_str_append_cstr(&buf, &len, &cap, ")");
+        if (!ok) {
+          free(buf);
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
         break;
       }
       case MORPHL_TYPE_OVERLOAD: {
-        size_t offset = 0;
-        offset += snprintf(buf + offset, sizeof(buf) - offset, "$overload");
+        bool ok = type_str_append_cstr(&buf, &len, &cap, "$overload");
         for (size_t i = 0; i < type->data.overload.candidate_count; ++i) {
           Str elem_str = morphl_type_to_string(
               type->data.overload.candidate_types[i], interns);
-          offset += snprintf(buf + offset, sizeof(buf) - offset, " %.*s",
-                             (int)elem_str.len, elem_str.ptr);
+          ok = ok && type_str_append_cstr(&buf, &len, &cap, " ");
+          ok = ok && type_str_append(&buf, &len, &cap, elem_str.ptr, elem_str.len);
           free((void*)elem_str.ptr);
         }
-        result = new_cstr(buf);
+        if (!ok) {
+          free(buf);
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
         break;
       }
       case MORPHL_TYPE_BLOCK: {
         // Print in format: {<name>:<type>, ...}($<prop>:<type>, ...)
-        snprintf(buf, sizeof(buf), "{");
-        size_t offset = strlen(buf);
+        bool ok = type_str_append_cstr(&buf, &len, &cap, "{");
         for (size_t i = 0; i < type->data.block.field_count; ++i) {
           Str field_str = morphl_type_to_string(type->data.block.field_types[i], interns);
-          int written = snprintf(buf + offset, sizeof(buf) - offset, "%.*s:%.*s%s",
-                                 (int)interns_lookup(interns, type->data.block.field_names[i]).len, interns_lookup(interns, type->data.block.field_names[i]).ptr,
-                                 (int)field_str.len, field_str.ptr,
-                                 (i + 1 < type->data.block.field_count) ? ", " : "");
-          offset += written;
+          Str field_name = interns_lookup(interns, type->data.block.field_names[i]);
+          ok = ok && type_str_append(&buf, &len, &cap, field_name.ptr, field_name.len);
+          ok = ok && type_str_append_cstr(&buf, &len, &cap, ":");
+          ok = ok && type_str_append(&buf, &len, &cap, field_str.ptr, field_str.len);
+          if (i + 1 < type->data.block.field_count) {
+            ok = ok && type_str_append_cstr(&buf, &len, &cap, ", ");
+          }
+          free((void*)field_str.ptr);
         }
-        offset += snprintf(buf + offset, sizeof(buf) - offset, "}");
+        ok = ok && type_str_append_cstr(&buf, &len, &cap, "}");
         if (type->data.block.prop_count > 0) {
-          offset += snprintf(buf + offset, sizeof(buf) - offset, "(");
+          ok = ok && type_str_append_cstr(&buf, &len, &cap, "(");
           for (size_t i = 0; i < type->data.block.prop_count; ++i) {
             Str prop_str = morphl_type_to_string(type->data.block.prop_types[i], interns);
-            int written = snprintf(buf + offset, sizeof(buf) - offset, "$%.*s:%.*s%s",
-                                   (int)interns_lookup(interns, type->data.block.prop_names[i]).len, interns_lookup(interns, type->data.block.prop_names[i]).ptr,
-                                   (int)prop_str.len, prop_str.ptr,
-                                   (i + 1 < type->data.block.prop_count) ? ", " : "");
-            offset += written;
+            Str prop_name = interns_lookup(interns, type->data.block.prop_names[i]);
+            ok = ok && type_str_append_cstr(&buf, &len, &cap, "$");
+            ok = ok && type_str_append(&buf, &len, &cap, prop_name.ptr, prop_name.len);
+            ok = ok && type_str_append_cstr(&buf, &len, &cap, ":");
+            ok = ok && type_str_append(&buf, &len, &cap, prop_str.ptr, prop_str.len);
+            if (i + 1 < type->data.block.prop_count) {
+              ok = ok && type_str_append_cstr(&buf, &len, &cap, ", ");
+            }
+            free((void*)prop_str.ptr);
           }
-          snprintf(buf + offset, sizeof(buf) - offset, ")");
+          ok = ok && type_str_append_cstr(&buf, &len, &cap, ")");
         }
-        result = new_cstr(buf);
+        if (!ok) {
+          free(buf);
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
         break;
       }
       case MORPHL_TYPE_REF: {
@@ -677,30 +738,48 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         Str underlying = (type->data.ref.is_recursive) ? 
           interns_lookup(interns, type->data.ref.recursive_sym) 
           : morphl_type_to_string(type->data.ref.target, interns);
-        printf("%.*s", (int)underlying.len, underlying.ptr);
-        snprintf(buf, sizeof(buf), "%s&%.*s", mut, (int)underlying.len, underlying.ptr);
+        if (!type_str_append_cstr(&buf, &len, &cap, mut) ||
+            !type_str_append_cstr(&buf, &len, &cap, "&") ||
+            !type_str_append(&buf, &len, &cap, underlying.ptr, underlying.len)) {
+          free(buf);
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
         if (!type->data.ref.is_recursive) free((void*)underlying.ptr);
-        result = new_cstr(buf);
         break;
       }
       case MORPHL_TYPE_ARRAY: {
         Str elem_str = morphl_type_to_string(type->data.array.elem_type, interns);
-        snprintf(buf, sizeof(buf), "[%.*s * %zu]", (int)elem_str.len, elem_str.ptr,
-                 type->data.array.count);
+        char count_buf[32];
+        snprintf(count_buf, sizeof(count_buf), "%zu", type->data.array.count);
+        if (!type_str_append_cstr(&buf, &len, &cap, "[") ||
+            !type_str_append(&buf, &len, &cap, elem_str.ptr, elem_str.len) ||
+            !type_str_append_cstr(&buf, &len, &cap, " * ") ||
+            !type_str_append_cstr(&buf, &len, &cap, count_buf) ||
+            !type_str_append_cstr(&buf, &len, &cap, "]")) {
+          free(buf);
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
         free((void*)elem_str.ptr);
-        result = new_cstr(buf);
         break;
       }
       case MORPHL_TYPE_UNION: {
-        size_t offset = 0;
-        offset += snprintf(buf + offset, sizeof(buf) - offset, "$union");
+        bool ok = type_str_append_cstr(&buf, &len, &cap, "$union");
         for (size_t i = 0; i < type->data.union_t.variant_count; ++i) {
           Str v_str = morphl_type_to_string(type->data.union_t.variant_types[i], interns);
-          offset += snprintf(buf + offset, sizeof(buf) - offset, " %.*s",
-                             (int)v_str.len, v_str.ptr);
+          ok = ok && type_str_append_cstr(&buf, &len, &cap, " ");
+          ok = ok && type_str_append(&buf, &len, &cap, v_str.ptr, v_str.len);
           free((void*)v_str.ptr);
         }
-        result = new_cstr(buf);
+        if (!ok) {
+          free(buf);
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
         break;
       }
       case MORPHL_TYPE_NEVER:

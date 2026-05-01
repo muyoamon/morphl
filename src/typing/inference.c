@@ -1781,9 +1781,15 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           type_context_define_var(ctx, var_sym, init_type);
         }
         type_context_update_var_repr(ctx, var_sym, init_node->repr);
+        if (init_type->kind == MORPHL_TYPE_FUNC) {
+          type_context_define_func(ctx, var_sym, init_type);
+        }
       } else {
         type_context_define_var(ctx, var_sym, init_type);
         type_context_update_var_repr(ctx, var_sym, init_node->repr);
+        if (init_type->kind == MORPHL_TYPE_FUNC) {
+          type_context_define_func(ctx, var_sym, init_type);
+        }
       }
       return init_type;
     }

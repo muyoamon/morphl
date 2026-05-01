@@ -735,6 +735,25 @@ bool morphl_native_set_cleanup(MorphlNativeCtx* ctx, morphl_ref_t handle,
     return true;
 }
 
+bool morphl_native_lookup_function(MorphlNativeCtx* ctx,
+                                   const char* symbol_name,
+                                   uint32_t* out_fidx) {
+    if (!native_ctx_valid(ctx) || !symbol_name || !out_fidx) return false;
+    for (uint32_t i = 0; i < ctx->vm->program->func_count; ++i) {
+        const VmFunctionMeta* fn = &ctx->vm->program->functions[i];
+        if ((fn->flags & MORPHL_FUNC_FLAG_NATIVE) == 0) continue;
+        if (fn->entry_point >= ctx->vm->program->native_sym_count) continue;
+        const char* native_name = ctx->vm->program->native_sym_names[fn->entry_point];
+        if (native_name && strcmp(native_name, symbol_name) == 0) {
+            *out_fidx = i;
+            return true;
+        }
+    }
+    RT_ERR(ctx->err ? ctx->err : stderr,
+           "vm: native lookup failed for symbol '%s'", symbol_name);
+    return false;
+}
+
 static bool checked_stack_addr(MorphlVm* vm, ptrdiff_t base, int32_t offset, size_t width,
                                ptrdiff_t* out_addr, FILE* err, const char* opname) {
     ptrdiff_t addr = base + (ptrdiff_t)offset;
@@ -1307,11 +1326,25 @@ morphl_exit_code_t morphl_vm_execute(MorphlVm* vm, FILE* err) {
                         return 1;
                     }
                     const VmFunctionMeta* fn = &vm->program->functions[fidx];
-                    if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
-                        RT_ERR(err, "vm: FREE cleanup must not be native");
-                        return 1;
-                    }
                     vm->heap_allocs[idx].cleanup_fidx = 0;  /* prevent double-call */
+                    if (fn->flags & MORPHL_FUNC_FLAG_NATIVE) {
+                        size_t saved_top = vm->stack.top;
+                        if (!stack_reserve(&vm->stack, fn->return_size)) {
+                            RT_ERR(err, "vm: OOM FREE native cleanup reserve");
+                            return 1;
+                        }
+                        int64_t hidden_parent = vm->call_frame_count > 0
+                            ? (int64_t)vm->call_frames[vm->call_frame_count - 1].frame_base : 0;
+                        PUSH_I64(hidden_parent);
+                        PUSH_I64(handle);
+                        if (!invoke_native(vm, fn, "FREE", err)) return 1;
+                        vm->stack.top = saved_top;
+                        vm->heap_allocs[idx].live = false;
+                        free(vm->heap_allocs[idx].data);
+                        vm->heap_allocs[idx].data = NULL;
+                        vm->heap_allocs[idx].size = 0;
+                        break;
+                    }
                     vm->pending_free_handle = handle;
                     /* push hidden_parent + handle as args to cleanup thunk */
                     int64_t hidden_parent = vm->call_frame_count > 0

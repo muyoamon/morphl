@@ -14,6 +14,8 @@
 
 [] - `$comment` and/or `//` treat the following tokens as comments (drop node) until new line.
 
+[] - Replace the current fixed-capacity frontend arena with a growable chunked arena. The current arena is still a bump allocator with a hard max size cap, so large source files or imports can exhaust it and cause misleading downstream typing/backend failures. The grow path must not move existing allocations, so this should be implemented as appended chunks rather than `realloc` on one backing buffer.
+
 ## Out of Spec Features (Low Priority, Not in order):
 
 [] - `mpldb` morphl debugger, a tool to debug the program.
@@ -77,4 +79,3 @@
 [x] - Finish the remaining `$defer`, `$heap`, and `$free` work in the VM. Alias-safe `$free` cleanup (compile-time alias resolution), function-body `$defer` (fires before `$ret` and implicit return), and `$new` template cleanup (fresh block instance inherits `$defer` from the template) are implemented. Runtime per-allocation cleanup-thunk model implemented: `$free y` now works when `y` is a runtime copy of a heap handle (not a compile-time alias).
 
 [x] - Add first-class source-level `$overload` support in the VM pipeline. Parser accepts builtin `$overload`; typing builds overload types, resolves projected candidates at use sites, supports whole-object `$set`, and VM lowering handles stored overload values plus selected-candidate loads/stores. C backend currently rejects source-level `$overload`, and lazy `$inline $overload` semantics remain follow-up work.
-

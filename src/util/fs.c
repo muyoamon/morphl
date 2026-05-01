@@ -86,9 +86,12 @@ Str fs_get_absolute_path_from_source(const char *path,
   if (fs_is_relative_path(path)) {
     char source_dir[MAX_PATH];
     strncpy(source_dir, source_file, MAX_PATH);
+    source_dir[MAX_PATH - 1] = '\0';
     char *last_sep = strrchr(source_dir, '/');
     if (last_sep) {
       *last_sep = '\0';
+    } else {
+      strcpy(source_dir, ".");
     }
     if (strlen(source_dir) + strlen(path) + 2 > MAX_PATH) {
       return str_from(NULL, 0);

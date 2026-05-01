@@ -532,6 +532,12 @@ $decl writer    $extern "println" $func ($decl s "") 0;
 
 The `$func` expression is used only for its type; its body is not emitted. The VM stores a function table index in the declared slot; at call time the dispatcher invokes the native C function pointer instead of interpreting bytecode.
 
+Inline `$extern` values are also callable anywhere a function value is expected:
+
+```
+$call $extern "stdout_file" $func () File ();
+```
+
 **Late binding after a forward declaration**:
 
 ```
@@ -1639,10 +1645,12 @@ Conceptually:
 
 ### 11.3 Standard Library
 
-The standard IO module is in `std/io.mpl`. Import it to access basic IO functions:
+The standard IO module is in `std/io.mpl`. Import it to access streams, plain block resources, and basic IO helpers:
 
 ```
 $decl io $import "std/io.mpl";
+$decl file $call $member io open ("./notes.txt", "r");
+$decl line $call $member io read_line (file);
 $call $member io println ("hello, world");
 $call $member io print_int (42);
 ```
@@ -1651,13 +1659,22 @@ Available symbols:
 
 | Name | Signature | Description |
 |---|---|---|
+| `File` | block `{ handle, owned, ok }` | plain file resource value |
+| `Line` | block `{ text, len, raw, ok }` | plain line buffer value |
+| `stdin` | `File` | static standard input stream |
+| `stdout` | `File` | static standard output stream |
+| `stderr` | `File` | static standard error stream |
+| `open` | `(string, string) → File` | open a file |
+| `close` | `(File) → i64` | close a file (idempotent) |
+| `write` | `(File, string) → i64` | write string to a stream |
+| `writeln` | `(File, string) → i64` | write string + newline to a stream |
+| `flush` | `(File) → i64` | flush a stream |
+| `read_line` | `(File) → Line` | read one trimmed line |
 | `print` | `(string) → i64` | write string to stdout |
 | `println` | `(string) → i64` | write string + newline to stdout |
 | `print_int` | `(i64) → i64` | write integer to stdout |
-| `eprint` | `(string) → i64` | write string to stderr |
-| `eprintln` | `(string) → i64` | write string + newline to stderr |
 
-All IO functions return `0` on success.
+`File` and `Line` are ordinary block values. The module defines cleanup with MorphL-level `$defer`, so a fresh instance created from those block templates carries the usual defer semantics: fresh construction gets a fresh cleanup schedule, while plain copies do not create another schedule. `read_line` returns `{ ok = 0, raw = 0, len = -1 }` on EOF or read failure.
 
 ### 11.4 Native Modules
 

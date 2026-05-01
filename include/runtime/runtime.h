@@ -149,6 +149,9 @@ bool morphl_native_heap_size(MorphlNativeCtx* ctx, morphl_ref_t handle,
                              size_t* out_size);
 bool morphl_native_set_cleanup(MorphlNativeCtx* ctx, morphl_ref_t handle,
                                uint32_t cleanup_fidx);
+bool morphl_native_lookup_function(MorphlNativeCtx* ctx,
+                                   const char* symbol_name,
+                                   uint32_t* out_fidx);
 
 /// Load a MorphL VM bytecode program from disk (out.mbc format).
 bool morphl_vm_program_load(const char* path, MorphlVmProgram** out_program);

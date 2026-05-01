@@ -4,6 +4,10 @@ add_library(morphl_runtime
   vm_native.c
 )
 
+set_target_properties(morphl_runtime PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
+)
+
 target_include_directories(morphl_runtime PUBLIC
   ${CMAKE_SOURCE_DIR}/include
 )
@@ -27,3 +31,5 @@ set_target_properties(morphl_std_io PROPERTIES
 target_include_directories(morphl_std_io PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
+
+target_link_libraries(morphl_std_io PRIVATE morphl_runtime morphl_util)

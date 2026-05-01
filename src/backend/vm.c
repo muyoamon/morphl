@@ -220,6 +220,11 @@ typedef struct {
 } StaticSlot;
 
 typedef struct {
+  Str name;
+  size_t fidx;
+} FunctionBinding;
+
+typedef struct {
   const StaticSlot* slot;
   ptrdiff_t byte_offset;
   const MorphlType* value_type;
@@ -281,6 +286,8 @@ typedef struct VmEmitter {
   size_t import_slot_count, import_slot_capacity;
   StaticSlot* static_slots;
   size_t static_slot_count, static_slot_capacity;
+  FunctionBinding* function_bindings;
+  size_t function_binding_count, function_binding_capacity;
   size_t static_slot_base;
   size_t static_slot_ptr;
   LexicalScope* lexical_scopes;
@@ -498,20 +505,70 @@ static const MorphlType* import_module_decl_type(const ImportSlot* slot,
   return NULL;
 }
 
-static bool emit_external_func_call(VmEmitter* e, Str module_path, Str func_name) {
-  if (!emit_op(e, VM_OP_CALL)) return false;
-  size_t operand_off = e->code.len;
-  if (!bytes_push_u32_le(&e->code, 0)) return false;
-  return emit_external_func_reloc(e, MORPHL_VM_RELOC_EXTERN_FUNC_U32,
-                                  operand_off, module_path, func_name);
-}
-
 static bool emit_external_func_iconst(VmEmitter* e, Str module_path, Str func_name) {
   if (!emit_op(e, VM_OP_ICONST)) return false;
   size_t operand_off = e->code.len;
   if (!bytes_push_i64_le(&e->code, 0)) return false;
   return emit_external_func_reloc(e, MORPHL_VM_RELOC_EXTERN_FUNC_I64,
                                   operand_off, module_path, func_name);
+}
+
+static size_t type_frame_size(const MorphlType* t);
+static Str current_module_origin_path(const VmEmitter* e);
+static bool add_native_symbol(VmEmitter* e, Str sym_str, Str module_path,
+                              size_t* out_index);
+static uint32_t func_return_size_u32(const MorphlType* fn_type);
+static size_t func_alloc(VmEmitter* e);
+
+static bool emit_native_func_value(VmEmitter* e, const MorphlType* fn_type,
+                                   Str fallback_name, Str symbol_name) {
+  if (!e) return false;
+  Str resolved_name = symbol_name.ptr ? symbol_name : fallback_name;
+  if (!resolved_name.ptr || resolved_name.len == 0) return false;
+  uint32_t param_sz = 0;
+  if (fn_type && fn_type->kind == MORPHL_TYPE_FUNC &&
+      fn_type->data.func.param_count > 0 &&
+      fn_type->data.func.param_types[0]) {
+    const MorphlType* param_type = fn_type->data.func.param_types[0];
+    while (param_type && param_type->kind == MORPHL_TYPE_REF &&
+           !param_type->data.ref.is_ref) {
+      param_type = param_type->data.ref.target;
+    }
+    param_sz = (uint32_t)type_frame_size(param_type);
+  }
+  size_t native_idx = SIZE_MAX;
+  if (!add_native_symbol(e, resolved_name, current_module_origin_path(e),
+                         &native_idx))
+    return false;
+  size_t fidx = func_alloc(e);
+  if (fidx == SIZE_MAX) return false;
+  e->functions.items[fidx].entry_point = (uint32_t)native_idx;
+  e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
+  e->functions.items[fidx].param_size = param_sz;
+  e->functions.items[fidx].return_size = func_return_size_u32(fn_type);
+  e->functions.items[fidx].frame_size = 0;
+  return emit_func_index_iconst(e, (uint32_t)fidx);
+}
+
+static const MorphlType* extern_func_type(const AstNode* node) {
+  if (!node) return NULL;
+  const MorphlType* node_type = node->type;
+  while (node_type && node_type->kind == MORPHL_TYPE_REF &&
+         !node_type->data.ref.is_ref) {
+    node_type = node_type->data.ref.target;
+  }
+  if (node_type && node_type->kind == MORPHL_TYPE_FUNC) return node_type;
+  for (size_t i = 0; i < node->child_count; ++i) {
+    const AstNode* child = node->children[i];
+    if (!child) continue;
+    const MorphlType* child_type = child->type;
+    while (child_type && child_type->kind == MORPHL_TYPE_REF &&
+           !child_type->data.ref.is_ref) {
+      child_type = child_type->data.ref.target;
+    }
+    if (child_type && child_type->kind == MORPHL_TYPE_FUNC) return child_type;
+  }
+  return NULL;
 }
 
 static bool emit_external_data_offset_i32(VmEmitter* e, uint8_t op,
@@ -774,6 +831,88 @@ static const StaticSlot* static_slot_lookup_scoped(const VmEmitter* e,
   return slot;
 }
 
+static const FunctionBinding* function_binding_lookup(const VmEmitter* e,
+                                                      Str name) {
+  if (!e) return NULL;
+  for (size_t i = e->function_binding_count; i > 0; --i) {
+    if (str_eq(e->function_bindings[i - 1].name, name)) {
+      return &e->function_bindings[i - 1];
+    }
+  }
+  return NULL;
+}
+
+static const FunctionBinding* function_binding_lookup_by_leaf(
+    const VmEmitter* e, Str name) {
+  if (!e) return NULL;
+  for (size_t i = e->function_binding_count; i > 0; --i) {
+    Str candidate = e->function_bindings[i - 1].name;
+    const char* last_dot = NULL;
+    for (size_t j = 0; j < candidate.len; ++j) {
+      if (candidate.ptr[j] == '.') last_dot = candidate.ptr + j;
+    }
+    if (last_dot) {
+      candidate.ptr = last_dot + 1;
+      candidate.len =
+          e->function_bindings[i - 1].name.len - (size_t)(candidate.ptr - e->function_bindings[i - 1].name.ptr);
+    }
+    if (str_eq(candidate, name)) {
+      return &e->function_bindings[i - 1];
+    }
+  }
+  return NULL;
+}
+
+static const FunctionBinding* function_binding_lookup_scoped(
+    const VmEmitter* e, Str name) {
+  char* full = lexical_make_binding_path(e, name);
+  const FunctionBinding* binding =
+      full ? function_binding_lookup(e, str_from(full, strlen(full))) : NULL;
+  free(full);
+  if (!binding) binding = function_binding_lookup(e, name);
+  return binding;
+}
+
+static Str function_binding_dup_name(Str name) {
+  if (!name.ptr || name.len == 0) return name;
+  char* copy = (char*)malloc(name.len + 1);
+  if (!copy) return (Str){NULL, 0};
+  memcpy(copy, name.ptr, name.len);
+  copy[name.len] = '\0';
+  return str_from(copy, name.len);
+}
+
+static bool function_binding_register(VmEmitter* e, Str name, size_t fidx) {
+  if (!e) return false;
+  for (size_t i = 0; i < e->function_binding_count; ++i) {
+    if (str_eq(e->function_bindings[i].name, name)) {
+      e->function_bindings[i].fidx = fidx;
+      return true;
+    }
+  }
+  if (e->function_binding_count >= e->function_binding_capacity) {
+    if (!vm_grow((void**)&e->function_bindings,
+                 &e->function_binding_capacity,
+                 sizeof(FunctionBinding), e->function_binding_count + 1)) {
+      return false;
+    }
+  }
+  Str owned_name = function_binding_dup_name(name);
+  if (!owned_name.ptr && name.ptr && name.len > 0) return false;
+  e->function_bindings[e->function_binding_count++] =
+      (FunctionBinding){owned_name.ptr ? owned_name : name, fidx};
+  return true;
+}
+
+static bool function_binding_register_scoped(VmEmitter* e, Str name,
+                                             size_t fidx) {
+  char* full = lexical_make_binding_path(e, name);
+  if (!full) return false;
+  bool ok = function_binding_register(e, str_from(full, strlen(full)), fidx);
+  free(full);
+  return ok;
+}
+
 static size_t static_slot_align(const MorphlType* t) {
   size_t align = type_frame_align(t);
   return align < 8 ? 8 : align;
@@ -931,6 +1070,15 @@ static bool collect_object_exports(VmEmitter* e, AstNode* root,
           break;
         }
       }
+      if (symbol_value == UINT32_MAX) {
+        const FunctionBinding* binding =
+            function_binding_lookup(e, node->children[0]->value);
+        if (!binding) {
+          binding = function_binding_lookup_by_leaf(
+              e, node->children[0]->value);
+        }
+        if (binding) symbol_value = (uint32_t)binding->fidx;
+      }
       if (symbol_value == UINT32_MAX) kind = MORPHL_VM_EXPORT_VALUE;
     } else if (node->storage_residence == MORPHL_STORAGE_STATIC) {
       const StaticSlot* slot = static_slot_lookup(e, node->children[0]->value);
@@ -1045,6 +1193,30 @@ static Str current_module_origin_path(const VmEmitter* e) {
     return str_from(e->emit_root->filename, strlen(e->emit_root->filename));
   }
   return empty;
+}
+
+static const MorphlType* current_file_scope_type(const VmEmitter* e) {
+  if (!e) return NULL;
+  Str root_prefix = current_file_root_prefix(e);
+  if (root_prefix.ptr) {
+    const ImportSlot* import_slot = emitter_find_import_slot(e, root_prefix);
+    if (import_slot && import_slot->module_root && import_slot->module_root->type)
+      return unwrap_ref(import_slot->module_root->type);
+  }
+  if (e->emit_root && e->emit_root->type) return unwrap_ref(e->emit_root->type);
+  return NULL;
+}
+
+static bool emit_current_file_base(VmEmitter* e) {
+  if (!e) return false;
+  Str root_prefix = current_file_root_prefix(e);
+  if (root_prefix.ptr) {
+    const ImportSlot* import_slot = emitter_find_import_slot(e, root_prefix);
+    if (!import_slot) return false;
+    return emit_op(e, VM_OP_GLOBAL) &&
+           emit_global_offset_i32(e, VM_OP_ALOAD, import_slot->global_slot);
+  }
+  return emit_op(e, VM_OP_GLOBAL);
 }
 
 static bool add_native_symbol(VmEmitter* e, Str sym_str, Str module_path,
@@ -2810,6 +2982,34 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                  emit_global_offset_i32(e, VM_OP_ALOAD,
                                         slot->global_slot + (size_t)extra);
         }
+        const MorphlType* file_scope_t = current_file_scope_type(e);
+        const MorphlType* field_type = NULL;
+        ptrdiff_t field_off = block_layout_field_offset(file_scope_t, e->interns,
+                                                        resolved, &field_type);
+        if (field_off != PTRDIFF_MAX && field_type) {
+          const MorphlType* t = unwrap_ref(field_type);
+          const MorphlType* field_ref = field_type;
+          while (field_ref && field_ref->kind == MORPHL_TYPE_REF &&
+                 !field_ref->data.ref.is_ref) {
+            field_ref = field_ref->data.ref.target;
+          }
+          if (t &&
+              (t->kind == MORPHL_TYPE_BLOCK || t->kind == MORPHL_TYPE_ARRAY ||
+               t->kind == MORPHL_TYPE_UNION)) {
+            if (field_ref && field_ref->kind == MORPHL_TYPE_REF &&
+                field_ref->data.ref.is_ref) {
+              return emit_current_file_base(e) &&
+                     emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_off);
+            }
+            VM_ERR(node,
+                   "plain access to file-scope aggregate '%.*s' is not supported",
+                   (int)node->value.len, node->value.ptr);
+            return false;
+          }
+          return emit_current_file_base(e) &&
+                 emit_op_i32(e, aload_op_repr(field_type, &node->repr),
+                             (int32_t)field_off);
+        }
       }
       if (base_off == PTRDIFF_MAX) {
         VM_ERR(node, "undefined identifier '%.*s'", (int)node->value.len,
@@ -2991,6 +3191,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return false;
         size_t fidx = func_alloc(e);
         if (fidx == SIZE_MAX) return false;
+        if (!function_binding_register_scoped(e, name, fidx)) return false;
         e->functions.items[fidx].entry_point = (uint32_t)native_idx;
         e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
         e->functions.items[fidx].param_size = param_sz;
@@ -3029,6 +3230,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (rhs && rhs->kind == AST_FUNC) {
           size_t fidx = func_alloc(e);
           if (fidx == SIZE_MAX) return false;
+          if (!function_binding_register_scoped(e, name, fidx)) return false;
           if (e->deferred_count >= e->deferred_capacity) {
             if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
                          sizeof(DeferredFunc), e->deferred_count + 1))
@@ -3151,6 +3353,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* allocate a function table slot */
         size_t fidx = func_alloc(e);
         if (fidx == SIZE_MAX) return false;
+        if (!function_binding_register_scoped(e, name, fidx)) return false;
         e->functions.items[fidx].entry_point = (uint32_t)native_idx;
         e->functions.items[fidx].flags = MORPHL_FUNC_FLAG_NATIVE;
         e->functions.items[fidx].param_size = param_sz;
@@ -3186,6 +3389,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           }
           size_t fidx = func_alloc(e);
           if (fidx == SIZE_MAX) return false;
+          if (!function_binding_register_scoped(e, name, fidx)) return false;
           if (!is_extern_stub) {
             if (e->deferred_count >= e->deferred_capacity) {
               if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
@@ -3205,6 +3409,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (rhs && rhs->kind == AST_FUNC) {
         size_t fidx = func_alloc(e);
         if (fidx == SIZE_MAX) return false;
+        if (!function_binding_register_scoped(e, name, fidx)) return false;
         /* defer function body emission */
         if (e->deferred_count >= e->deferred_capacity) {
           if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
@@ -3945,76 +4150,31 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       }
 
       if (callee->kind == AST_IDENT) {
-        Str callee_name = alias_resolve(e, callee->value);
-        ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, callee_name);
-        if (off == PTRDIFF_MAX) {
-          VM_ERR(callee, "undefined callee '%.*s'", (int)callee->value.len,
-                 callee->value.ptr);
+        const FunctionBinding* binding =
+            function_binding_lookup_scoped(e, callee->value);
+        if (binding) {
+          return emit_func_index_u32(e, VM_OP_CALL, (uint32_t)binding->fidx);
+        }
+      }
+
+      if (builtin_is_name(e, callee, "$extern")) {
+        const MorphlType* fn_type = extern_func_type(callee);
+        Str fallback_name = str_from("", 0);
+        if (callee->child_count > 0 && callee->children[0] &&
+            callee->children[0]->kind == AST_IDENT) {
+          fallback_name = callee->children[0]->value;
+        }
+        if (!fn_type ||
+            !emit_native_func_value(e, fn_type, fallback_name,
+                                    callee->extern_symbol)) {
+          VM_ERR(callee, "inline $extern callee could not be lowered");
           return false;
         }
-        /* Use CALLF (indirect call via function index stored at frame[off]).
-         * This is the correct implementation: the function index is stored in
-         * the frame as i64 (put there when the function was declared), and
-         * CALLF loads it and dispatches. For known-at-compile-time callees, we
-         * could use CALL, but CALLF is correct and handles dynamic dispatch
-         * too. */
-        return emit_op_i32(e, VM_OP_CALLF, (int32_t)off);
+        return emit_op(e, VM_OP_CALLX);
       }
 
-      /* $member target field — compute combined frame offset and emit CALLF.
-       * Handles: $call $member io println (args) */
-      if (callee->kind == AST_BUILTIN && callee->op && e->interns &&
-          callee->child_count == 2) {
-        Str callee_op = interns_lookup(e->interns, callee->op);
-        if (callee_op.len == 7 && memcmp(callee_op.ptr, "$member", 7) == 0) {
-          struct AstNode* target = callee->children[0];
-          struct AstNode* field_nd = callee->children[1];
-
-          Str field_name = field_nd->value;
-          if (!field_name.ptr && e->interns && field_nd->op)
-            field_name = interns_lookup(e->interns, field_nd->op);
-
-          const MorphlType* target_btype = unwrap_ref(target->type);
-          if (!target_btype || target_btype->kind != MORPHL_TYPE_BLOCK) {
-            VM_ERR(node, "$call $member: target is not a block");
-            return false;
-          }
-
-          const MorphlType* field_type = NULL;
-          ptrdiff_t field_offset = block_layout_field_offset(
-              target_btype, e->interns, field_name, &field_type);
-          if (field_offset == PTRDIFF_MAX || !field_type) {
-            VM_ERR(node, "$call $member: field not found");
-            return false;
-          }
-
-          if (target->kind != AST_IDENT) {
-            VM_ERR(target, "$call $member: target must be identifier");
-            return false;
-          }
-          Str target_name = alias_resolve(e, target->value);
-          const ImportSlot* import_slot =
-              emitter_find_import_slot(e, target_name);
-          const MorphlType* field_ft = unwrap_ref(field_type);
-          if (e->emit_object && import_slot && field_ft &&
-              field_ft->kind == MORPHL_TYPE_FUNC) {
-            return emit_external_func_call(e, import_slot->module_path,
-                                           field_name);
-          }
-          ptrdiff_t target_off =
-              morphl_backend_find_offset(&e->frameInfo, target_name);
-          if (target_off == PTRDIFF_MAX) {
-            VM_ERR(target, "$call $member: undefined target '%.*s'",
-                   (int)target_name.len, target_name.ptr);
-            return false;
-          }
-          return emit_op_i32(e, VM_OP_CALLF,
-                             (int32_t)(target_off + field_offset));
-        }
-      }
-
-      VM_ERR(callee, "unsupported callee kind %d", callee->kind);
-      return false;
+      if (!emit_node(e, callee)) return false;
+      return emit_op(e, VM_OP_CALLX);
     }
 
     /* ── assignment ── */
@@ -4479,6 +4639,26 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         return node->child_count > 0 ? emit_node(e, node->children[0]) : true;
       }
 
+      if (OP_IS("$extern")) {
+        const MorphlType* fn_type = extern_func_type(node);
+        if (!fn_type || fn_type->kind != MORPHL_TYPE_FUNC) {
+          VM_ERR(node, "$extern expression is only supported for function values");
+          return false;
+        }
+        Str fallback_name = str_from("", 0);
+        if (node->child_count > 0 && node->children[0] &&
+            node->children[0]->kind == AST_IDENT) {
+          fallback_name = node->children[0]->value;
+        }
+        if ((!node->extern_symbol.ptr || node->extern_symbol.len == 0) &&
+            (!fallback_name.ptr || fallback_name.len == 0)) {
+          VM_ERR(node, "$extern function value requires a symbol name");
+          return false;
+        }
+        return emit_native_func_value(e, fn_type, fallback_name,
+                                      node->extern_symbol);
+      }
+
       if (OP_IS("$size") || OP_IS("$signed") || OP_IS("$unsigned")) {
         size_t value_index = node->child_count > 1 ? 1 : 0;
         if (node->child_count <= value_index || !node->children[value_index]) return false;
@@ -4622,7 +4802,13 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
 
         /* get target type (block or union) */
         const MorphlType* raw_target_type = target->type;
-        const MorphlType* target_btype = unwrap_ref(raw_target_type);
+        bool target_is_ref = raw_target_type &&
+                             raw_target_type->kind == MORPHL_TYPE_REF &&
+                             raw_target_type->data.ref.is_ref;
+        const MorphlType* target_btype =
+            (target_is_ref && raw_target_type->data.ref.target)
+                ? unwrap_ref(raw_target_type->data.ref.target)
+                : unwrap_ref(raw_target_type);
         if (!target_btype) {
           VM_ERR(target, "$member: cannot resolve target type");
           return false;
@@ -4748,6 +4934,36 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                  emit_global_offset_i32(e,
                                         aload_op_repr(field_type, field_storage ? &field_storage->repr : NULL),
                                         (size_t)field_offset);
+        }
+
+        if (target_is_ref) {
+          const MorphlType* ft_unwrapped = unwrap_ref(field_type);
+          const MorphlType* ft_ref = field_type;
+          while (ft_ref && ft_ref->kind == MORPHL_TYPE_REF &&
+                 !ft_ref->data.ref.is_ref) {
+            ft_ref = ft_ref->data.ref.target;
+          }
+          if (!emit_ref_handle_expr(e, target)) {
+            VM_ERR(target, "$member: could not resolve reference target");
+            return false;
+          }
+          if (ft_unwrapped &&
+              (ft_unwrapped->kind == MORPHL_TYPE_BLOCK ||
+               ft_unwrapped->kind == MORPHL_TYPE_ARRAY ||
+               ft_unwrapped->kind == MORPHL_TYPE_UNION)) {
+            if (ft_ref && ft_ref->kind == MORPHL_TYPE_REF &&
+                ft_ref->data.ref.is_ref) {
+              return emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
+            }
+            VM_ERR(field_nd,
+                   "$member: inline aggregate field access through references is not supported");
+            return false;
+          }
+          return emit_op_i32(
+              e,
+              aload_op_repr(field_type,
+                            field_storage ? &field_storage->repr : NULL),
+              (int32_t)field_offset);
         }
 
         /* computed expression target (e.g. $member $global $modules, or module

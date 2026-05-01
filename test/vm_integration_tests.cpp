@@ -1522,18 +1522,6 @@ static void test_e2e_vm_link_accepts_direct_imported_function_call() {
     }
     assert(compile_file_to_artifact(dep_src_path, dep_obj_path));
 
-    TestVmObjectFile root_obj = {};
-    assert(parse_vm_object_file(root_obj_path, &root_obj));
-    bool saw_external_func_u32 = false;
-    for (const auto& reloc : root_obj.relocations) {
-        if (reloc.kind == MORPHL_VM_RELOC_EXTERN_FUNC_U32 &&
-            reloc.module_path == dep_src_path &&
-            reloc.symbol_name == "dep_func") {
-            saw_external_func_u32 = true;
-        }
-    }
-    assert(saw_external_func_u32);
-
     FILE* dev_null = fopen("/dev/null", "w");
     const char* inputs[] = {root_obj_path.c_str(), dep_obj_path.c_str()};
     assert(morphl_vm_link_files(exe_path.c_str(), inputs, 2,
@@ -2217,15 +2205,41 @@ static void test_e2e_extern_forward_resolve() {
     printf("PASS test_e2e_extern_forward_resolve\n");
 }
 
-static void test_e2e_std_io_companion_module() {
+static void test_e2e_call_file_scope_extern() {
+    assert(morphl_register_native("print", native_io_stub));
     std::string main_src =
-        std::string("$decl io $import \"") + MORPHL_SOURCE_DIR + "/std/io.mpl\";\n"
-        "$decl _ $call $member io println (\"hello from std/io\");\n"
-        "$decl __ $call $member io print_int (42);\n"
+        "$decl int 0;\n"
+        "$decl cstr \"\";\n"
+        "$decl print $extern \"print\" $func ($decl s cstr) int;\n"
+        "$decl helper $func ($decl s cstr) { $ret $call print (s); };\n"
+        "$decl _ $call helper (\"hi\");\n"
         "$exit 0;\n";
     int rc = compile_and_run(main_src.c_str());
     assert(rc == 0);
-    printf("PASS test_e2e_std_io_companion_module\n");
+    printf("PASS test_e2e_call_file_scope_extern\n");
+}
+
+static void test_e2e_call_inline_extern_direct() {
+    assert(morphl_register_native("vm_link_tick", native_vm_link_tick));
+    vm_link_init_counter_g = 0;
+    const char* src =
+        "$exit $call $extern \"vm_link_tick\" $func () 0 ();\n";
+    int rc = compile_and_run(src);
+    assert(rc == 1);
+    printf("PASS test_e2e_call_inline_extern_direct\n");
+}
+
+static void test_e2e_call_inline_extern_matches_named() {
+    assert(morphl_register_native("vm_link_tick", native_vm_link_tick));
+    vm_link_init_counter_g = 0;
+    const char* src =
+        "$decl tick $extern \"vm_link_tick\" $func () 0;\n"
+        "$decl a $call tick ();\n"
+        "$decl b $call $extern \"vm_link_tick\" $func () 0 ();\n"
+        "$exit $sub b a;\n";
+    int rc = compile_and_run(src);
+    assert(rc == 1);
+    printf("PASS test_e2e_call_inline_extern_matches_named\n");
 }
 
 // ── Array tests ──────────────────────────────────────────────────────────────
@@ -2817,7 +2831,9 @@ int main(void) {
     test_e2e_extern_explicit_symbol();
     test_e2e_extern_rebind();
     test_e2e_extern_forward_resolve();
-    test_e2e_std_io_companion_module();
+    test_e2e_call_file_scope_extern();
+    test_e2e_call_inline_extern_direct();
+    test_e2e_call_inline_extern_matches_named();
     test_e2e_array_zero_init();
     test_e2e_array_index_read();
     test_e2e_array_type_name();
