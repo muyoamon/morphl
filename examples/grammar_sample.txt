@@ -14,6 +14,7 @@ end
 rule expr:
     %NUMBER => number
     %STRING => str
+    "exit" $expr code => $exit code
     "return" $expr val => $ret val
     "while" $expr cond $expr body => $while cond body
     "if" $expr cond $then_else_group t_e => $if cond t_e

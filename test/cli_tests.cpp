@@ -152,6 +152,41 @@ static void test_vm_compile_links_import_graph() {
   assert(output.find("executing VM bytecode from " + exe_path) != std::string::npos);
 }
 
+static void test_vm_compile_runs_imported_recursive_function() {
+  std::string temp_dir = make_temp_dir();
+  std::string dep_path = temp_dir + "/factorial.mpl";
+  std::string root_path = temp_dir + "/root.mpl";
+  std::string exe_path = temp_dir + "/factorial.mplx";
+  std::string log_path = temp_dir + "/factorial.log";
+  std::string grammar_path =
+      std::string(MORPHL_SOURCE_DIR) + "/examples/grammar_sample.txt";
+
+  write_file(dep_path,
+             std::string("$syntax \"") + grammar_path + "\";\n" +
+             "fact := (n := 0) => {\n"
+             "  if (n <= 1) {\n"
+             "    return 1;\n"
+             "  } else {\n"
+             "    return n * fact(n - 1);\n"
+             "  };\n"
+             "};\n");
+  write_file(root_path,
+             std::string("$decl fact $import \"") + dep_path + "\";\n" +
+                 "$exit $call $member fact fact 5;\n");
+
+  std::string command = "cd " + quote_arg(temp_dir) + " && " +
+                        quote_arg(MORPHLC_PATH) + " -o " +
+                        quote_arg(exe_path) + " " + quote_arg(root_path);
+  int exit_code = run_command_capture(command, log_path);
+
+  assert(exit_code == 120);
+  assert(file_exists(exe_path));
+
+  std::string output = read_file(log_path);
+  assert(output.find("output written to " + exe_path) != std::string::npos);
+  assert(output.find("executing VM bytecode from " + exe_path) != std::string::npos);
+}
+
 static void test_mplvm_runs_executable() {
   std::string temp_dir = make_temp_dir();
   std::string source_path = temp_dir + "/prog.mpl";
@@ -380,6 +415,7 @@ int main() {
   test_custom_c_output();
   test_custom_vm_output_runs();
   test_vm_compile_links_import_graph();
+  test_vm_compile_runs_imported_recursive_function();
   test_mplvm_runs_executable();
   test_mplinsp_reads_object_file();
   test_mplinsp_reads_executable_file();

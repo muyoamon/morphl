@@ -870,6 +870,7 @@ static const FunctionBinding* function_binding_lookup_scoped(
       full ? function_binding_lookup(e, str_from(full, strlen(full))) : NULL;
   free(full);
   if (!binding) binding = function_binding_lookup(e, name);
+  if (!binding) binding = function_binding_lookup_by_leaf(e, name);
   return binding;
 }
 
@@ -1738,6 +1739,92 @@ static Str metadata_op_string(const VmEmitter* e, const AstNode* node) {
   return str_from("", 0);
 }
 
+static size_t block_scope_size(struct AstNode* block);
+static bool emit_scope_binding_cleanups(VmEmitter* e, size_t scope_depth);
+static bool emit_inline_node(VmEmitter* e, AstNode* node,
+                             const InlineReturnCtx* ret_ctx);
+
+static void if_branch_nodes(AstNode* node, AstNode** then_branch,
+                            AstNode** else_branch) {
+  if (then_branch) *then_branch = NULL;
+  if (else_branch) *else_branch = NULL;
+  if (!node || node->child_count < 2) return;
+
+  if (node->child_count == 2 && node->children[1] &&
+      node->children[1]->kind == AST_GROUP) {
+    AstNode* group = node->children[1];
+    if (then_branch && group->child_count > 0) *then_branch = group->children[0];
+    if (else_branch && group->child_count > 1) *else_branch = group->children[1];
+    return;
+  }
+
+  if (then_branch) *then_branch = node->children[1];
+  if (else_branch && node->child_count > 2) *else_branch = node->children[2];
+}
+
+static bool emit_zero_scope_block_inline(VmEmitter* e, AstNode* node) {
+  if (!e || !node || node->kind != AST_BLOCK) return false;
+  if (block_scope_size(node) != 0) return false;
+  if (!lexical_scope_push_anon(e)) return false;
+  if (!emit_enter(e, 0)) {
+    lexical_scope_pop(e);
+    return false;
+  }
+  for (size_t i = 0; i < node->child_count; ++i) {
+    if (!emit_node(e, node->children[i])) {
+      lexical_scope_pop(e);
+      return false;
+    }
+  }
+  if (!emit_scope_binding_cleanups(e, e->scope_depth)) {
+    lexical_scope_pop(e);
+    return false;
+  }
+  if (!emit_leave(e, 0)) {
+    lexical_scope_pop(e);
+    return false;
+  }
+  lexical_scope_pop(e);
+  return true;
+}
+
+static bool emit_zero_scope_inline_block(VmEmitter* e, AstNode* node,
+                                         const InlineReturnCtx* ret_ctx) {
+  if (!e || !node || node->kind != AST_BLOCK) return false;
+  if (block_scope_size(node) != 0) return false;
+  if (!lexical_scope_push_anon(e)) return false;
+  if (!emit_enter(e, 0)) {
+    lexical_scope_pop(e);
+    return false;
+  }
+  for (size_t i = 0; i < node->child_count; ++i) {
+    if (!emit_inline_node(e, node->children[i], ret_ctx)) {
+      lexical_scope_pop(e);
+      return false;
+    }
+  }
+  for (size_t i = node->child_count; i > 0; --i) {
+    AstNode* child = node->children[i - 1];
+    if (!builtin_is_name(e, child, "$defer") || child->child_count < 1 ||
+        !child->children[0])
+      continue;
+    if (!emit_inline_node(e, child->children[0], ret_ctx)) {
+      lexical_scope_pop(e);
+      return false;
+    }
+  }
+  if (!emit_scope_binding_cleanups(e, e->scope_depth)) {
+    lexical_scope_pop(e);
+    return false;
+  }
+  if (!emit_leave(e, 0)) {
+    lexical_scope_pop(e);
+    return false;
+  }
+  lexical_scope_pop(e);
+  return true;
+}
+
 static bool collect_inline_param_bindings(
     VmEmitter* e, AstNode* params, AstNode* call_args,
     InlineParamBinding* bindings, size_t binding_cap, size_t* out_count,
@@ -2184,6 +2271,9 @@ static bool emit_inline_ret(VmEmitter* e, AstNode* node,
 static bool emit_inline_if(VmEmitter* e, AstNode* node,
                            const InlineReturnCtx* ret_ctx) {
   if (node->child_count < 2) return false;
+  AstNode* then_branch = NULL;
+  AstNode* else_branch = NULL;
+  if_branch_nodes(node, &then_branch, &else_branch);
   if (!emit_node(e, node->children[0])) return false;
   if (!emit_iconst(e, 0)) return false;
   if (!emit_op(e, VM_OP_IEQ)) return false;
@@ -2191,11 +2281,21 @@ static bool emit_inline_if(VmEmitter* e, AstNode* node,
   size_t end_lbl = label_new(e);
   if (else_lbl == SIZE_MAX || end_lbl == SIZE_MAX) return false;
   if (!emit_jump(e, VM_OP_JIF, else_lbl)) return false;
-  if (!emit_inline_node(e, node->children[1], ret_ctx)) return false;
+  if (then_branch) {
+    if (then_branch->kind == AST_BLOCK && block_scope_size(then_branch) == 0) {
+      if (!emit_zero_scope_inline_block(e, then_branch, ret_ctx)) return false;
+    } else if (!emit_inline_node(e, then_branch, ret_ctx)) {
+      return false;
+    }
+  }
   if (!emit_jump(e, VM_OP_JMP, end_lbl)) return false;
   if (!label_bind(e, else_lbl)) return false;
-  if (node->child_count > 2 && node->children[2]) {
-    if (!emit_inline_node(e, node->children[2], ret_ctx)) return false;
+  if (else_branch) {
+    if (else_branch->kind == AST_BLOCK && block_scope_size(else_branch) == 0) {
+      if (!emit_zero_scope_inline_block(e, else_branch, ret_ctx)) return false;
+    } else if (!emit_inline_node(e, else_branch, ret_ctx)) {
+      return false;
+    }
   }
   return label_bind(e, end_lbl);
 }
@@ -3923,8 +4023,14 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       /* emit RHS expression */
       if (rhs_is_import) {
         if (!e->emit_object) {
+          AstNode* module_file = import_module_root(rhs);
+          bool ok = false;
           if (!lexical_scope_push_named(e, name)) return false;
-          bool ok = emit_node(e, rhs);
+          if (t && t->kind == MORPHL_TYPE_BLOCK && module_file && bind_has_frame_storage) {
+            ok = emit_block_value_into_slot(e, t, module_file, name, off);
+          } else {
+            ok = emit_node(e, rhs);
+          }
           lexical_scope_pop(e);
           if (!ok) return false;
         }
@@ -4527,6 +4633,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
     /* ── if expression ── */
     case AST_IF: {
       if (node->child_count < 2) return false;
+      AstNode* then_branch = NULL;
+      AstNode* else_branch = NULL;
+      if_branch_nodes(node, &then_branch, &else_branch);
       /* emit condition */
       if (!emit_node(e, node->children[0])) return false;
       /* negate: ICONST 0, IEQ → 1 if condition was false */
@@ -4538,12 +4647,22 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (else_lbl == SIZE_MAX || end_lbl == SIZE_MAX) return false;
       if (!emit_jump(e, VM_OP_JIF, else_lbl)) return false;
       /* then branch */
-      if (!emit_node(e, node->children[1])) return false;
+      if (then_branch) {
+        if (then_branch->kind == AST_BLOCK && block_scope_size(then_branch) == 0) {
+          if (!emit_zero_scope_block_inline(e, then_branch)) return false;
+        } else if (!emit_node(e, then_branch)) {
+          return false;
+        }
+      }
       if (!emit_jump(e, VM_OP_JMP, end_lbl)) return false;
       /* else branch */
       if (!label_bind(e, else_lbl)) return false;
-      if (node->child_count > 2 && node->children[2]) {
-        if (!emit_node(e, node->children[2])) return false;
+      if (else_branch) {
+        if (else_branch->kind == AST_BLOCK && block_scope_size(else_branch) == 0) {
+          if (!emit_zero_scope_block_inline(e, else_branch)) return false;
+        } else if (!emit_node(e, else_branch)) {
+          return false;
+        }
       }
       return label_bind(e, end_lbl);
     }

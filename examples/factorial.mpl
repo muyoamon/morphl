@@ -1,8 +1,4 @@
 $syntax "grammar_sample.txt";
-block := {
-    a := 0;
-    b := "Hello World";
-};
 fact := (n := 0) => {
     if (n <= 1) {
         return 1;
@@ -10,4 +6,4 @@ fact := (n := 0) => {
         return n * fact(n-1);
     };
 };
-$call fact 4;
+
