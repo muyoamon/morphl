@@ -16,9 +16,5 @@ $decl Iterator $template T $traits {
 }
 
 $decl Iterable $template T $traits {
-  $prop iter $func () Iterator;
-
-  $prop foreach $func ($decl cb $specialize callback T) ();
-
-  $prop filter $func ($decl cb $specialize callback (T, 0)) ();
+  $prop foreach $func ($decl cb $func T ()) ();
 };

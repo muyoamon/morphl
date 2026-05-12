@@ -239,9 +239,9 @@ static void test_std_iterable_compiles() {
 
   std::string output = read_file(log_path);
   assert(output.find("output written to " + object_path) != std::string::npos);
-  assert(output.find("group\n"
-                     "                      ident T\n"
-                     "                      literal 0") != std::string::npos);
+  assert(output.find("func\n"
+                     "                    ident T\n"
+                     "                    group") != std::string::npos);
 }
 
 static void test_std_iterable_import_exports_templates() {
