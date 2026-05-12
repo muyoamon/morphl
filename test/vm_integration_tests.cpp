@@ -2728,6 +2728,40 @@ static void test_e2e_inline_func_block_body_no_ret() {
     printf("PASS test_e2e_inline_func_block_body_no_ret\n");
 }
 
+static void test_e2e_template_specialized_arithmetic() {
+    int rc = compile_and_run(
+        "$decl f $template T $add T 1;\n"
+        "$decl result $specialize f 41;\n"
+        "$exit result;\n");
+    assert(rc == 42);
+}
+
+static void test_e2e_template_specialized_function_declared_call() {
+    int rc = compile_and_run(
+        "$decl add_one $template T $func ($decl x T) $ret $add x 1;\n"
+        "$decl add_one_int $specialize add_one 0;\n"
+        "$exit $call add_one_int 41;\n");
+    assert(rc == 42);
+}
+
+static void test_e2e_template_specialized_function_direct_call() {
+    int rc = compile_and_run(
+        "$decl add_one $template T $func ($decl x T) $ret $add x 1;\n"
+        "$exit $call ($specialize add_one 0) 41;\n");
+    assert(rc == 42);
+}
+
+static void test_e2e_template_specialized_function_block_arg() {
+    int rc = compile_and_run(
+        "$decl Pair $template (T E) { $decl val T; $decl err E; };\n"
+        "$decl res $specialize Pair (10 $null);\n"
+        "$decl f $template T $func $decl res T {\n"
+        "  $ret $add $member res val 1;\n"
+        "};\n"
+        "$exit $call $specialize f res res;\n");
+    assert(rc == 11);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -2793,6 +2827,10 @@ int main(void) {
     test_e2e_vm_link_accepts_direct_imported_function_call();
     test_e2e_vm_link_rejects_missing_dependency_function_export();
     test_e2e_vm_link_rejects_missing_dependency_object();
+    test_e2e_template_specialized_arithmetic();
+    test_e2e_template_specialized_function_declared_call();
+    test_e2e_template_specialized_function_direct_call();
+    test_e2e_template_specialized_function_block_arg();
     test_e2e_vm_link_rejects_unrelated_object();
     test_e2e_global_argc();
     test_e2e_global_entry();

@@ -104,6 +104,10 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out) {
     switch (node->kind) {
         case AST_LITERAL:
         case AST_IDENT:
+            if (node->type && node->type->kind == MORPHL_TYPE_TEMPLATE) {
+                emit_append(out, "/* unspecialized template */0");
+                break;
+            }
             emit_append_n(out, node->value.ptr, node->value.len);
             break;
         case AST_BUILTIN:
@@ -133,6 +137,13 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out) {
             emit_append(out, ")");
             break;
         case AST_SET:
+            if ((node->type && node->type->kind == MORPHL_TYPE_TEMPLATE) ||
+                (node->child_count >= 2 && node->children[1] &&
+                 node->children[1]->type &&
+                 node->children[1]->type->kind == MORPHL_TYPE_TEMPLATE)) {
+                emit_append(out, "/* template set */0");
+                break;
+            }
             if (node->child_count >= 2) {
                 emit_append(out, "(");
                 emit_node_expr(node->children[0], out);
@@ -149,6 +160,12 @@ static void emit_node_expr(AstNode *node, EmitBuffer *out) {
                 AstNode *value = node->children[1];
                 // If value is $forward, skip this node
                 if (value->kind == AST_BUILTIN && value->op == operator_sym_from_enum(FORWARD)) {
+                    break;
+                }
+                if (value->kind == AST_BUILTIN && value->op == operator_sym_from_enum(TEMPLATE)) {
+                    break;
+                }
+                if (node->type && node->type->kind == MORPHL_TYPE_TEMPLATE) {
                     break;
                 }
                 const char *type_name = infer_decl_type(value);

@@ -553,6 +553,196 @@ static bool is_null_ref_type(const MorphlType* type) {
          type->data.ref.target && type->data.ref.target->kind == MORPHL_TYPE_VOID;
 }
 
+static bool ast_node_take(AstNode* dst, AstNode* src) {
+  if (!dst || !src) return false;
+  for (size_t i = 0; i < dst->child_count; ++i) {
+    ast_free(dst->children[i]);
+  }
+  free(dst->children);
+  free((void*)dst->import_path.ptr);
+  if (dst->import_module && !dst->import_module_shared) {
+    ast_free(dst->import_module);
+  }
+  ast_free(dst->lowered);
+  AstNode moved = *src;
+  *dst = moved;
+  src->children = NULL;
+  src->child_count = 0;
+  src->child_capacity = 0;
+  src->import_path = str_from(NULL, 0);
+  src->import_module = NULL;
+  src->import_module_shared = false;
+  ast_free(src);
+  return true;
+}
+
+static bool collect_template_params(TypeContext* ctx,
+                                    AstNode* spec,
+                                    Sym** out_params,
+                                    size_t* out_count) {
+  if (!ctx || !spec || !out_params || !out_count) return false;
+  *out_params = NULL;
+  *out_count = 0;
+  size_t count = spec->kind == AST_GROUP ? spec->child_count : 1;
+  if (count == 0) return false;
+  Sym* params = (Sym*)malloc(count * sizeof(Sym));
+  if (!params) return false;
+  for (size_t i = 0; i < count; ++i) {
+    AstNode* p = spec->kind == AST_GROUP ? spec->children[i] : spec;
+    if (!p || p->kind != AST_IDENT) {
+      free(params);
+      return false;
+    }
+    Sym sym = p->op;
+    if (!sym && p->value.ptr) sym = interns_intern(ctx->interns, p->value);
+    if (!sym) {
+      free(params);
+      return false;
+    }
+    for (size_t j = 0; j < i; ++j) {
+      if (params[j] == sym) {
+        free(params);
+        return false;
+      }
+    }
+    params[i] = sym;
+  }
+  *out_params = params;
+  *out_count = count;
+  return true;
+}
+
+static bool collect_specialize_args(AstNode* spec,
+                                    AstNode*** out_args,
+                                    size_t* out_count) {
+  if (!spec || !out_args || !out_count) return false;
+  *out_args = NULL;
+  *out_count = 0;
+  size_t count = spec->kind == AST_GROUP ? spec->child_count : 1;
+  if (count == 0) return false;
+  AstNode** args = (AstNode**)malloc(count * sizeof(AstNode*));
+  if (!args) return false;
+  for (size_t i = 0; i < count; ++i) {
+    args[i] = spec->kind == AST_GROUP ? spec->children[i] : spec;
+    if (!args[i]) {
+      free(args);
+      return false;
+    }
+  }
+  *out_args = args;
+  *out_count = count;
+  return true;
+}
+
+static MorphlType* infer_template_expr(TypeContext* ctx, AstNode* node) {
+  if (!ctx || !node || node->child_count != 2) return NULL;
+  Sym* params = NULL;
+  size_t param_count = 0;
+  if (!collect_template_params(ctx, node->children[0], &params, &param_count)) {
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                    "$template: parameter spec must be an identifier or identifier group");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  AstNode* body = ast_clone(node->children[1]);
+  if (!body) {
+    free(params);
+    return NULL;
+  }
+  MorphlType* result = morphl_type_template(ctx->arena, params, param_count, body);
+  free(params);
+  return result;
+}
+
+static MorphlType* infer_specialize_expr(TypeContext* ctx, AstNode* node) {
+  if (!ctx || !node || node->child_count != 2) return NULL;
+  MorphlType* raw_template_type = morphl_infer_type_of_ast(ctx, node->children[0]);
+  bool inline_template =
+      raw_template_type && raw_template_type->kind == MORPHL_TYPE_REF &&
+      raw_template_type->data.ref.is_inline;
+  MorphlType* template_type = unwrap_ref(raw_template_type);
+  if (!template_type || template_type->kind != MORPHL_TYPE_TEMPLATE) {
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                    "$specialize: first argument must be a template");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  AstNode** subst_args = NULL;
+  size_t subst_count = 0;
+  if (!collect_specialize_args(node->children[1], &subst_args, &subst_count)) {
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                    "$specialize: substitution spec must be an expression or group");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  if (subst_count != template_type->data.template_t.param_count) {
+    free(subst_args);
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                    "$specialize: substitution arity mismatch");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  AstNode* body = ast_clone(template_type->data.template_t.body);
+  AstNode* signature_body = ast_clone(template_type->data.template_t.signature_body);
+  if (!body) {
+    ast_free(signature_body);
+    free(subst_args);
+    return NULL;
+  }
+  if (!signature_body) {
+    ast_free(body);
+    free(subst_args);
+    return NULL;
+  }
+  if (!ast_substitute_idents(&body,
+                             template_type->data.template_t.param_syms,
+                             subst_args,
+                             subst_count)) {
+    ast_free(body);
+    ast_free(signature_body);
+    free(subst_args);
+    return NULL;
+  }
+  if (!ast_substitute_idents(&signature_body,
+                             template_type->data.template_t.param_syms,
+                             subst_args,
+                             subst_count)) {
+    ast_free(body);
+    ast_free(signature_body);
+    free(subst_args);
+    return NULL;
+  }
+  free(subst_args);
+  MorphlType* result = morphl_infer_type_of_ast(ctx, body);
+  if (!result) {
+    ast_free(body);
+    ast_free(signature_body);
+    return NULL;
+  }
+  MorphlType* signature_result = morphl_infer_type_of_ast(ctx, signature_body);
+  ast_free(signature_body);
+  if (!signature_result) {
+    ast_free(body);
+    return NULL;
+  }
+  if (!morphl_type_is_subtype(result, signature_result)) {
+    MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                    "$specialize: template implementation is not a subtype of its declared signature");
+    morphl_error_emit(NULL, &err);
+    ast_free(body);
+    return NULL;
+  }
+  body->type = result;
+  if (inline_template) {
+    if (!ast_node_take(node, body)) return NULL;
+  } else {
+    ast_free(node->lowered);
+    node->lowered = body;
+  }
+  node->type = signature_result;
+  return signature_result;
+}
+
 static bool refs_assignable(const MorphlType* target_ref, const MorphlType* value_type) {
   if (!target_ref || target_ref->kind != MORPHL_TYPE_REF || !target_ref->data.ref.is_ref ||
       !value_type || value_type->kind != MORPHL_TYPE_REF || !value_type->data.ref.is_ref) {
@@ -1739,6 +1929,12 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       node->storage_residence = init_node->storage_residence;
       node->extern_symbol = default_extern_symbol(init_node);
       node->repr = init_node->repr;
+      MorphlType* init_unwrapped = unwrap_ref(init_type);
+      if (init_unwrapped && init_unwrapped->kind == MORPHL_TYPE_TEMPLATE &&
+          init_type->kind == MORPHL_TYPE_REF && init_type->data.ref.is_inline) {
+        node->contributes_to_shape = false;
+        node->contributes_to_layout = false;
+      }
 
       ForwardEntry* forward = pending_forward;
       if (forward && !forward->resolved) {
@@ -2117,6 +2313,14 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       Sym set_sym = interns_intern(ctx->interns, str_from("$set", 4));
       Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
       Sym extern_sym = interns_intern(ctx->interns, str_from("$extern", 7));
+      Sym template_sym = interns_intern(ctx->interns, str_from("$template", 9));
+      Sym specialize_sym = interns_intern(ctx->interns, str_from("$specialize", 11));
+      if (node->op == template_sym) {
+        return infer_template_expr(ctx, node);
+      }
+      if (node->op == specialize_sym) {
+        return infer_specialize_expr(ctx, node);
+      }
       if (node->op == import_sym) {
         if (node->child_count != 1) {
           MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$import expects 1 arg");
@@ -2287,6 +2491,41 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           value_type = morphl_infer_type_of_ast(ctx, node->children[1]);
         }
         if (!target_type || !value_type) return NULL;
+        MorphlType* target_template = unwrap_ref(target_type);
+        MorphlType* value_template = unwrap_ref(value_type);
+        if (target_template && target_template->kind == MORPHL_TYPE_TEMPLATE &&
+            value_template && value_template->kind == MORPHL_TYPE_TEMPLATE) {
+          if (target_type->kind != MORPHL_TYPE_REF || !target_type->data.ref.is_mutable) {
+            MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                            "$set: template target is not mutable");
+            morphl_error_emit(NULL, &err);
+            return NULL;
+          }
+          if (node->children[0]->kind != AST_IDENT) {
+            MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                            "$set: template target must be an identifier");
+            morphl_error_emit(NULL, &err);
+            return NULL;
+          }
+          Sym target_sym = node->children[0]->op;
+          if (!target_sym && node->children[0]->value.ptr) {
+            target_sym = interns_intern(ctx->interns, node->children[0]->value);
+          }
+          if (target_template->data.template_t.param_count !=
+              value_template->data.template_t.param_count) {
+            MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                            "$set: template parameter shape mismatch");
+            morphl_error_emit(NULL, &err);
+            return NULL;
+          }
+          AstNode* new_body = ast_clone(value_template->data.template_t.body);
+          if (!new_body) return NULL;
+          target_template->data.template_t.body = new_body;
+          if (target_sym) {
+            (void)type_context_update_var(ctx, target_sym, target_type);
+          }
+          return target_template;
+        }
         MorphlType* target_unwrapped = unwrap_ref(target_type);
         MorphlType* value_unwrapped = unwrap_ref(value_type);
         if (target_unwrapped && target_unwrapped->kind == MORPHL_TYPE_OVERLOAD) {

@@ -56,6 +56,7 @@ typedef struct AstNode {
   bool overload_select_self;
   size_t overload_selected_index;
   MorphlReprInfo repr;
+  struct AstNode* lowered;
 } AstNode;
 
 AstNode* ast_new(AstKind kind);
@@ -69,5 +70,10 @@ void ast_print(const AstNode* node, InternTable* interns);
 // helper
 
 void ast_replace_ident(AstNode* root, InternTable* interns, Str name, AstNode* _new);
+bool ast_shape_equals(const AstNode* a, const AstNode* b);
+bool ast_substitute_idents(AstNode** root,
+                           const Sym* param_syms,
+                           AstNode** replacements,
+                           size_t param_count);
 
 #endif // MORPHL_AST_AST_H_

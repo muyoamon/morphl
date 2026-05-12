@@ -24,6 +24,7 @@ typedef enum {
   MORPHL_TYPE_ARRAY,     // Fixed-size array type [T * N]
   MORPHL_TYPE_UNION,     // Tagged union type $union V1 V2 ...
   MORPHL_TYPE_NEVER,     // Bottom type ($never) — subtype of all types
+  MORPHL_TYPE_TEMPLATE,  // Template with fixed signature and mutable body AST
 } MorphlTypeKind;
 
 // Forward declaration
@@ -119,6 +120,13 @@ typedef struct {
   size_t variant_count;
 } MorphlUnionType;
 
+typedef struct {
+  Sym* param_syms;
+  size_t param_count;
+  AstNode* body;
+  AstNode* signature_body;
+} MorphlTemplateType;
+
 // Main type structure
 typedef struct MorphlType {
   MorphlTypeKind kind;
@@ -132,6 +140,7 @@ typedef struct MorphlType {
     MorphlRefType ref;       // kind == MORPHL_TYPE_REF
     MorphlArrayType array;   // kind == MORPHL_TYPE_ARRAY
     MorphlUnionType union_t; // kind == MORPHL_TYPE_UNION
+    MorphlTemplateType template_t; // kind == MORPHL_TYPE_TEMPLATE
     Sym sym;                // Used for named types (traits, structs, etc.)
   } data;
   void* details;      // For future extensibility
@@ -178,6 +187,10 @@ MorphlType* morphl_type_block_with_props(Arena* arena,
 MorphlType* morphl_type_array(Arena* arena, MorphlType* elem_type, size_t count);
 MorphlType* morphl_type_union(Arena* arena, MorphlType** variant_types, size_t variant_count);
 MorphlType* morphl_type_never(Arena* arena);
+MorphlType* morphl_type_template(Arena* arena,
+                                 Sym* param_syms,
+                                 size_t param_count,
+                                 AstNode* body);
 /* {} — empty block type; distinct from () (void). Used as the result of $while loops
  * and as the implicit return type of functions that do not return a value. */
 MorphlType* morphl_type_empty_block(Arena* arena);

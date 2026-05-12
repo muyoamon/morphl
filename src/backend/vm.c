@@ -519,6 +519,8 @@ static bool add_native_symbol(VmEmitter* e, Str sym_str, Str module_path,
                               size_t* out_index);
 static uint32_t func_return_size_u32(const MorphlType* fn_type);
 static size_t func_alloc(VmEmitter* e);
+static bool builtin_is_name(const VmEmitter* e, const AstNode* node,
+                            const char* name);
 
 static bool emit_native_func_value(VmEmitter* e, const MorphlType* fn_type,
                                    Str fallback_name, Str symbol_name) {
@@ -1479,6 +1481,7 @@ static size_t type_frame_align_with_repr(const MorphlType* t,
     case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_STRING:
     case MORPHL_TYPE_FUNC:
+    case MORPHL_TYPE_TEMPLATE:
       if (t->kind == MORPHL_TYPE_INT && repr && repr->has_align)
         return repr->align_bytes;
       if (t->kind == MORPHL_TYPE_INT && repr && repr->has_size)
@@ -1564,6 +1567,7 @@ static size_t type_frame_size_with_repr(const MorphlType* t,
     case MORPHL_TYPE_STRING:
       return 8; /* stored as i64 or f64 or string pointer */
     case MORPHL_TYPE_FUNC:
+    case MORPHL_TYPE_TEMPLATE:
       return 8; /* stored as i64 (function table index) */
     case MORPHL_TYPE_REF:
       /* $ref (is_ref=true) stores an 8-byte absolute stack address (i64).
@@ -1624,6 +1628,7 @@ static uint8_t load_op(const MorphlType* t) {
     case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_FUNC:
     case MORPHL_TYPE_STRING:
+    case MORPHL_TYPE_TEMPLATE:
       return VM_OP_ILOAD; /* string pointer fits in i64 slot */
     case MORPHL_TYPE_FLOAT:
       return VM_OP_FLOAD;
@@ -1644,6 +1649,7 @@ static uint8_t store_op(const MorphlType* t) {
     case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_FUNC:
     case MORPHL_TYPE_STRING:
+    case MORPHL_TYPE_TEMPLATE:
       return VM_OP_ISTORE; /* string pointer fits in i64 slot */
     case MORPHL_TYPE_FLOAT:
       return VM_OP_FSTORE;
@@ -1724,6 +1730,56 @@ static bool emit_repr_normalize(VmEmitter* e, const MorphlReprInfo* repr) {
     default: return false;
   }
   return emit_op(e, op);
+}
+
+static bool emit_aggregate_from_frame(VmEmitter* e,
+                                      const MorphlType* t,
+                                      ptrdiff_t base_off);
+
+static bool emit_block_from_frame(VmEmitter* e,
+                                  const MorphlType* t,
+                                  ptrdiff_t base_off) {
+  if (!e || !t || t->kind != MORPHL_TYPE_BLOCK) return false;
+  size_t cursor = 0;
+  for (size_t i = 0; i < t->data.block.layout_field_count; ++i) {
+    const MorphlType* raw_ft = t->data.block.layout_field_types[i];
+    const MorphlType* ft = unwrap_ref(raw_ft);
+    const MorphlReprInfo* repr =
+        t->data.block.layout_field_storage
+            ? &t->data.block.layout_field_storage[i].repr
+            : NULL;
+    size_t align = type_frame_align_with_repr(ft, repr);
+    size_t field_off = align_up(cursor, align);
+    if (field_off > cursor &&
+        !emit_op_u32(e, VM_OP_RESERVE, (uint32_t)(field_off - cursor))) {
+      return false;
+    }
+    if (ft && ft->kind == MORPHL_TYPE_BLOCK) {
+      if (!emit_aggregate_from_frame(e, ft, base_off + (ptrdiff_t)field_off))
+        return false;
+    } else {
+      uint8_t op = load_op_repr(ft, repr);
+      if (op == 0xFF) return false;
+      if (!emit_op_i32(e, op, (int32_t)(base_off + (ptrdiff_t)field_off)))
+        return false;
+    }
+    cursor = field_off + type_frame_size_with_repr(ft, repr);
+  }
+  size_t total = type_frame_size(t);
+  if (total > cursor &&
+      !emit_op_u32(e, VM_OP_RESERVE, (uint32_t)(total - cursor))) {
+    return false;
+  }
+  return true;
+}
+
+static bool emit_aggregate_from_frame(VmEmitter* e,
+                                      const MorphlType* t,
+                                      ptrdiff_t base_off) {
+  t = unwrap_ref((MorphlType*)t);
+  if (!t) return false;
+  if (t->kind == MORPHL_TYPE_BLOCK) return emit_block_from_frame(e, t, base_off);
+  return false;
 }
 
 static Str metadata_op_string(const VmEmitter* e, const AstNode* node) {
@@ -3006,6 +3062,91 @@ static bool emit_overload_value_into_slot(VmEmitter* e, const MorphlType* overlo
   return true;
 }
 
+static bool collect_specialize_replacements(AstNode* spec, AstNode*** out_args,
+                                            size_t* out_count) {
+  if (!spec || !out_args || !out_count) return false;
+  size_t count = spec->kind == AST_GROUP ? spec->child_count : 1;
+  if (count == 0) return false;
+  AstNode** args = (AstNode**)malloc(count * sizeof(AstNode*));
+  if (!args) return false;
+  for (size_t i = 0; i < count; ++i) {
+    args[i] = spec->kind == AST_GROUP ? spec->children[i] : spec;
+    if (!args[i]) {
+      free(args);
+      return false;
+    }
+  }
+  *out_args = args;
+  *out_count = count;
+  return true;
+}
+
+static AstNode* instantiate_specialize_body(VmEmitter* e, AstNode* node) {
+  if (!e || !node || !builtin_is_name(e, node, "$specialize") ||
+      node->child_count != 2) {
+    return NULL;
+  }
+  if (node->lowered) {
+    AstNode* lowered = ast_clone(node->lowered);
+    if (!lowered) return NULL;
+    return lowered;
+  }
+  const MorphlType* tmpl_t =
+      node->children[0] ? unwrap_ref(node->children[0]->type) : NULL;
+  if (!tmpl_t || tmpl_t->kind != MORPHL_TYPE_TEMPLATE) {
+    VM_ERR(node, "$specialize: first argument is not a template");
+    return NULL;
+  }
+  AstNode** args = NULL;
+  size_t arg_count = 0;
+  if (!collect_specialize_replacements(node->children[1], &args, &arg_count)) {
+    VM_ERR(node, "$specialize: invalid substitution list");
+    return NULL;
+  }
+  if (arg_count != tmpl_t->data.template_t.param_count) {
+    free(args);
+    VM_ERR(node, "$specialize: substitution arity mismatch");
+    return NULL;
+  }
+  AstNode* body = ast_clone(tmpl_t->data.template_t.body);
+  if (!body) {
+    free(args);
+    return NULL;
+  }
+  if (!ast_substitute_idents(&body, tmpl_t->data.template_t.param_syms, args,
+                             arg_count)) {
+    free(args);
+    ast_free(body);
+    return NULL;
+  }
+  free(args);
+  MorphlType* inferred = morphl_infer_type_of_ast(e->type_ctx, body);
+  if (!inferred) {
+    ast_free(body);
+    return NULL;
+  }
+  body->type = inferred;
+  return body;
+}
+
+static bool emit_specialize_expr(VmEmitter* e, AstNode* node) {
+  AstNode* body = instantiate_specialize_body(e, node);
+  if (!body) return false;
+  if (body->kind == AST_FUNC) {
+    size_t fidx = func_alloc(e);
+    if (fidx == SIZE_MAX) return false;
+    if (e->deferred_count >= e->deferred_capacity) {
+      if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
+                   sizeof(DeferredFunc), e->deferred_count + 1))
+        return false;
+    }
+    e->deferred[e->deferred_count++] =
+        (DeferredFunc){body, fidx, str_from("", 0), current_file_root_prefix(e)};
+    return emit_func_index_iconst(e, (uint32_t)fidx);
+  }
+  return emit_node(e, body);
+}
+
 /* ── emit a single AST node ─────────────────────────────────────────────── */
 
 static bool emit_node(VmEmitter* e, struct AstNode* node) {
@@ -3148,6 +3289,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return false;
         }
         return emit_op_i32(e, op, (int32_t)candidate_off);
+      }
+      if (t && t->kind == MORPHL_TYPE_BLOCK) {
+        return emit_aggregate_from_frame(e, t, off);
       }
       uint8_t op = load_op_repr(t, &node->repr);
       if (op == 0xFF) {
@@ -3398,6 +3542,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         /* find the offset we just registered */
         off = morphl_backend_find_offset(&e->frameInfo, name);
         if (off == PTRDIFF_MAX) return false;
+      }
+
+      if (t && t->kind == MORPHL_TYPE_TEMPLATE) {
+        return true;
       }
 
       /* if RHS is a $import, track slot index so we can write the $modules
@@ -4020,6 +4168,17 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
       }
 
+      if (t && t->kind == MORPHL_TYPE_BLOCK && rhs &&
+          builtin_is_name(e, rhs, "$specialize")) {
+        AstNode* body = instantiate_specialize_body(e, rhs);
+        if (!body) return false;
+        if (body->kind != AST_BLOCK) {
+          VM_ERR(rhs, "$specialize: expected block template result");
+          return false;
+        }
+        return emit_block_value_into_slot(e, t, body, name, off);
+      }
+
       /* emit RHS expression */
       if (rhs_is_import) {
         if (!e->emit_object) {
@@ -4288,6 +4447,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (node->child_count < 2) return false;
       struct AstNode* target = node->children[0];
       struct AstNode* value = node->children[1];
+      const MorphlType* set_t = unwrap_ref(node->type);
+      const MorphlType* value_t = value ? unwrap_ref(value->type) : NULL;
+      if ((set_t && set_t->kind == MORPHL_TYPE_TEMPLATE) ||
+          (value_t && value_t->kind == MORPHL_TYPE_TEMPLATE)) {
+        return true;
+      }
 
       /* compound LHS: $member or $index */
       if (target->kind == AST_BUILTIN && e->interns && target->op &&
@@ -4719,6 +4884,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return false;
         }
         return emit_node(e, node->children[node->overload_selected_index]);
+      }
+
+      if (OP_IS("$specialize")) {
+        return emit_specialize_expr(e, node);
+      }
+
+      if (OP_IS("$template")) {
+        VM_ERR(node, "template expression was not resolved before VM codegen");
+        return false;
       }
 
       /* $ret */

@@ -972,6 +972,8 @@ static OperatorRow kBuiltinOps[] = {
 
   // overload type 
   {"$overload",AST_BUILTIN,false, 1, (size_t)-1, NULL,              0, OP_PP_KEEP_NODE, OVERLOAD},
+  {"$template",AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, TEMPLATE},
+  {"$specialize",AST_BUILTIN,false,2, 2,          NULL,              0, OP_PP_KEEP_NODE, SPECIALIZE},
   {"$size",   AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, SIZEOF_REPR},
   {"$align",  AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, ALIGNOF_REPR},
   {"$signed", AST_BUILTIN,false, 1, 1,           NULL,              0, OP_PP_KEEP_NODE, SIGNED_REPR},

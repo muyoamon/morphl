@@ -60,6 +60,13 @@ AstNode* ast_clone(const AstNode* node) {
   clone->overload_select_self = node->overload_select_self;
   clone->overload_selected_index = node->overload_selected_index;
   clone->repr = node->repr;
+  if (node->lowered) {
+    clone->lowered = ast_clone(node->lowered);
+    if (!clone->lowered) {
+      ast_free(clone);
+      return NULL;
+    }
+  }
   if (node->import_path.ptr && node->import_path.len > 0) {
     char* path_copy = (char*)malloc(node->import_path.len + 1);
     if (!path_copy) {
@@ -105,6 +112,7 @@ void ast_free(AstNode* node) {
   if (node->import_module && !node->import_module_shared) {
     ast_free(node->import_module);
   }
+  ast_free(node->lowered);
   free(node->children);
   free(node);
 }
@@ -211,4 +219,140 @@ void ast_replace_ident(AstNode* root, InternTable* interns, Str name, AstNode* _
 
     ast_replace_ident(node, interns, name, _new);
   }
+}
+
+static bool sym_list_contains(const Sym* syms, size_t count, Sym sym) {
+  for (size_t i = 0; i < count; ++i) {
+    if (syms[i] == sym) return true;
+  }
+  return false;
+}
+
+bool ast_shape_equals(const AstNode* a, const AstNode* b) {
+  if (!a || !b) return a == b;
+  if (a->kind != b->kind) return false;
+  if (a->op != b->op) return false;
+  if (a->value.len != b->value.len) return false;
+  if (a->value.len > 0 &&
+      (!a->value.ptr || !b->value.ptr ||
+       memcmp(a->value.ptr, b->value.ptr, a->value.len) != 0)) {
+    return false;
+  }
+  if (a->child_count != b->child_count) return false;
+  for (size_t i = 0; i < a->child_count; ++i) {
+    if (!ast_shape_equals(a->children[i], b->children[i])) return false;
+  }
+  return true;
+}
+
+static size_t matching_substitution_index(const AstNode* node,
+                                          const Sym* param_syms,
+                                          const Sym* shadowed,
+                                          size_t param_count) {
+  if (!node || node->kind != AST_IDENT || !node->op) return SIZE_MAX;
+  for (size_t i = 0; i < param_count; ++i) {
+    if (node->op == param_syms[i] &&
+        !sym_list_contains(shadowed, param_count, node->op)) {
+      return i;
+    }
+  }
+  return SIZE_MAX;
+}
+
+static bool collect_decl_name(const AstNode* node,
+                              const Sym* param_syms,
+                              Sym* shadowed,
+                              size_t param_count) {
+  if (!node || node->kind != AST_DECL || node->child_count < 1) return true;
+  AstNode* name = node->children[0];
+  if (!name || name->kind != AST_IDENT || !name->op) return true;
+  for (size_t i = 0; i < param_count; ++i) {
+    if (name->op == param_syms[i]) {
+      shadowed[i] = name->op;
+      break;
+    }
+  }
+  return true;
+}
+
+static bool substitute_impl(AstNode** slot,
+                            const Sym* param_syms,
+                            AstNode** replacements,
+                            const Sym* shadowed,
+                            size_t param_count) {
+  if (!slot || !*slot) return true;
+  AstNode* node = *slot;
+  size_t subst_i =
+      matching_substitution_index(node, param_syms, shadowed, param_count);
+  if (subst_i != SIZE_MAX) {
+    AstNode* clone = ast_clone(replacements[subst_i]);
+    if (!clone) return false;
+    ast_free(node);
+    *slot = clone;
+    return true;
+  }
+
+  if (node->kind == AST_DECL || node->kind == AST_PROP) {
+    for (size_t i = 1; i < node->child_count; ++i) {
+      if (!substitute_impl(&node->children[i], param_syms, replacements,
+                           shadowed, param_count)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (node->kind == AST_FUNC && node->child_count >= 2) {
+    if (!substitute_impl(&node->children[0], param_syms, replacements,
+                         shadowed, param_count)) {
+      return false;
+    }
+    Sym* body_shadowed = NULL;
+    if (param_count > 0) {
+      body_shadowed = (Sym*)calloc(param_count, sizeof(Sym));
+      if (!body_shadowed) return false;
+      memcpy(body_shadowed, shadowed, param_count * sizeof(Sym));
+      if (node->children[0]->kind == AST_DECL) {
+        collect_decl_name(node->children[0], param_syms, body_shadowed,
+                          param_count);
+      } else if (node->children[0]->kind == AST_GROUP) {
+        for (size_t i = 0; i < node->children[0]->child_count; ++i) {
+          collect_decl_name(node->children[0]->children[i], param_syms,
+                            body_shadowed, param_count);
+        }
+      }
+    }
+    bool ok = substitute_impl(&node->children[1], param_syms, replacements,
+                              body_shadowed ? body_shadowed : shadowed,
+                              param_count);
+    free(body_shadowed);
+    for (size_t i = 2; ok && i < node->child_count; ++i) {
+      ok = substitute_impl(&node->children[i], param_syms, replacements,
+                           shadowed, param_count);
+    }
+    return ok;
+  }
+
+  for (size_t i = 0; i < node->child_count; ++i) {
+    if (!substitute_impl(&node->children[i], param_syms, replacements,
+                         shadowed, param_count)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ast_substitute_idents(AstNode** root,
+                           const Sym* param_syms,
+                           AstNode** replacements,
+                           size_t param_count) {
+  if (!root || !param_syms || !replacements) return false;
+  Sym* shadowed = NULL;
+  if (param_count > 0) {
+    shadowed = (Sym*)calloc(param_count, sizeof(Sym));
+    if (!shadowed) return false;
+  }
+  bool ok = substitute_impl(root, param_syms, replacements, shadowed, param_count);
+  free(shadowed);
+  return ok;
 }

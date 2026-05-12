@@ -363,6 +363,46 @@ static void test_source_overload_parses_as_builtin() {
   std::remove(source_path.c_str());
 }
 
+static void test_source_template_and_specialize_parse() {
+  InternTable* interns = interns_new();
+  assert(interns != nullptr);
+  assert(operator_registry_init(interns));
+
+  Arena arena;
+  arena_init(&arena, 4096);
+
+  const char* source =
+      "$decl f $template (T U) $add T U;\n"
+      "$decl x $specialize f (0 1);\n";
+  std::string source_path = write_temp_file(source);
+
+  ScopedParserContext ctx;
+  AstNode* root = parse_scoped_source(interns, &arena, source_path, &ctx);
+  assert(root != nullptr);
+  assert(root->kind == AST_FILE);
+  assert(root->child_count == 2);
+
+  AstNode* tmpl = root->children[0]->children[1];
+  assert(tmpl->kind == AST_BUILTIN);
+  assert(tmpl->op == interns_intern(interns, str_from("$template", 9)));
+  assert(tmpl->child_count == 2);
+  assert(tmpl->children[0]->kind == AST_GROUP);
+  assert(tmpl->children[0]->child_count == 2);
+
+  AstNode* spec = root->children[1]->children[1];
+  assert(spec->kind == AST_BUILTIN);
+  assert(spec->op == interns_intern(interns, str_from("$specialize", 11)));
+  assert(spec->child_count == 2);
+  assert(spec->children[1]->kind == AST_GROUP);
+  assert(spec->children[1]->child_count == 2);
+
+  ast_free(root);
+  scoped_parser_free(&ctx);
+  arena_free(&arena);
+  interns_free(interns);
+  std::remove(source_path.c_str());
+}
+
 int main() {
   test_grammar_loading();
   test_parser_accept_reject();
@@ -371,6 +411,7 @@ int main() {
   test_scoped_builtin_ast_locations();
   test_scoped_import_preserves_literal_and_reuses_cache();
   test_source_overload_parses_as_builtin();
+  test_source_template_and_specialize_parse();
   std::puts("All parser tests passed.");
   return 0;
 }

@@ -346,6 +346,30 @@ MorphlType* morphl_type_never(Arena* arena) {
   return t;
 }
 
+MorphlType* morphl_type_template(Arena* arena,
+                                 Sym* param_syms,
+                                 size_t param_count,
+                                 AstNode* body) {
+  if (!arena || !body || (param_count > 0 && !param_syms)) return NULL;
+  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
+  if (!t) return NULL;
+  memset(t, 0, sizeof(MorphlType));
+  t->kind = MORPHL_TYPE_TEMPLATE;
+  t->size = 0;
+  t->align = 1;
+  if (param_count > 0) {
+    Sym* params = arena_alloc(arena, param_count * sizeof(Sym));
+    if (!params) return NULL;
+    memcpy(params, param_syms, param_count * sizeof(Sym));
+    t->data.template_t.param_syms = params;
+  }
+  t->data.template_t.param_count = param_count;
+  t->data.template_t.body = body;
+  t->data.template_t.signature_body = ast_clone(body);
+  if (!t->data.template_t.signature_body) return NULL;
+  return t;
+}
+
 /* {} — empty block type, distinct from () (void).
  * Used as the result type of loops and implicit return of void functions. */
 MorphlType* morphl_type_empty_block(Arena* arena) {
@@ -467,6 +491,22 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
       }
       t->data.union_t.variant_types = variants;
     }
+  } else if (t->kind == MORPHL_TYPE_TEMPLATE) {
+    if (t->data.template_t.param_count > 0 &&
+        t->data.template_t.param_syms) {
+      Sym* params =
+          arena_alloc(arena,
+                      t->data.template_t.param_count * sizeof(Sym));
+      if (!params) return NULL;
+      memcpy(params, t->data.template_t.param_syms,
+             t->data.template_t.param_count * sizeof(Sym));
+      t->data.template_t.param_syms = params;
+    }
+    t->data.template_t.body = ast_clone(t->data.template_t.body);
+    if (!t->data.template_t.body) return NULL;
+    t->data.template_t.signature_body =
+        ast_clone(t->data.template_t.signature_body);
+    if (!t->data.template_t.signature_body) return NULL;
   }
 
   return t;
@@ -563,6 +603,17 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
                               b->data.union_t.variant_types[i])) return false;
     }
     return true;
+  }
+
+  if (a->kind == MORPHL_TYPE_TEMPLATE) {
+    if (a->data.template_t.param_count != b->data.template_t.param_count)
+      return false;
+    for (size_t i = 0; i < a->data.template_t.param_count; ++i) {
+      if (a->data.template_t.param_syms[i] != b->data.template_t.param_syms[i])
+        return false;
+    }
+    return ast_shape_equals(a->data.template_t.signature_body,
+                            b->data.template_t.signature_body);
   }
 
   return true;
@@ -782,6 +833,21 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         }
         break;
       }
+      case MORPHL_TYPE_TEMPLATE: {
+        bool ok = type_str_append_cstr(&buf, &len, &cap, "$template");
+        for (size_t i = 0; i < type->data.template_t.param_count; ++i) {
+          Str pname = interns_lookup(interns, type->data.template_t.param_syms[i]);
+          ok = ok && type_str_append_cstr(&buf, &len, &cap, " ");
+          ok = ok && type_str_append(&buf, &len, &cap, pname.ptr, pname.len);
+        }
+        if (!ok) {
+          free(buf);
+          result = new_cstr("<oom>");
+        } else {
+          result = buf;
+        }
+        break;
+      }
       case MORPHL_TYPE_NEVER:
         result = new_cstr("$never");
         break;
@@ -833,6 +899,9 @@ bool morphl_type_is_subtype(const MorphlType* sub, const MorphlType* super) {
     return morphl_type_equals(sub, super);
   }
   if (sub->kind == MORPHL_TYPE_OVERLOAD) {
+    return morphl_type_equals(sub, super);
+  }
+  if (sub->kind == MORPHL_TYPE_TEMPLATE) {
     return morphl_type_equals(sub, super);
   }
   if (sub->kind == MORPHL_TYPE_UNION) {

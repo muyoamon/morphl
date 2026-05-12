@@ -1705,6 +1705,177 @@ static void test_control_flow_inference() {
   printf("  PASS test_control_flow_inference\n");
 }
 
+static void test_template_type_and_specialization() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+    interns, &arena,
+    "$decl f $template T $member T x;\n"
+    "$decl v $specialize f { $decl x 7; };\n",
+    &parser_ctx);
+  assert(root != NULL);
+  MorphlType* root_type = morphl_infer_type_of_ast(ctx, root);
+  assert(root_type != NULL);
+  assert(root->kind == AST_FILE && root->child_count == 2);
+  AstNode* tmpl_decl = root->children[0];
+  AstNode* spec_decl = root->children[1];
+  assert(tmpl_decl->type != NULL);
+  assert(tmpl_decl->type->kind == MORPHL_TYPE_TEMPLATE);
+  assert(tmpl_decl->contributes_to_shape == true);
+  assert(tmpl_decl->contributes_to_layout == true);
+  assert(spec_decl->type != NULL && spec_decl->type->kind == MORPHL_TYPE_INT);
+  assert(spec_decl->children[1]->kind == AST_BUILTIN);
+  assert(spec_decl->children[1]->op ==
+         interns_intern(interns, str_from("$specialize", 11)));
+  assert(spec_decl->children[1]->lowered != NULL);
+  assert(spec_decl->children[1]->lowered->kind == AST_BUILTIN);
+  assert(spec_decl->children[1]->lowered->op ==
+         interns_intern(interns, str_from("$member", 7)));
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("  PASS test_template_type_and_specialization\n");
+}
+
+static void test_template_arithmetic_and_function_specialization() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+    interns, &arena,
+    "$decl add_one_expr $template T $add T 1;\n"
+    "$decl v $specialize add_one_expr 0;\n"
+    "$decl add_one $template T $func ($decl x T) $ret $add x 1;\n"
+    "$decl add_one_int $specialize add_one 0;\n"
+    "$decl called $call ($specialize add_one 0) 41;\n",
+    &parser_ctx);
+  assert(root != NULL);
+  MorphlType* root_type = morphl_infer_type_of_ast(ctx, root);
+  assert(root_type != NULL);
+  assert(root->kind == AST_FILE && root->child_count == 5);
+  assert(root->children[1]->type != NULL &&
+         root->children[1]->type->kind == MORPHL_TYPE_INT);
+  MorphlType* fn_type = root->children[3]->type;
+  assert(fn_type != NULL && fn_type->kind == MORPHL_TYPE_FUNC);
+  assert(fn_type->data.func.param_count == 1);
+  assert(fn_type->data.func.param_types[0]->kind == MORPHL_TYPE_INT);
+  assert(fn_type->data.func.return_type->kind == MORPHL_TYPE_INT);
+  assert(root->children[4]->type != NULL &&
+         root->children[4]->type->kind == MORPHL_TYPE_INT);
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("  PASS test_template_arithmetic_and_function_specialization\n");
+}
+
+static void test_template_rejects_bad_specialization() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+    interns, &arena,
+    "$decl f $template T $add T 1;\n"
+    "$decl bad $specialize f \"x\";\n",
+    &parser_ctx);
+  assert(root != NULL);
+  assert(morphl_infer_type_of_ast(ctx, root) == NULL);
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("  PASS test_template_rejects_bad_specialization\n");
+}
+
+static void test_mutable_template_set_updates_specialization() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+    interns, &arena,
+    "$decl Result $mut $template (T E) { $decl val T; $decl err E; };\n"
+    "$set Result $template (T E) { $decl val T; $decl err E; $decl ok 0; };\n"
+    "$decl res $specialize Result (1.0 $null);\n",
+    &parser_ctx);
+  assert(root != NULL);
+  TypeContext* ctx = parser_ctx.type_context;
+  MorphlType* root_type = morphl_infer_type_of_ast(ctx, root);
+  assert(root_type != NULL);
+  assert(root->kind == AST_FILE && root->child_count == 3);
+  assert(ctx->file_type != NULL && ctx->file_type->kind == MORPHL_TYPE_BLOCK);
+  MorphlType* res_type = NULL;
+  for (size_t i = 0; i < ctx->file_type->data.block.field_count; ++i) {
+    if (ctx->file_type->data.block.field_names[i] ==
+        interns_intern(interns, str_from("res", 3))) {
+      res_type = ctx->file_type->data.block.field_types[i];
+      break;
+    }
+  }
+  assert(res_type != NULL && res_type->kind == MORPHL_TYPE_BLOCK);
+  assert(res_type->data.block.field_count == 2);
+  AstNode* res_body = root->children[2]->children[1]->lowered;
+  assert(res_body != NULL && res_body->kind == AST_BLOCK);
+  assert(res_body->child_count == 3);
+  assert(res_body->children[2]->kind == AST_DECL);
+  assert(res_body->children[2]->children[0]->op ==
+         interns_intern(interns, str_from("ok", 2)));
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("  PASS test_mutable_template_set_updates_specialization\n");
+}
+
+static void test_template_exact_shape_equality() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+
+  Sym t_sym = interns_intern(interns, str_from("T", 1));
+  AstNode* body_x = make_builtin(interns, "$member", {
+    make_ident(interns, "T"),
+    make_ident(interns, "x")
+  });
+  AstNode* body_x_clone = ast_clone(body_x);
+  AstNode* body_y = make_builtin(interns, "$member", {
+    make_ident(interns, "T"),
+    make_ident(interns, "y")
+  });
+  MorphlType* tmpl_x = morphl_type_template(&arena, &t_sym, 1, body_x);
+  MorphlType* tmpl_x2 = morphl_type_template(&arena, &t_sym, 1, body_x_clone);
+  MorphlType* tmpl_y = morphl_type_template(&arena, &t_sym, 1, body_y);
+  assert(tmpl_x != NULL && tmpl_x2 != NULL && tmpl_y != NULL);
+  assert(morphl_type_equals(tmpl_x, tmpl_x2));
+  assert(!morphl_type_equals(tmpl_x, tmpl_y));
+
+  interns_free(interns);
+  arena_free(&arena);
+  printf("  PASS test_template_exact_shape_equality\n");
+}
+
 int main() {
   printf("Running typing system tests...\n\n");
 
@@ -1742,6 +1913,11 @@ int main() {
   test_array_type();
   test_union_type();
   test_control_flow_inference();
+  test_template_type_and_specialization();
+  test_template_arithmetic_and_function_specialization();
+  test_template_rejects_bad_specialization();
+  test_mutable_template_set_updates_specialization();
+  test_template_exact_shape_equality();
   // Note: Recursion is tested via examples/test_recursion.mpl
   // Unit testing recursion requires full parser integration
 
