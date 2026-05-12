@@ -1745,6 +1745,46 @@ static void test_template_type_and_specialization() {
   printf("  PASS test_template_type_and_specialization\n");
 }
 
+static void test_template_union_field_specialization() {
+  Arena arena = create_test_arena();
+  InternTable* interns = create_test_interns();
+  assert(operator_registry_init(interns));
+  TypeContext* ctx = type_context_new(&arena, interns);
+  assert(ctx != NULL);
+
+  ScopedParserContext parser_ctx;
+  AstNode* root = parse_source(
+    interns, &arena,
+    "$decl Result $template (T E) {\n"
+    "  $decl val $union T E;\n"
+    "};\n"
+    "$decl r $specialize Result (0 \"\");\n",
+    &parser_ctx);
+  assert(root != NULL);
+  MorphlType* root_type = morphl_infer_type_of_ast(ctx, root);
+  assert(root_type != NULL);
+  assert(root->kind == AST_FILE && root->child_count == 2);
+  AstNode* tmpl_decl = root->children[0];
+  AstNode* spec_decl = root->children[1];
+  assert(tmpl_decl->type != NULL);
+  assert(tmpl_decl->type->kind == MORPHL_TYPE_TEMPLATE);
+  assert(spec_decl->type != NULL);
+  assert(spec_decl->type->kind == MORPHL_TYPE_BLOCK);
+  assert(spec_decl->type->data.block.field_count == 1);
+  MorphlType* val_type = spec_decl->type->data.block.field_types[0];
+  assert(val_type != NULL && val_type->kind == MORPHL_TYPE_UNION);
+  assert(val_type->data.union_t.variant_count == 2);
+  assert(val_type->data.union_t.variant_types[0]->kind == MORPHL_TYPE_INT);
+  assert(val_type->data.union_t.variant_types[1]->kind == MORPHL_TYPE_STRING);
+
+  ast_free(root);
+  scoped_parser_free(&parser_ctx);
+  type_context_free(ctx);
+  interns_free(interns);
+  arena_free(&arena);
+  printf("  PASS test_template_union_field_specialization\n");
+}
+
 static void test_template_arithmetic_and_function_specialization() {
   Arena arena = create_test_arena();
   InternTable* interns = create_test_interns();
@@ -1914,6 +1954,7 @@ int main() {
   test_union_type();
   test_control_flow_inference();
   test_template_type_and_specialization();
+  test_template_union_field_specialization();
   test_template_arithmetic_and_function_specialization();
   test_template_rejects_bad_specialization();
   test_mutable_template_set_updates_specialization();

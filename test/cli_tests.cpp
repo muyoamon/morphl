@@ -223,6 +223,52 @@ static void test_vm_compile_ignores_type_only_import_dependency() {
   assert(output.find("output written to " + exe_path) != std::string::npos);
 }
 
+static void test_std_iterable_compiles() {
+  std::string temp_dir = make_temp_dir();
+  std::string object_path = temp_dir + "/iterable.mplo";
+  std::string log_path = temp_dir + "/iterable.log";
+  std::string iterable_path = std::string(MORPHL_SOURCE_DIR) + "/std/iterable.mpl";
+
+  std::string command = "cd " + quote_arg(temp_dir) + " && " +
+                        quote_arg(MORPHLC_PATH) + " -c -o " +
+                        quote_arg(object_path) + " " + quote_arg(iterable_path);
+  int exit_code = run_command_capture(command, log_path);
+
+  assert(exit_code == 0);
+  assert(file_exists(object_path));
+
+  std::string output = read_file(log_path);
+  assert(output.find("output written to " + object_path) != std::string::npos);
+  assert(output.find("group\n"
+                     "                      ident T\n"
+                     "                      literal 0") != std::string::npos);
+}
+
+static void test_std_iterable_import_exports_templates() {
+  std::string temp_dir = make_temp_dir();
+  std::string source_path = temp_dir + "/use_iterable.mpl";
+  std::string object_path = temp_dir + "/use_iterable.mplo";
+  std::string log_path = temp_dir + "/use_iterable.log";
+  std::string iterable_path = std::string(MORPHL_SOURCE_DIR) + "/std/iterable.mpl";
+
+  write_file(source_path,
+             std::string("$alias Iterator $member $import \"") +
+                 iterable_path + "\" Iterator;\n"
+             "$alias Iterable $member $import \"" +
+                 iterable_path + "\" Iterable;\n");
+
+  std::string command = "cd " + quote_arg(temp_dir) + " && " +
+                        quote_arg(MORPHLC_PATH) + " -c -o " +
+                        quote_arg(object_path) + " " + quote_arg(source_path);
+  int exit_code = run_command_capture(command, log_path);
+
+  assert(exit_code == 0);
+  assert(file_exists(object_path));
+
+  std::string output = read_file(log_path);
+  assert(output.find("output written to " + object_path) != std::string::npos);
+}
+
 static void test_mplvm_runs_executable() {
   std::string temp_dir = make_temp_dir();
   std::string source_path = temp_dir + "/prog.mpl";
@@ -453,6 +499,8 @@ int main() {
   test_vm_compile_links_import_graph();
   test_vm_compile_runs_imported_recursive_function();
   test_vm_compile_ignores_type_only_import_dependency();
+  test_std_iterable_compiles();
+  test_std_iterable_import_exports_templates();
   test_mplvm_runs_executable();
   test_mplinsp_reads_object_file();
   test_mplinsp_reads_executable_file();

@@ -809,32 +809,6 @@ static MorphlType* pp_action_index(const OperatorInfo* info,
   return arr_type->data.array.elem_type;
 }
 
-/* $union V1 V2 ... — tagged union type */
-static MorphlType* pp_action_union(const OperatorInfo* info,
-                                   void* global_state,
-                                   void* block_state,
-                                   AstNode** args,
-                                   size_t arg_count) {
-  (void)info; (void)global_state;
-  TypeContext* ctx = (TypeContext*)block_state;
-  if (!ctx || arg_count < 1) return NULL;
-
-  MorphlType** variant_types = (MorphlType**)arena_push(ctx->arena, NULL, arg_count * sizeof(MorphlType*));
-  if (!variant_types) return NULL;
-  for (size_t i = 0; i < arg_count; ++i) {
-    if (!args[i]) { variant_types[i] = morphl_type_never(ctx->arena); continue; }
-    /* Resolve variant type structurally from the expression */
-    MorphlType* vt = morphl_infer_type_of_ast(ctx, args[i]);
-    if (!vt) {
-      MorphlError err = MORPHL_ERR_NODE(args[i], MORPHL_E_TYPE, "$union: cannot resolve variant type");
-      morphl_error_emit(NULL, &err);
-      return NULL;
-    }
-    variant_types[i] = vt;
-  }
-  return morphl_type_union(ctx->arena, variant_types, arg_count);
-}
-
 /* $as expr TargetType — reinterpret cast */
 static MorphlType* pp_action_as(const OperatorInfo* info,
                                 void* global_state,
@@ -955,7 +929,7 @@ static OperatorRow kBuiltinOps[] = {
   {"$index",  AST_BUILTIN,false, 2, 2,           pp_action_index,   0, OP_PP_KEEP_NODE, INDEX},
 
   // Union types and reinterpret cast
-  {"$union",  AST_BUILTIN, true, 1, (size_t)-1,  pp_action_union,   0, OP_PP_KEEP_NODE, UNION},
+  {"$union",  AST_BUILTIN,false, 1, (size_t)-1,  NULL,              0, OP_PP_KEEP_NODE, UNION},
   {"$as",     AST_BUILTIN,false, 2, 2,           pp_action_as,      0, OP_PP_KEEP_NODE, AS},
 
   // overload type 
