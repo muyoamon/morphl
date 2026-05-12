@@ -74,6 +74,10 @@ typedef struct {
   MorphlType** this_stack;
   size_t this_depth;
   size_t this_capacity;
+
+  MorphlType** parent_stack;
+  size_t parent_depth;
+  size_t parent_capacity;
 } TypeContext;
 
 // Create/destroy TypeContext
@@ -115,6 +119,9 @@ bool type_context_push_global(TypeContext* ctx, MorphlType* global_type);
 bool type_context_pop_global(TypeContext* ctx);
 MorphlType* type_context_get_file(TypeContext* ctx);
 MorphlType* type_context_get_global(TypeContext* ctx);
+bool type_context_push_parent(TypeContext* ctx, MorphlType* parent_type);
+bool type_context_pop_parent(TypeContext* ctx);
+MorphlType* type_context_get_parent(TypeContext* ctx);
 
 // Return type management
 void type_context_set_return_type(TypeContext* ctx, MorphlType* ret_type);

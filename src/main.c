@@ -187,12 +187,23 @@ static bool frontend_parse_file(const char* grammar_path,
   return true;
 }
 
-static bool collect_import_paths(const ScopedParserContext* parser_ctx,
-                                 StringList* out_paths) {
-  if (!parser_ctx || !out_paths) return false;
-  for (size_t i = 0; i < parser_ctx->import_cache_count; ++i) {
-    const char* path = parser_ctx->import_cache_entries[i].canonical_path.ptr;
-    if (!path || string_list_contains(out_paths, path)) continue;
+static bool collect_vm_dependency_import_paths(InternTable* interns,
+                                               const AstNode* root,
+                                               StringList* out_paths) {
+  if (!interns || !root || !out_paths) return false;
+  if (root->kind != AST_FILE && root->kind != AST_BLOCK) return true;
+  Sym import_sym = interns_intern(interns, str_from("$import", 7));
+  for (size_t i = 0; i < root->child_count; ++i) {
+    const AstNode* node = root->children[i];
+    if (!node || node->kind != AST_DECL || node->child_count < 2) continue;
+    const AstNode* rhs = node->children[1];
+    if (!rhs || rhs->kind != AST_BUILTIN || rhs->op != import_sym ||
+        rhs->child_count < 1 || !rhs->children[0] ||
+        !rhs->children[0]->import_path.ptr) {
+      continue;
+    }
+    const char* path = rhs->children[0]->import_path.ptr;
+    if (string_list_contains(out_paths, path)) continue;
     if (!string_list_push_copy(out_paths, path)) return false;
   }
   return true;
@@ -228,7 +239,10 @@ static bool compile_vm_dependency_graph_recursive(const char* source_path,
   if (!compile_vm_object_from_unit(&unit, object_path)) goto done;
   if (!string_list_push_owned(object_paths, object_path)) goto done;
   object_path = NULL;
-  if (!collect_import_paths(&unit.parser_ctx, &import_paths)) goto done;
+  if (!collect_vm_dependency_import_paths(unit.interns, unit.root,
+                                          &import_paths)) {
+    goto done;
+  }
   frontend_unit_free(&unit);
   for (size_t i = 0; i < import_paths.count; ++i) {
     if (!compile_vm_dependency_graph_recursive(import_paths.items[i],
@@ -367,7 +381,9 @@ int main(int argc, char** argv) {
         } else if (!compile_vm_object_from_unit(&unit, root_object_path) ||
                    !string_list_push_owned(&temp_object_paths,
                                            root_object_path) ||
-                   !collect_import_paths(&unit.parser_ctx, &root_imports)) {
+                   !collect_vm_dependency_import_paths(unit.interns,
+                                                       unit.root,
+                                                       &root_imports)) {
           free(root_object_path);
           accepted = false;
         } else {

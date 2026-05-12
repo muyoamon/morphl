@@ -112,6 +112,32 @@ static struct MorphlImportCacheEntry* import_cache_store(
   return entry;
 }
 
+static bool import_cache_absorb(ScopedParserContext* dst,
+                                ScopedParserContext* src) {
+  if (!dst || !src || src->import_cache_count == 0) return true;
+  size_t needed = dst->import_cache_count + src->import_cache_count;
+  if (needed > dst->import_cache_cap) {
+    size_t new_cap = dst->import_cache_cap ? dst->import_cache_cap * 2 : 4;
+    while (new_cap < needed) new_cap *= 2;
+    struct MorphlImportCacheEntry* resized =
+        (struct MorphlImportCacheEntry*)realloc(
+            dst->import_cache_entries,
+            new_cap * sizeof(struct MorphlImportCacheEntry));
+    if (!resized) return false;
+    dst->import_cache_entries = resized;
+    dst->import_cache_cap = new_cap;
+  }
+  memcpy(dst->import_cache_entries + dst->import_cache_count,
+         src->import_cache_entries,
+         src->import_cache_count * sizeof(struct MorphlImportCacheEntry));
+  dst->import_cache_count += src->import_cache_count;
+  free(src->import_cache_entries);
+  src->import_cache_entries = NULL;
+  src->import_cache_count = 0;
+  src->import_cache_cap = 0;
+  return true;
+}
+
 // $import: validate single string argument; keep node for downstream handling
 static MorphlType* pp_action_import(const OperatorInfo* info,
                                     void* global_state,
@@ -178,6 +204,7 @@ static MorphlType* pp_action_import(const OperatorInfo* info,
 
   AstNode* module_root = NULL;
   bool ok = scoped_parse_ast(&module_ctx, tokens, token_count, &module_root);
+  if (ok && !import_cache_absorb(ctx, &module_ctx)) ok = false;
   scoped_parser_free(&module_ctx);
   /* Intern all identifier/literal strings BEFORE freeing source_buffer and tokens,
    * so that AST value.ptr fields point to stable intern-table memory afterwards. */
@@ -747,45 +774,6 @@ static MorphlType* pp_action_const(const OperatorInfo* info,
 }
 
 
-/* $array elem-type count — allocate a fixed-size array */
-static MorphlType* pp_action_array(const OperatorInfo* info,
-                                   void* global_state,
-                                   void* block_state,
-                                   AstNode** args,
-                                   size_t arg_count) {
-  (void)info; (void)global_state;
-  TypeContext* ctx = (TypeContext*)block_state;
-  if (!ctx || arg_count != 2 || !args[0] || !args[1]) return NULL;
-
-  /* Resolve element type structurally from the expression */
-  MorphlType* elem_type = morphl_infer_type_of_ast(ctx, args[0]);
-  if (!elem_type) {
-    MorphlError err = MORPHL_ERR_NODE(args[0], MORPHL_E_TYPE, "$array: cannot resolve element type");
-    morphl_error_emit(NULL, &err);
-    return NULL;
-  }
-
-  /* Count must be an integer literal */
-  if (args[1]->kind != AST_LITERAL || !args[1]->value.ptr) {
-    MorphlError err = MORPHL_ERR_NODE(args[1], MORPHL_E_TYPE, "$array: count must be an integer literal");
-    morphl_error_emit(NULL, &err);
-    return NULL;
-  }
-  char buf[32];
-  size_t n = args[1]->value.len < sizeof(buf) - 1 ? args[1]->value.len : sizeof(buf) - 1;
-  memcpy(buf, args[1]->value.ptr, n);
-  buf[n] = '\0';
-  char* end = NULL;
-  long long count = strtoll(buf, &end, 10);
-  if (end == buf || count <= 0) {
-    MorphlError err = MORPHL_ERR_NODE(args[1], MORPHL_E_TYPE, "$array: count must be a positive integer");
-    morphl_error_emit(NULL, &err);
-    return NULL;
-  }
-
-  return morphl_type_array(ctx->arena, elem_type, (size_t)count);
-}
-
 /* $index array index — element access */
 static MorphlType* pp_action_index(const OperatorInfo* info,
                                    void* global_state,
@@ -963,7 +951,7 @@ static OperatorRow kBuiltinOps[] = {
   {"$extern", AST_BUILTIN,false, 1, 2,           NULL,              0, OP_PP_KEEP_NODE, EXTERN},
 
   // Array types
-  {"$array",  AST_BUILTIN, true, 2, 2,           pp_action_array,   0, OP_PP_KEEP_NODE, ARRAY},
+  {"$array",  AST_BUILTIN,false, 2, 2,           NULL,              0, OP_PP_KEEP_NODE, ARRAY},
   {"$index",  AST_BUILTIN,false, 2, 2,           pp_action_index,   0, OP_PP_KEEP_NODE, INDEX},
 
   // Union types and reinterpret cast

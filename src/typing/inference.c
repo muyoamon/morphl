@@ -634,6 +634,29 @@ static bool collect_specialize_args(AstNode* spec,
   return true;
 }
 
+static void copy_matching_prop_values(MorphlType* dst, MorphlType* src) {
+  dst = unwrap_ref(dst);
+  src = unwrap_ref(src);
+  if (!dst || !src ||
+      dst->kind != MORPHL_TYPE_BLOCK ||
+      src->kind != MORPHL_TYPE_BLOCK ||
+      !dst->data.block.prop_names ||
+      !dst->data.block.prop_values ||
+      !src->data.block.prop_names ||
+      !src->data.block.prop_values) {
+    return;
+  }
+
+  for (size_t i = 0; i < dst->data.block.prop_count; ++i) {
+    for (size_t j = 0; j < src->data.block.prop_count; ++j) {
+      if (dst->data.block.prop_names[i] == src->data.block.prop_names[j]) {
+        dst->data.block.prop_values[i] = src->data.block.prop_values[j];
+        break;
+      }
+    }
+  }
+}
+
 static MorphlType* infer_template_expr(TypeContext* ctx, AstNode* node) {
   if (!ctx || !node || node->child_count != 2) return NULL;
   Sym* params = NULL;
@@ -732,6 +755,7 @@ static MorphlType* infer_specialize_expr(TypeContext* ctx, AstNode* node) {
     ast_free(body);
     return NULL;
   }
+  copy_matching_prop_values(signature_result, result);
   body->type = result;
   if (inline_template) {
     if (!ast_node_take(node, body)) return NULL;
@@ -741,6 +765,93 @@ static MorphlType* infer_specialize_expr(TypeContext* ctx, AstNode* node) {
   }
   node->type = signature_result;
   return signature_result;
+}
+
+static MorphlType* infer_impl_override_block(TypeContext* ctx,
+                                             AstNode* block,
+                                             MorphlType* base_type) {
+  if (!ctx || !block || block->kind != AST_BLOCK || !base_type) return NULL;
+  if (!type_context_push_scope(ctx)) return NULL;
+  if (!type_context_push_this(ctx, base_type)) {
+    type_context_pop_scope(ctx);
+    return NULL;
+  }
+
+  Sym* prop_names = NULL;
+  MorphlType** prop_types = NULL;
+  AstNode** prop_values = NULL;
+  size_t prop_count = 0;
+  size_t prop_cap = 0;
+  bool ok = true;
+
+  for (size_t i = 0; i < block->child_count; ++i) {
+    AstNode* stmt = block->children[i];
+    MorphlType* stmt_type = morphl_infer_type_of_ast(ctx, stmt);
+    if (!stmt_type) {
+      ok = false;
+      break;
+    }
+    if (!stmt || stmt->kind != AST_PROP || stmt->child_count < 1) continue;
+    AstNode* name_node = stmt->children[0];
+    if (!name_node) {
+      ok = false;
+      break;
+    }
+    if (!name_node->op && name_node->value.ptr) {
+      name_node->op = interns_intern(ctx->interns, name_node->value);
+    }
+    if (!name_node->op) {
+      ok = false;
+      break;
+    }
+    if (prop_count >= prop_cap) {
+      size_t new_cap = prop_cap ? prop_cap * 2 : 4;
+      Sym* new_names = (Sym*)malloc(new_cap * sizeof(Sym));
+      MorphlType** new_types =
+          (MorphlType**)malloc(new_cap * sizeof(MorphlType*));
+      AstNode** new_values =
+          (AstNode**)malloc(new_cap * sizeof(AstNode*));
+      if (!new_names || !new_types || !new_values) {
+        free(new_names);
+        free(new_types);
+        free(new_values);
+        ok = false;
+        break;
+      }
+      if (prop_count > 0) {
+        memcpy(new_names, prop_names, prop_count * sizeof(Sym));
+        memcpy(new_types, prop_types, prop_count * sizeof(MorphlType*));
+        memcpy(new_values, prop_values, prop_count * sizeof(AstNode*));
+      }
+      free(prop_names);
+      free(prop_types);
+      free(prop_values);
+      prop_names = new_names;
+      prop_types = new_types;
+      prop_values = new_values;
+      prop_cap = new_cap;
+    }
+    prop_names[prop_count] = name_node->op;
+    prop_types[prop_count] = stmt_type;
+    prop_values[prop_count] = stmt->child_count >= 2 ? stmt->children[1] : NULL;
+    prop_count++;
+  }
+
+  MorphlType* result = NULL;
+  if (ok) {
+    result = morphl_type_block_with_props(ctx->arena, NULL, NULL, 0, NULL,
+                                          NULL, NULL, 0, NULL,
+                                          prop_names, prop_types, prop_values,
+                                          prop_count);
+    block->type = result;
+  }
+
+  free(prop_names);
+  free(prop_types);
+  free(prop_values);
+  type_context_pop_this(ctx);
+  type_context_pop_scope(ctx);
+  return ok ? result : NULL;
 }
 
 static bool refs_assignable(const MorphlType* target_ref, const MorphlType* value_type) {
@@ -958,11 +1069,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$parent", 7))) {
-    /* $parent: the block scope enclosing the current function.
-     * Inside a function body, type_context_get_this() returns the block type
-     * of the scope that contains the function (since AST_FUNC doesn't push_this),
-     * which is exactly the $parent type. */
-    MorphlType* parent_type = type_context_get_this(ctx);
+    MorphlType* parent_type = type_context_get_parent(ctx);
     if (!parent_type) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$parent: no enclosing block scope");
       morphl_error_emit(NULL, &err);
@@ -1459,26 +1566,60 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       }
     }
 
-    /* Build result: base structural fields + merged props (trait defaults + overrides) */
-    /* Merge: start with trait props, replace with override where provided */
-    size_t total_props = trait_type->data.block.prop_count;
-    Sym* merged_names = (Sym*)malloc(total_props * sizeof(Sym));
-    MorphlType** merged_types = (MorphlType**)malloc(total_props * sizeof(MorphlType*));
-    if (!merged_names || !merged_types) {
-      free(merged_names); free(merged_types);
+    /* Build result: base structural fields + base props + trait props.
+     * Trait props are replaced by override props where provided. */
+    size_t max_props = (base_type->kind == MORPHL_TYPE_BLOCK
+                            ? base_type->data.block.prop_count
+                            : 0) +
+                       trait_type->data.block.prop_count;
+    Sym* merged_names = (Sym*)malloc(max_props * sizeof(Sym));
+    MorphlType** merged_types = (MorphlType**)malloc(max_props * sizeof(MorphlType*));
+    AstNode** merged_values = (AstNode**)malloc(max_props * sizeof(AstNode*));
+    if (!merged_names || !merged_types || !merged_values) {
+      free(merged_names); free(merged_types); free(merged_values);
       return NULL;
     }
+    size_t total_props = 0;
+    if (base_type->kind == MORPHL_TYPE_BLOCK) {
+      for (size_t bi = 0; bi < base_type->data.block.prop_count; ++bi) {
+        merged_names[total_props] = base_type->data.block.prop_names[bi];
+        merged_types[total_props] = base_type->data.block.prop_types
+                                        ? base_type->data.block.prop_types[bi]
+                                        : NULL;
+        merged_values[total_props] = base_type->data.block.prop_values
+                                         ? base_type->data.block.prop_values[bi]
+                                         : NULL;
+        total_props++;
+      }
+    }
     for (size_t ti = 0; ti < trait_type->data.block.prop_count; ++ti) {
-      merged_names[ti] = trait_type->data.block.prop_names[ti];
-      merged_types[ti] = trait_type->data.block.prop_types[ti]; /* default */
+      Sym prop_name = trait_type->data.block.prop_names[ti];
+      MorphlType* prop_type = trait_type->data.block.prop_types[ti];
+      AstNode* prop_value = trait_type->data.block.prop_values
+                                ? trait_type->data.block.prop_values[ti]
+                                : NULL;
       if (override_type && override_type->kind == MORPHL_TYPE_BLOCK) {
         for (size_t oi = 0; oi < override_type->data.block.prop_count; ++oi) {
-          if (override_type->data.block.prop_names[oi] == merged_names[ti]) {
-            merged_types[ti] = override_type->data.block.prop_types[oi];
+          if (override_type->data.block.prop_names[oi] == prop_name) {
+            prop_type = override_type->data.block.prop_types[oi];
+            prop_value = override_type->data.block.prop_values
+                             ? override_type->data.block.prop_values[oi]
+                             : NULL;
             break;
           }
         }
       }
+      size_t dst = total_props;
+      for (size_t mi = 0; mi < total_props; ++mi) {
+        if (merged_names[mi] == prop_name) {
+          dst = mi;
+          break;
+        }
+      }
+      if (dst == total_props) total_props++;
+      merged_names[dst] = prop_name;
+      merged_types[dst] = prop_type;
+      merged_values[dst] = prop_value;
     }
     MorphlType* result = morphl_type_block_with_props(
         ctx->arena,
@@ -1490,9 +1631,10 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.layout_field_types : NULL,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.layout_field_count : 0,
         base_type->kind == MORPHL_TYPE_BLOCK ? base_type->data.block.layout_field_storage : NULL,
-        merged_names, merged_types, NULL, total_props);
+        merged_names, merged_types, merged_values, total_props);
     free(merged_names);
     free(merged_types);
+    free(merged_values);
     return result;
   }
 
@@ -2014,7 +2156,10 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
     case AST_BLOCK: {
       if (!type_context_push_scope(ctx)) return NULL;
       MorphlType* block_type = morphl_type_block(ctx->arena, NULL, NULL, 0);
-      if (!block_type || !type_context_push_this(ctx, block_type)) {
+      MorphlType* parent_type = type_context_get_this(ctx);
+      if (!block_type || !type_context_push_parent(ctx, parent_type) ||
+          !type_context_push_this(ctx, block_type)) {
+        if (block_type) type_context_pop_parent(ctx);
         type_context_pop_scope(ctx);
         return NULL;
       }
@@ -2205,6 +2350,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         }
       }
       type_context_pop_this(ctx);
+      type_context_pop_parent(ctx);
       if (pushed_file) {
         type_context_pop_file(ctx);
       }
@@ -2257,6 +2403,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       // Set expected return type to UNKNOWN initially
       // This allows $ret to establish the return type on first encounter
       // and enables recursion (recursive call sees UNKNOWN matching UNKNOWN)
+      MorphlType* saved_return_type = type_context_get_return_type(ctx);
       type_context_set_return_type(ctx, current_func->data.func.return_type);
       
       // Infer return type from function body in the pseudo-scope
@@ -2266,7 +2413,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       if (!body_type) {
         type_context_pop_func(ctx);
         type_context_pop_scope(ctx);
-        type_context_set_return_type(ctx, NULL);
+        type_context_set_return_type(ctx, saved_return_type);
         MorphlError err = MORPHL_ERR_AT(func_body, MORPHL_E_TYPE, "$func: cannot infer body type");
         morphl_error_emit(NULL, &err);
         return NULL;
@@ -2283,7 +2430,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       if (!return_type) {
         type_context_pop_func(ctx);
         type_context_pop_scope(ctx);
-        type_context_set_return_type(ctx, NULL);
+        type_context_set_return_type(ctx, saved_return_type);
         MorphlError err = MORPHL_ERR_AT(func_body, MORPHL_E_TYPE, "$func: cannot determine return type");
         morphl_error_emit(NULL, &err);
         return NULL;
@@ -2294,8 +2441,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       type_context_pop_func(ctx);
       type_context_pop_scope(ctx);
       
-      // Clear return type after function
-      type_context_set_return_type(ctx, NULL);
+      type_context_set_return_type(ctx, saved_return_type);
       
       // Create function type with 1 parameter (the parameter expression)
       // The parameter type represents what the function accepts
@@ -2313,6 +2459,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       Sym set_sym = interns_intern(ctx->interns, str_from("$set", 4));
       Sym import_sym = interns_intern(ctx->interns, str_from("$import", 7));
       Sym extern_sym = interns_intern(ctx->interns, str_from("$extern", 7));
+      Sym impl_sym = interns_intern(ctx->interns, str_from("$impl", 5));
       Sym template_sym = interns_intern(ctx->interns, str_from("$template", 9));
       Sym specialize_sym = interns_intern(ctx->interns, str_from("$specialize", 11));
       if (node->op == template_sym) {
@@ -2346,6 +2493,27 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           return NULL;
         }
         return module_type;
+      }
+      if (node->op == impl_sym) {
+        if (node->child_count < 2 || node->child_count > 3) {
+          MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                                          "$impl expects 2 or 3 args");
+          morphl_error_emit(NULL, &err);
+          return NULL;
+        }
+        MorphlType* arg_types[3] = {0};
+        arg_types[0] = morphl_infer_type_of_ast(ctx, node->children[0]);
+        arg_types[1] = morphl_infer_type_of_ast(ctx, node->children[1]);
+        if (!arg_types[0] || !arg_types[1]) return NULL;
+        if (node->child_count == 3) {
+          arg_types[2] =
+              infer_impl_override_block(ctx, node->children[2],
+                                        unwrap_ref(arg_types[1]));
+          if (!arg_types[2]) return NULL;
+          node->children[2]->type = arg_types[2];
+        }
+        return morphl_infer_type_for_op(ctx, node, node->op, arg_types,
+                                        node->child_count);
       }
       if (node->op == idtstr_sym) {
         if (node->child_count != 1) {

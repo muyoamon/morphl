@@ -20,6 +20,7 @@ static void* arena_alloc(Arena* a, size_t size) {
 #define INITIAL_FILE_CAPACITY 4
 #define INITIAL_GLOBAL_CAPACITY 4
 #define INITIAL_FUNC_STACK_CAPACITY 4
+#define INITIAL_PARENT_CAPACITY 8
 
 TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   if (!arena || !interns) return NULL;
@@ -46,6 +47,10 @@ TypeContext* type_context_new(Arena* arena, InternTable* interns) {
   if (!ctx->this_stack) return NULL;
   ctx->this_depth = 0;
   ctx->this_capacity = INITIAL_THIS_CAPACITY;
+  ctx->parent_stack = arena_alloc(arena, INITIAL_PARENT_CAPACITY * sizeof(MorphlType*));
+  if (!ctx->parent_stack) return NULL;
+  ctx->parent_depth = 0;
+  ctx->parent_capacity = INITIAL_PARENT_CAPACITY;
 
   ctx->func_stack = arena_alloc(arena, INITIAL_FUNC_STACK_CAPACITY * sizeof(MorphlType*));
   if (!ctx->func_stack) return NULL;
@@ -493,6 +498,33 @@ MorphlType* type_context_get_file(TypeContext* ctx) {
 MorphlType* type_context_get_global(TypeContext* ctx) {
   if (!ctx) return NULL;
   return ctx->global_type;
+}
+
+bool type_context_push_parent(TypeContext* ctx, MorphlType* parent_type) {
+  if (!ctx) return false;
+  if (ctx->parent_depth >= ctx->parent_capacity) {
+    size_t new_cap = ctx->parent_capacity * 2;
+    MorphlType** new_stack =
+        arena_alloc(ctx->arena, new_cap * sizeof(MorphlType*));
+    if (!new_stack) return false;
+    memcpy(new_stack, ctx->parent_stack,
+           ctx->parent_depth * sizeof(MorphlType*));
+    ctx->parent_stack = new_stack;
+    ctx->parent_capacity = new_cap;
+  }
+  ctx->parent_stack[ctx->parent_depth++] = parent_type;
+  return true;
+}
+
+bool type_context_pop_parent(TypeContext* ctx) {
+  if (!ctx || ctx->parent_depth == 0) return false;
+  ctx->parent_depth--;
+  return true;
+}
+
+MorphlType* type_context_get_parent(TypeContext* ctx) {
+  if (!ctx || ctx->parent_depth == 0) return NULL;
+  return ctx->parent_stack[ctx->parent_depth - 1];
 }
 
 void type_context_print_debug(TypeContext* ctx) {

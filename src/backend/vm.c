@@ -59,6 +59,14 @@ static void vm_diag(MorphlSeverity sev, const AstNode* node, MorphlErrCode code,
 #define VM_WARN(node, fmt, ...) \
   vm_diag(MORPHL_SEV_WARN, (node), MORPHL_E_CODEGEN, fmt, ##__VA_ARGS__)
 
+static bool prop_name_matches_member(Str prop_name, Str member_name) {
+  if (str_eq(prop_name, member_name)) return true;
+  return prop_name.ptr && member_name.ptr &&
+         prop_name.len == member_name.len + 1 &&
+         prop_name.ptr[0] == '$' &&
+         memcmp(prop_name.ptr + 1, member_name.ptr, member_name.len) == 0;
+}
+
 /* ── growable byte buffer ───────────────────────────────────────────────────
  */
 
@@ -505,6 +513,22 @@ static const MorphlType* import_module_decl_type(const ImportSlot* slot,
   return NULL;
 }
 
+static AstNode* import_module_decl_node(AstNode* module_root, Str symbol_name) {
+  if (!module_root ||
+      (module_root->kind != AST_FILE && module_root->kind != AST_BLOCK)) {
+    return NULL;
+  }
+  for (size_t i = 0; i < module_root->child_count; ++i) {
+    AstNode* node = module_root->children[i];
+    if (!node || node->kind != AST_DECL || node->child_count < 2 ||
+        !node->children[0] || node->children[0]->kind != AST_IDENT) {
+      continue;
+    }
+    if (str_eq(node->children[0]->value, symbol_name)) return node;
+  }
+  return NULL;
+}
+
 static bool emit_external_func_iconst(VmEmitter* e, Str module_path, Str func_name) {
   if (!emit_op(e, VM_OP_ICONST)) return false;
   size_t operand_off = e->code.len;
@@ -521,9 +545,24 @@ static uint32_t func_return_size_u32(const MorphlType* fn_type);
 static size_t func_alloc(VmEmitter* e);
 static bool builtin_is_name(const VmEmitter* e, const AstNode* node,
                             const char* name);
+static bool emit_native_func_value_from_module(VmEmitter* e,
+                                               const MorphlType* fn_type,
+                                               Str fallback_name,
+                                               Str symbol_name,
+                                               Str module_path);
 
 static bool emit_native_func_value(VmEmitter* e, const MorphlType* fn_type,
                                    Str fallback_name, Str symbol_name) {
+  return emit_native_func_value_from_module(e, fn_type, fallback_name,
+                                            symbol_name,
+                                            current_module_origin_path(e));
+}
+
+static bool emit_native_func_value_from_module(VmEmitter* e,
+                                               const MorphlType* fn_type,
+                                               Str fallback_name,
+                                               Str symbol_name,
+                                               Str module_path) {
   if (!e) return false;
   Str resolved_name = symbol_name.ptr ? symbol_name : fallback_name;
   if (!resolved_name.ptr || resolved_name.len == 0) return false;
@@ -539,8 +578,7 @@ static bool emit_native_func_value(VmEmitter* e, const MorphlType* fn_type,
     param_sz = (uint32_t)type_frame_size(param_type);
   }
   size_t native_idx = SIZE_MAX;
-  if (!add_native_symbol(e, resolved_name, current_module_origin_path(e),
-                         &native_idx))
+  if (!add_native_symbol(e, resolved_name, module_path, &native_idx))
     return false;
   size_t fidx = func_alloc(e);
   if (fidx == SIZE_MAX) return false;
@@ -3396,10 +3434,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                 return alias_add(e, name, src->value, 0);
             }
           }
-          VM_ERR(node, "$ref: unsupported lvalue kind");
-          return false;
+            if (!builtin_is_name(e, lval, "$parent")) {
+              VM_ERR(node, "$ref: unsupported lvalue kind");
+              return false;
+            }
+          }
         }
-      }
 
       /* If this $decl foo $func... is the real body resolving a prior $forward
        * stub, find the matching deferred entry by name and replace its AST node
@@ -3544,12 +3584,22 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (off == PTRDIFF_MAX) return false;
       }
 
-      if (t && t->kind == MORPHL_TYPE_TEMPLATE) {
-        return true;
-      }
+        if (t && t->kind == MORPHL_TYPE_TEMPLATE) {
+          return true;
+        }
 
-      /* if RHS is a $import, track slot index so we can write the $modules
-       * entry after emission */
+        if (rhs && builtin_is_name(e, rhs, "$ref") && rhs->child_count > 0 &&
+            builtin_is_name(e, rhs->children[0], "$parent")) {
+          if (!bind_has_frame_storage) {
+            VM_ERR(node, "$ref $parent declaration must contribute storage");
+            return false;
+          }
+          if (!emit_op_i32(e, VM_OP_ILOAD, 0)) return false;
+          return emit_op_i32(e, VM_OP_RSTORE, (int32_t)off);
+        }
+
+        /* if RHS is a $import, track slot index so we can write the $modules
+         * entry after emission */
       size_t import_slot_before = SIZE_MAX;
       if (rhs && rhs->kind == AST_BUILTIN && e->interns && rhs->op) {
         Str rhs_op = interns_lookup(e->interns, rhs->op);
@@ -4172,11 +4222,16 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           builtin_is_name(e, rhs, "$specialize")) {
         AstNode* body = instantiate_specialize_body(e, rhs);
         if (!body) return false;
-        if (body->kind != AST_BLOCK) {
+        AstNode* block_body = body;
+        if (builtin_is_name(e, body, "$impl") && body->child_count >= 2 &&
+            body->children[1] && body->children[1]->kind == AST_BLOCK) {
+          block_body = body->children[1];
+        }
+        if (block_body->kind != AST_BLOCK) {
           VM_ERR(rhs, "$specialize: expected block template result");
           return false;
         }
-        return emit_block_value_into_slot(e, t, body, name, off);
+        return emit_block_value_into_slot(e, t, block_body, name, off);
       }
 
       /* emit RHS expression */
@@ -4382,12 +4437,127 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         }
       }
 
+      /* Concrete property method dispatch: $call ($member obj method) args.
+       * Unlike a plain function value call, the method body expects its
+       * hidden $parent slot to point at obj, not at the caller's frame. */
+      {
+        struct AstNode* callee_eff = callee;
+        if (callee_eff->kind == AST_GROUP && callee_eff->child_count == 1 &&
+            callee_eff->children[0]) {
+          callee_eff = callee_eff->children[0];
+        }
+        if (builtin_is_name(e, callee_eff, "$member") &&
+            callee_eff->child_count >= 2) {
+          struct AstNode* target = callee_eff->children[0];
+          struct AstNode* field_nd = callee_eff->children[1];
+          const MorphlType* target_btype =
+              target ? unwrap_ref(target->type) : NULL;
+          Str field_name = field_nd ? field_nd->value : (Str){NULL, 0};
+          if (!field_name.ptr && e->interns && field_nd && field_nd->op) {
+            field_name = interns_lookup(e->interns, field_nd->op);
+          }
+          if (target_btype && target_btype->kind == MORPHL_TYPE_BLOCK &&
+              target_btype->data.block.prop_count > 0 &&
+              target_btype->data.block.prop_names &&
+              target_btype->data.block.prop_values) {
+            struct AstNode* prop_value = NULL;
+            for (size_t pi = 0; pi < target_btype->data.block.prop_count; ++pi) {
+              Str pname = e->interns && target_btype->data.block.prop_names[pi]
+                              ? interns_lookup(e->interns,
+                                               target_btype->data.block.prop_names[pi])
+                              : (Str){NULL, 0};
+              if (prop_name_matches_member(pname, field_name)) {
+                prop_value = target_btype->data.block.prop_values[pi];
+                break;
+              }
+            }
+            if (prop_value) {
+              if (builtin_is_name(e, prop_value, "$overload") &&
+                  callee_eff->overload_has_selection &&
+                  !callee_eff->overload_select_self) {
+                if (callee_eff->overload_selected_index >= prop_value->child_count) {
+                  VM_ERR(callee_eff, "invalid property overload selection");
+                  return false;
+                }
+                prop_value =
+                    prop_value->children[callee_eff->overload_selected_index];
+              }
+              if (!emit_op_u32(e, VM_OP_RESERVE, ret_sz)) return false;
+              if (target && target->kind == AST_IDENT) {
+                ptrdiff_t extra = 0;
+                Str target_name = alias_resolve_full(e, target->value, &extra);
+                ptrdiff_t target_off =
+                    morphl_backend_find_offset(&e->frameInfo, target_name) + extra;
+                if (target_off == PTRDIFF_MAX + extra) {
+                  VM_ERR(target, "method dispatch: undefined target '%.*s'",
+                         (int)target_name.len, target_name.ptr);
+                  return false;
+                }
+                const MorphlType* raw_target_type = target->type;
+                if (raw_target_type &&
+                    raw_target_type->kind == MORPHL_TYPE_REF &&
+                    raw_target_type->data.ref.is_ref) {
+                  if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)target_off)) return false;
+                } else if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)target_off)) {
+                  return false;
+                }
+              } else if (builtin_is_name(e, target, "$parent")) {
+                if (!emit_op_i32(e, VM_OP_ILOAD, 0)) return false;
+              } else {
+                VM_ERR(callee_eff,
+                       "method dispatch: unsupported property target");
+                return false;
+              }
+              if (args) {
+                if (args->kind == AST_GROUP) {
+                  for (size_t i = 0; i < args->child_count; i++) {
+                    if (!emit_node(e, args->children[i])) return false;
+                  }
+                } else {
+                  if (!emit_node(e, args)) return false;
+                }
+              }
+              if (!emit_node(e, prop_value)) return false;
+              return emit_op(e, VM_OP_CALLX);
+            }
+          }
+        }
+      }
+
       /* RESERVE return slot */
       if (!emit_op_u32(e, VM_OP_RESERVE, ret_sz)) return false;
 
+      bool emitted_hidden_parent = false;
+      {
+        AstNode* callee_eff = callee;
+        if (callee_eff->kind == AST_GROUP && callee_eff->child_count == 1 &&
+            callee_eff->children[0]) {
+          callee_eff = callee_eff->children[0];
+        }
+        if (builtin_is_name(e, callee_eff, "$member") &&
+            callee_eff->child_count >= 2 && callee_eff->children[0]) {
+          AstNode* target = callee_eff->children[0];
+          if (target->kind == AST_IDENT && target->type &&
+              target->type->kind == MORPHL_TYPE_REF &&
+              target->type->data.ref.is_ref) {
+            ptrdiff_t extra = 0;
+            Str target_name = alias_resolve_full(e, target->value, &extra);
+            ptrdiff_t target_off =
+                morphl_backend_find_offset(&e->frameInfo, target_name) + extra;
+            if (target_off == PTRDIFF_MAX + extra) {
+              VM_ERR(target, "method dispatch: undefined target '%.*s'",
+                     (int)target_name.len, target_name.ptr);
+              return false;
+            }
+            if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)target_off)) return false;
+            emitted_hidden_parent = true;
+          }
+        }
+      }
+
       /* emit hidden $parent argument: absolute stack address of caller's
        * frame[0]. The callee copies this into its own $parent slot at entry. */
-      if (!emit_op_i32(e, VM_OP_ADDREF, 0)) return false;
+      if (!emitted_hidden_parent && !emit_op_i32(e, VM_OP_ADDREF, 0)) return false;
 
       /* emit arguments */
       if (args) {
@@ -4536,15 +4706,33 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         if (tlop.len == 6 && memcmp(tlop.ptr, "$index", 6) == 0) {
           struct AstNode* arr = target->children[0];
           struct AstNode* idx = target->children[1];
-          if (!arr || arr->kind != AST_IDENT) return false;
+          if (!arr) return false;
           const MorphlType* at = unwrap_ref(arr->type);
           if (!at || at->kind != MORPHL_TYPE_ARRAY) return false;
           const MorphlType* et = at->data.array.elem_type;
           size_t esz = type_frame_size(et);
-          ptrdiff_t extra = 0;
-          Str aname = alias_resolve_full(e, arr->value, &extra);
-          ptrdiff_t arr_off =
-              morphl_backend_find_offset(&e->frameInfo, aname) + extra;
+          ptrdiff_t arr_off = PTRDIFF_MAX;
+          bool arr_is_parent_member = false;
+          if (arr->kind == AST_IDENT) {
+            ptrdiff_t extra = 0;
+            Str aname = alias_resolve_full(e, arr->value, &extra);
+            arr_off = morphl_backend_find_offset(&e->frameInfo, aname) + extra;
+          } else if (builtin_is_name(e, arr, "$member") &&
+                     arr->child_count >= 2 && arr->children[0] &&
+                     arr->children[1] &&
+                     builtin_is_name(e, arr->children[0], "$parent")) {
+            Str field_name = arr->children[1]->value;
+            if (!field_name.ptr && e->interns && arr->children[1]->op)
+              field_name = interns_lookup(e->interns, arr->children[1]->op);
+            const MorphlType* parent_t =
+                arr->children[0]->type ? unwrap_ref(arr->children[0]->type) : NULL;
+            arr_off = block_layout_field_offset(parent_t, e->interns,
+                                                field_name, NULL);
+            arr_is_parent_member = true;
+          } else {
+            return false;
+          }
+          if (arr_off == PTRDIFF_MAX) return false;
           uint8_t sop = store_op(et);
           if (sop == 0xFF) return false;
           /* literal index: emit value, then ISTORE/FSTORE at computed offset */
@@ -4555,6 +4743,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             memcpy(ibuf, idx->value.ptr, ilen);
             ibuf[ilen] = '\0';
             long long iv = strtoll(ibuf, NULL, 10);
+            if (arr_is_parent_member) {
+              if (!emit_op_i32(e, VM_OP_ILOAD, 0)) return false;
+              if (!emit_node(e, value)) return false;
+              return emit_op_i32(e, astore_op_repr(et, NULL),
+                                 (int32_t)(arr_off + iv * (long long)esz));
+            }
             if (!emit_node(e, value)) return false;
             return emit_op_i32(e, sop,
                                (int32_t)(arr_off + iv * (long long)esz));
@@ -4562,7 +4756,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           /* runtime index: compute address first (ADDREF+IMUL+IADD), then emit
            * value, then ASTORE 0. Stack order for ASTORE: [base, value]; off=0
            * because base already incorporates the full byte offset. */
-          if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)arr_off)) return false;
+          if (arr_is_parent_member) {
+            if (!emit_op_i32(e, VM_OP_ILOAD, 0) ||
+                !emit_iconst(e, (int64_t)arr_off) ||
+                !emit_op(e, VM_OP_IADD)) {
+              return false;
+            }
+          } else if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)arr_off)) {
+            return false;
+          }
           if (!emit_node(e, idx)) return false;
           if (!emit_iconst(e, (int64_t)esz)) return false;
           if (!emit_op(e, VM_OP_IMUL)) return false;
@@ -5121,12 +5323,20 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               pname = interns_lookup(e->interns,
                                      target_btype->data.block.prop_names[pi]);
             }
-            if (str_eq(pname, field_name)) {
+              if (prop_name_matches_member(pname, field_name)) {
               struct AstNode* val = target_btype->data.block.prop_values[pi];
               if (!val) {
                 VM_ERR(field_nd, "$member: property '%.*s' has no value",
                        (int)field_name.len, field_name.ptr);
                 return false;
+              }
+              if (builtin_is_name(e, val, "$overload") &&
+                  node->overload_has_selection && !node->overload_select_self) {
+                if (node->overload_selected_index >= val->child_count) {
+                  VM_ERR(node, "invalid property overload selection");
+                  return false;
+                }
+                return emit_node(e, val->children[node->overload_selected_index]);
               }
               return emit_node(e, val);
             }
@@ -5259,10 +5469,24 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               (int32_t)field_offset);
         }
 
-        /* computed expression target (e.g. $member $global $modules, or module
-         * frame addr): emit the target expression (pushes an i64 base address),
-         * then ALOAD field_off. */
-        if (target->kind == AST_BUILTIN) {
+          if (builtin_is_name(e, target, "$import")) {
+            AstNode* module_root = import_module_root(target);
+            AstNode* decl = import_module_decl_node(module_root, field_name);
+            const MorphlType* fn_type =
+                decl && decl->type ? unwrap_ref(decl->type) : NULL;
+            if (decl && fn_type && fn_type->kind == MORPHL_TYPE_FUNC) {
+              Str module_path = target->child_count > 0 && target->children[0]
+                                    ? target->children[0]->import_path
+                                    : str_from("", 0);
+              return emit_native_func_value_from_module(
+                  e, fn_type, field_name, decl->extern_symbol, module_path);
+            }
+          }
+
+          /* computed expression target (e.g. $member $global $modules, or module
+           * frame addr): emit the target expression (pushes an i64 base address),
+           * then ALOAD field_off. */
+          if (target->kind == AST_BUILTIN) {
           if (!emit_node(e, target)) return false;
           return emit_op_i32(e,
                              aload_op_repr(field_type, field_storage ? &field_storage->repr : NULL),
@@ -5517,21 +5741,6 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         struct AstNode* arr_node = node->children[0];
         struct AstNode* idx_node = node->children[1];
 
-        /* resolve array identifier → frame offset */
-        if (arr_node->kind != AST_IDENT) {
-          VM_ERR(arr_node, "$index: array operand must be an identifier");
-          return false;
-        }
-        ptrdiff_t arr_extra = 0;
-        Str arr_name = alias_resolve_full(e, arr_node->value, &arr_extra);
-        ptrdiff_t arr_off =
-            morphl_backend_find_offset(&e->frameInfo, arr_name) + arr_extra;
-        if (arr_off == PTRDIFF_MAX + arr_extra) {
-          VM_ERR(arr_node, "$index: undefined array '%.*s'", (int)arr_name.len,
-                 arr_name.ptr);
-          return false;
-        }
-
         /* get array and element types */
         const MorphlType* arr_btype =
             arr_node->type ? (arr_node->type->kind == MORPHL_TYPE_REF &&
@@ -5541,6 +5750,38 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                            : NULL;
         if (!arr_btype || arr_btype->kind != MORPHL_TYPE_ARRAY) {
           VM_ERR(arr_node, "$index: array node type not resolved");
+          return false;
+        }
+        ptrdiff_t arr_off = PTRDIFF_MAX;
+        bool arr_is_parent_member = false;
+        if (arr_node->kind == AST_IDENT) {
+          ptrdiff_t arr_extra = 0;
+          Str arr_name = alias_resolve_full(e, arr_node->value, &arr_extra);
+          arr_off = morphl_backend_find_offset(&e->frameInfo, arr_name) + arr_extra;
+          if (arr_off == PTRDIFF_MAX + arr_extra) {
+            VM_ERR(arr_node, "$index: undefined array '%.*s'", (int)arr_name.len,
+                   arr_name.ptr);
+            return false;
+          }
+        } else if (builtin_is_name(e, arr_node, "$member") &&
+                   arr_node->child_count >= 2 && arr_node->children[0] &&
+                   arr_node->children[1] &&
+                   builtin_is_name(e, arr_node->children[0], "$parent")) {
+          Str field_name = arr_node->children[1]->value;
+          if (!field_name.ptr && e->interns && arr_node->children[1]->op)
+            field_name = interns_lookup(e->interns, arr_node->children[1]->op);
+          const MorphlType* parent_t = arr_node->children[0]->type
+                                           ? unwrap_ref(arr_node->children[0]->type)
+                                           : NULL;
+          arr_off = block_layout_field_offset(parent_t, e->interns,
+                                              field_name, NULL);
+          arr_is_parent_member = true;
+          if (arr_off == PTRDIFF_MAX) {
+            VM_ERR(arr_node, "$index: parent array field not found");
+            return false;
+          }
+        } else {
+          VM_ERR(arr_node, "$index: array operand must be an identifier or $parent member");
           return false;
         }
         const MorphlType* elem_type = arr_btype->data.array.elem_type;
@@ -5565,6 +5806,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             VM_ERR(idx_node, "$index: invalid index literal");
             return false;
           }
+          if (arr_is_parent_member) {
+            if (!emit_op_i32(e, VM_OP_ILOAD, 0)) return false;
+            return emit_op_i32(
+                e, aload_op_repr(elem_type, NULL),
+                (int32_t)(arr_off + idx_val * (long long)elem_size));
+          }
           return emit_op_i32(
               e, lop, (int32_t)(arr_off + idx_val * (long long)elem_size));
         }
@@ -5573,7 +5820,15 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
          * ALOAD 0. After IADD the stack holds the absolute address of
          * arr[index]; ALOAD with offset 0 loads from that exact address (not
          * +elem_size). */
-        if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)arr_off)) return false;
+        if (arr_is_parent_member) {
+          if (!emit_op_i32(e, VM_OP_ILOAD, 0) ||
+              !emit_iconst(e, (int64_t)arr_off) ||
+              !emit_op(e, VM_OP_IADD)) {
+            return false;
+          }
+        } else if (!emit_op_i32(e, VM_OP_ADDREF, (int32_t)arr_off)) {
+          return false;
+        }
         if (!emit_node(e, idx_node)) return false;
         if (!emit_iconst(e, (int64_t)elem_size)) return false;
         if (!emit_op(e, VM_OP_IMUL)) return false;

@@ -2350,7 +2350,7 @@ static void test_e2e_block_function_field_updates_parent() {
     int rc = compile_and_run(
         "$decl x {\n"
         "  $decl a $mut 10;\n"
-        "  $decl f $func ($decl n 0) $set $member $parent a n;\n"
+        "  $decl f $func ($decl n 0) { $set $member $parent a n; $ret (); };\n"
         "};\n"
         "$call $member x f 42;\n"
         "$exit $member x a;\n"

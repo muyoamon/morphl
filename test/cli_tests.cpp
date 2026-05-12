@@ -187,6 +187,42 @@ static void test_vm_compile_runs_imported_recursive_function() {
   assert(output.find("executing VM bytecode from " + exe_path) != std::string::npos);
 }
 
+static void test_vm_compile_ignores_type_only_import_dependency() {
+  std::string temp_dir = make_temp_dir();
+  std::string iterable_path = temp_dir + "/iterable.mpl";
+  std::string array_path = temp_dir + "/array.mpl";
+  std::string exe_path = temp_dir + "/array.mplx";
+  std::string log_path = temp_dir + "/array.log";
+
+  write_file(iterable_path,
+             "$decl Iterable $template T $traits {\n"
+             "  $prop foreach $func ($decl cb $func T ()) ();\n"
+             "};\n");
+  write_file(array_path,
+             std::string("$alias Iterable $member $import \"") +
+                 iterable_path + "\" Iterable;\n"
+             "$decl Array $template (T, L) $impl $specialize Iterable T {\n"
+             "  $decl val $array T L;\n"
+             "  $decl length $add L 0;\n"
+             "} {\n"
+             "  $prop foreach $func ($decl cb $func T ()) {\n"
+             "    $ret ();\n"
+             "  };\n"
+             "};\n");
+
+  std::string command = "cd " + quote_arg(temp_dir) + " && " +
+                        quote_arg(MORPHLC_PATH) + " -o " +
+                        quote_arg(exe_path) + " " + quote_arg(array_path);
+  int exit_code = run_command_capture(command, log_path);
+
+  assert(exit_code == 0);
+  assert(file_exists(exe_path));
+
+  std::string output = read_file(log_path);
+  assert(output.find("unrelated object") == std::string::npos);
+  assert(output.find("output written to " + exe_path) != std::string::npos);
+}
+
 static void test_mplvm_runs_executable() {
   std::string temp_dir = make_temp_dir();
   std::string source_path = temp_dir + "/prog.mpl";
@@ -416,6 +452,7 @@ int main() {
   test_custom_vm_output_runs();
   test_vm_compile_links_import_graph();
   test_vm_compile_runs_imported_recursive_function();
+  test_vm_compile_ignores_type_only_import_dependency();
   test_mplvm_runs_executable();
   test_mplinsp_reads_object_file();
   test_mplinsp_reads_executable_file();
