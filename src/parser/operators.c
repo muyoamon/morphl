@@ -456,10 +456,9 @@ static MorphlType* pp_action_if(const OperatorInfo* info,
     return NULL;
   }
   
-  // Check that condition is bool or int (truthy)
-  if (cond_type->kind != MORPHL_TYPE_BOOL &&
-      cond_type->kind != MORPHL_TYPE_INT) {
-    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$if: condition must be bool or int");
+  // Check that condition is an integer truth value.
+  if (cond_type->kind != MORPHL_TYPE_INT) {
+    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$if: condition must be int");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
@@ -667,9 +666,8 @@ static MorphlType* pp_action_while(const OperatorInfo* info,
     return NULL;
   }
   
-  if (cond_type->kind != MORPHL_TYPE_BOOL &&
-      cond_type->kind != MORPHL_TYPE_INT) {
-    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$while: condition must be bool or int");
+  if (cond_type->kind != MORPHL_TYPE_INT) {
+    MorphlError err = MORPHL_ERR_NODE(condition, MORPHL_E_TYPE, "$while: condition must be int");
     morphl_error_emit(NULL, &err);
     return NULL;
   }

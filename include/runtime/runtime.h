@@ -17,6 +17,8 @@ typedef struct MorphlNativeCtx MorphlNativeCtx;
 /* ABI-level scalar storage aliases for morphl native modules. */
 typedef int64_t   morphl_i64_t;
 typedef double    morphl_f64_t;
+/* Deprecated compatibility alias. Morphl source truth values are represented as
+ * i64 integers; use morphl_i64_t / MORPHL_I64 in new native modules. */
 typedef int64_t   morphl_bool_t;
 typedef uintptr_t morphl_ref_t;
 typedef uintptr_t morphl_str_handle_t;

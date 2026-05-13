@@ -985,6 +985,8 @@ static const StaticSlot* static_slot_register(VmEmitter* e, Str name,
 
 static const MorphlType* unwrap_ref(
     const MorphlType* t); /* forward declaration */
+static size_t union_payload_offset(const MorphlType* t);
+static size_t union_tag_offset(const MorphlType* t);
 static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
                                            InternTable* interns, Str field_name,
                                            const MorphlType** out_field_type);
@@ -1414,11 +1416,12 @@ static bool resolve_static_access_chain(const VmEmitter* e, const AstNode* node,
       bool is_data =
           segments[i].len == 6 && memcmp(segments[i].ptr, "$$data", 6) == 0;
       if (is_tag) {
-        extra_off += (ptrdiff_t)(cur_type->size - 8);
+        extra_off += (ptrdiff_t)union_tag_offset(cur_type);
         cur_type = morphl_type_int(e->type_ctx->arena);
         continue;
       }
       if (is_data) {
+        extra_off += (ptrdiff_t)union_payload_offset(cur_type);
         cur_type = morphl_type_block(e->type_ctx->arena, NULL, NULL, 0);
         continue;
       }
@@ -1500,6 +1503,15 @@ static size_t align_up(size_t offset, size_t align) {
   return (offset + align - 1) & ~(align - 1);
 }
 
+static size_t union_payload_offset(const MorphlType* t) {
+  (void)t;
+  return 0;
+}
+
+static size_t union_tag_offset(const MorphlType* t) {
+  return (t && t->kind == MORPHL_TYPE_UNION && t->size >= 8) ? t->size - 8 : 0;
+}
+
 /* Natural alignment requirement for a type (power of 2). */
 static size_t type_frame_align_with_repr(const MorphlType* t,
                                          const MorphlReprInfo* repr);
@@ -1516,7 +1528,6 @@ static size_t type_frame_align_with_repr(const MorphlType* t,
   switch (t->kind) {
     case MORPHL_TYPE_INT:
     case MORPHL_TYPE_FLOAT:
-    case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_STRING:
     case MORPHL_TYPE_FUNC:
     case MORPHL_TYPE_TEMPLATE:
@@ -1601,7 +1612,6 @@ static size_t type_frame_size_with_repr(const MorphlType* t,
       if (repr && repr->has_size) return repr->size_bytes;
       return 8;
     case MORPHL_TYPE_FLOAT:
-    case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_STRING:
       return 8; /* stored as i64 or f64 or string pointer */
     case MORPHL_TYPE_FUNC:
@@ -1663,7 +1673,6 @@ static uint8_t load_op(const MorphlType* t) {
   if (!t) return 0xFF;
   switch (t->kind) {
     case MORPHL_TYPE_INT:
-    case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_FUNC:
     case MORPHL_TYPE_STRING:
     case MORPHL_TYPE_TEMPLATE:
@@ -1684,7 +1693,6 @@ static uint8_t store_op(const MorphlType* t) {
   if (!t) return 0xFF;
   switch (t->kind) {
     case MORPHL_TYPE_INT:
-    case MORPHL_TYPE_BOOL:
     case MORPHL_TYPE_FUNC:
     case MORPHL_TYPE_STRING:
     case MORPHL_TYPE_TEMPLATE:
@@ -3398,7 +3406,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                   bool is_tag =
                       fname.len == 5 && memcmp(fname.ptr, "$$tag", 5) == 0;
                   ptrdiff_t uoff = 0;
-                  if (is_tag) uoff = (ptrdiff_t)(ttype->size - 8);
+                  if (is_tag) uoff = (ptrdiff_t)union_tag_offset(ttype);
+                  if (is_data) uoff = (ptrdiff_t)union_payload_offset(ttype);
                   if (is_data || is_tag)
                     return alias_add(e, name, tgt->value, uoff);
                 }
@@ -3859,7 +3868,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           }
           if (t->kind == MORPHL_TYPE_ARRAY || t->kind == MORPHL_TYPE_UNION ||
               t->kind == MORPHL_TYPE_INT || t->kind == MORPHL_TYPE_FLOAT ||
-              t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_STRING) {
+              t->kind == MORPHL_TYPE_STRING) {
             return true;
           }
           VM_ERR(rhs, "$new: expression is not instantiable");
@@ -3880,7 +3889,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           /* Scalar types: emit init value and store */
           if (t &&
               (t->kind == MORPHL_TYPE_INT || t->kind == MORPHL_TYPE_FLOAT ||
-               t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_STRING)) {
+               t->kind == MORPHL_TYPE_STRING)) {
             if (!emit_node(e, init_node)) return false;
             return emit_op_i32(e, store_op_repr(t, &node->repr), (int32_t)off);
           }
@@ -4027,7 +4036,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               VM_ERR(node, "$new union: init type does not match any variant");
               return false;
             }
-            /* Store variant fields at offset 0 (data-first layout) */
+            ptrdiff_t data_off = off + (ptrdiff_t)union_payload_offset(t);
+            /* Store variant fields at the payload offset. */
             if (variant_t && variant_t->kind == MORPHL_TYPE_BLOCK &&
                 init_node->kind == AST_GROUP) {
               size_t field_byte_off = 0;
@@ -4047,7 +4057,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                   if (!emit_node(e, gv)) return false;
                   uint8_t sop = store_op_repr(ft, field_repr);
                   if (sop != 0xFF &&
-                      !emit_op_i32(e, sop, (int32_t)(off + field_byte_off)))
+                      !emit_op_i32(e, sop,
+                                   (int32_t)(data_off + field_byte_off)))
                     return false;
                 }
                 field_byte_off += type_frame_size_with_repr(ft, field_repr);
@@ -4056,11 +4067,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               /* Single-value init (scalar variant) */
               if (!emit_node(e, init_node)) return false;
               uint8_t sop = store_op(init_t);
-              if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)off))
+              if (sop != 0xFF && !emit_op_i32(e, sop, (int32_t)data_off))
                 return false;
             }
-            /* Inject $$tag at data-first layout: offset = union_size - 8 */
-            ptrdiff_t tag_off = off + (ptrdiff_t)(t->size - 8);
+            ptrdiff_t tag_off = off + (ptrdiff_t)union_tag_offset(t);
             if (!emit_iconst(e, (int64_t)tag)) return false;
             return emit_op_i32(e, VM_OP_ISTORE, (int32_t)tag_off);
           }
@@ -4077,7 +4087,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * each branch with inline data+tag stores directly into x's frame. */
       if (t && t->kind == MORPHL_TYPE_UNION && rhs && rhs->kind == AST_IF &&
           rhs->child_count >= 3) {
-        ptrdiff_t tag_off = off + (ptrdiff_t)(t->size - 8);
+        ptrdiff_t data_off = off + (ptrdiff_t)union_payload_offset(t);
+        ptrdiff_t tag_off = off + (ptrdiff_t)union_tag_offset(t);
         struct AstNode* cond_nd = rhs->children[0];
         struct AstNode* then_nd = rhs->children[1];
         struct AstNode* else_nd = rhs->children[2];
@@ -4098,7 +4109,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             VM_ERR(then_nd, "$if: unsupported then-branch type for union");
             return false;
           }
-          if (!emit_op_i32(e, sop2, (int32_t)off)) return false;
+          if (!emit_op_i32(e, sop2, (int32_t)data_off)) return false;
         }
         if (!emit_iconst(e, 0)) return false;
         if (!emit_op_i32(e, VM_OP_ISTORE, (int32_t)tag_off)) return false;
@@ -4113,7 +4124,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             VM_ERR(else_nd, "$if: unsupported else-branch type for union");
             return false;
           }
-          if (!emit_op_i32(e, sop2, (int32_t)off)) return false;
+          if (!emit_op_i32(e, sop2, (int32_t)data_off)) return false;
         }
         if (!emit_iconst(e, 1)) return false;
         if (!emit_op_i32(e, VM_OP_ISTORE, (int32_t)tag_off)) return false;
@@ -4663,7 +4674,8 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             if (toff == PTRDIFF_MAX + extra) return false;
             if (!emit_node(e, value)) return false;
             ptrdiff_t foff =
-                is_tag ? toff + (ptrdiff_t)(ttype->size - 8) : toff;
+                is_tag ? toff + (ptrdiff_t)union_tag_offset(ttype)
+                       : toff + (ptrdiff_t)union_payload_offset(ttype);
             return emit_op_i32(e, VM_OP_ISTORE, (int32_t)foff);
           }
           /* block named field */
@@ -5364,18 +5376,13 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
                    (int)tname.len, tname.ptr);
             return false;
           }
-          /* Data-first layout: $$data at union_offset+0, $$tag at
-           * union_offset+max_payload_size. max_payload_size = union_size - 8
-           * (the 8 reserved for the tag slot). */
-          ptrdiff_t tag_off = toff + (ptrdiff_t)(target_btype->size - 8);
+          ptrdiff_t data_off =
+              toff + (ptrdiff_t)union_payload_offset(target_btype);
+          ptrdiff_t tag_off = toff + (ptrdiff_t)union_tag_offset(target_btype);
           if (is_tag) {
-            /* $$tag → ILOAD at union_offset + max_payload_size */
             return emit_op_i32(e, VM_OP_ILOAD, (int32_t)tag_off);
           }
-          /* $$data → address of payload region = union_offset + 0.
-           * With data-first layout this is the same as the union's own address,
-           * so $as s Circle works seamlessly via prefix subtyping. */
-          return emit_op_i32(e, VM_OP_ADDREF, (int32_t)toff);
+          return emit_op_i32(e, VM_OP_ADDREF, (int32_t)data_off);
         }
 
         if (target_btype->kind != MORPHL_TYPE_BLOCK) {
@@ -5600,7 +5607,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               ft->data.ref.target) {
             MorphlTypeKind tk = ft->data.ref.target->kind;
             if (tk == MORPHL_TYPE_INT || tk == MORPHL_TYPE_FLOAT ||
-                tk == MORPHL_TYPE_BOOL || tk == MORPHL_TYPE_STRING) {
+                tk == MORPHL_TYPE_STRING) {
               if (!emit_op(e, VM_OP_DEREF)) return false;
             }
           }
@@ -5639,6 +5646,24 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
        * access to the target variable's frame offset. */
       if (OP_IS("$new")) {
         if (node->child_count < 1 || !node->children[0]) return false;
+        const MorphlType* new_t = unwrap_ref(node->type);
+        if (new_t && (new_t->kind == MORPHL_TYPE_INT ||
+                      new_t->kind == MORPHL_TYPE_FLOAT ||
+                      new_t->kind == MORPHL_TYPE_STRING)) {
+          if (node->child_count >= 2 && node->children[1]) {
+            const MorphlType* init_t = unwrap_ref(node->children[1]->type);
+            if (init_t &&
+                !morphl_type_equals(init_t, new_t) &&
+                !morphl_type_is_subtype(init_t, new_t)) {
+              VM_ERR(node, "$new: initializer is not compatible with type");
+              return false;
+            }
+            return emit_node(e, node->children[1]);
+          }
+          if (new_t->kind == MORPHL_TYPE_INT) return emit_iconst(e, 0);
+          if (new_t->kind == MORPHL_TYPE_FLOAT) return emit_fconst(e, 0.0);
+          return emit_sconst(e, str_from("", 0));
+        }
         struct AstNode* block_ref = node->children[0];
         /* resolve the block name to its deferred function index */
         Str block_name =

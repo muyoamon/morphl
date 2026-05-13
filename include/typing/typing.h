@@ -13,7 +13,6 @@ typedef enum {
   MORPHL_TYPE_FLOAT,
   MORPHL_TYPE_STRING,
   MORPHL_TYPE_IDENT,
-  MORPHL_TYPE_BOOL,
   MORPHL_TYPE_FUNC,      // Function type with parameters and return type
   MORPHL_TYPE_REF,       // Reference type with mutability/inline flags
   MORPHL_TYPE_PRIMITIVE, // (Deprecated) Primitive type placeholder
@@ -153,7 +152,6 @@ MorphlType* morphl_type_int(Arena* arena);
 MorphlType* morphl_type_float(Arena* arena);
 MorphlType* morphl_type_string(Arena* arena);
 MorphlType* morphl_type_ident(Arena* arena);
-MorphlType* morphl_type_bool(Arena* arena);
 MorphlType* morphl_type_func(Arena* arena,
                              MorphlType* param_type,
                              MorphlType* return_type);
@@ -228,7 +226,6 @@ static inline MorphlMemberStorage morphl_member_storage_make(bool shape,
 static inline bool morphl_type_is_primitive(const MorphlType* type) {
   return type && (type->kind == MORPHL_TYPE_INT ||
                      type->kind == MORPHL_TYPE_FLOAT ||
-                     type->kind == MORPHL_TYPE_BOOL || 
                      type->kind == MORPHL_TYPE_STRING || 
                      type->kind == MORPHL_TYPE_VOID);
 }

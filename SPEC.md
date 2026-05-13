@@ -25,7 +25,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
 ### 2.1 Single-`$` Keywords 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`, `$overload`, `$size`, `$align`, `$signed`, `$unsigned`, `$udiv`, `$umod`, `$ult`, `$ugt`, `$ulte`, `$ugte`, `$ushr`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`, `$overload`, `$template`, `$specialize`, `$static`, `$inline`, `$heap`, `$free`, `$group`, `$block`, `$syntax`, `$size`, `$align`, `$signed`, `$unsigned`, `$udiv`, `$umod`, `$ult`, `$ugt`, `$ulte`, `$ugte`, `$ushr`, `$i2f`, `$f2i`, `$idtstr`, `$strtid`, `$forward`, `$band`, `$bor`, `$bxor`, `$bnot`, `$lshift`, `$rshift`, `$req`, `$rneq`, `$rem`, `$fadd`, `$fsub`, `$fmul`, `$fdiv`.
 
 ### 2.2 Double-`$$` Directives
 `$$`-prefixed name are compiler directives - They are as-early-as-possible resolutions. The compiler substitute them at compile time whenever it can determine the value statically. If it cannot, resolution defers to runtime
@@ -692,7 +692,29 @@ $member f1 a;  // valid
 $member f1 b;  // error — b is not part of f1's shape
 ```
 
-### 5.8 Bare Expression as Storage
+### 5.8 `$heap` and `$free` - Heap Storage
+
+`$heap` moves the wrapped storage expression into heap-backed storage and returns a `$ref` handle to that allocation:
+
+```
+$decl p $heap { $decl x $mut 0; };
+```
+
+Properties:
+
+- `$heap <expr>` has reference type `$ref T`, where `T` is the wrapped expression's type.
+- If the wrapped storage is mutable, the reference preserves that write access.
+- Heap-backed blocks may carry cleanup generated from `$defer` expressions in the block template.
+
+`$free` releases a heap-backed reference:
+
+```
+$free p;
+```
+
+`$free <ref>` has type `()` and requires a reference argument. When the allocation has an attached cleanup thunk, `$free` runs that cleanup before releasing the allocation.
+
+### 5.9 Bare Expression as Storage
 
 A bare expression in storage-expression context is treated as a constant ephemeral storage expression.
 
@@ -710,7 +732,7 @@ Therefore, using a bare expression as the RHS of a `$decl` works:
 $decl x 0; 
 ```
 
-### 5.8 Storage Expression Summary
+### 5.10 Storage Expression Summary
 
 | Expression | Meaning | Writable |
 |---|---|---|
@@ -718,6 +740,8 @@ $decl x 0;
 | `$mut expr` | mutable storage | yes |
 | `$ref lvalue` | alias to any addressable lvalue | depends on referent |
 | `$static expr` | static storage (program lifetime) | depends on wrapped storage |
+| `$heap expr` | heap-backed storage, returned as a reference | depends on wrapped storage |
+| `$free ref` | release heap-backed storage | no |
 | `$inline expr` | non-storage expression, must be consumed by storage specifier | no |
 | `$new T` | fresh instance via re-execution of block T | depends on fields |
 | `$new T init` | instantiate T with initializer (any type) | depends on fields |
@@ -938,7 +962,7 @@ Both `$as s Circle` and `$as ($member s $$data) Circle` are safe and produce the
 
 Accessing the payload without a preceding `$$tag` check is allowed but unsafe — the programmer asserts knowledge of the active variant.
 
-### 7.5 `$overload` - First-Class Overload Aggregate
+### 7.8 `$overload` - First-Class Overload Aggregate
 
 `$overload` stores multiple candidate expressions in one value:
 
@@ -980,7 +1004,38 @@ back to candidate projection.
 > backend currently rejects source-level `$overload`. Lazy `$inline $overload`
 > behavior is not yet implemented.
 
-### 7.6 Integer Representation Descriptors
+### 7.9 `$template` and `$specialize`
+
+`$template` creates a compile-time template value. A template has a parameter list and a body expression:
+
+```morphl
+$template <params> <body>
+```
+
+The parameter list is either a single identifier or a group of identifiers:
+
+```morphl
+$decl pair $template (T U) {
+    $decl left T;
+    $decl right U;
+};
+```
+
+`$specialize` instantiates a template by substituting concrete expressions for the template parameters:
+
+```morphl
+$specialize <template-expr> <args>
+```
+
+The substitution list is either a single expression or a group whose arity must match the template parameter list:
+
+```morphl
+$decl p $specialize pair (0 "");
+```
+
+Template specialization is checked during typing. The implementation clones the template body, substitutes matching identifiers, infers the instantiated body, and uses that result as the specialized expression type.
+
+### 7.10 Integer Representation Descriptors
 
 morphl supports expression-attached integer representation descriptors:
 
@@ -1081,13 +1136,19 @@ $set $index buf i 77;       // buf[i] = 77 (runtime index)
 
 ## 8.5 Compiler-Injected Intrinsic Properties
 
-Three universal `$$`-prefixed pseudo-fields are available on any expression via `$member`. They resolve entirely at **compile time** — the target expression is **not evaluated at runtime** (analogous to C's `sizeof`).
+Several universal `$$`-prefixed pseudo-fields are available on any expression via `$member`. They resolve entirely at **compile time** — the target expression is **not evaluated at runtime** (analogous to C's `sizeof`).
 
 | Syntax | Return type | Value |
 |---|---|---|
 | `$member <expr> $$name` | `string` | Identifier name of `<expr>`, or `""` if not a plain identifier |
 | `$member <expr> $$size` | `int`    | Size in bytes of `<expr>`'s type |
 | `$member <expr> $$type` | `string` | Type signature of `<expr>` as a string |
+| `$member <expr> $$op` | `string` | Operator name for a builtin expression, or `""` when unavailable |
+| `$member <expr> $$path` | `string` | Source file path associated with `<expr>` |
+| `$member <expr> $$delim` | `string` | Current statement delimiter, currently `";"` |
+| `$member <expr> $$version` | `string` | VM bytecode version as `major.minor` |
+| `$member <expr> $$line` | `int` | Source line associated with `<expr>` |
+| `$member <expr> $$col` | `int` | Source column associated with `<expr>` |
 
 ### Examples
 
@@ -1114,6 +1175,7 @@ $member (42) $$type       ; → "int"
 - Because the target is not evaluated, `$member ($call sideEffect ()) $$size` does **not** call `sideEffect` — only its return type is inspected.
 - `$$name` returns `""` for any non-identifier expression (calls, arithmetic, literals, etc.).
 - The type string format from `$$type` matches the internal type signature format (same as used in error messages).
+- `$$syntax` is reserved but not implemented as a metadata property in the VM backend.
 
 ---
 
@@ -1292,6 +1354,31 @@ All functions are entries in a global function table. A function value at runtim
 FuncTable[n] = { bytecode_offset, arity, frame_size }
 ```
 
+### 9.8 `$forward` — Forward Function Binding
+
+`$forward` records a function-shaped binding before its implementation is available:
+
+```morphl
+$decl f $forward $func ($decl x 0) 0;
+```
+
+The forward stub must have function type. A later `$decl` with the same name resolves the forward binding when its type is compatible:
+
+```morphl
+$decl f $func ($decl x 0) {
+    $ret $add x 1;
+};
+```
+
+Forward declarations are also used with contextual `$extern` bindings:
+
+```morphl
+$decl writer $forward $extern $func ($decl s "") 0;
+$decl writer $extern "println";
+```
+
+The second declaration supplies the implementation or native symbol while preserving the type established by the forward declaration.
+
 ---
 
 
@@ -1358,7 +1445,7 @@ $while $lt i 10 {
 - **Type of `$while`**: always `void`. `$while` is always used for its side effects; it never produces a meaningful value.
 
 
-### 7.3 `$break` and `$continue` — Loop Control
+### 11.3 `$break` and `$continue` — Loop Control
 
 `$break` exits the nearest enclosing `$while` immediately.
 
@@ -1385,7 +1472,7 @@ $while $lt j 10 {
 
 Both `$break` and `$continue` take no arguments. Using either outside a `$while` body is a compile error.
 
-### 7.4 Logical Operators
+### 11.4 Logical Operators
 
 ```
 $and <lhs> <rhs>   — logical AND (short-circuit)
@@ -1410,6 +1497,60 @@ $if $and $gt x 0 $lt x 100 {
     // x is in (0, 100)
 };
 ```
+
+### 11.5 Integer Bitwise Operators
+
+```
+$band <lhs> <rhs>    — bitwise AND
+$bor  <lhs> <rhs>    — bitwise OR
+$bxor <lhs> <rhs>    — bitwise XOR
+$bnot <expr>         — bitwise NOT
+$lshift <lhs> <rhs>  — signed left shift
+$rshift <lhs> <rhs>  — signed right shift
+$ushr <lhs> <rhs>    — unsigned right shift
+```
+
+All bitwise operands must be integers. Binary bitwise operators return `int`; `$bnot` returns `int`.
+
+### 11.6 Unsigned Integer Operators
+
+```
+$udiv <lhs> <rhs>    — unsigned integer division
+$umod <lhs> <rhs>    — unsigned integer modulo
+$ult  <lhs> <rhs>    — unsigned less-than
+$ugt  <lhs> <rhs>    — unsigned greater-than
+$ulte <lhs> <rhs>    — unsigned less-than-or-equal
+$ugte <lhs> <rhs>    — unsigned greater-than-or-equal
+```
+
+Operands must be integers. `$udiv` and `$umod` return `int`; unsigned comparisons return `bool`.
+
+### 11.7 Reference Equality
+
+```
+$req  <lhs> <rhs>    — reference equality
+$rneq <lhs> <rhs>    — reference inequality
+```
+
+Both operands must be `$ref` values. The comparison checks whether the two references denote the same storage address and returns `bool`.
+
+### 11.8 Numeric Conversions
+
+```
+$i2f <expr>          — integer to float
+$f2i <expr>          — float to integer
+```
+
+The VM backend emits explicit conversion opcodes for these operations.
+
+### 11.9 Identifier/String Conversions
+
+```
+$idtstr <ident>      — identifier to string
+$strtid <string>     — string to identifier
+```
+
+`$idtstr` returns the textual name of an identifier as a string value. `$strtid` converts a string literal into an identifier-like value for compile-time/type-level use.
 
 ---
 

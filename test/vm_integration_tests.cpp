@@ -2442,6 +2442,14 @@ static void test_e2e_new_scalar() {
     printf("PASS test_e2e_new_scalar\n");
 }
 
+static void test_e2e_new_scalar_value_context() {
+    const char* src =
+        "$exit $add ($new 0 4) ($new 0);\n";
+    int rc = compile_and_run(src);
+    assert(rc == 4);
+    printf("PASS test_e2e_new_scalar_value_context\n");
+}
+
 static void test_e2e_new_array_group_initializer() {
     int rc = compile_and_run(
         "$decl arr $new ($array 0 3) (4, 5, 6);\n"
@@ -2889,6 +2897,7 @@ int main(void) {
     test_e2e_set_index();
     test_e2e_runtime_index();
     test_e2e_new_scalar();
+    test_e2e_new_scalar_value_context();
     test_e2e_new_array_group_initializer();
     test_e2e_new_union_tag();
     test_e2e_new_inline_block_type_expr();

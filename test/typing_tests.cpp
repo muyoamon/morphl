@@ -149,12 +149,6 @@ static void test_type_constructors() {
   assert(t_float->kind == MORPHL_TYPE_FLOAT);
   assert(t_float->size == 8);
   
-  // Test bool type
-  MorphlType* t_bool = morphl_type_bool(&arena);
-  assert(t_bool != NULL);
-  assert(t_bool->kind == MORPHL_TYPE_BOOL);
-  assert(t_bool->size == 1);
-  
   arena_free(&arena);
   printf("✓ test_type_constructors passed\n");
 }
@@ -226,7 +220,7 @@ static void test_type_context_vars() {
   
   // Create variable types
   MorphlType* t_int = morphl_type_int(&arena);
-  MorphlType* t_bool = morphl_type_bool(&arena);
+  MorphlType* t_string = morphl_type_string(&arena);
   
   // Intern variable names
   Sym x_sym = interns_intern(interns, str_from("x", 1));
@@ -236,7 +230,7 @@ static void test_type_context_vars() {
   bool ok = type_context_define_var(ctx, x_sym, t_int);
   assert(ok == true);
   
-  ok = type_context_define_var(ctx, y_sym, t_bool);
+  ok = type_context_define_var(ctx, y_sym, t_string);
   assert(ok == true);
   
   // Look up variables
@@ -246,7 +240,7 @@ static void test_type_context_vars() {
   
   MorphlType* found_y = type_context_lookup_var(ctx, y_sym);
   assert(found_y != NULL);
-  assert(found_y->kind == MORPHL_TYPE_BOOL);
+  assert(found_y->kind == MORPHL_TYPE_STRING);
   
   // Look up non-existent variable
   Sym z_sym = interns_intern(interns, str_from("z", 1));
@@ -386,18 +380,18 @@ static void test_infer_comparison_ops() {
   MorphlType* t_int = morphl_type_int(&arena);
   MorphlType* t_int2 = morphl_type_int(&arena);
   
-  // Test $eq (int, int) -> bool
+  // Test $eq (int, int) -> int truth value
   Sym eq_sym = interns_intern(interns, str_from("$eq", 3));
   MorphlType* arg_types[] = {t_int, t_int2};
   MorphlType* result = morphl_infer_type_for_op(ctx, NULL, eq_sym, arg_types, 2);
   assert(result != NULL);
-  assert(result->kind == MORPHL_TYPE_BOOL);
+  assert(result->kind == MORPHL_TYPE_INT);
   
-  // Test $lt (int, int) -> bool
+  // Test $lt (int, int) -> int truth value
   Sym lt_sym = interns_intern(interns, str_from("$lt", 3));
   result = morphl_infer_type_for_op(ctx, NULL, lt_sym, arg_types, 2);
   assert(result != NULL);
-  assert(result->kind == MORPHL_TYPE_BOOL);
+  assert(result->kind == MORPHL_TYPE_INT);
   
   type_context_free(ctx);
   interns_free(interns);
@@ -418,29 +412,27 @@ static void test_infer_logic_ops() {
   TypeContext* ctx = type_context_new(&arena, interns);
   assert(ctx != NULL);
   
-  MorphlType* t_bool = morphl_type_bool(&arena);
-  MorphlType* t_bool2 = morphl_type_bool(&arena);
   MorphlType* t_int = morphl_type_int(&arena);
   
-  // Test $and (bool, bool) -> bool
+  // Test $and (int, int) -> int truth value
   Sym and_sym = interns_intern(interns, str_from("$and", 4));
-  MorphlType* arg_types[] = {t_bool, t_bool2};
+  MorphlType* arg_types[] = {t_int, t_int};
   MorphlType* result = morphl_infer_type_for_op(ctx, NULL, and_sym, arg_types, 2);
   assert(result != NULL);
-  assert(result->kind == MORPHL_TYPE_BOOL);
+  assert(result->kind == MORPHL_TYPE_INT);
   
-  // Test $not (bool) -> bool
+  // Test $not (int) -> int truth value
   Sym not_sym = interns_intern(interns, str_from("$not", 4));
-  MorphlType* arg_types_not[] = {t_bool};
+  MorphlType* arg_types_not[] = {t_int};
   result = morphl_infer_type_for_op(ctx, NULL, not_sym, arg_types_not, 1);
   assert(result != NULL);
-  assert(result->kind == MORPHL_TYPE_BOOL);
+  assert(result->kind == MORPHL_TYPE_INT);
   
-  // Test $and (int, int) -> bool: ints are truthy, accepted for logical ops
+  // Test $and (int, int): ints are truthy, accepted for logical ops
   MorphlType* int_args[] = {t_int, t_int};
   result = morphl_infer_type_for_op(ctx, NULL, and_sym, int_args, 2);
   assert(result != NULL);
-  assert(result->kind == MORPHL_TYPE_BOOL);
+  assert(result->kind == MORPHL_TYPE_INT);
   
   type_context_free(ctx);
   interns_free(interns);
@@ -1179,7 +1171,7 @@ static void test_pp_while() {
   TypeContext* ctx = type_context_new(&arena, interns);
   assert(ctx != NULL);
 
-  // Condition: $lt 1 2 -> bool
+  // Condition: $lt 1 2 -> int truth value
   AstNode* one = make_literal("1");
   AstNode* two = make_literal("2");
   AstNode* cond = make_builtin(interns, "$lt", {one, two});
@@ -1565,9 +1557,9 @@ static void test_union_type() {
   assert(morphl_type_is_subtype(never, u));
   assert(morphl_type_is_subtype(never, ti));
 
-  /* flattening: $union int ($union float bool) → $union int float bool */
-  MorphlType* tb = morphl_type_bool(&arena);
-  MorphlType* inner[2] = {tf, tb};
+  /* flattening: $union int ($union float string) -> $union int float string */
+  MorphlType* ts = morphl_type_string(&arena);
+  MorphlType* inner[2] = {tf, ts};
   MorphlType* inner_u = morphl_type_union(&arena, inner, 2);
   MorphlType* outer[2] = {ti, inner_u};
   MorphlType* flat = morphl_type_union(&arena, outer, 2);
@@ -1595,9 +1587,8 @@ static void test_control_flow_inference() {
   // $if with no else → void
   {
     Sym if_sym = interns_intern(interns, str_from("$if", 3));
-    MorphlType* bool_t = morphl_type_bool(&arena);
     MorphlType* int_t  = morphl_type_int(&arena);
-    MorphlType* args[2] = { bool_t, int_t };
+    MorphlType* args[2] = { morphl_type_int(&arena), int_t };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 2);
     assert(result && result->kind == MORPHL_TYPE_VOID);
   }
@@ -1605,9 +1596,8 @@ static void test_control_flow_inference() {
   // $if with matching branches → that type
   {
     Sym if_sym = interns_intern(interns, str_from("$if", 3));
-    MorphlType* bool_t = morphl_type_bool(&arena);
     MorphlType* int_t  = morphl_type_int(&arena);
-    MorphlType* args[3] = { bool_t, int_t, morphl_type_int(&arena) };
+    MorphlType* args[3] = { morphl_type_int(&arena), int_t, morphl_type_int(&arena) };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
     assert(result && result->kind == MORPHL_TYPE_INT);
   }
@@ -1615,10 +1605,9 @@ static void test_control_flow_inference() {
   // $if with $never then-branch → else type
   {
     Sym if_sym = interns_intern(interns, str_from("$if", 3));
-    MorphlType* bool_t  = morphl_type_bool(&arena);
     MorphlType* never_t = morphl_type_never(&arena);
     MorphlType* float_t = morphl_type_float(&arena);
-    MorphlType* args[3] = { bool_t, never_t, float_t };
+    MorphlType* args[3] = { morphl_type_int(&arena), never_t, float_t };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
     assert(result && result->kind == MORPHL_TYPE_FLOAT);
   }
@@ -1626,10 +1615,9 @@ static void test_control_flow_inference() {
   // $if with $never else-branch → then type
   {
     Sym if_sym = interns_intern(interns, str_from("$if", 3));
-    MorphlType* bool_t  = morphl_type_bool(&arena);
     MorphlType* int_t   = morphl_type_int(&arena);
     MorphlType* never_t = morphl_type_never(&arena);
-    MorphlType* args[3] = { bool_t, int_t, never_t };
+    MorphlType* args[3] = { morphl_type_int(&arena), int_t, never_t };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
     assert(result && result->kind == MORPHL_TYPE_INT);
   }
@@ -1637,10 +1625,9 @@ static void test_control_flow_inference() {
   // $if with divergent branches → union
   {
     Sym if_sym = interns_intern(interns, str_from("$if", 3));
-    MorphlType* bool_t  = morphl_type_bool(&arena);
     MorphlType* int_t   = morphl_type_int(&arena);
     MorphlType* float_t = morphl_type_float(&arena);
-    MorphlType* args[3] = { bool_t, int_t, float_t };
+    MorphlType* args[3] = { morphl_type_int(&arena), int_t, float_t };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, if_sym, args, 3);
     assert(result && result->kind == MORPHL_TYPE_UNION);
     assert(result->data.union_t.variant_count == 2);
@@ -1649,9 +1636,8 @@ static void test_control_flow_inference() {
   // $while → void
   {
     Sym while_sym = interns_intern(interns, str_from("$while", 6));
-    MorphlType* bool_t = morphl_type_bool(&arena);
     MorphlType* void_t = morphl_type_void(&arena);
-    MorphlType* args[2] = { bool_t, void_t };
+    MorphlType* args[2] = { morphl_type_int(&arena), void_t };
     MorphlType* result = morphl_infer_type_for_op(ctx, NULL, while_sym, args, 2);
     assert(result && result->kind == MORPHL_TYPE_VOID);
   }

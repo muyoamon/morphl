@@ -129,7 +129,7 @@ static void apply_repr_metadata(TypeContext* ctx, AstNode* node) {
 
 static bool is_truthy_condition_type(const MorphlType* t) {
   t = unwrap_ref((MorphlType*)t);
-  return t && (t->kind == MORPHL_TYPE_BOOL || t->kind == MORPHL_TYPE_INT);
+  return t && t->kind == MORPHL_TYPE_INT;
 }
 
 static void clear_overload_selection(AstNode* node) {
@@ -1171,7 +1171,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return arg_types[0];
   }
 
-  // Comparison operators: (any, any) → bool
+  // Comparison operators: (any, any) -> int truth value
   if (op_sym == interns_intern(ctx->interns, str_from("$req", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$rneq", 5))) {
     if (arg_count != 2 || !arg_types[0] || !arg_types[1] ||
@@ -1181,7 +1181,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    return morphl_type_bool(ctx->arena);
+    return morphl_type_int(ctx->arena);
   }
 
   if (op_sym == interns_intern(ctx->interns, str_from("$eq", 3)) ||
@@ -1205,10 +1205,10 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     
-    return morphl_type_bool(ctx->arena);
+    return morphl_type_int(ctx->arena);
   }
   
-  // Logic operators: bool → bool (or (bool, bool) → bool for $and/$or)
+  // Logic operators: integer truth values -> int truth value
   if (op_sym == interns_intern(ctx->interns, str_from("$and", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$or", 3))) {
     
@@ -1220,14 +1220,14 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     
     for (size_t i = 0; i < 2; ++i) {
       MorphlType* check = unwrap_ref(arg_types[i]);
-      if (!check || (check->kind != MORPHL_TYPE_BOOL && check->kind != MORPHL_TYPE_INT)) {
-        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: arg %llu must be bool or int", op_name, (unsigned long long)(i + 1));
+      if (!check || check->kind != MORPHL_TYPE_INT) {
+        MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: arg %llu must be int", op_name, (unsigned long long)(i + 1));
         morphl_error_emit(NULL, &err);
         return NULL;
       }
     }
     
-    return morphl_type_bool(ctx->arena);
+    return morphl_type_int(ctx->arena);
   }
   
   if (op_sym == interns_intern(ctx->interns, str_from("$not", 4))) {
@@ -1239,13 +1239,13 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     }
     
     MorphlType* check = unwrap_ref(arg_types[0]);
-    if (!check || (check->kind != MORPHL_TYPE_BOOL && check->kind != MORPHL_TYPE_INT)) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$not: argument must be bool or int");
+    if (!check || check->kind != MORPHL_TYPE_INT) {
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$not: argument must be int");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
     
-    return morphl_type_bool(ctx->arena);
+    return morphl_type_int(ctx->arena);
   }
   
   // Arithmetic operators: (int, int) → int or (float, float) → float
@@ -1324,7 +1324,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     return morphl_type_float(ctx->arena);
   }
   
-  // Reference equality: ($ref T, $ref T) → bool
+  // Reference equality: ($ref T, $ref T) -> int truth value
   if (op_sym == interns_intern(ctx->interns, str_from("$req", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$rneq", 5))) {
     if (arg_count != 2) {
@@ -1340,7 +1340,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       morphl_error_emit(NULL, &err);
       return NULL;
     }
-    return morphl_type_bool(ctx->arena);
+    return morphl_type_int(ctx->arena);
   }
 
   // Bitwise operators: (int, int) → int
@@ -1514,7 +1514,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
         op_sym == interns_intern(ctx->interns, str_from("$ugt", 4)) ||
         op_sym == interns_intern(ctx->interns, str_from("$ulte", 5)) ||
         op_sym == interns_intern(ctx->interns, str_from("$ugte", 5))) {
-      return morphl_type_bool(ctx->arena);
+      return morphl_type_int(ctx->arena);
     }
     return morphl_type_int(ctx->arena);
   }
@@ -1766,7 +1766,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     }
     MorphlType* cond_type = unwrap_ref(arg_types[0]);
     if (!is_truthy_condition_type(cond_type)) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: condition must be bool or int");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$if: condition must be int");
       morphl_error_emit(NULL, &err);
       return NULL;
     }
@@ -1932,7 +1932,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     if (!is_truthy_condition_type(arg_types[0])) {
-      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$while: condition must be bool or int");
+      MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$while: condition must be int");
       morphl_error_emit(NULL, &err);
       return NULL;
     }

@@ -481,8 +481,6 @@ static Str get_ctype_name(MorphlType *type, InternTable *interns, TypeArray *typ
                 return str_from("long long", strlen("long long"));
             case MORPHL_TYPE_FLOAT:
                 return str_from("double", strlen("double"));
-            case MORPHL_TYPE_BOOL:
-                return str_from("bool", strlen("bool"));
             case MORPHL_TYPE_STRING:
                 return str_from("const char *", strlen("const char *"));
             case MORPHL_TYPE_VOID:

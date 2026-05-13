@@ -80,17 +80,6 @@ MorphlType* morphl_type_ident(Arena* arena) {
   return t;
 }
 
-MorphlType* morphl_type_bool(Arena* arena) {
-  if (!arena) return NULL;
-  MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
-  if (!t) return NULL;
-  memset(t, 0, sizeof(MorphlType));
-  t->kind = MORPHL_TYPE_BOOL;
-  t->size = 1;
-  t->align = 1;
-  return t;
-}
-
 // Function type constructor
 MorphlType* morphl_type_func(Arena* arena,
                              MorphlType* param_type,
@@ -314,7 +303,7 @@ MorphlType* morphl_type_union(Arena* arena, MorphlType** variant_types, size_t v
   if (flat_count == 0) return morphl_type_void(arena);
   if (flat_count == 1) return flat[0];
 
-  // Compute layout: slot 0 (8 bytes) = $$tag; slot 1+ = data payload
+  // Compute layout: payload at offset 0, trailing 8-byte $$tag.
   size_t max_payload = 0;
   for (size_t i = 0; i < flat_count; ++i) {
     size_t sz = flat[i]->size;
@@ -324,7 +313,7 @@ MorphlType* morphl_type_union(Arena* arena, MorphlType** variant_types, size_t v
   MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
   if (!t) return NULL;
   t->kind  = MORPHL_TYPE_UNION;
-  t->size  = 8 + max_payload; // 8-byte tag slot + payload
+  t->size  = max_payload + 8;
   t->align = 8;
 
   MorphlType** stored = arena_alloc(arena, flat_count * sizeof(MorphlType*));
@@ -685,9 +674,6 @@ Str morphl_type_to_string(const MorphlType* type, InternTable *interns) {
         break;
       case MORPHL_TYPE_IDENT:
         result = new_cstr("ident");
-        break;
-      case MORPHL_TYPE_BOOL:
-        result = new_cstr("bool");
         break;
       case MORPHL_TYPE_FUNC: {
         // Print in format: <params> => <return>
