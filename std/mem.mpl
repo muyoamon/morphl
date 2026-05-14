@@ -27,18 +27,43 @@ $decl RawSlice {
 
 "Native Untyped Memory Allocation";
 $decl _c_malloc  $extern "_native_malloc"  $func ($decl size 0) $ref Byte;
-$decl _c_realloc $extern "_native_realloc" $func ($decl ptr $ref Byte, $decl size 0) $ref Byte;
-$decl _c_free    $extern "_native_free"    $func ($decl ptr $ref Byte) ();
+$decl _c_realloc $extern "_native_realloc" $func ($decl ptr $mut $ref Byte, $decl size 0) $ref Byte;
+$decl _c_free    $extern "_native_free"    $func ($decl ptr $mut $ref Byte) ();
 
 
 "Morphl Wrapper";
 
 $decl alloc_bytes $func ($decl size 0, $decl align 0) {
-  "TODO: should return RawBuffer";
+  $decl ptr $call _c_malloc size;
+  $decl alloc_ok $rneq ptr $null;
+  $ret {
+    $decl ptr $mut ptr;
+    $decl len $mut size;
+    $decl cap $mut size;
+    $decl align $const align;
+    $decl owned $mut 1;
+    $decl ok $mut alloc_ok;
+  };
 }
 
 $decl realloc_bytes $func ($decl buf $ref RawBuffer, $decl new_size 0) {
-  "TODO: should return RawBuffer";
+  $decl ptr $call _c_realloc ($member buf ptr, new_size);
+  $if $rneq ptr $null {
+    $set $member buf ptr ptr;
+    $set $member buf len new_size;
+    $set $member buf cap new_size;
+    $set $member buf ok 1;
+  } {
+    $set $member buf ok 0;
+  };
+  $ret {
+    $decl ptr $mut $member buf ptr;
+    $decl len $mut $member buf len;
+    $decl cap $mut $member buf cap;
+    $decl align $const $member buf align;
+    $decl owned $mut $member buf owned;
+    $decl ok $mut $member buf ok;
+  };
 }
 
 $decl free $func ($decl buf $ref RawBuffer) {

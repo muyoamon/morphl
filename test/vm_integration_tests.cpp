@@ -1902,6 +1902,17 @@ static void test_e2e_ref_write_through() {
     printf("PASS test_e2e_ref_write_through\n");
 }
 
+static void test_e2e_ref_rebind_to_null() {
+    int rc = compile_and_run(
+        "$decl x $mut 10;\n"
+        "$decl r $mut $ref x;\n"
+        "$set r $null;\n"
+        "$exit x;\n"
+    );
+    assert(rc == 10);
+    printf("PASS test_e2e_ref_rebind_to_null\n");
+}
+
 static void test_e2e_static_ref_read() {
     // $ref on a $static variable produces a valid ref
     int rc = compile_and_run(
@@ -2859,6 +2870,7 @@ int main(void) {
     test_e2e_heap_block_defer_cleanup();
     test_e2e_rnull_decl_and_req_check();
     test_e2e_ref_write_through();
+    test_e2e_ref_rebind_to_null();
     test_e2e_static_ref_read();
     test_e2e_func_body_defer_runs_at_ret();
     test_e2e_func_body_defer_lifo_order();

@@ -151,6 +151,17 @@ static bool type_matches_expected(MorphlType* actual, MorphlType* expected) {
   actual = unwrap_ref(actual);
   expected = unwrap_ref(expected);
   if (!actual || !expected) return false;
+  if (actual->kind == MORPHL_TYPE_GROUP && expected->kind == MORPHL_TYPE_GROUP) {
+    if (actual->data.group.elem_count != expected->data.group.elem_count)
+      return false;
+    for (size_t i = 0; i < actual->data.group.elem_count; ++i) {
+      if (!type_matches_expected(actual->data.group.elem_types[i],
+                                 expected->data.group.elem_types[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
   return morphl_type_equals(actual, expected) ||
          morphl_type_is_subtype(actual, expected);
 }
@@ -863,6 +874,16 @@ static bool refs_assignable(const MorphlType* target_ref, const MorphlType* valu
   return morphl_type_equals(target_ref->data.ref.target, value_type->data.ref.target);
 }
 
+static const MorphlType* ref_slot_type(const MorphlType* type) {
+  if (!type || type->kind != MORPHL_TYPE_REF) return NULL;
+  if (type->data.ref.is_ref) return type;
+  if (type->data.ref.target && type->data.ref.target->kind == MORPHL_TYPE_REF &&
+      type->data.ref.target->data.ref.is_ref) {
+    return type->data.ref.target;
+  }
+  return NULL;
+}
+
 static MorphlType* infer_extern_binding_type(TypeContext* ctx,
                                              AstNode* node,
                                              MorphlType* expected_type,
@@ -1175,8 +1196,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
   if (op_sym == interns_intern(ctx->interns, str_from("$req", 4)) ||
       op_sym == interns_intern(ctx->interns, str_from("$rneq", 5))) {
     if (arg_count != 2 || !arg_types[0] || !arg_types[1] ||
-        arg_types[0]->kind != MORPHL_TYPE_REF || !arg_types[0]->data.ref.is_ref ||
-        arg_types[1]->kind != MORPHL_TYPE_REF || !arg_types[1]->data.ref.is_ref) {
+        !ref_slot_type(arg_types[0]) || !ref_slot_type(arg_types[1])) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s expects 2 ref arguments", op_name);
       morphl_error_emit(NULL, &err);
       return NULL;
@@ -1334,8 +1354,7 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
     }
     MorphlType* left  = arg_types[0];
     MorphlType* right = arg_types[1];
-    if (!left || left->kind != MORPHL_TYPE_REF ||
-        !right || right->kind != MORPHL_TYPE_REF) {
+    if (!ref_slot_type(left) || !ref_slot_type(right)) {
       MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "%s: both arguments must be $ref types", op_name);
       morphl_error_emit(NULL, &err);
       return NULL;
@@ -2752,15 +2771,19 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
             morphl_error_emit(NULL, &err);
             return NULL;
           }
+          const MorphlType* target_ref_slot = ref_slot_type(target_type);
           if (value_type->kind == MORPHL_TYPE_REF && value_type->data.ref.is_ref) {
-            if (!refs_assignable(target_type, value_type)) {
+            if (!target_ref_slot || !refs_assignable(target_ref_slot, value_type)) {
               MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: incompatible ref rebinding");
               morphl_error_emit(NULL, &err);
               return NULL;
             }
             return target_type;
           }
-          if (!morphl_type_equals(target_type->data.ref.target, value_type)) {
+          MorphlType* write_target =
+              target_ref_slot ? target_ref_slot->data.ref.target
+                              : target_type->data.ref.target;
+          if (!morphl_type_equals(write_target, value_type)) {
             MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");
             morphl_error_emit(NULL, &err);
             return NULL;

@@ -2509,6 +2509,16 @@ static const MorphlType* unwrap_ref(const MorphlType* t) {
   return t;
 }
 
+static const MorphlType* ref_slot_type(const MorphlType* t) {
+  if (!t || t->kind != MORPHL_TYPE_REF) return NULL;
+  if (t->data.ref.is_ref) return t;
+  if (t->data.ref.target && t->data.ref.target->kind == MORPHL_TYPE_REF &&
+      t->data.ref.target->data.ref.is_ref) {
+    return t->data.ref.target;
+  }
+  return NULL;
+}
+
 static struct AstNode* unwrap_extern_expr(struct AstNode* node,
                                           InternTable* interns) {
   while (node && node->kind == AST_BUILTIN && node->op &&
@@ -2958,8 +2968,8 @@ static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
     const MorphlType* field_type = NULL;
     ptrdiff_t field_offset = block_layout_field_offset(target_btype, e->interns,
                                                        field_name, &field_type);
-    if (field_offset == PTRDIFF_MAX || !field_type ||
-        field_type->kind != MORPHL_TYPE_REF || !field_type->data.ref.is_ref) {
+    const MorphlType* field_ref_slot = ref_slot_type(field_type);
+    if (field_offset == PTRDIFF_MAX || !field_ref_slot) {
       return false;
     }
     /* AST_IDENT target: look up in frame or static slots */
@@ -2987,6 +2997,40 @@ static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
     return emit_op_i32(e, VM_OP_ALOAD, (int32_t)field_offset);
   }
   return false;
+}
+
+static const MorphlType* call_param_type_at(AstNode* callee, size_t arg_index) {
+  if (!callee || !callee->type) return NULL;
+  const MorphlType* fn_type = unwrap_ref(callee->type);
+  if (fn_type && fn_type->kind == MORPHL_TYPE_GROUP &&
+      fn_type->data.group.elem_count == 1) {
+    fn_type = unwrap_ref(fn_type->data.group.elem_types[0]);
+  }
+  if (fn_type && fn_type->kind == MORPHL_TYPE_OVERLOAD &&
+      callee->overload_has_selection && !callee->overload_select_self &&
+      callee->overload_selected_index < fn_type->data.overload.candidate_count) {
+    fn_type = unwrap_ref(
+        fn_type->data.overload.candidate_types[callee->overload_selected_index]);
+  }
+  if (!fn_type || fn_type->kind != MORPHL_TYPE_FUNC ||
+      fn_type->data.func.param_count == 0 ||
+      !fn_type->data.func.param_types[0]) {
+    return NULL;
+  }
+  const MorphlType* params = unwrap_ref(fn_type->data.func.param_types[0]);
+  if (params && params->kind == MORPHL_TYPE_GROUP) {
+    return arg_index < params->data.group.elem_count
+               ? params->data.group.elem_types[arg_index]
+               : NULL;
+  }
+  return arg_index == 0 ? fn_type->data.func.param_types[0] : NULL;
+}
+
+static bool emit_call_arg(VmEmitter* e, AstNode* callee, AstNode* arg,
+                          size_t arg_index) {
+  const MorphlType* expected = call_param_type_at(callee, arg_index);
+  if (ref_slot_type(expected) && emit_ref_handle_expr(e, arg)) return true;
+  return emit_node(e, arg);
 }
 
 /* ── frame alignment helper ─────────────────────────────────────────────── */
@@ -4433,9 +4477,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               if (args) {
                 if (args->kind == AST_GROUP) {
                   for (size_t i = 0; i < args->child_count; i++)
-                    if (!emit_node(e, args->children[i])) return false;
+                    if (!emit_call_arg(e, callee, args->children[i], i))
+                      return false;
                 } else {
-                  if (!emit_node(e, args)) return false;
+                  if (!emit_call_arg(e, callee, args, 0)) return false;
                 }
               }
               if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)traitvar_off))
@@ -4522,10 +4567,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               if (args) {
                 if (args->kind == AST_GROUP) {
                   for (size_t i = 0; i < args->child_count; i++) {
-                    if (!emit_node(e, args->children[i])) return false;
+                    if (!emit_call_arg(e, prop_value, args->children[i], i))
+                      return false;
                   }
                 } else {
-                  if (!emit_node(e, args)) return false;
+                  if (!emit_call_arg(e, prop_value, args, 0)) return false;
                 }
               }
               if (!emit_node(e, prop_value)) return false;
@@ -4574,10 +4620,10 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (args) {
         if (args->kind == AST_GROUP) {
           for (size_t i = 0; i < args->child_count; i++) {
-            if (!emit_node(e, args->children[i])) return false;
+            if (!emit_call_arg(e, callee, args->children[i], i)) return false;
           }
         } else {
-          if (!emit_node(e, args)) return false;
+          if (!emit_call_arg(e, callee, args, 0)) return false;
         }
       }
 
@@ -4652,7 +4698,13 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           Str fname = fnd->value;
           if (!fname.ptr && e->interns && fnd->op)
             fname = interns_lookup(e->interns, fnd->op);
-          const MorphlType* ttype = unwrap_ref(tgt->type);
+          const MorphlType* raw_tgt_type = tgt->type;
+          const MorphlType* target_ref_slot = ref_slot_type(raw_tgt_type);
+          bool target_is_ref = target_ref_slot != NULL;
+          const MorphlType* ttype =
+              target_ref_slot && target_ref_slot->data.ref.target
+                  ? unwrap_ref(target_ref_slot->data.ref.target)
+                  : unwrap_ref(raw_tgt_type);
           if (!ttype) {
             VM_ERR(tgt, "$set $member: cannot resolve target type");
             return false;
@@ -4706,6 +4758,22 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             Str tname = alias_resolve_full(e, tgt->value, &extra);
             ptrdiff_t toff =
                 morphl_backend_find_offset(&e->frameInfo, tname) + extra;
+            if (target_is_ref) {
+              if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)toff)) return false;
+              if (ref_slot_type(field_type) && value->type &&
+                  value->type->kind == MORPHL_TYPE_REF &&
+                  value->type->data.ref.is_ref) {
+                if (!emit_ref_handle_expr(e, value) && !emit_node(e, value))
+                  return false;
+              } else if (!emit_node(e, value)) {
+                return false;
+              }
+              uint8_t asop =
+                  astore_op_repr(field_type,
+                                  field_storage ? &field_storage->repr : NULL);
+              if (asop == 0xFF) return false;
+              return emit_op_i32(e, asop, (int32_t)field_off);
+            }
             if (!emit_node(e, value)) return false;
             uint8_t sop = store_op_repr(unwrap_ref(field_type),
                                         field_storage ? &field_storage->repr : NULL);
@@ -4896,9 +4964,9 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           morphl_backend_find_offset(&e->frameInfo, target_name) + textra;
       const MorphlType* target_slot_type =
           target->type ? target->type : node->children[0]->type;
+      const MorphlType* target_ref_slot = ref_slot_type(target_slot_type);
       bool direct_rebinding =
-          target_slot_type && target_slot_type->kind == MORPHL_TYPE_REF &&
-          target_slot_type->data.ref.is_ref && value->type &&
+          target_ref_slot && value->type &&
           value->type->kind == MORPHL_TYPE_REF && value->type->data.ref.is_ref &&
           str_eq(target_name, target->value) && textra == 0;
       if (off == PTRDIFF_MAX + textra) {
@@ -4988,8 +5056,7 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
           return emit_op_i32(e, sop, (int32_t)cand_off);
         }
       }
-      if (target_slot_type && target_slot_type->kind == MORPHL_TYPE_REF &&
-          target_slot_type->data.ref.is_ref && !direct_rebinding &&
+      if (target_ref_slot && !direct_rebinding &&
           str_eq(target_name, target->value) && textra == 0) {
         if (!emit_op_i32(e, VM_OP_RLOAD, (int32_t)off)) return false;
         if (!emit_node(e, value)) return false;
