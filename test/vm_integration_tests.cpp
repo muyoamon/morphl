@@ -2781,6 +2781,82 @@ static void test_e2e_template_specialized_function_block_arg() {
     assert(rc == 11);
 }
 
+// ── $implicit tests ───────────────────────────────────────────────────────────
+
+/* $implicit: suffix default arg used when caller omits it */
+static void test_e2e_implicit_default_arg_used() {
+    int rc = compile_and_run(
+        "$decl add $func ($decl x 0, $implicit $decl y 10) {\n"
+        "  $ret $add x y;\n"
+        "};\n"
+        "$exit $call add (5);\n"   /* 5 + 10 = 15 */
+    );
+    assert(rc == 15);
+    printf("PASS test_e2e_implicit_default_arg_used\n");
+}
+
+/* $implicit: caller supplies all args, default is overridden */
+static void test_e2e_implicit_default_arg_overridden() {
+    int rc = compile_and_run(
+        "$decl add $func ($decl x 0, $implicit $decl y 10) {\n"
+        "  $ret $add x y;\n"
+        "};\n"
+        "$exit $call add (5, 20);\n"   /* 5 + 20 = 25 */
+    );
+    assert(rc == 25);
+    printf("PASS test_e2e_implicit_default_arg_overridden\n");
+}
+
+/* $implicit: prefix default — caller provides only required suffix */
+static void test_e2e_implicit_prefix_default_arg() {
+    int rc = compile_and_run(
+        "$decl sub $func ($implicit $decl base 100, $decl x 0) {\n"
+        "  $ret $sub base x;\n"
+        "};\n"
+        "$exit $call sub (7);\n"   /* 100 - 7 = 93 */
+    );
+    assert(rc == 93);
+    printf("PASS test_e2e_implicit_prefix_default_arg\n");
+}
+
+/* $implicit: layout error — implicit sandwiched between required fields */
+static void test_e2e_implicit_layout_error_sandwiched() {
+    /* The $decl fails type inference; $exit 0 then hits a downstream backend
+     * error because the type context is broken — overall compile returns -1. */
+    int rc = compile_and_run(
+        "$decl bad ($implicit 1, 2, $implicit 3, 4);\n"
+        "$exit 0;\n"
+    );
+    assert(rc == -1);   /* compile error */
+    printf("PASS test_e2e_implicit_layout_error_sandwiched\n");
+}
+
+/* $implicit: group $set with prefix implicit compiles and runs without error.
+ * Verifies: (a) windowed $set is accepted by type checker, (b) code generates
+ * cleanly, (c) VM runs without memory faults.
+ * Note: reading individual group elements back out is not yet supported by
+ * the backend, so element-level verification is not done here. */
+static void test_e2e_implicit_set_prefix_window() {
+    int rc = compile_and_run(
+        "$decl g $mut ($implicit 1, 2, 3);\n"
+        "$set g (10, 20);\n"  /* window: [0] stays 1, [1]=10, [2]=20 */
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_implicit_set_prefix_window\n");
+}
+
+/* $implicit: group $set with suffix implicit compiles and runs without error. */
+static void test_e2e_implicit_set_suffix_window() {
+    int rc = compile_and_run(
+        "$decl g $mut (1, 2, $implicit 3);\n"
+        "$set g (10, 20);\n"  /* window: [0]=10, [1]=20, [2] stays 3 */
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_implicit_set_suffix_window\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -2937,6 +3013,12 @@ int main(void) {
     test_e2e_inline_func_block_body_no_ret();
     test_e2e_overload_arithmetic_resolution();
     test_e2e_overload_whole_object_assignment();
+    test_e2e_implicit_default_arg_used();
+    test_e2e_implicit_default_arg_overridden();
+    test_e2e_implicit_prefix_default_arg();
+    test_e2e_implicit_layout_error_sandwiched();
+    test_e2e_implicit_set_prefix_window();
+    test_e2e_implicit_set_suffix_window();
     printf("All integration tests passed.\n");
     return 0;
 }

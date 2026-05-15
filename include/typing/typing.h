@@ -57,6 +57,7 @@ typedef struct {
   bool contributes_to_shape;
   bool contributes_to_layout;
   bool is_mutable;
+  bool is_implicit;
   MorphlStorageResidence residence;
   MorphlReprInfo repr;
 } MorphlMemberStorage;
@@ -72,6 +73,8 @@ typedef struct {
 typedef struct {
   MorphlType** elem_types;
   size_t elem_count;
+  bool*      elem_implicit; // NULL = all required; per-element implicit flags when non-NULL
+  AstNode**  elem_defaults; // NULL for required slots; default-value AST node for implicit slots
 } MorphlGroupType;
 
 typedef struct {
@@ -161,7 +164,9 @@ MorphlType* morphl_type_ref(Arena* arena,
                             bool is_inline);
 MorphlType* morphl_type_group(Arena* arena,
                               MorphlType** elem_types,
-                              size_t elem_count);
+                              size_t elem_count,
+                              bool* elem_implicit,
+                              AstNode** elem_defaults);
 MorphlType* morphl_type_overload(Arena* arena,
                                  MorphlType** candidate_types,
                                  size_t candidate_count);
@@ -214,6 +219,7 @@ static inline MorphlMemberStorage morphl_member_storage_make(bool shape,
   storage.contributes_to_shape = shape;
   storage.contributes_to_layout = layout;
   storage.is_mutable = is_mutable;
+  storage.is_implicit = false;
   storage.residence = residence;
   storage.repr.has_size = false;
   storage.repr.size_bytes = 0;
@@ -221,6 +227,10 @@ static inline MorphlMemberStorage morphl_member_storage_make(bool shape,
   storage.repr.align_bytes = 0;
   storage.repr.signedness = MORPHL_INT_SIGNEDNESS_DEFAULT;
   return storage;
+}
+
+static inline void morphl_member_storage_set_implicit(MorphlMemberStorage* s, bool implicit) {
+  if (s) s->is_implicit = implicit;
 }
 
 static inline bool morphl_type_is_primitive(const MorphlType* type) {

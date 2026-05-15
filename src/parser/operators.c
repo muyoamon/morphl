@@ -334,15 +334,109 @@ static MorphlType* pp_action_call(const OperatorInfo* info,
     return NULL;
   }
   
-  // Check that provided parameter matches the function's parameter type
-  // (later can implement subtyping here)
+  // Check that provided parameter matches the function's parameter type.
+  // Supports window matching: if expected is a GROUP with implicits and actual
+  // is a GROUP with fewer elements that covers all required members, desugar
+  // args[1] to a full-arity group inserting defaults for implicit slots.
   MorphlType* expected_param_type = func_type->data.func.param_types[0];
-  if (!morphl_type_equals(provided_param_type, expected_param_type)) {
+  bool types_match = morphl_type_equals(provided_param_type, expected_param_type);
+  if (!types_match) {
+    // Also allow subtype (e.g. $never, block prefix subtypes)
+    if (morphl_type_is_subtype(provided_param_type, expected_param_type)) {
+      types_match = true;
+    }
+  }
+  if (!types_match) {
+    // Try window match: provided GROUP with fewer elements than expected GROUP with implicits.
+    MorphlType* prov_uw = provided_param_type;
+    while (prov_uw && prov_uw->kind == MORPHL_TYPE_REF) prov_uw = prov_uw->data.ref.target;
+    MorphlType* exp_uw = expected_param_type;
+    while (exp_uw && exp_uw->kind == MORPHL_TYPE_REF) exp_uw = exp_uw->data.ref.target;
+    if (prov_uw && exp_uw &&
+        prov_uw->kind == MORPHL_TYPE_GROUP && exp_uw->kind == MORPHL_TYPE_GROUP &&
+        exp_uw->data.group.elem_implicit) {
+      size_t N = prov_uw->data.group.elem_count;
+      size_t E = exp_uw->data.group.elem_count;
+      /* Compute first_req and last_req in expected. */
+      size_t first_req = (size_t)-1, last_req = (size_t)-1;
+      for (size_t i = 0; i < E; ++i) {
+        if (!exp_uw->data.group.elem_implicit[i]) {
+          if (first_req == (size_t)-1) first_req = i;
+          last_req = i;
+        }
+      }
+      size_t ws = (size_t)-1;
+      if (first_req == (size_t)-1) {
+        ws = 0; /* All implicit — any window is valid. */
+      } else {
+        size_t req_span = last_req - first_req + 1;
+        if (N >= req_span) {
+          ws = (last_req + 1 >= N) ? (last_req + 1 - N) : 0;
+          if (ws > first_req) ws = (size_t)-1;
+        }
+      }
+      if (ws != (size_t)-1) {
+        /* Verify element-wise type compatibility within the window. */
+        bool window_ok = true;
+        for (size_t i = 0; i < N && window_ok; ++i) {
+          if (!morphl_type_equals(prov_uw->data.group.elem_types[i],
+                                  exp_uw->data.group.elem_types[ws + i]) &&
+              !morphl_type_is_subtype(prov_uw->data.group.elem_types[i],
+                                      exp_uw->data.group.elem_types[ws + i])) {
+            window_ok = false;
+          }
+        }
+        if (window_ok) {
+          types_match = true;
+          /* Desugar param_expr (args[1]) to a full-arity E-element group.
+           * Implicit slots get defaults from the expected group type;
+           * required slots get clones of the provided arg elements. */
+          AstNode* padded = ast_new(AST_GROUP);
+          if (padded) {
+            bool build_ok = true;
+            size_t prov_idx = 0;
+            for (size_t i = 0; i < E && build_ok; ++i) {
+              AstNode* child;
+              if (i >= ws && i < ws + N) {
+                /* Window slot — clone from provided arg group. */
+                AstNode* src = (param_expr->kind == AST_GROUP && prov_idx < param_expr->child_count)
+                               ? param_expr->children[prov_idx]
+                               : param_expr;
+                child = ast_clone(src);
+                prov_idx++;
+              } else {
+                /* Implicit slot — use default from expected group type. */
+                AstNode* def = exp_uw->data.group.elem_defaults ? exp_uw->data.group.elem_defaults[i] : NULL;
+                child = def ? ast_clone(def) : NULL;
+              }
+              if (!child || !ast_append_child(padded, child)) {
+                build_ok = false;
+                if (child) ast_free(child);
+              }
+            }
+            if (build_ok) {
+              /* Replace args[1] with padded group. The old param_expr is now
+               * orphaned — don't free it here since the caller owns the args array. */
+              args[1] = padded;
+              /* Re-infer the padded group so its type is set correctly. */
+              provided_param_type = morphl_infer_type_of_ast(ctx, padded);
+            } else {
+              ast_free(padded);
+              types_match = false;
+            }
+          } else {
+            types_match = false;
+          }
+        }
+      }
+    }
+  }
+  if (!types_match) {
     MorphlError err = MORPHL_ERR_NODE(param_expr, MORPHL_E_TYPE, "$call: parameter type mismatch");
     morphl_error_emit(NULL, &err);
     return NULL;
   }
-  
+
   // Return the function's return type
   return func_type->data.func.return_type;
 }
@@ -752,13 +846,13 @@ static MorphlType* pp_action_const(const OperatorInfo* info,
                                   AstNode** args,
                                   size_t arg_count) {
   (void)info; (void)global_state;
-  
+
   TypeContext* ctx = (TypeContext*)block_state;
   if (!ctx || arg_count != 1) return NULL;
-  
+
   AstNode* target = args[0];
   if (!target) return NULL;
-  
+
   // Infer type of target expression
   MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
   if (!target_type) {
@@ -766,9 +860,35 @@ static MorphlType* pp_action_const(const OperatorInfo* info,
     morphl_error_emit(NULL, &err);
     return NULL;
   }
-  
+
   // Create immutable reference type
   return morphl_type_ref(ctx->arena, target_type, false, false);
+}
+
+static MorphlType* pp_action_implicit(const OperatorInfo* info,
+                                      void* global_state,
+                                      void* block_state,
+                                      AstNode** args,
+                                      size_t arg_count) {
+  (void)info; (void)global_state;
+
+  TypeContext* ctx = (TypeContext*)block_state;
+  if (!ctx || arg_count != 1) return NULL;
+
+  AstNode* target = args[0];
+  if (!target) return NULL;
+
+  // Mark the wrapped node as implicit; the parent $decl or group will pick this up
+  target->storage_is_implicit = true;
+
+  // Return the inner type unchanged — $implicit is a positional annotation only
+  MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
+  if (!target_type) {
+    MorphlError err = MORPHL_ERR_NODE(target, MORPHL_E_TYPE, "$implicit: cannot infer target type");
+    morphl_error_emit(NULL, &err);
+    return NULL;
+  }
+  return target_type;
 }
 
 
@@ -846,8 +966,9 @@ static OperatorRow kBuiltinOps[] = {
   {"$prop",   AST_PROP   ,true,  2, 2,          pp_action_prop,    0, OP_PP_KEEP_NODE, PROP},
   {"$ret",    AST_BUILTIN,false, 1, 1,          pp_action_ret,     0, OP_PP_KEEP_NODE, RET},
   {"$member", AST_BUILTIN,false, 2, 2,          pp_action_member,  0, OP_PP_KEEP_NODE, MEMBER},
-  {"$mut",    AST_BUILTIN,false, 1, 1,          pp_action_mut,     0, OP_PP_KEEP_NODE, MUT},
-  {"$const",  AST_BUILTIN,false, 1, 1,          pp_action_const,   0, OP_PP_KEEP_NODE, CONST},
+  {"$mut",      AST_BUILTIN,false, 1, 1,          pp_action_mut,      0, OP_PP_KEEP_NODE, MUT},
+  {"$const",    AST_BUILTIN,false, 1, 1,          pp_action_const,    0, OP_PP_KEEP_NODE, CONST},
+  {"$implicit", AST_BUILTIN,false, 1, 1,          pp_action_implicit, 0, OP_PP_KEEP_NODE, IMPLICIT},
   {"$static", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, STATIC},
   {"$inline", AST_BUILTIN,false, 1, 1,          NULL,              0, OP_PP_KEEP_NODE, INLINE},
   {"$this",   AST_BUILTIN,false, 0, 0,          NULL,              0, OP_PP_KEEP_NODE, THIS},

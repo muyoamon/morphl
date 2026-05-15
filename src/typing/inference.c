@@ -147,18 +147,87 @@ static void set_overload_selection(AstNode* node, bool select_self,
   node->overload_selected_index = candidate_index;
 }
 
+/* Returns true when element i of group g is marked implicit. */
+static bool group_elem_is_implicit(const MorphlType* g, size_t i) {
+  if (!g || g->kind != MORPHL_TYPE_GROUP) return false;
+  if (!g->data.group.elem_implicit) return false;
+  return g->data.group.elem_implicit[i];
+}
+
+/* Returns true when at least one element of group g is implicit. */
+static bool group_has_implicits(const MorphlType* g) {
+  if (!g || g->kind != MORPHL_TYPE_GROUP || !g->data.group.elem_implicit) return false;
+  for (size_t i = 0; i < g->data.group.elem_count; ++i)
+    if (g->data.group.elem_implicit[i]) return true;
+  return false;
+}
+
+
+/*
+ * Find the leftmost contiguous window of size N in expected_group that covers
+ * all required members. Returns the window start index, or SIZE_MAX if no
+ * valid window exists.
+ *
+ * Layout constraint: implicit* required+ implicit* guarantees required members
+ * form a contiguous block. A window [ws, ws+N) is valid iff ws <= first_req
+ * and ws+N > last_req. Leftmost valid ws = max(0, last_req - N + 1).
+ */
+static size_t find_implicit_window(const MorphlType* expected_group, size_t N) {
+  if (!expected_group || expected_group->kind != MORPHL_TYPE_GROUP) return SIZE_MAX;
+  size_t E = expected_group->data.group.elem_count;
+  if (N > E) return SIZE_MAX;
+
+  size_t first_req = SIZE_MAX, last_req = SIZE_MAX;
+  for (size_t i = 0; i < E; ++i) {
+    if (!group_elem_is_implicit(expected_group, i)) {
+      if (first_req == SIZE_MAX) first_req = i;
+      last_req = i;
+    }
+  }
+  if (first_req == SIZE_MAX) {
+    /* All implicit — any window is valid; leftmost wins. */
+    return 0;
+  }
+  size_t req_span = last_req - first_req + 1;
+  if (N < req_span) return SIZE_MAX; /* Can't cover all required. */
+  size_t ws = (last_req + 1 >= N) ? (last_req + 1 - N) : 0;
+  if (ws > first_req) return SIZE_MAX;
+  return ws;
+}
+
 static bool type_matches_expected(MorphlType* actual, MorphlType* expected) {
   actual = unwrap_ref(actual);
   expected = unwrap_ref(expected);
   if (!actual || !expected) return false;
   if (actual->kind == MORPHL_TYPE_GROUP && expected->kind == MORPHL_TYPE_GROUP) {
-    if (actual->data.group.elem_count != expected->data.group.elem_count)
-      return false;
-    for (size_t i = 0; i < actual->data.group.elem_count; ++i) {
-      if (!type_matches_expected(actual->data.group.elem_types[i],
-                                 expected->data.group.elem_types[i])) {
-        return false;
+    size_t N = actual->data.group.elem_count;
+    size_t E = expected->data.group.elem_count;
+    if (N == E && !group_has_implicits(expected)) {
+      /* Fast path: same arity, no implicits. */
+      for (size_t i = 0; i < N; ++i) {
+        if (!type_matches_expected(actual->data.group.elem_types[i],
+                                   expected->data.group.elem_types[i]))
+          return false;
       }
+      return true;
+    }
+    if (N == E) {
+      /* Same arity with implicits: positional match (implicits must also match). */
+      for (size_t i = 0; i < N; ++i) {
+        if (!type_matches_expected(actual->data.group.elem_types[i],
+                                   expected->data.group.elem_types[i]))
+          return false;
+      }
+      return true;
+    }
+    /* Reduced arity: try window match. */
+    if (!group_has_implicits(expected)) return false;
+    size_t ws = find_implicit_window(expected, N);
+    if (ws == SIZE_MAX) return false;
+    for (size_t i = 0; i < N; ++i) {
+      if (!type_matches_expected(actual->data.group.elem_types[i],
+                                 expected->data.group.elem_types[ws + i]))
+        return false;
     }
     return true;
   }
@@ -496,6 +565,7 @@ static void apply_storage_metadata(TypeContext* ctx,
 
   Sym mut_sym = interns_intern(ctx->interns, str_from("$mut", 4));
   Sym const_sym = interns_intern(ctx->interns, str_from("$const", 6));
+  Sym implicit_sym = interns_intern(ctx->interns, str_from("$implicit", 9));
   Sym inline_sym = interns_intern(ctx->interns, str_from("$inline", 7));
   Sym static_sym = interns_intern(ctx->interns, str_from("$static", 7));
   Sym heap_sym = interns_intern(ctx->interns, str_from("$heap", 5));
@@ -504,6 +574,7 @@ static void apply_storage_metadata(TypeContext* ctx,
   Sym ref_sym = interns_intern(ctx->interns, str_from("$ref", 4));
 
   if (decl_or_expr->op == mut_sym || decl_or_expr->op == const_sym ||
+      decl_or_expr->op == implicit_sym ||
       decl_or_expr->op == inline_sym || decl_or_expr->op == static_sym ||
       decl_or_expr->op == heap_sym) {
     if (decl_or_expr->child_count > 0 && decl_or_expr->children[0]) {
@@ -511,6 +582,7 @@ static void apply_storage_metadata(TypeContext* ctx,
       decl_or_expr->contributes_to_shape = decl_or_expr->children[0]->contributes_to_shape;
       decl_or_expr->contributes_to_layout = decl_or_expr->children[0]->contributes_to_layout;
       decl_or_expr->storage_is_mutable = decl_or_expr->children[0]->storage_is_mutable;
+      decl_or_expr->storage_is_implicit = decl_or_expr->children[0]->storage_is_implicit;
       decl_or_expr->storage_residence = decl_or_expr->children[0]->storage_residence;
       decl_or_expr->extern_symbol = decl_or_expr->children[0]->extern_symbol;
       decl_or_expr->repr = decl_or_expr->children[0]->repr;
@@ -519,6 +591,8 @@ static void apply_storage_metadata(TypeContext* ctx,
 
   if (decl_or_expr->op == mut_sym) {
     decl_or_expr->storage_is_mutable = true;
+  } else if (decl_or_expr->op == implicit_sym) {
+    decl_or_expr->storage_is_implicit = true;
   } else if (decl_or_expr->op == const_sym) {
     decl_or_expr->storage_is_mutable = false;
   } else if (decl_or_expr->op == inline_sym) {
@@ -1767,8 +1841,69 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
       return NULL;
     }
     if (func_type->data.func.param_count > 0 && func_type->data.func.param_types[0]) {
+      MorphlType* param_type = func_type->data.func.param_types[0];
+      MorphlType* actual_arg_type = arg_node ? morphl_infer_type_of_ast(ctx, arg_node) : NULL;
+      MorphlType* actual_uw = unwrap_ref(actual_arg_type);
+      MorphlType* param_uw = unwrap_ref(param_type);
+      /* When arg_node is an AST_GROUP but infers transparently (single elem),
+       * rebuild as a GROUP type with elem_count = child_count for window matching. */
+      if (param_uw && param_uw->kind == MORPHL_TYPE_GROUP && group_has_implicits(param_uw) &&
+          arg_node && arg_node->kind == AST_GROUP &&
+          (!actual_uw || actual_uw->kind != MORPHL_TYPE_GROUP)) {
+        size_t child_n = arg_node->child_count;
+        MorphlType** child_types = child_n ? (MorphlType**)malloc(child_n * sizeof(MorphlType*)) : NULL;
+        bool child_ok = true;
+        for (size_t ci = 0; ci < child_n && child_ok; ++ci) {
+          child_types[ci] = morphl_infer_type_of_ast(ctx, arg_node->children[ci]);
+          if (!child_types[ci]) child_ok = false;
+        }
+        if (child_ok && child_n > 0) {
+          actual_arg_type = morphl_type_group(ctx->arena, child_types, child_n, NULL, NULL);
+          actual_uw = actual_arg_type;
+        }
+        free(child_types);
+      }
+      /* Detect windowed group arg: actual has fewer elements than param, param has implicits. */
+      if (actual_uw && param_uw &&
+          actual_uw->kind == MORPHL_TYPE_GROUP && param_uw->kind == MORPHL_TYPE_GROUP &&
+          group_has_implicits(param_uw) &&
+          actual_uw->data.group.elem_count < param_uw->data.group.elem_count) {
+        size_t N = actual_uw->data.group.elem_count;
+        size_t ws = find_implicit_window(param_uw, N);
+        if (ws != SIZE_MAX && type_matches_expected(actual_uw, param_uw)) {
+          /* Desugar arg_node in-place: build padded full-arity group. */
+          AstNode* padded = ast_new(AST_GROUP);
+          bool build_ok = (padded != NULL);
+          size_t prov_idx = 0;
+          for (size_t i = 0; i < param_uw->data.group.elem_count && build_ok; ++i) {
+            AstNode* child;
+            if (i >= ws && i < ws + N) {
+              AstNode* src = (arg_node && arg_node->kind == AST_GROUP && prov_idx < arg_node->child_count)
+                             ? arg_node->children[prov_idx]
+                             : arg_node;
+              child = ast_clone(src);
+              prov_idx++;
+            } else {
+              AstNode* def = param_uw->data.group.elem_defaults ? param_uw->data.group.elem_defaults[i] : NULL;
+              child = def ? ast_clone(def) : NULL;
+            }
+            if (!child || !ast_append_child(padded, child)) {
+              build_ok = false;
+              if (child) ast_free(child);
+            }
+          }
+          if (build_ok) {
+            /* Replace children[1] with padded group; re-infer its type. */
+            ((AstNode*)node)->children[1] = padded;
+            padded->type = morphl_infer_type_of_ast(ctx, padded);
+            return func_type->data.func.return_type;
+          } else {
+            if (padded) ast_free(padded);
+          }
+        }
+      }
       if (!resolve_overload_to_expected(ctx, arg_node,
-                                        func_type->data.func.param_types[0],
+                                        param_type,
                                         true, true)) {
         return NULL;
       }
@@ -2087,6 +2222,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       node->contributes_to_shape = init_node->contributes_to_shape;
       node->contributes_to_layout = init_node->contributes_to_layout;
       node->storage_is_mutable = init_node->storage_is_mutable;
+      node->storage_is_implicit = init_node->storage_is_implicit;
       node->storage_residence = init_node->storage_residence;
       node->extern_symbol = default_extern_symbol(init_node);
       node->repr = init_node->repr;
@@ -2158,16 +2294,58 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         return morphl_infer_type_of_ast(ctx, node->children[0]);
       }
       MorphlType** elems = NULL;
+      bool* implicits = NULL;
+      AstNode** defaults = NULL;
+      bool any_implicit = false;
       if (count > 0) {
-        elems = (MorphlType**)malloc(count * sizeof(MorphlType*));
-        if (!elems) return NULL;
+        elems    = (MorphlType**)malloc(count * sizeof(MorphlType*));
+        implicits = (bool*)calloc(count, sizeof(bool));
+        defaults  = (AstNode**)calloc(count, sizeof(AstNode*));
+        if (!elems || !implicits || !defaults) {
+          free(elems); free(implicits); free(defaults);
+          return NULL;
+        }
         for (size_t i = 0; i < count; ++i) {
-          elems[i] = morphl_infer_type_of_ast(ctx, node->children[i]);
-          if (!elems[i]) { free(elems); return NULL; }
+          AstNode* child = node->children[i];
+          elems[i] = morphl_infer_type_of_ast(ctx, child);
+          if (!elems[i]) { free(elems); free(implicits); free(defaults); return NULL; }
+          /* child is implicit if it or its inner node was marked by $implicit */
+          bool impl = child->storage_is_implicit;
+          implicits[i] = impl;
+          if (impl) {
+            any_implicit = true;
+            /* Unwrap storage qualifiers to reach the underlying $decl or expression. */
+            AstNode* inner = child;
+            while (inner && inner->kind == AST_BUILTIN && inner->child_count == 1 && inner->children[0])
+              inner = inner->children[0];
+            /* Default expression: for $decl nodes the initializer is children[1] */
+            if (inner && inner->kind == AST_DECL && inner->child_count > 1)
+              defaults[i] = inner->children[1];
+            else
+              defaults[i] = inner ? inner : child;
+          }
+        }
+        /* Validate implicit* required+ implicit* layout */
+        bool seen_required = false, seen_implicit_after_required = false;
+        for (size_t i = 0; i < count; ++i) {
+          if (!implicits[i]) {
+            if (seen_implicit_after_required) {
+              MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                "$implicit members must form a prefix/suffix — cannot interleave with required members");
+              morphl_error_emit(NULL, &err);
+              free(elems); free(implicits); free(defaults);
+              return NULL;
+            }
+            seen_required = true;
+          } else if (seen_required) {
+            seen_implicit_after_required = true;
+          }
         }
       }
-      MorphlType* group_type = morphl_type_group(ctx->arena, elems, count);
-      free(elems);
+      MorphlType* group_type = morphl_type_group(ctx->arena, elems, count,
+                                                  any_implicit ? implicits : NULL,
+                                                  any_implicit ? defaults  : NULL);
+      free(elems); free(implicits); free(defaults);
       return group_type;
     }
 
@@ -2267,6 +2445,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
               stmt->storage_is_mutable,
               stmt->storage_residence);
             field_storage[field_count].repr = stmt->repr;
+            morphl_member_storage_set_implicit(&field_storage[field_count], stmt->storage_is_implicit);
             field_count++;
           }
           if (stmt->contributes_to_layout) {
@@ -2291,6 +2470,7 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
               stmt->storage_is_mutable,
               stmt->storage_residence);
             layout_field_storage[layout_field_count].repr = stmt->repr;
+            morphl_member_storage_set_implicit(&layout_field_storage[layout_field_count], stmt->storage_is_implicit);
             layout_field_count++;
           }
           Sym* names = field_count ? (Sym*)arena_push(ctx->arena, NULL, field_count * sizeof(Sym)) : NULL;
@@ -2366,6 +2546,23 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           block_type->data.block.prop_types  = ptypes;
           block_type->data.block.prop_values = pvals;
           block_type->data.block.prop_count  = prop_count;
+        }
+      }
+      /* Validate implicit* required+ implicit* layout constraint for block fields */
+      if (ok) {
+        bool blk_seen_required = false, blk_seen_impl_after_req = false;
+        for (size_t j = 0; j < field_count && ok; ++j) {
+          if (!field_storage[j].is_implicit) {
+            if (blk_seen_impl_after_req) {
+              MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE,
+                "$implicit members must form a prefix/suffix — cannot interleave with required members");
+              morphl_error_emit(NULL, &err);
+              ok = false;
+            }
+            blk_seen_required = true;
+          } else if (blk_seen_required) {
+            blk_seen_impl_after_req = true;
+          }
         }
       }
       type_context_pop_this(ctx);
@@ -2472,6 +2669,20 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
     case AST_IF:
     case AST_SET: {
       if (!node->op) return NULL;
+      /* $implicit is transparent to type inference: mark node and return
+       * the inner child's type unchanged. ($mut/$const are NOT transparent —
+       * they are handled below by morphl_infer_type_for_op which creates a
+       * REF wrapper type.) */
+      {
+        Sym implicit_q = interns_intern(ctx->interns, str_from("$implicit", 9));
+        if (node->op == implicit_q && node->child_count == 1 && node->children[0]) {
+          apply_storage_metadata(ctx, (AstNode*)node, 0, NULL);
+          MorphlType* inner_type = morphl_infer_type_of_ast(ctx, node->children[0]);
+          node->storage_is_implicit = true;
+          node->type = inner_type;
+          return inner_type;
+        }
+      }
       Sym idtstr_sym = interns_intern(ctx->interns, str_from("$idtstr", 7));
       Sym strtid_sym = interns_intern(ctx->interns, str_from("$strtid", 7));
       Sym member_sym = interns_intern(ctx->interns, str_from("$member", 7));
@@ -2784,6 +2995,18 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
               target_ref_slot ? target_ref_slot->data.ref.target
                               : target_type->data.ref.target;
           if (!morphl_type_equals(write_target, value_type)) {
+            /* Check for windowed group assignment (implicit prefix/suffix). */
+            MorphlType* wt_uw = unwrap_ref(write_target);
+            MorphlType* vt_uw = unwrap_ref(value_type);
+            if (wt_uw && vt_uw &&
+                wt_uw->kind == MORPHL_TYPE_GROUP && vt_uw->kind == MORPHL_TYPE_GROUP &&
+                group_has_implicits(wt_uw)) {
+              size_t ws = find_implicit_window(wt_uw, vt_uw->data.group.elem_count);
+              if (ws != SIZE_MAX && type_matches_expected(vt_uw, wt_uw)) {
+                node->implicit_window_start = ws;
+                return value_type;
+              }
+            }
             MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");
             morphl_error_emit(NULL, &err);
             return NULL;
@@ -2794,11 +3017,23 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           /* Allow trait assignment: an impl type (BLOCK with fields+props) may be assigned
            * to a trait-typed variable (BLOCK with only props, field_count==0). */
           MorphlType* tgt_uw = unwrap_ref(target_type);
+          MorphlType* val_uw = unwrap_ref(value_type);
           bool is_trait_assign = tgt_uw && tgt_uw->kind == MORPHL_TYPE_BLOCK &&
                                  tgt_uw->data.block.field_count == 0 &&
                                  tgt_uw->data.block.prop_count > 0 &&
                                  morphl_type_is_subtype(value_type, tgt_uw);
-          if (!is_trait_assign) {
+          /* Allow windowed group assignment (implicit prefix/suffix). */
+          bool is_window_assign = false;
+          if (!is_trait_assign && tgt_uw && val_uw &&
+              tgt_uw->kind == MORPHL_TYPE_GROUP && val_uw->kind == MORPHL_TYPE_GROUP &&
+              group_has_implicits(tgt_uw)) {
+            size_t ws = find_implicit_window(tgt_uw, val_uw->data.group.elem_count);
+            if (ws != SIZE_MAX && type_matches_expected(val_uw, tgt_uw)) {
+              node->implicit_window_start = ws;
+              is_window_assign = true;
+            }
+          }
+          if (!is_trait_assign && !is_window_assign) {
             MorphlError err = MORPHL_ERR_AT(node, MORPHL_E_TYPE, "$set: type mismatch in assignment");
             morphl_error_emit(NULL, &err);
             return NULL;

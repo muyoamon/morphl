@@ -53,6 +53,8 @@ AstNode* ast_clone(const AstNode* node) {
   clone->contributes_to_shape = node->contributes_to_shape;
   clone->contributes_to_layout = node->contributes_to_layout;
   clone->storage_is_mutable = node->storage_is_mutable;
+  clone->storage_is_implicit = node->storage_is_implicit;
+  clone->implicit_window_start = node->implicit_window_start;
   clone->storage_residence = node->storage_residence;
   clone->extern_symbol = node->extern_symbol;
   clone->import_module_shared = node->import_module_shared;

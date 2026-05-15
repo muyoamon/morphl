@@ -1124,7 +1124,7 @@ static void test_pp_call_group_param() {
   // Build function type: (group[int, int]) -> int
   MorphlType* t_int = morphl_type_int(&arena);
   MorphlType* group_elems[2] = {t_int, t_int};
-  MorphlType* group_type = morphl_type_group(&arena, group_elems, 2);
+  MorphlType* group_type = morphl_type_group(&arena, group_elems, 2, NULL, NULL);
   MorphlType* func_type = morphl_type_func(&arena, group_type, t_int);
 
   Sym f_sym = interns_intern(interns, str_from("f", 1));

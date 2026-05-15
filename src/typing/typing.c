@@ -130,7 +130,9 @@ MorphlType* morphl_type_ref(Arena* arena,
 // Group type constructor
 MorphlType* morphl_type_group(Arena* arena,
                               MorphlType** elem_types,
-                              size_t elem_count) {
+                              size_t elem_count,
+                              bool* elem_implicit,
+                              AstNode** elem_defaults) {
   if (!arena) return NULL;
   MorphlType* t = arena_alloc(arena, sizeof(MorphlType));
   if (!t) return NULL;
@@ -146,6 +148,18 @@ MorphlType* morphl_type_group(Arena* arena,
     }
     t->data.group.elem_types = elems;
     t->data.group.elem_count = elem_count;
+    if (elem_implicit) {
+      bool* impl = arena_alloc(arena, elem_count * sizeof(bool));
+      if (!impl) return NULL;
+      for (size_t i = 0; i < elem_count; ++i) impl[i] = elem_implicit[i];
+      t->data.group.elem_implicit = impl;
+    }
+    if (elem_defaults) {
+      AstNode** defs = arena_alloc(arena, elem_count * sizeof(AstNode*));
+      if (!defs) return NULL;
+      for (size_t i = 0; i < elem_count; ++i) defs[i] = elem_defaults[i];
+      t->data.group.elem_defaults = defs;
+    }
   } else {
     t->data.group.elem_types = NULL;
     t->data.group.elem_count = 0;
@@ -397,6 +411,20 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
         if (!elems[i]) return NULL;
       }
       t->data.group.elem_types = elems;
+      if (t->data.group.elem_implicit) {
+        bool* impl = arena_alloc(arena, t->data.group.elem_count * sizeof(bool));
+        if (!impl) return NULL;
+        for (size_t i = 0; i < t->data.group.elem_count; ++i)
+          impl[i] = t->data.group.elem_implicit[i];
+        t->data.group.elem_implicit = impl;
+      }
+      if (t->data.group.elem_defaults) {
+        AstNode** defs = arena_alloc(arena, t->data.group.elem_count * sizeof(AstNode*));
+        if (!defs) return NULL;
+        for (size_t i = 0; i < t->data.group.elem_count; ++i)
+          defs[i] = t->data.group.elem_defaults[i]; // shallow copy — AST nodes are not owned here
+        t->data.group.elem_defaults = defs;
+      }
     }
   } else if (t->kind == MORPHL_TYPE_OVERLOAD) {
     if (t->data.overload.candidate_count > 0 &&
@@ -527,6 +555,9 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
       if (!morphl_type_equals(a->data.group.elem_types[i], b->data.group.elem_types[i])) {
         return false;
       }
+      bool a_impl = a->data.group.elem_implicit ? a->data.group.elem_implicit[i] : false;
+      bool b_impl = b->data.group.elem_implicit ? b->data.group.elem_implicit[i] : false;
+      if (a_impl != b_impl) return false;
     }
     return true;
   }

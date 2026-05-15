@@ -47,7 +47,9 @@ typedef struct AstNode {
   bool contributes_to_shape;
   bool contributes_to_layout;
   bool storage_is_mutable;
+  bool storage_is_implicit;
   MorphlStorageResidence storage_residence;
+  size_t implicit_window_start; // set by $set inference: index in target where RHS window starts
   Str extern_symbol;
   Str import_path;
   struct AstNode* import_module;

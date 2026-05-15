@@ -590,6 +590,11 @@ static bool patch_sconst_indices(uint8_t* code, uint32_t code_len,
         if (ip + 8 > code_len) goto truncated;
         ip += 8;
         break;
+      case VM_OP_VSTORE:
+        /* [i32 off][u32 size] = 8 bytes of operands */
+        if (ip + 8 > code_len) goto truncated;
+        ip += 8;
+        break;
       case VM_OP_ENTER:
       case VM_OP_LEAVE:
       case VM_OP_JMP:

@@ -45,6 +45,7 @@ enum Operator{
   MEMBER,
   MUT,
   CONST,
+  IMPLICIT,
   INLINE,
   THIS,
   PARENT,

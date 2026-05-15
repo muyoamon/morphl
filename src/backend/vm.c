@@ -5069,8 +5069,24 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
       if (!emit_node(e, value)) return false;
       const MorphlType* t = unwrap_ref(value->type ? value->type : node->type);
       uint8_t sop = store_op_repr(t, &target->repr);
-      if (sop == 0xFF && value->kind == AST_CALL && t) {
-        return emit_vstore(e, (int32_t)off, (uint32_t)type_frame_size(t));
+      if (sop == 0xFF && t) {
+        /* Group / block / array — use VSTORE.
+         * For windowed implicit group assignment, offset by window start. */
+        size_t ws_bytes = 0;
+        if (node->implicit_window_start > 0) {
+          const MorphlType* tgt_t = unwrap_ref(
+              target->type ? target->type : node->children[0]->type);
+          if (tgt_t && tgt_t->kind == MORPHL_TYPE_GROUP) {
+            for (size_t wi = 0;
+                 wi < node->implicit_window_start &&
+                 wi < tgt_t->data.group.elem_count;
+                 wi++) {
+              ws_bytes += type_frame_size(tgt_t->data.group.elem_types[wi]);
+            }
+          }
+        }
+        return emit_vstore(e, (int32_t)(off + (ptrdiff_t)ws_bytes),
+                           (uint32_t)type_frame_size(t));
       }
       if (sop == 0xFF) return false;
       return emit_op_i32(e, sop, (int32_t)off);
@@ -5196,10 +5212,11 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
         return emit_op(e, VM_OP_RET);
       }
 
-      /* $mut / $const / $inline / $static / $ref / $heap (qualifier form) —
-       * transparent storage qualifiers */
+      /* $mut / $const / $inline / $static / $ref / $heap / $implicit
+       * (qualifier form) — transparent storage qualifiers */
       if (OP_IS("$mut") || OP_IS("$const") || OP_IS("$inline") ||
-          OP_IS("$static") || OP_IS("$ref") || OP_IS("$heap")) {
+          OP_IS("$static") || OP_IS("$ref") || OP_IS("$heap") ||
+          OP_IS("$implicit")) {
         if (node->overload_has_selection && !node->overload_select_self &&
             node->child_count > 0 && node->children[0]) {
           AstNode* child = node->children[0];
@@ -6403,6 +6420,9 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
   size_t param_sz = 0;
   for (size_t i = 0; i < param_count; i++) {
     struct AstNode* p = param_decls[i];
+    /* unwrap storage qualifiers like $implicit */
+    while (p && p->kind == AST_BUILTIN && p->child_count == 1 && p->children[0])
+      p = p->children[0];
     if (p && p->type) {
       param_sz += type_frame_size(unwrap_ref(p->type));
     }
@@ -6427,6 +6447,9 @@ static bool emit_function_body(VmEmitter* e, struct AstNode* func_node,
   /* register parameters in frame */
   for (size_t i = 0; i < param_count; i++) {
     struct AstNode* p = param_decls[i];
+    /* unwrap storage qualifiers like $implicit */
+    while (p && p->kind == AST_BUILTIN && p->child_count == 1 && p->children[0])
+      p = p->children[0];
     if (!p || p->kind != AST_DECL || p->child_count < 1) continue;
     struct AstNode* pname = p->children[0];
     if (!pname || pname->kind != AST_IDENT) continue;
