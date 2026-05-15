@@ -66,6 +66,21 @@ $decl realloc_bytes $func ($decl buf $ref RawBuffer, $decl new_size 0) {
   };
 }
 
+$decl alloc_ptr $func ($decl size 0, $decl align 0) {
+  $ret $call _c_malloc size;
+}
+
+$decl realloc_ptr $func ($decl ptr $mut $ref Byte, $decl new_size 0) {
+  $ret $call _c_realloc (ptr, new_size);
+}
+
+$decl free_ptr $func ($decl ptr $mut $ref Byte) {
+  $if $rneq ptr $null {
+    $call _c_free ptr;
+  };
+  $ret ();
+}
+
 $decl free $func ($decl buf $ref RawBuffer) {
   $if $and ($member buf ok) ($member buf owned) {
     $call _c_free ($member buf ptr);
@@ -76,4 +91,14 @@ $decl free $func ($decl buf $ref RawBuffer) {
     $set $member buf ok 0;
   };
   $ret ();
+}
+
+$decl read_value $template T $func ($decl ptr $mut $ref 0, $decl byte_offset 0) {
+  $decl native $extern "_native_read_value" $func ($decl p $mut $ref 0, $decl off 0) T;
+  $ret $call native (ptr, byte_offset);
+}
+
+$decl write_value $template T $func ($decl ptr $mut $ref 0, $decl byte_offset 0, $decl value T) {
+  $decl native $extern "_native_write_value" $func ($decl p $mut $ref 0, $decl off 0, $decl v T) 0;
+  $ret $call native (ptr, byte_offset, value);
 }

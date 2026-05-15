@@ -255,6 +255,15 @@ static bool path_mentions_std_root(const char* path) {
            strcmp(path, "std") == 0;
 }
 
+static bool is_std_mem_native_symbol(const char* symbol_name) {
+    if (!symbol_name) return false;
+    return strcmp(symbol_name, "_native_malloc") == 0 ||
+           strcmp(symbol_name, "_native_realloc") == 0 ||
+           strcmp(symbol_name, "_native_free") == 0 ||
+           strcmp(symbol_name, "_native_read_value") == 0 ||
+           strcmp(symbol_name, "_native_write_value") == 0;
+}
+
 static bool load_native_module_file(MorphlVmProgram* prog, const char* lib_path) {
     if (!prog || !lib_path || !lib_path[0]) return false;
     void* handle = dlopen(lib_path, RTLD_LAZY | RTLD_LOCAL);
@@ -315,6 +324,25 @@ static bool resolve_native_symbol(MorphlVmProgram* prog, const char* exe_path,
         }
 #endif
     }
+
+#ifdef MORPHL_STD_NATIVE_DIR
+    if (is_std_mem_native_symbol(symbol_name)) {
+        size_t len = strlen(MORPHL_STD_NATIVE_DIR) + 1 + strlen("mem") +
+                     strlen(MORPHL_NATIVE_LIB_EXT) + 1;
+        candidate = (char*)malloc(len);
+        if (candidate) {
+            snprintf(candidate, len, "%s/%s%s", MORPHL_STD_NATIVE_DIR, "mem",
+                     MORPHL_NATIVE_LIB_EXT);
+            if (load_native_module_file(prog, candidate)) {
+                *out_fn = morphl_native_registry_lookup(symbol_name);
+                free(candidate);
+                if (*out_fn) return true;
+            } else {
+                free(candidate);
+            }
+        }
+    }
+#endif
 
     candidate = replace_path_extension(exe_path, MORPHL_NATIVE_LIB_EXT);
     if (candidate && load_native_module_file(prog, candidate)) {

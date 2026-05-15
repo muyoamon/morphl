@@ -48,4 +48,20 @@ target_include_directories(morphl_std_mem PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
 
-target_link_libraries(morphl_std_mem PRIVATE morphl_runtime)
+target_link_libraries(morphl_std_mem PRIVATE morphl_runtime morphl_util)
+
+add_library(morphl_std_vec SHARED
+  std_mem_module.c
+)
+
+set_target_properties(morphl_std_vec PROPERTIES
+  PREFIX ""
+  OUTPUT_NAME "vec"
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/std"
+)
+
+target_include_directories(morphl_std_vec PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(morphl_std_vec PRIVATE morphl_runtime morphl_util)
