@@ -532,6 +532,7 @@ MorphlType* morphl_type_clone(Arena* arena, const MorphlType* type) {
 // Check type equality
 bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
   if (!a || !b) return a == b;
+  if (a == b) return true;
   if (a->kind != b->kind) return false;
   
   if (a->kind == MORPHL_TYPE_FUNC) {
@@ -594,14 +595,10 @@ bool morphl_type_equals(const MorphlType* a, const MorphlType* b) {
         }
       }
     }
-    // Also compare properties for exact equality
-    if (a->data.block.prop_count != b->data.block.prop_count) return false;
-    for (size_t i = 0; i < a->data.block.prop_count; ++i) {
-      if (a->data.block.prop_names[i] != b->data.block.prop_names[i]) return false;
-      if (!morphl_type_equals(a->data.block.prop_types[i], b->data.block.prop_types[i])) {
-        return false;
-      }
-    }
+    // Props are compile-time overlays and are not part of structural identity
+    // (consistent with morphl_type_is_subtype which ignores props per SPEC §9.2).
+    // Comparing prop types also causes infinite recursion for self-referential
+    // block types (e.g. Vec<T> whose props have $implicit $ref $this params).
     return true;
   }
 

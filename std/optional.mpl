@@ -1,23 +1,17 @@
-$alias Bool $size 1 0;
-
 $decl Optional $template T {
-  $decl val $union
-    $null
-    T 
-  ;
+  $decl tag $mut 0;
+  $decl data $mut ($as 0 T);
 
-  $prop has_value $func () $eq ($member $member $this val $$tag) 1;
+  $prop has_value $func ($decl this $implicit $ref $this) $member this tag;
 
-  "Return value as T, UB if val is null"
-  $prop value $func () $as $member $this val T;
+  $prop value $func ($decl this $implicit $ref $this) $member this data;
 
-
-  $prop value_or $func ($decl default T) {
-    $decl this $ref $parent;
-    $if ($eq ($member $member this val $$tag) 1) {
-      $ret $as $member this val T;
+  $prop value_or $func ($decl this $implicit $ref $this, $decl default T) {
+    $if $member this tag {
+      $ret $member this data;
     } {
       $ret default;
     }
   };
+
 };

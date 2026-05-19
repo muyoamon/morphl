@@ -279,6 +279,11 @@ int main(int argc, char** argv) {
   int arg_index = 1;
 
   while (argc > arg_index && argv[arg_index][0] == '-') {
+    if (strcmp(argv[arg_index], "--help") == 0 || strcmp(argv[arg_index], "-h") == 0) {
+      print_usage(argv[0]);
+      return 0;
+    }
+
     if (strcmp(argv[arg_index], "--backend") == 0) {
       if (argc <= arg_index + 1) {
         MorphlError e = MORPHL_ERR(MORPHL_E_CLI, "missing backend value after --backend");

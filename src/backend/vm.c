@@ -550,6 +550,12 @@ static bool emit_native_func_value_from_module(VmEmitter* e,
                                                Str fallback_name,
                                                Str symbol_name,
                                                Str module_path);
+static bool emit_inline_import_func(VmEmitter* e, AstNode* module_root,
+                                    Str func_name, Str module_path);
+static const FunctionBinding* function_binding_lookup_by_leaf(const VmEmitter* e,
+                                                               Str name);
+static const MorphlType* unwrap_ref(const MorphlType* t);
+static bool function_binding_register(VmEmitter* e, Str name, size_t fidx);
 
 static bool emit_native_func_value(VmEmitter* e, const MorphlType* fn_type,
                                    Str fallback_name, Str symbol_name) {
@@ -575,7 +581,13 @@ static bool emit_native_func_value_from_module(VmEmitter* e,
            !param_type->data.ref.is_ref) {
       param_type = param_type->data.ref.target;
     }
-    param_sz = (uint32_t)type_frame_size(param_type);
+    if (param_type && param_type->kind == MORPHL_TYPE_GROUP) {
+      for (size_t gi = 0; gi < param_type->data.group.elem_count; ++gi)
+        param_sz += (uint32_t)type_frame_size(
+            unwrap_ref(param_type->data.group.elem_types[gi]));
+    } else if (param_type) {
+      param_sz = (uint32_t)type_frame_size(param_type);
+    }
   }
   size_t native_idx = SIZE_MAX;
   if (!add_native_symbol(e, resolved_name, module_path, &native_idx))
@@ -588,6 +600,79 @@ static bool emit_native_func_value_from_module(VmEmitter* e,
   e->functions.items[fidx].return_size = func_return_size_u32(fn_type);
   e->functions.items[fidx].frame_size = 0;
   return emit_func_index_iconst(e, (uint32_t)fidx);
+}
+
+/* Eagerly register all function-typed declarations from an inline-imported
+ * module that was accessed via $member ($import "...") func_name rather than
+ * through a proper $decl foo $import "..." import slot.  Extern functions are
+ * registered as native symbols; regular morphl functions are deferred.  Returns
+ * the function index iconst for func_name, or fails if not found. */
+static bool emit_inline_import_func(VmEmitter* e, AstNode* module_root,
+                                    Str func_name, Str module_path) {
+  if (!e) return false;
+  /* If already registered (e.g., by a previous call for this module), just
+   * look up by leaf name and emit the index. */
+  const FunctionBinding* existing =
+      function_binding_lookup_by_leaf(e, func_name);
+  if (existing) return emit_func_index_iconst(e, (uint32_t)existing->fidx);
+
+  /* Walk the module's top-level declarations and register every function. */
+  if (module_root) {
+    for (size_t i = 0; i < module_root->child_count; ++i) {
+      AstNode* mnode = module_root->children[i];
+      if (!mnode || mnode->kind != AST_DECL || mnode->child_count < 2) continue;
+      AstNode* mname_nd = mnode->children[0];
+      AstNode* mrhs     = mnode->children[1];
+      if (!mname_nd || mname_nd->kind != AST_IDENT) continue;
+      Str mname = mname_nd->value;
+      if (function_binding_lookup_by_leaf(e, mname)) continue; /* already done */
+      const MorphlType* mtype = mnode->type ? unwrap_ref(mnode->type) : NULL;
+      if (!mtype || mtype->kind != MORPHL_TYPE_FUNC) continue;
+      if (mnode->extern_symbol.ptr && mnode->extern_symbol.len > 0) {
+        /* $extern function: allocate a native symbol slot */
+        uint32_t param_sz = 0;
+        if (mtype->data.func.param_count > 0 && mtype->data.func.param_types[0]) {
+          const MorphlType* p = unwrap_ref(mtype->data.func.param_types[0]);
+          if (p && p->kind == MORPHL_TYPE_GROUP) {
+            for (size_t gi = 0; gi < p->data.group.elem_count; ++gi)
+              param_sz += (uint32_t)type_frame_size(
+                  unwrap_ref(p->data.group.elem_types[gi]));
+          } else if (p) {
+            param_sz = (uint32_t)type_frame_size(p);
+          }
+        }
+        size_t native_idx = SIZE_MAX;
+        if (!add_native_symbol(e, mnode->extern_symbol, module_path,
+                               &native_idx))
+          return false;
+        size_t fidx = func_alloc(e);
+        if (fidx == SIZE_MAX) return false;
+        e->functions.items[fidx].entry_point  = (uint32_t)native_idx;
+        e->functions.items[fidx].flags        = MORPHL_FUNC_FLAG_NATIVE;
+        e->functions.items[fidx].param_size   = param_sz;
+        e->functions.items[fidx].return_size  = func_return_size_u32(mtype);
+        e->functions.items[fidx].frame_size   = 0;
+        if (!function_binding_register(e, mname, fidx)) return false;
+      } else if (mrhs && mrhs->kind == AST_FUNC) {
+        /* Regular morphl function: defer the body */
+        size_t fidx = func_alloc(e);
+        if (fidx == SIZE_MAX) return false;
+        if (e->deferred_count >= e->deferred_capacity) {
+          if (!vm_grow((void**)&e->deferred, &e->deferred_capacity,
+                       sizeof(DeferredFunc), e->deferred_count + 1))
+            return false;
+        }
+        Str empty_root = str_from("", 0);
+        e->deferred[e->deferred_count++] =
+            (DeferredFunc){mrhs, fidx, mname, empty_root};
+        if (!function_binding_register(e, mname, fidx)) return false;
+      }
+    }
+  }
+
+  existing = function_binding_lookup_by_leaf(e, func_name);
+  if (!existing) return false;
+  return emit_func_index_iconst(e, (uint32_t)existing->fidx);
 }
 
 static const MorphlType* extern_func_type(const AstNode* node) {
@@ -993,6 +1078,8 @@ static ptrdiff_t block_layout_field_offset(const MorphlType* block_type,
 static size_t block_scope_size(struct AstNode* block);
 static bool emit_node(VmEmitter* e, struct AstNode* node);
 static bool emit_func_body_defers(VmEmitter* e);
+static bool emit_push_aggregate_base(VmEmitter* e, AstNode* node,
+                                     ptrdiff_t* out_field_off);
 
 typedef struct {
   Str name;
@@ -2928,6 +3015,59 @@ static bool emit_scope_binding_cleanups(VmEmitter* e, size_t scope_depth) {
   return true;
 }
 
+
+/* Push the absolute base address of an aggregate-valued expression and return
+ * the accumulated field offset from that base to reach the expression's
+ * content.  Caller should use ALOAD(returned_off + N) or IADD to locate
+ * fields within the aggregate.
+ *
+ * Handles two cases:
+ *   AST_IDENT  – emits RLOAD (for $ref idents) or ADDREF (for inline ones)
+ *   $member    – recurses on the inner target, accumulates field offsets
+ */
+static bool emit_push_aggregate_base(VmEmitter* e, AstNode* node,
+                                     ptrdiff_t* out_field_off) {
+  if (!e || !node || !out_field_off) return false;
+  *out_field_off = 0;
+
+  if (node->kind == AST_IDENT) {
+    const MorphlType* t = node->type;
+    bool is_ref =
+        t && t->kind == MORPHL_TYPE_REF && t->data.ref.is_ref;
+    Str name = alias_resolve(e, node->value);
+    ptrdiff_t off = morphl_backend_find_offset(&e->frameInfo, name);
+    if (off == PTRDIFF_MAX) return false;
+    if (is_ref)
+      return emit_op_i32(e, VM_OP_RLOAD, (int32_t)off);
+    return emit_op_i32(e, VM_OP_ADDREF, (int32_t)off);
+  }
+
+  if (builtin_is_name(e, node, "$member") && node->child_count >= 2 &&
+      node->children[0] && node->children[1]) {
+    AstNode* inner = node->children[0];
+    AstNode* field_nd = node->children[1];
+    Str field_name = field_nd->value;
+    if (!field_name.ptr && e->interns && field_nd->op)
+      field_name = interns_lookup(e->interns, field_nd->op);
+    const MorphlType* raw = inner->type;
+    bool inner_is_ref =
+        raw && raw->kind == MORPHL_TYPE_REF && raw->data.ref.is_ref;
+    const MorphlType* btype = inner_is_ref
+        ? unwrap_ref(raw->data.ref.target)
+        : unwrap_ref(raw);
+    if (!btype) return false;
+    const MorphlType* ft = NULL;
+    ptrdiff_t foff =
+        block_layout_field_offset(btype, e->interns, field_name, &ft);
+    if (foff == PTRDIFF_MAX) return false;
+    ptrdiff_t inner_base_off = 0;
+    if (!emit_push_aggregate_base(e, inner, &inner_base_off)) return false;
+    *out_field_off = inner_base_off + foff;
+    return true;
+  }
+
+  return false;
+}
 
 static bool emit_ref_handle_expr(VmEmitter* e, AstNode* node) {
   if (!e || !node) return false;
@@ -5449,24 +5589,43 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
             VM_ERR(field_nd, "$member: union only supports $$tag and $$data");
             return false;
           }
-          if (target->kind != AST_IDENT) {
-            VM_ERR(target, "$member: union target must be an identifier");
-            return false;
+          if (target->kind == AST_IDENT) {
+            Str tname = alias_resolve(e, target->value);
+            ptrdiff_t toff = morphl_backend_find_offset(&e->frameInfo, tname);
+            if (toff == PTRDIFF_MAX) {
+              VM_ERR(target, "$member: undefined union variable '%.*s'",
+                     (int)tname.len, tname.ptr);
+              return false;
+            }
+            ptrdiff_t data_off =
+                toff + (ptrdiff_t)union_payload_offset(target_btype);
+            ptrdiff_t tag_off = toff + (ptrdiff_t)union_tag_offset(target_btype);
+            if (is_tag) {
+              return emit_op_i32(e, VM_OP_ILOAD, (int32_t)tag_off);
+            }
+            return emit_op_i32(e, VM_OP_ADDREF, (int32_t)data_off);
           }
-          Str tname = alias_resolve(e, target->value);
-          ptrdiff_t toff = morphl_backend_find_offset(&e->frameInfo, tname);
-          if (toff == PTRDIFF_MAX) {
-            VM_ERR(target, "$member: undefined union variable '%.*s'",
-                   (int)tname.len, tname.ptr);
-            return false;
+          /* Non-ident target (e.g. $member expr field): push absolute base
+           * address of the union via ref chain, then ALOAD/IADD to reach
+           * the tag or payload. */
+          {
+            ptrdiff_t base_foff = 0;
+            if (!emit_push_aggregate_base(e, target, &base_foff)) {
+              VM_ERR(target, "$member: cannot resolve union target address");
+              return false;
+            }
+            ptrdiff_t data_off =
+                base_foff + (ptrdiff_t)union_payload_offset(target_btype);
+            ptrdiff_t tag_off =
+                base_foff + (ptrdiff_t)union_tag_offset(target_btype);
+            if (is_tag) {
+              return emit_op_i32(e, VM_OP_ALOAD, (int32_t)tag_off);
+            }
+            /* $data: push absolute address of payload */
+            if (data_off == 0) return true; /* base is already the payload addr */
+            return emit_iconst(e, (int64_t)data_off) &&
+                   emit_op(e, VM_OP_IADD);
           }
-          ptrdiff_t data_off =
-              toff + (ptrdiff_t)union_payload_offset(target_btype);
-          ptrdiff_t tag_off = toff + (ptrdiff_t)union_tag_offset(target_btype);
-          if (is_tag) {
-            return emit_op_i32(e, VM_OP_ILOAD, (int32_t)tag_off);
-          }
-          return emit_op_i32(e, VM_OP_ADDREF, (int32_t)data_off);
         }
 
         if (target_btype->kind != MORPHL_TYPE_BLOCK) {
@@ -5569,8 +5728,12 @@ static bool emit_node(VmEmitter* e, struct AstNode* node) {
               Str module_path = target->child_count > 0 && target->children[0]
                                     ? target->children[0]->import_path
                                     : str_from("", 0);
-              return emit_native_func_value_from_module(
-                  e, fn_type, field_name, decl->extern_symbol, module_path);
+              if (decl->extern_symbol.ptr && decl->extern_symbol.len > 0) {
+                return emit_native_func_value_from_module(
+                    e, fn_type, field_name, decl->extern_symbol, module_path);
+              }
+              return emit_inline_import_func(e, module_root, field_name,
+                                             module_path);
             }
           }
 

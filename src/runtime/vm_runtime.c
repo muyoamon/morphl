@@ -312,14 +312,11 @@ static bool resolve_native_symbol(MorphlVmProgram* prog, const char* exe_path,
                              base, MORPHL_NATIVE_LIB_EXT);
                     if (load_native_module_file(prog, candidate)) {
                         *out_fn = morphl_native_registry_lookup(symbol_name);
-                        free(candidate);
-                        free(base);
-                        if (*out_fn) return true;
-                    } else {
-                        free(candidate);
                     }
+                    free(candidate);
                 }
                 free(base);
+                if (*out_fn) return true;
             }
         }
 #endif

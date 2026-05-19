@@ -848,8 +848,11 @@ static MorphlType* infer_specialize_expr(TypeContext* ctx, AstNode* node) {
     ast_free(node->lowered);
     node->lowered = body;
   }
-  node->type = signature_result;
-  return signature_result;
+  /* Return result (body's type) not signature_result: signature_body is freed above
+   * and signature_result's prop types would have elem_defaults pointing into freed AST.
+   * result's prop types point into body (kept alive via node->lowered). */
+  node->type = result;
+  return result;
 }
 
 static MorphlType* infer_impl_override_block(TypeContext* ctx,
@@ -1893,12 +1896,67 @@ MorphlType* morphl_infer_type_for_op(TypeContext* ctx,
             }
           }
           if (build_ok) {
+            /* For $member method calls the VM backend emits ADDREF to the
+             * target for the implicit this; substituting the padded group
+             * would double-push it. Skip the substitution and just return
+             * the inferred return type. */
+            AstNode* eff_cn = callee_node;
+            if (eff_cn && eff_cn->kind == AST_GROUP &&
+                eff_cn->child_count == 1 && eff_cn->children[0])
+              eff_cn = eff_cn->children[0];
+            if (eff_cn && eff_cn->kind == AST_BUILTIN &&
+                eff_cn->op == interns_intern(ctx->interns,
+                                             str_from("$member", 7))) {
+              ast_free(padded);
+              return func_type->data.func.return_type;
+            }
             /* Replace children[1] with padded group; re-infer its type. */
             ((AstNode*)node)->children[1] = padded;
             padded->type = morphl_infer_type_of_ast(ctx, padded);
             return func_type->data.func.return_type;
           } else {
             if (padded) ast_free(padded);
+          }
+        }
+      }
+      /* Implicit-only method call: $call ($member obj prop) () where the
+       * function's param is a single non-GROUP type (transparent single-element
+       * group for implicit this). The VM's method dispatch handles the this
+       * binding via the ADDREF of the target — no explicit arg needed. */
+      if (actual_uw && param_uw &&
+          actual_uw->kind == MORPHL_TYPE_GROUP &&
+          actual_uw->data.group.elem_count == 0 &&
+          param_uw->kind != MORPHL_TYPE_GROUP &&
+          callee_node) {
+        AstNode* eff = callee_node;
+        if (eff->kind == AST_GROUP && eff->child_count == 1 && eff->children[0])
+          eff = eff->children[0];
+        if (eff->kind == AST_BUILTIN &&
+            eff->op == interns_intern(ctx->interns, str_from("$member", 7))) {
+          return func_type->data.func.return_type;
+        }
+      }
+      /* Single explicit non-GROUP arg to $member method where the param is
+       * GROUP with implicits (e.g. $call $member v $push 42). The VM
+       * method dispatch handles implicit this via ADDREF; just validate
+       * the single arg against the required window element. */
+      if (actual_uw && param_uw &&
+          actual_uw->kind != MORPHL_TYPE_GROUP &&
+          param_uw->kind == MORPHL_TYPE_GROUP &&
+          group_has_implicits(param_uw) &&
+          callee_node) {
+        AstNode* eff2 = callee_node;
+        if (eff2->kind == AST_GROUP && eff2->child_count == 1 &&
+            eff2->children[0])
+          eff2 = eff2->children[0];
+        if (eff2->kind == AST_BUILTIN &&
+            eff2->op == interns_intern(ctx->interns, str_from("$member", 7))) {
+          size_t ws2 = find_implicit_window(param_uw, 1);
+          if (ws2 != SIZE_MAX) {
+            MorphlType* exp_elem = param_uw->data.group.elem_types[ws2];
+            if (type_matches_expected(actual_uw, exp_elem)) {
+              return func_type->data.func.return_type;
+            }
           }
         }
       }
@@ -2409,7 +2467,9 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
       for (size_t i = 0; i < node->child_count; ++i) {
         AstNode* stmt = node->children[i];
         MorphlType* stmt_type = morphl_infer_type_of_ast(ctx, stmt);
-        if (!stmt_type) { ok = false; break; }
+        if (!stmt_type) {
+          ok = false; break;
+        }
         if (!stmt || stmt->child_count < 1) continue;
 
         bool is_decl = (stmt->kind == AST_DECL);
@@ -2707,6 +2767,11 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         AstNode* module_node =
             node->children[0] ? node->children[0]->import_module : NULL;
         if (!module_node) return NULL;
+        /* Import modules are shared (import_module_shared=true) — return the
+         * cached type if already typed to avoid redundant re-typing that exhausts the arena. */
+        if (module_node->type && module_node->type->kind == MORPHL_TYPE_BLOCK) {
+          return module_node->type;
+        }
         if (!type_context_push_file(ctx, NULL)) {
           return NULL;
         }
@@ -2790,7 +2855,9 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
           return NULL;
         }
         MorphlType* target_type = morphl_infer_type_of_ast(ctx, target);
-        if (!target_type) return NULL;
+        if (!target_type) {
+          return NULL;
+        }
         target_type = unwrap_ref(target_type);
         if (!target_type) return NULL;
 
@@ -2888,7 +2955,9 @@ static MorphlType* morphl_infer_type_of_ast_inner(TypeContext* ctx, AstNode* nod
         } else {
           value_type = morphl_infer_type_of_ast(ctx, node->children[1]);
         }
-        if (!target_type || !value_type) return NULL;
+        if (!target_type || !value_type) {
+          return NULL;
+        }
         MorphlType* target_template = unwrap_ref(target_type);
         MorphlType* value_template = unwrap_ref(value_type);
         if (target_template && target_template->kind == MORPHL_TYPE_TEMPLATE &&

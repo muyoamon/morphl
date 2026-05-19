@@ -475,6 +475,65 @@ static int compile_and_run(const char* source) {
     return result;
 }
 
+static std::string get_std_dir() {
+    std::string f = __FILE__;
+    size_t pos = f.rfind('/');
+    return (pos == std::string::npos ? "." : f.substr(0, pos)) + "/../std";
+}
+
+static int compile_and_run_std(const char* source) {
+    static int std_counter = 0;
+    std::string std_dir = get_std_dir();
+    std::ostringstream ss;
+    ss << std_dir << "/._it_" << ++std_counter << ".mpl";
+    std::string src_path = ss.str();
+    {
+        std::ofstream f(src_path, std::ios::trunc);
+        assert(f.is_open());
+        f << source;
+    }
+    std::string out_path = temp_path(".mbc");
+    InternTable* interns = interns_new();
+    if (!interns) { std::remove(src_path.c_str()); return -1; }
+    if (!operator_registry_init(interns)) { interns_free(interns); std::remove(src_path.c_str()); return -1; }
+    Arena arena; arena_init(&arena, 1024 * 1024);  /* 1 MiB — same as CLI; 64 KiB fills up on non-trivial imports */
+    ScopedParserContext parser_ctx;
+    if (!scoped_parser_init(&parser_ctx, interns, &arena, src_path.c_str())) {
+        arena_free(&arena); interns_free(interns); std::remove(src_path.c_str()); return -1;
+    }
+    char* source_buffer = NULL; size_t source_len = 0;
+    if (!morphl_file_read_all(src_path.c_str(), &source_buffer, &source_len)) {
+        scoped_parser_free(&parser_ctx); arena_free(&arena); interns_free(interns);
+        std::remove(src_path.c_str()); return -1;
+    }
+    struct token* tokens = NULL; size_t token_count = 0;
+    if (!lexer_tokenize(src_path.c_str(), str_from(source_buffer, source_len),
+                        interns, &tokens, &token_count)) {
+        free(source_buffer); scoped_parser_free(&parser_ctx);
+        arena_free(&arena); interns_free(interns); std::remove(src_path.c_str()); return -1;
+    }
+    AstNode* root = NULL;
+    bool accepted = scoped_parse_ast(&parser_ctx, tokens, token_count, &root);
+    if (!accepted) {
+        free(tokens); free(source_buffer); scoped_parser_free(&parser_ctx);
+        arena_free(&arena); interns_free(interns); std::remove(src_path.c_str()); return -1;
+    }
+    MorphlBackendContext backend_ctx = {};
+    backend_ctx.tree = root; backend_ctx.out_file = out_path.c_str();
+    backend_ctx.type_context = parser_ctx.type_context;
+    int result = -1;
+    if (morphl_register_backend(MORPHL_BACKEND_TYPE_VM) && morphl_compile(&backend_ctx)) {
+        FILE* dev_null = fopen("/dev/null", "w");
+        result = (int)morphl_vm_run_file(out_path.c_str(), 1, nullptr, nullptr,
+                                          dev_null ? dev_null : stderr);
+        if (dev_null) fclose(dev_null);
+    }
+    ast_free(root); free(tokens); free(source_buffer);
+    scoped_parser_free(&parser_ctx); arena_free(&arena); interns_free(interns);
+    std::remove(src_path.c_str()); std::remove(out_path.c_str());
+    return result;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /* Spec §3 ($decl): basic integer declaration */
@@ -2857,6 +2916,119 @@ static void test_e2e_implicit_set_suffix_window() {
     printf("PASS test_e2e_implicit_set_suffix_window\n");
 }
 
+// ── Vec<T> tests ─────────────────────────────────────────────────────────────
+
+static void test_e2e_vec_push_and_get() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$call $member v $reserve (4);\n"
+        "$call $member v $push (10);\n"
+        "$call $member v $push (20);\n"
+        "$call $member v $push (30);\n"
+        "$decl opt $call $member v $get (1);\n"
+        "$exit $call $member opt $value ();\n"
+    );
+    assert(rc == 20);
+    printf("PASS test_e2e_vec_push_and_get\n");
+}
+
+static void test_e2e_vec_push_and_pop() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$call $member v $reserve (4);\n"
+        "$call $member v $push (42);\n"
+        "$decl opt $call $member v $pop ();\n"
+        "$exit $call $member opt $value ();\n"
+    );
+    assert(rc == 42);
+    printf("PASS test_e2e_vec_push_and_pop\n");
+}
+
+static void test_e2e_vec_pop_empty_is_none() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$decl opt $call $member v $pop ();\n"
+        "$exit $call $member opt $has_value ();\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_vec_pop_empty_is_none\n");
+}
+
+static void test_e2e_vec_get_out_of_bounds_is_none() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$call $member v $reserve (4);\n"
+        "$call $member v $push (1);\n"
+        "$call $member v $push (2);\n"
+        "$decl opt $call $member v $get (5);\n"
+        "$exit $call $member opt $has_value ();\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_vec_get_out_of_bounds_is_none\n");
+}
+
+static void test_e2e_vec_put_modifies_element() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$call $member v $reserve (4);\n"
+        "$call $member v $push (10);\n"
+        "$call $member v $put (0, 99);\n"
+        "$decl opt $call $member v $get (0);\n"
+        "$exit $call $member opt $value ();\n"
+    );
+    assert(rc == 99);
+    printf("PASS test_e2e_vec_put_modifies_element\n");
+}
+
+static void test_e2e_vec_put_out_of_bounds_noop() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$call $member v $put (0, 99);\n"
+        "$exit 0;\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_vec_put_out_of_bounds_noop\n");
+}
+
+static void test_e2e_vec_clear_resets_len() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$call $member v $reserve (4);\n"
+        "$call $member v $push (1);\n"
+        "$call $member v $push (2);\n"
+        "$call $member v $push (3);\n"
+        "$call $member v $clear ();\n"
+        "$decl opt $call $member v $pop ();\n"
+        "$exit $call $member opt $has_value ();\n"
+    );
+    assert(rc == 0);
+    printf("PASS test_e2e_vec_clear_resets_len\n");
+}
+
+static void test_e2e_vec_auto_grow() {
+    int rc = compile_and_run_std(
+        "$alias Vec $member $import \"vec.mpl\" Vec;\n"
+        "$decl v $mut $specialize Vec 0;\n"
+        "$call $member v $reserve (2);\n"
+        "$call $member v $push (1);\n"
+        "$call $member v $push (2);\n"
+        "$call $member v $push (3);\n"
+        "$call $member v $push (4);\n"
+        "$call $member v $push (5);\n"
+        "$decl opt $call $member v $get (4);\n"
+        "$exit $call $member opt $value ();\n"
+    );
+    assert(rc == 5);
+    printf("PASS test_e2e_vec_auto_grow\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(void) {
@@ -3019,6 +3191,14 @@ int main(void) {
     test_e2e_implicit_layout_error_sandwiched();
     test_e2e_implicit_set_prefix_window();
     test_e2e_implicit_set_suffix_window();
+    test_e2e_vec_push_and_get();
+    test_e2e_vec_push_and_pop();
+    test_e2e_vec_pop_empty_is_none();
+    test_e2e_vec_get_out_of_bounds_is_none();
+    test_e2e_vec_put_modifies_element();
+    test_e2e_vec_put_out_of_bounds_noop();
+    test_e2e_vec_clear_resets_len();
+    test_e2e_vec_auto_grow();
     printf("All integration tests passed.\n");
     return 0;
 }
