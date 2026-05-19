@@ -25,7 +25,7 @@ morphl is a statically typed, structurally typed language designed around the fo
 Every language keyword is prefixed with `$`. This ensures language constructs never conflict with user-defined field names.
 
 ### 2.1 Single-`$` Keywords 
-Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`, `$overload`, `$template`, `$specialize`, `$static`, `$inline`, `$implicit`, `$heap`, `$free`, `$group`, `$block`, `$syntax`, `$size`, `$align`, `$signed`, `$unsigned`, `$udiv`, `$umod`, `$ult`, `$ugt`, `$ulte`, `$ugte`, `$ushr`, `$i2f`, `$f2i`, `$idtstr`, `$strtid`, `$forward`, `$band`, `$bor`, `$bxor`, `$bnot`, `$lshift`, `$rshift`, `$req`, `$rneq`, `$rem`, `$fadd`, `$fsub`, `$fmul`, `$fdiv`.
+Reserved keywords include: `$decl`, `$prop`, `$mut`, `$const`, `$ref`, `$new`, `$func`, `$ret`, `$call`, `$impl`, `$traits`, `$import`, `$extern`, `$set`, `$null`, `$this`, `$parent`, `$file`, `$global`, `$exit`, `$defer`, `$if`, `$while`, `$break`, `$continue`, `$and`, `$or`, `$not`, `$union`, `$array`, `$never`, `$as`, `$overload`, `$template`, `$specialize`, `$static`, `$inline`, `$heap`, `$free`, `$group`, `$block`, `$syntax`, `$size`, `$align`, `$signed`, `$unsigned`, `$udiv`, `$umod`, `$ult`, `$ugt`, `$ulte`, `$ugte`, `$ushr`, `$i2f`, `$f2i`, `$idtstr`, `$strtid`, `$forward`, `$band`, `$bor`, `$bxor`, `$bnot`, `$lshift`, `$rshift`, `$req`, `$rneq`, `$rem`, `$fadd`, `$fsub`, `$fmul`, `$fdiv`.
 
 ### 2.2 Double-`$$` Directives
 `$$`-prefixed name are compiler directives - They are as-early-as-possible resolutions. The compiler substitute them at compile time whenever it can determine the value statically. If it cannot, resolution defers to runtime
@@ -133,72 +133,6 @@ Implementing a trait on `$never` is meaningless - no value of type `$never` can 
 ```
 
 In practice: use `()` for void returns and no-arg functions. Use `{}` when you mean "any block" as a type constraint.
-
-### 3.5 Group Types
-
-A **group** is an unnamed, positional tuple of one or more values. It is the primary way to pass or return multiple values together.
-
-#### Syntax
-
-```
-(e1, e2, ..., en)          // parenthesised group literal
-$group e1 e2 ... en        // explicit keyword form (equivalent)
-```
-
-A group literal with a single element `(x)` collapses to `x` — there is no semantic difference. The empty group `()` is the universal unit type (see §3.2).
-
-#### Type Notation
-
-A group's type is written as an ordered tuple of its element types:
-
-```
-(T1, T2, ..., Tn)
-```
-
-There are no field names — elements are identified solely by position.
-
-#### Usage Contexts
-
-**Function call arguments** — the argument list to `$call` is a group:
-
-```
-$decl add $func ($decl x 0, $decl y 0) { $ret $add x y; };
-$decl r $call add (3, 4);    // argument group (3, 4)
-```
-
-**Multiple return values** — `$ret` can return a group:
-
-```
-$decl swap $func ($decl a 0, $decl b 0) { $ret (b, a); };
-```
-
-**Mutable group variables** — a group can be stored and updated:
-
-```
-$decl g $mut (1, 2, 3);
-$set g (10, 20, 30);         // full replacement
-```
-
-#### Layout
-
-Group elements are stored **contiguously in declaration order** with natural alignment. In the current VM backend, every scalar element occupies 8 bytes, so a group of `n` scalars occupies `n × 8` bytes with no padding.
-
-#### Element Access
-
-Groups have no named fields and no index operator. To read individual elements, pass the group to a function whose parameters name each slot:
-
-```
-$decl fst $func ($decl a 0, $decl b 0) { $ret a; };
-$decl snd $func ($decl a 0, $decl b 0) { $ret b; };
-
-$decl g (10, 20);
-$decl first $call fst g;    // 10
-$decl second $call snd g;   // 20
-```
-
-#### Structural Matching
-
-A group `(A1, ..., An)` is type-compatible with `(B1, ..., Bn)` when every corresponding element `Ai` is compatible with `Bi`. The element count must match exactly unless optional (`$implicit`) members are involved (see §5.3).
 
 ---
 
@@ -439,73 +373,7 @@ $set $index arr i 77;           // array element (runtime index)
 
 Only `$mut`-declared variables and fields may appear on the LHS of `$set`. Assigning to a `$const` binding is a compile error.
 
-### 5.3 `$implicit` — Optional Member Qualifier
-
-```
-$implicit <expr>
-$implicit $decl name default-value
-```
-
-Marks a function parameter or group element as **optional at the call site**. When the caller omits an implicit argument, the declared initializer is used as the default value. `$implicit` is a positional annotation — it does not affect the storage class or type of the wrapped expression.
-
-#### Layout Constraint
-
-Implicit members may only appear as a contiguous **prefix** and/or **suffix** around the required members. Required members must form a contiguous block:
-
-```
-implicit*  required+  implicit*     // valid
-required   implicit   required      // compile error — sandwiched implicit
-```
-
-#### Default Function Arguments
-
-```
-$decl add $func ($decl x 0, $implicit $decl y 10) {
-  $ret $add x y;
-};
-
-$decl r1 $call add (5);       // y uses default 10  →  15
-$decl r2 $call add (5, 3);    // y overridden to 3  →   8
-```
-
-```
-$decl repeat $func ($implicit $decl times 3, $decl n 0) {
-  // ... loop n * times
-};
-
-$decl r3 $call repeat (7);       // times uses default 3
-$decl r4 $call repeat (5, 7);    // times overridden to 5
-```
-
-The provided arguments form a **leftmost contiguous window** that covers all required members. Implicit slots outside the window are filled with their default values. This desugaring happens at the call site — the backend always sees a full-arity argument group.
-
-#### Window Selection Rule
-
-Given a target group of `E` total elements with `req` required ones and a provided group of `N` elements:
-
-| Condition | Behaviour |
-|---|---|
-| `N == req` | Match provided args positionally against required slots; fill all implicit slots with defaults |
-| `req < N ≤ E` | Leftmost window `[ws, ws+N)` such that `ws ≤ first_required` and `ws+N > last_required` |
-| `N > E` or no valid window | Type error |
-
-#### Windowed `$set`
-
-When the RHS of a `$set` has fewer elements than the target group **and** the target group has implicit members, the assignment updates only the required window. Implicit slots outside the window are **not touched** — they retain their current values:
-
-```
-$decl state $mut ($implicit 0, 2, 3);
-$set state (10, 20);      // [0] stays 0, [1]=10, [2]=20
-
-$decl record $mut (1, 2, $implicit 0);
-$set record (10, 20);     // [0]=10, [1]=20, [2] stays 0
-```
-
-#### Block Fields ⚠ Future
-
-`$implicit` on a block `$decl` field is reserved for marking fields as skippable in positional block initializers. This is not yet implemented.
-
-### 5.4 `$inline` - Non-Storage Expression
+### 5.3 `$inline` - Non-Storage Expression
 
 ```
 $inline expr;
@@ -542,7 +410,7 @@ $alias add_one $inline $func ($decl n 0) 0 {
 $decl x $call add_one 5;   // inlined to: $decl x $add 5 1
 ```
 
-### 5.5 `$ref` — Reference
+### 5.4 `$ref` — Reference
 
 ```
 $decl r $ref <lvalue>
@@ -606,7 +474,7 @@ Rebinding is valid only when the reference slot itself is mutable and the new ta
 
 **Lifetime rule**: a `$ref` must not outlive its target unless the target's storage class guarantees that lifetime. The compiler does not enforce this in v1.0 — it is a programmer responsibility. Storing a `$ref` to storage that is subsequently invalidated results in undefined behavior.
 
-### 5.6 Mutability Subtyping
+### 5.5 Mutability Subtyping
 
 Mutable storage satisfies immutable expectations, but not vice versa:
 
@@ -634,7 +502,7 @@ $const $ref T </: $mut $ref T    // unsafe — would grant write access to immut
 
 This rule is enforced by the type checker for function arguments, `$set` targets, and `$decl` initializers.
 
-### 5.7 `$extern` — Native Symbol Binding
+### 5.6 `$extern` — Native Symbol Binding
 
 `$extern` is a storage expression that binds an instance-held slot to a native C symbol resolved at load time.
 
@@ -735,7 +603,7 @@ typedef bool (*MorphlNativeFn)(MorphlNativeCtx* ctx,
 
 Arguments sit below `frame_base` in declaration order, 8 bytes each. The last argument is at `stack[frame_base - 8]`. The caller reserves the return slot and passes it as `ret_ptr`; native code must write exactly `ret_size` bytes matching the declared morphl return type and return `true` on success.
 
-### 5.8 `$static` - Static Storage Transformer
+### 5.7 `$static` - Static Storage Transformer
 
 ```
 $static <storage-expr>
@@ -824,7 +692,7 @@ $member f1 a;  // valid
 $member f1 b;  // error — b is not part of f1's shape
 ```
 
-### 5.9 `$heap` and `$free` - Heap Storage
+### 5.8 `$heap` and `$free` - Heap Storage
 
 `$heap` moves the wrapped storage expression into heap-backed storage and returns a `$ref` handle to that allocation:
 
@@ -846,7 +714,7 @@ $free p;
 
 `$free <ref>` has type `()` and requires a reference argument. When the allocation has an attached cleanup thunk, `$free` runs that cleanup before releasing the allocation.
 
-### 5.10 Bare Expression as Storage
+### 5.9 Bare Expression as Storage
 
 A bare expression in storage-expression context is treated as a constant ephemeral storage expression.
 
@@ -864,13 +732,12 @@ Therefore, using a bare expression as the RHS of a `$decl` works:
 $decl x 0; 
 ```
 
-### 5.11 Storage Expression Summary
+### 5.10 Storage Expression Summary
 
 | Expression | Meaning | Writable |
 |---|---|---|
 | `$const expr` | immutable storage | no |
 | `$mut expr` | mutable storage | yes |
-| `$implicit expr` | marks a function param or group element as optional; default is the initializer | no |
 | `$ref lvalue` | alias to any addressable lvalue | depends on referent |
 | `$static expr` | static storage (program lifetime) | depends on wrapped storage |
 | `$heap expr` | heap-backed storage, returned as a reference | depends on wrapped storage |
@@ -2417,7 +2284,6 @@ All built-in operators registered in `kBuiltinOps` (`src/parser/operators.c`). "
 | **Storage Qualifiers** | | |
 | `$mut` | 1 | Mark storage as mutable. |
 | `$const` | 1 | Mark storage as immutable (default). |
-| `$implicit` | 1 | Mark a function parameter or group element as optional with a default value. |
 | `$inline` | 1 | Inline storage qualifier (implementation extension). |
 | **Reference** | | |
 | `$ref` | 1 | Create a reference (fixed-size handle; 8 bytes in the current VM). |
