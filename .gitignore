@@ -18,6 +18,10 @@ CLAUDE.md
 AGENTS.md
 plan.md
 
+/zig-out
+/.zig-cache
+
+
 /out.c
 /out.mbc
 /out.mple
