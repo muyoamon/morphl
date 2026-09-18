@@ -80,6 +80,16 @@ $decl mod_ent $func ($decl k "", $decl st "", $decl t T.proto_ty)
 $decl proto_mod $call mod_ent ("", "", T.t_bot)
 $decl mod_list $specialize P.list proto_mod
 
+// §4.11 + §5.5: a `$fwd` name and the placeholder standing for its result.
+$decl fwd_ent $func ($decl n "", $decl i 0) { $decl name n  $decl id i }
+$decl proto_fwd $call fwd_ent ("", 0)
+$decl fwd_list $specialize P.list proto_fwd
+
+// One equation of the system: this placeholder resolves to this type.
+$decl res_ent $func ($decl i 0, $decl t T.proto_ty) { $decl id i  $decl ty t }
+$decl proto_res $call res_ent (0, T.t_bot)
+$decl res_list $specialize P.list proto_res
+
 // -------------------------------------------------------------------- context
 
 $decl ctx $func ()
@@ -103,6 +113,8 @@ $decl eval_diags $func ($decl x Pa.diags.node) x
 $decl eval_tmpls $func ($decl x tmpl_list.node) x
 $decl eval_memo  $func ($decl x memo_list.node) x
 $decl eval_mods  $func ($decl x mod_list.node) x
+$decl eval_fwds  $func ($decl x fwd_list.node) x
+$decl eval_res   $func ($decl x res_list.node) x
 $decl sval       P.sval
 
 $decl fresh $func ($decl cx proto_ctx)
@@ -598,7 +610,10 @@ $decl infer_import $func ($decl cx proto_ctx, $decl n Pa.proto_node)
 $decl bst $func ($decl e0 env.node)
   { $decl env  $mut $new e0
     $decl flds $mut $new T.fields.nil
-    $decl prps $mut $new T.props.nil }
+    $decl prps $mut $new T.props.nil
+    // §5.5: "`$fwd` slots share one system of equations."
+    $decl fwds $mut $new fwd_list.nil
+    $decl res  $mut $new res_list.nil }
 
 $decl proto_bst $call bst (env.nil)
 
@@ -657,12 +672,22 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
     // §4.1: the name is in scope inside its own initializer, standing for
     // §5.5's placeholder `R`. A `$func` initializer gets the sharper treatment
     // in `infer_rec_func`, because a bare `R` is not callable.
-    $decl ty $if ($call is_form (init, "func"))
-        ($call infer_rec_func (cx, $call eval_env (s.env), nm, init))
-        { $decl id  $call fresh (cx)
-          $decl e1  $call bind ($call eval_env (s.env), nm, $call T.t_var (id))
-          $decl raw $call infer (cx, e1, init)
-          $decl r   $call close_rec (raw, id) }.r
+    // A `$fwd` for this name already bound it to `[params] -> R` (§5.5), so the
+    // body is typed against that placeholder and its resolution recorded as one
+    // equation of the group's system.
+    $decl fe $call find_fwd ($call eval_fwds (s.fwds), nm)
+    $decl ty $if ($call lt (-1, fe.id))
+        ($call infer_fwd_body (cx, $call eval_env (s.env), init, fe.id))
+        ($if ($call is_form (init, "func"))
+            ($call infer_rec_func (cx, $call eval_env (s.env), nm, init))
+            { $decl id  $call fresh (cx)
+              $decl e1  $call bind ($call eval_env (s.env), nm, $call T.t_var (id))
+              $decl raw $call infer (cx, e1, init)
+              $decl r   $call close_rec (raw, id) }.r)
+    $decl eqn $if ($call lt (-1, fe.id))
+        ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
+                                          $call eval_res (s.res))))
+        ()
     $decl bound $set s.env ($call bind ($call eval_env (s.env), nm, ty))
     // A `$fwd` already reserved this slot at its own position (§4.11), so
     // complete that one rather than appending a second.
@@ -705,23 +730,123 @@ $decl infer_prop_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env
     $decl added $set s.prps ($call T.props.cons ($call T.prop_typed (nm, cv, f.ty), $call eval_prps (s.prps)))
     $decl bound $set s.env ($call bind ($call eval_env (s.env), nm, f.ty)) }
 
-// §4.11: reserves an ordered slot *at this position* with a placeholder type.
-$decl infer_fwd_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node)
-  { $decl nm $call name_of ($call op (it, 0))
-    $decl ty $call T.t_var ($call fresh (cx))
-    $decl bound $set s.env ($call bind ($call eval_env (s.env), nm, ty))
-    $decl added $set s.flds ($call put_field ($call eval_flds (s.flds), nm, ty)) }
+// §4.11: reserves an ordered slot *at this position*. The type was decided by
+// `prebind_fwds` before the block was walked, so this only claims the slot —
+// which is what keeps the layout position at the `$fwd`, not at the `$decl`.
+$decl infer_fwd_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl all Pa.nodes.node, $decl it Pa.proto_node)
+  { $decl bound $call prebind_one (cx, s, all, it)
+    $decl nm    $call name_of ($call op (it, 0))
+    $decl f     $call lookup ($call eval_env (s.env), nm)
+    $decl added $set s.flds ($call put_field ($call eval_flds (s.flds), nm, f.ty)) }
 
-$decl infer_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node, $decl it Pa.proto_node)
+$decl find_fwd $func ($decl xs fwd_list.node, $decl nm "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head.name, nm)) xs.head ($call find_fwd (xs.tail, nm)),
+  $case xs ($call fwd_ent ("", -1))
+)
+
+$decl find_completing $func ($decl items Pa.nodes.node, $decl nm "") $match items (
+  $case {$prop tag "cons"}
+    $if ($call and ($call is_form (items.head, "decl"),
+                    $call eq_str ($call name_of ($call op (items.head, 0)), nm)))
+        items.head
+        ($call find_completing (items.tail, nm)),
+  $case items Pa.proto_node
+)
+
+// Bind every `$fwd` name before the block is walked.
+//
+// §5.5 says the slots "share one system of equations", which needs each name to
+// stand for something callable while the others are typed. §3.4 supplies it: a
+// parameter's default fixes its type and no default depends on a body, so the
+// whole group's *signatures* are knowable up front. Each name is bound to
+// `[params] -> R`, leaving only the results unknown — the same shape that makes
+// self-recursion work in `infer_rec_func`.
+$decl prebind_one $func ($decl cx proto_ctx, $decl s proto_bst,
+                         $decl all Pa.nodes.node, $decl it Pa.proto_node)
+  { $decl pe   $call eval_env (s.env)
+    $decl nm   $call name_of ($call op (it, 0))
+    $decl comp $call find_completing (all, nm)
+    $decl id   $call fresh (cx)
+    $decl init $if ($call is_form (comp, "decl")) ($call op (comp, 1)) comp
+    $decl ty $if ($call is_form (init, "func"))
+        ($call T.t_func (($call infer_params (cx, pe, $call group_items ($call op (init, 0)),
+                                              T.tys.nil, pe)).tys,
+                         $call T.t_var (id)))
+        ($call T.t_var (id))
+    $decl bound $set s.env ($call bind ($call eval_env (s.env), nm, ty))
+    $decl noted $set s.fwds ($call fwd_list.cons ($call fwd_ent (nm, id), $call eval_fwds (s.fwds)))
+    // §4.11: "A `$fwd` not completed by the end of its block is an error."
+    $decl checked $if ($call is_form (comp, "decl")) T.t_unit
+        ($call err (cx, $call concat ("$fwd '", $call concat (nm,
+            "' is never completed by a $decl in this block")), it)) }
+
+// The completing `$decl` for a `$fwd` name. The name is already bound to
+// `[params] -> R` in `e`, so the body is typed without rebinding it, and `R` is
+// closed over the result exactly as in `infer_rec_func`.
+$decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node, $decl id 0)
+  $if ($call not ($call is_form (n, "func")))
+      ($call close_rec ($call infer (cx, e, n), id))
+      { $decl ps $call group_items ($call op (n, 0))
+        $decl r  $call infer_params (cx, e, ps, T.tys.nil, e)
+        $decl saved    $call tval (cx.tryset)
+        $decl cleared  $set cx.tryset T.t_bot
+        $decl body     $call infer (cx, r.env, $call op (n, 1))
+        $decl tries    $call tval (cx.tryset)
+        $decl restored $set cx.tryset saved
+        $decl res0 $call T.join (body, tries)
+        $decl res  $if ($call T.same (res0, $call T.t_var (id))) T.t_bot ($call close_rec (res0, id))
+        $decl out  $call T.t_func (r.tys, res) }.out
+
+$decl result_of $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "func"} t.result,
+  $case t t
+)
+
+// Solving the system. Each equation is substituted into the others — never into
+// itself, which `close_rec` handles instead — and one round per equation is
+// enough to resolve a cycle of that length.
+$decl subst_all $func ($decl t T.proto_ty, $decl rs res_list.node) $match rs (
+  $case {$prop tag "cons"} $call subst_all ($call T.subst (t, rs.head.id, rs.head.ty), rs.tail),
+  $case rs t
+)
+
+$decl subst_others $func ($decl t T.proto_ty, $decl rs res_list.node, $decl self 0) $match rs (
+  $case {$prop tag "cons"}
+    $call subst_others ($if ($call eq_int (rs.head.id, self)) t ($call T.subst (t, rs.head.id, rs.head.ty)),
+                        rs.tail, self),
+  $case rs t
+)
+
+$decl solve_once $func ($decl rs res_list.node, $decl all res_list.node, $decl acc res_list.node) $match rs (
+  $case {$prop tag "cons"}
+    { $decl t2 $call close_rec ($call subst_others (rs.head.ty, all, rs.head.id), rs.head.id)
+      $decl out $call solve_once (rs.tail, all, $call res_list.cons ($call res_ent (rs.head.id, t2), acc)) }.out,
+  $case rs ($call res_list.reverse (acc, res_list.nil))
+)
+
+$decl solve $func ($decl rs res_list.node, $decl n 0)
+  $if ($call eq_int (n, 0)) rs ($call solve ($call solve_once (rs, rs, res_list.nil), $call sub (n, 1)))
+
+$decl apply_res_fields $func ($decl fs T.fields.node, $decl rs res_list.node, $decl acc T.fields.node) $match fs (
+  $case {$prop tag "cons"}
+    $call apply_res_fields (fs.tail, rs,
+        $call T.fields.cons ($call T.field (fs.head.name, $call subst_all (fs.head.ty, rs)), acc)),
+  $case fs ($call T.fields.reverse (acc, T.fields.nil))
+)
+
+$decl infer_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node,
+                        $decl all Pa.nodes.node, $decl it Pa.proto_node)
   $if ($call is_form (it, "prop")) ($call infer_prop_item (cx, s, pe, it))
-  ($if ($call is_form (it, "fwd")) ($call infer_fwd_item (cx, s, it))
+  ($if ($call is_form (it, "fwd")) ($call infer_fwd_item (cx, s, all, it))
   ($if ($call is_form (it, "decl")) ($call infer_decl_item (cx, s, it))
        // §3.3: other expressions run for effect and are discarded.
        ($do ($call infer (cx, $call eval_env (s.env), it)) ())))
 
-$decl infer_items $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node, $decl items Pa.nodes.node) $match items (
+$decl infer_items $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node,
+                         $decl all Pa.nodes.node, $decl items Pa.nodes.node) $match items (
   $case {$prop tag "cons"}
-    $do ($call infer_item (cx, s, pe, items.head)) ($call infer_items (cx, s, pe, items.tail)),
+    $do ($call infer_item (cx, s, pe, all, items.head))
+        ($call infer_items (cx, s, pe, all, items.tail)),
   $case items ()
 )
 
@@ -733,9 +858,15 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
     $decl heard  $set cx.quiet false
     $decl pe     $call prop_pass (cx, pe0, items, peA)
     $decl s      $call bst (pe)
-    $decl walked $call infer_items (cx, s, pe, items)
-    $decl out    $call T.t_block ($call T.fields.reverse ($call eval_flds (s.flds), T.fields.nil),
-                                  $call eval_prps (s.prps)) }.out
+    $decl walked $call infer_items (cx, s, pe, items, items)
+    // §5.5: the group is solved as one system, then its answers are substituted
+    // everywhere — a sibling typed before the group closed still mentions the
+    // placeholders.
+    $decl eqns   $call eval_res (s.res)
+    $decl solved $call solve (eqns, $call res_list.length (eqns, 0))
+    $decl flds   $call apply_res_fields ($call T.fields.reverse ($call eval_flds (s.flds), T.fields.nil),
+                                         solved, T.fields.nil)
+    $decl out    $call T.t_block (flds, $call eval_prps (s.prps)) }.out
 
 // ------------------------------------------------------------------ dispatch
 

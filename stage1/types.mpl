@@ -471,6 +471,62 @@ $decl unroll $func ($decl t proto_ty) $match t (
   $case t t
 )
 
+// ------------------------------------------------- the comparison state
+//
+// Amadio–Cardelli: a recursive type is never substituted into itself. A `rec`
+// records its binder, a variable is unfolded one step when it is actually
+// reached, and the assumption set holds *pairs of variable ids* — two integers
+// — rather than a rendering of the two types. Substituting instead (`unroll`)
+// copies the whole type tree, so a chain of unrollings grows exponentially.
+//
+// Variable ids are globally unique, so one binder environment serves both sides.
+
+$decl binder_ent $func ($decl i 0, $decl t proto_ty) { $decl id i  $decl ty t }
+$decl proto_binder $call binder_ent (0, t_bot)
+$decl binder_list $specialize P.list proto_binder
+
+$decl pair_ent $func ($decl x 0, $decl y 0) { $decl l x  $decl r y }
+$decl proto_pair $call pair_ent (0, 0)
+$decl pair_list $specialize P.list proto_pair
+
+$decl actx $func ($decl bs binder_list.node, $decl ps pair_list.node)
+  { $decl binders bs  $decl pairs ps }
+
+$decl proto_actx $call actx (binder_list.nil, pair_list.nil)
+
+$decl with_binder $func ($decl st proto_actx, $decl i 0, $decl t proto_ty)
+  $call actx ($call binder_list.cons ($call binder_ent (i, t), st.binders), st.pairs)
+
+$decl with_pair $func ($decl st proto_actx, $decl x 0, $decl y 0)
+  $call actx (st.binders, $call pair_list.cons ($call pair_ent (x, y), st.pairs))
+
+$decl find_binder $func ($decl bs binder_list.node, $decl i 0) $match bs (
+  $case {$prop tag "cons"} $if ($call eq_int (bs.head.id, i)) bs.head.ty ($call find_binder (bs.tail, i)),
+  $case bs t_bot
+)
+
+// One step of unfolding, without building a substituted type.
+//
+// A variable with no binder in scope is a placeholder for a type still being
+// solved (§5.5). It is **unrelated** to everything but itself — not ⊥. Treating
+// it as ⊥ would make it a subtype of anything, and `join` would then swallow
+// the placeholder instead of keeping it in the union for the solver to resolve.
+$decl unfolded $func ($decl o true, $decl t proto_ty) { $decl ok o  $decl ty t }
+
+$decl unfold_var $func ($decl st proto_actx, $decl i 0)
+  { $decl bt $call find_binder (st.binders, i)
+    $decl out $match bt (
+        $case {$prop tag "rec"} ($call unfolded (true, bt.body)),
+        $case bt ($call unfolded (false, t_bot))
+      ) }.out
+
+$decl mem_pair $func ($decl ps pair_list.node, $decl x 0, $decl y 0) $match ps (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_int (ps.head.l, x), $call eq_int (ps.head.r, y))) true
+        ($call mem_pair (ps.tail, x, y)),
+  $case ps false
+)
+
 // --------------------------------------------------------------- subtyping
 //
 // §5.1. `sub` is coinductive: before descending it records the goal, and a
@@ -479,45 +535,45 @@ $decl unroll $func ($decl t proto_ty) $match t (
 
 $fwd sub_seen
 
-$decl subs_all_left $func ($decl xs tys.node, $decl b proto_ty, $decl seen strs.node) $match xs (
+$decl subs_all_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_actx) $match xs (
   $case {$prop tag "cons"}
-    $if ($call sub_seen (xs.head, b, seen)) ($call subs_all_left (xs.tail, b, seen)) false,
+    $if ($call sub_seen (xs.head, b, st)) ($call subs_all_left (xs.tail, b, st)) false,
   $case xs true
 )
 
-$decl subs_any_right $func ($decl a proto_ty, $decl ys tys.node, $decl seen strs.node) $match ys (
+$decl subs_any_right $func ($decl a proto_ty, $decl ys tys.node, $decl st proto_actx) $match ys (
   $case {$prop tag "cons"}
-    $if ($call sub_seen (a, ys.head, seen)) true ($call subs_any_right (a, ys.tail, seen)),
+    $if ($call sub_seen (a, ys.head, st)) true ($call subs_any_right (a, ys.tail, st)),
   $case ys false
 )
 
-$decl subs_all_right $func ($decl a proto_ty, $decl ys tys.node, $decl seen strs.node) $match ys (
+$decl subs_all_right $func ($decl a proto_ty, $decl ys tys.node, $decl st proto_actx) $match ys (
   $case {$prop tag "cons"}
-    $if ($call sub_seen (a, ys.head, seen)) ($call subs_all_right (a, ys.tail, seen)) false,
+    $if ($call sub_seen (a, ys.head, st)) ($call subs_all_right (a, ys.tail, st)) false,
   $case ys true
 )
 
-$decl subs_any_left $func ($decl xs tys.node, $decl b proto_ty, $decl seen strs.node) $match xs (
+$decl subs_any_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_actx) $match xs (
   $case {$prop tag "cons"}
-    $if ($call sub_seen (xs.head, b, seen)) true ($call subs_any_left (xs.tail, b, seen)),
+    $if ($call sub_seen (xs.head, b, st)) true ($call subs_any_left (xs.tail, b, st)),
   $case xs false
 )
 
 // Elementwise, same arity (§5.1 for groups).
-$decl subs_zip $func ($decl xs tys.node, $decl ys tys.node, $decl seen strs.node) $match xs (
+$decl subs_zip $func ($decl xs tys.node, $decl ys tys.node, $decl st proto_actx) $match xs (
   $case {$prop tag "cons"} $match ys (
       $case {$prop tag "cons"}
-        $if ($call sub_seen (xs.head, ys.head, seen)) ($call subs_zip (xs.tail, ys.tail, seen)) false,
+        $if ($call sub_seen (xs.head, ys.head, st)) ($call subs_zip (xs.tail, ys.tail, st)) false,
       $case ys false
     ),
   $case xs ($call tys.is_nil (ys))
 )
 
 // Contravariant in parameters (§5.1 for functions): the *argument* side flips.
-$decl subs_zip_flipped $func ($decl xs tys.node, $decl ys tys.node, $decl seen strs.node) $match xs (
+$decl subs_zip_flipped $func ($decl xs tys.node, $decl ys tys.node, $decl st proto_actx) $match xs (
   $case {$prop tag "cons"} $match ys (
       $case {$prop tag "cons"}
-        $if ($call sub_seen (ys.head, xs.head, seen)) ($call subs_zip_flipped (xs.tail, ys.tail, seen)) false,
+        $if ($call sub_seen (ys.head, xs.head, st)) ($call subs_zip_flipped (xs.tail, ys.tail, st)) false,
       $case ys false
     ),
   $case xs ($call tys.is_nil (ys))
@@ -541,12 +597,12 @@ $decl find_prop $func ($decl xs props.node, $decl n "") $match xs (
 // same names at the same positions, each at a subtype. Running out of required
 // fields means the prefix is satisfied; running out of `S`'s fields first means
 // `T` demands more than `S` has.
-$decl sub_fields $func ($decl s fields.node, $decl want fields.node, $decl seen strs.node) $match want (
+$decl sub_fields $func ($decl s fields.node, $decl want fields.node, $decl st proto_actx) $match want (
   $case {$prop tag "cons"} $match s (
       $case {$prop tag "cons"}
         $if ($call eq_str (s.head.name, want.head.name))
-            ($if ($call sub_seen (s.head.ty, want.head.ty, seen))
-                 ($call sub_fields (s.tail, want.tail, seen))
+            ($if ($call sub_seen (s.head.ty, want.head.ty, st))
+                 ($call sub_fields (s.tail, want.tail, st))
                  false)
             false,
       $case s false
@@ -568,41 +624,63 @@ $decl sub_props $func ($decl s props.node, $decl want props.node) $match want (
 // §5.3: `&T <: &mut T <: &const T`. `&T` and `&mut T` are invariant in `T`;
 // only `&const T` is covariant, which is why structural width subtyping on
 // storage is available exclusively through read-only views.
-$decl sub_ref $func ($decl a proto_ty, $decl b proto_ty, $decl seen strs.node)
-  $if ($call eq_str (b.qual, "const")) ($call sub_seen (a.inner, b.inner, seen))
+$decl sub_ref $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
+  $if ($call eq_str (b.qual, "const")) ($call sub_seen (a.inner, b.inner, st))
   ($if ($call eq_str (b.qual, "mut"))
        ($call and ($call not ($call eq_str (a.qual, "const")), $call ty_eq (a.inner, b.inner)))
        ($call and ($call eq_str (a.qual, ""), $call ty_eq (a.inner, b.inner))))
 
-$decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl seen strs.node) $match a (
+// A variable on the left. Pairing it with a variable on the right is the only
+// goal that can recur, so that is the pair worth assuming.
+$decl sub_var_left $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match b (
+  $case {$prop tag "var"}
+    $if ($call mem_pair (st.pairs, a.id, b.id)) true
+        { $decl ua $call unfold_var (st, a.id)
+          $decl ub $call unfold_var (st, b.id)
+          // Two free variables are related only when they are the same, which
+          // `same` has already decided by the time we get here.
+          $decl out $if ($call and (ua.ok, ub.ok))
+              ($call sub_seen (ua.ty, ub.ty, $call with_pair (st, a.id, b.id)))
+              false }.out,
+  $case b { $decl ua $call unfold_var (st, a.id)
+            $decl out $if ua.ok ($call sub_seen (ua.ty, b, st)) false }.out
+)
+
+$decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match a (
   // §3.6: ⊥ is a subtype of everything.
   $case {$prop tag "bottom"} true,
-  $case {$prop tag "rec"}    $call sub_seen ($call unroll (a), b, seen),
-  $case {$prop tag "union"}  $call subs_all_left (a.members, b, seen),
+  // The binder is recorded, not substituted (§5.5 is equirecursive, so this is
+  // sound; it is only the *representation* that stays folded).
+  $case {$prop tag "rec"}    $call sub_seen (a.body, b, $call with_binder (st, a.id, a)),
+  $case {$prop tag "var"}    $call sub_var_left (a, b, st),
+  $case {$prop tag "union"}  $call subs_all_left (a.members, b, st),
   $case a $match b (
-      $case {$prop tag "rec"}   $call sub_seen (a, $call unroll (b), seen),
-      $case {$prop tag "union"} $call subs_any_right (a, b.members, seen),
-      $case {$prop tag "inter"} $call subs_all_right (a, b.members, seen),
+      $case {$prop tag "rec"}   $call sub_seen (a, b.body, $call with_binder (st, b.id, b)),
+      $case {$prop tag "var"}
+        { $decl ub $call unfold_var (st, b.id)
+          $decl o  $if ub.ok ($call sub_seen (a, ub.ty, st)) false }.o,
+      $case {$prop tag "union"} $call subs_any_right (a, b.members, st),
+      $case {$prop tag "inter"} $call subs_all_right (a, b.members, st),
       $case b $match a (
-          $case {$prop tag "inter"} $call subs_any_left (a.members, b, seen),
+          $case {$prop tag "inter"} $call subs_any_left (a.members, b, st),
           $case {$prop tag "block"} $match b (
               $case {$prop tag "block"}
-                $if ($call sub_fields (a.fields, b.fields, seen))
+                $if ($call sub_fields (a.fields, b.fields, st))
                     ($call sub_props (a.props, b.props)) false,
               $case b false
             ),
           $case {$prop tag "group"} $match b (
-              $case {$prop tag "group"} $call subs_zip (a.items, b.items, seen),
+              $case {$prop tag "group"} $call subs_zip (a.items, b.items, st),
               $case b false
             ),
           $case {$prop tag "func"} $match b (
               $case {$prop tag "func"}
-                $if ($call subs_zip_flipped (a.params, b.params, seen))
-                    ($call sub_seen (a.result, b.result, seen)) false,
+                $if ($call subs_zip_flipped (a.params, b.params, st))
+                    ($call sub_seen (a.result, b.result, st)) false,
               $case b false
             ),
           $case {$prop tag "ref"} $match b (
-              $case {$prop tag "ref"} $call sub_ref (a, b, seen),
+              $case {$prop tag "ref"} $call sub_ref (a, b, st),
               $case b false
             ),
           $case {$prop tag "array"} $match b (
@@ -627,15 +705,10 @@ $decl is_rec $func ($decl t proto_ty) $match t (
 // was the checker's dominant cost — the strings are proportional to the whole
 // type and nothing is ever freed (BOOTSTRAP.md §3) — so the key is built only
 // when one side is a `rec`.
-$decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl seen strs.node)
-  $if ($call same (a, b)) true
-  ($if ($call or ($call is_rec (a), $call is_rec (b)))
-      { $decl key $call concat ($call show (a), $call concat (" <: ", $call show (b)))
-        $decl out $if ($call mem_str (seen, key)) true
-                      ($call sub_step (a, b, $call strs.cons (key, seen))) }.out
-      ($call sub_step (a, b, seen)))
+$decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
+  $if ($call same (a, b)) true ($call sub_step (a, b, st))
 
-$decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, strs.nil)
+$decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, proto_actx)
 
 // ------------------------------------------------------ lattice operations
 //

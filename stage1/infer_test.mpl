@@ -313,3 +313,44 @@ $decl t73 $call check ("two element types give two lists",
     $call field_ty ($call concat (list_src, "$decl s ($specialize list \"\").node"), "s"))))
 
 $decl done2 $call nl ("all template tests passed")
+
+// ------------------------------------------- mutual recursion (§4.11, §5.5)
+
+// §5.5: "`$fwd` slots share one system of equations." §12's own example.
+$decl evenodd $call concat (
+  "$fwd odd ",
+  $call concat (
+  "$decl even $func ($decl n 0) $if ($call eq_int (n, 0)) true  ($call odd  ($call sub (n, 1))) ",
+  "$decl odd  $func ($decl n 0) $if ($call eq_int (n, 0)) false ($call even ($call sub (n, 1))) "))
+
+$decl t74 $call check ("mutual recursion through $fwd types cleanly",
+  $call eq_int ($call n_errs (evenodd), 0))
+$decl t75 $call check_str ("both halves infer Bool -> Bool",
+  $call field_ty (evenodd, "even"), "[Int]-><false,true>")
+$decl t76 $call check_str ("...and so does the one declared by $fwd",
+  $call field_ty (evenodd, "odd"), "[Int]-><false,true>")
+
+// §4.11: the layout position is the `$fwd`, not the completing `$decl`.
+$decl t77 $call check_str ("the $fwd holds the slot even with a function",
+  $call field_ty ($call concat ("$decl b { ", $call concat (evenodd, "} ")), "b"),
+  "{odd:[Int]-><false,true>,even:[Int]-><false,true>,}")
+
+// A three-way cycle needs more than one round of substitution.
+$decl three_cycle $call concat (
+  "$fwd b $fwd c ",
+  $call concat (
+  "$decl a $func ($decl n 0) $if ($call eq_int (n, 0)) 1 ($call b ($call sub (n, 1))) ",
+  $call concat (
+  "$decl b $func ($decl n 0) $if ($call eq_int (n, 0)) \"s\" ($call c ($call sub (n, 1))) ",
+  "$decl c $func ($decl n 0) $if ($call eq_int (n, 0)) true ($call a ($call sub (n, 1))) ")))
+
+$decl t78 $call check ("a three-way cycle types cleanly",
+  $call eq_int ($call n_errs (three_cycle), 0))
+$decl t79 $call check_str ("every member of the cycle sees the whole union",
+  $call field_ty (three_cycle, "a"), "[Int]-><Int,Str,true>")
+
+// A `$fwd` never completed is still an error (§4.11) — unchanged by any of this.
+$decl t80 $call check ("an uncompleted $fwd still reports",
+  $call lt (0, $call n_errs ("$decl b { $fwd never  $decl other 1 }")))
+
+$decl done3 $call nl ("all mutual-recursion tests passed")
