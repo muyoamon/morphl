@@ -8,9 +8,11 @@
 //!
 //! Everything here is an ordinary shadowable name, never a keyword (§2.1).
 //!
-//! Still missing, and deliberately: `read_file`, `write_file` and `args`. Those
-//! are platform I/O, they need the `Io` plumbing the driver owns, and nothing
-//! in stage 0's own test suite needs them. They land with step 4.
+//! The platform group (`print`, `read_file`, `write_file`, `args`) stands in
+//! for what §4.16 says must be library code over `$extern`. Stage 0 has no
+//! `$extern`, so these are builtins — but they reach the host through an
+//! injected `Platform` rather than touching it directly, so the substitution
+//! does not smuggle I/O into the evaluator.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -256,6 +258,62 @@ fn printFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return .unit;
 }
 
+/// `read_file (path)` → `none | {$prop tag "some" $decl v Str}`.
+///
+/// The UTF-8 check is not defensive coding, it is §3.1's invariant: `Str` is
+/// *always* valid UTF-8. §4.16 spells out the consequence for data arriving
+/// from outside — "bytes received from C become a `Str` only through a
+/// validating library function returning `option Str`" — and a file is exactly
+/// that case, so unreadable and non-UTF-8 both come back as `none`.
+fn readFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const path = try wantStr(rt, args, 0, "read_file", span);
+    const p = rt.platform orelse
+        return rt.fail(span, "read_file is unavailable: no platform was configured", .{});
+    const bytes = p.readFile(rt.arena, path) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Failed => return tagBlock(rt.arena, "none"),
+    };
+    if (!std.unicode.utf8ValidateSlice(bytes)) return tagBlock(rt.arena, "none");
+    return some(rt.arena, .{ .str = bytes });
+}
+
+/// `write_file (path, contents)` → `() | err`.
+///
+/// §8 requires failing operations to return a value rather than panic; `err`
+/// is the shape §4.15 gives the root block, so a caller writes
+/// `$try ($call write_file (p, s)) err` and the error set is inferred.
+fn writeFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const path = try wantStr(rt, args, 0, "write_file", span);
+    const data = try wantStr(rt, args, 1, "write_file", span);
+    const p = rt.platform orelse
+        return rt.fail(span, "write_file is unavailable: no platform was configured", .{});
+    p.writeFile(path, data) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Failed => return tagBlock(rt.arena, "err"),
+    };
+    return .unit;
+}
+
+/// `args ()` → an array of `Str`.
+///
+/// A zero-arity function rather than a value, so a program that never asks
+/// pays nothing. Each call builds a fresh array, since §8's arrays are
+/// `&mut [T]` and handing out one shared mutable array would let one caller's
+/// writes surprise the next.
+fn argsFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    _ = args;
+    const p = rt.platform orelse
+        return rt.fail(span, "args is unavailable: no platform was configured", .{});
+    const list = p.args(rt.arena) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Failed => return rt.fail(span, "args could not be read from the host", .{}),
+    };
+    const a = try rt.arena.create(value.Array);
+    a.* = .{ .elems = try rt.arena.alloc(value.Cell, list.len) };
+    for (a.elems, list) |*cell, s| cell.* = .{ .value = .{ .str = s } };
+    return .{ .array = a };
+}
+
 const table = [_]value.Builtin{
     .{ .name = "add", .arity = 2, .func = addFn },
     .{ .name = "sub", .arity = 2, .func = subFn },
@@ -277,6 +335,9 @@ const table = [_]value.Builtin{
     .{ .name = "alen", .arity = 1, .func = alenFn },
     .{ .name = "panic", .arity = 1, .func = panicFn },
     .{ .name = "print", .arity = 1, .func = printFn },
+    .{ .name = "read_file", .arity = 1, .func = readFileFn },
+    .{ .name = "write_file", .arity = 2, .func = writeFileFn },
+    .{ .name = "args", .arity = 0, .func = argsFn },
 };
 
 test "the root block is monomorphic and complete per BOOTSTRAP 2" {
@@ -289,10 +350,12 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
 
     const scope = try rootScope(arena, &rt);
     for ([_][]const u8{
-        "add",    "sub",  "mul",        "div",        "mod",   "neg", "lt",
-        "eq_int", "eq_str", "concat",   "len",        "slice", "byte",
-        "int_to_str", "str_to_int", "array", "at", "alen", "panic", "print",
-        "err",    "none",
+        // Numeric, comparison, strings, conversion, arrays, control.
+        "add",        "sub",        "mul",   "div",  "mod",   "neg",   "lt",
+        "eq_int",     "eq_str",     "concat", "len", "slice", "byte",
+        "int_to_str", "str_to_int", "array", "at",   "alen",  "panic",
+        // Shapes (§4.15) and platform.
+        "err",        "none",       "print", "read_file", "write_file", "args",
     }) |name| {
         if (scope.findLocal(name) == null) {
             std.debug.print("root block is missing '{s}'\n", .{name});
@@ -333,6 +396,121 @@ test "slice works in bytes and refuses to split a code point" {
     try std.testing.expectError(error.Panicked, sliceFn(&rt, &.{
         s, .{ .int = 0 }, .{ .int = 2 },
     }, span));
+}
+
+/// An in-memory host, so the platform intrinsics are testable without touching
+/// a filesystem.
+const FakePlatform = struct {
+    const Entry = struct { path: []const u8, bytes: []const u8 };
+
+    files: []const Entry,
+    argv: []const []const u8 = &.{},
+    written: *?Entry = undefined,
+    fail_writes: bool = false,
+
+    fn readFile(ctx: *const anyopaque, arena: Allocator, path: []const u8) value.Platform.PlatformError![]const u8 {
+        _ = arena;
+        const self: *const FakePlatform = @ptrCast(@alignCast(ctx));
+        for (self.files) |f| if (std.mem.eql(u8, f.path, path)) return f.bytes;
+        return error.Failed;
+    }
+
+    fn writeFile(ctx: *const anyopaque, path: []const u8, bytes: []const u8) value.Platform.PlatformError!void {
+        const self: *const FakePlatform = @ptrCast(@alignCast(ctx));
+        if (self.fail_writes) return error.Failed;
+        self.written.* = .{ .path = path, .bytes = bytes };
+    }
+
+    fn args(ctx: *const anyopaque, arena: Allocator) value.Platform.PlatformError![]const []const u8 {
+        _ = arena;
+        const self: *const FakePlatform = @ptrCast(@alignCast(ctx));
+        return self.argv;
+    }
+
+    fn platform(self: *const FakePlatform) value.Platform {
+        return .{
+            .ctx = self,
+            .readFileFn = readFile,
+            .writeFileFn = writeFile,
+            .argsFn = args,
+        };
+    }
+};
+
+test "read_file returns option Str and refuses non-UTF-8 bytes (3.1, 4.16)" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    var diags = diag.Diagnostics.init(std.testing.allocator);
+    defer diags.deinit();
+    const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
+
+    const host: FakePlatform = .{ .files = &.{
+        .{ .path = "good", .bytes = "hi" },
+        .{ .path = "binary", .bytes = "\xff\xfe" },
+    } };
+    var rt: Runtime = .{
+        .arena = arena_state.allocator(),
+        .diags = &diags,
+        .platform = host.platform(),
+    };
+
+    const ok = try readFileFn(&rt, &.{.{ .str = "good" }}, span);
+    try std.testing.expectEqualStrings("some", ok.block.findProp("tag").?.str);
+    try std.testing.expectEqualStrings("hi", ok.block.findDecl("v").?.str);
+
+    // Missing file and invalid UTF-8 are both `none`, not errors: a Str is
+    // always valid UTF-8, so bytes only become one through a validating read.
+    const missing = try readFileFn(&rt, &.{.{ .str = "nope" }}, span);
+    try std.testing.expectEqualStrings("none", missing.block.findProp("tag").?.str);
+    const binary = try readFileFn(&rt, &.{.{ .str = "binary" }}, span);
+    try std.testing.expectEqualStrings("none", binary.block.findProp("tag").?.str);
+}
+
+test "write_file returns unit or err, and args is an array of Str" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    var diags = diag.Diagnostics.init(std.testing.allocator);
+    defer diags.deinit();
+    const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
+
+    var sink: ?FakePlatform.Entry = null;
+    const host: FakePlatform = .{
+        .files = &.{},
+        .argv = &.{ "a", "bb" },
+        .written = &sink,
+    };
+    var rt: Runtime = .{
+        .arena = arena_state.allocator(),
+        .diags = &diags,
+        .platform = host.platform(),
+    };
+
+    const wrote = try writeFileFn(&rt, &.{ .{ .str = "out" }, .{ .str = "body" } }, span);
+    try std.testing.expect(wrote == .unit);
+    try std.testing.expectEqualStrings("out", sink.?.path);
+    try std.testing.expectEqualStrings("body", sink.?.bytes);
+
+    const failing: FakePlatform = .{ .files = &.{}, .written = &sink, .fail_writes = true };
+    rt.platform = failing.platform();
+    const failed = try writeFileFn(&rt, &.{ .{ .str = "out" }, .{ .str = "body" } }, span);
+    try std.testing.expectEqualStrings("err", failed.block.findProp("tag").?.str);
+
+    rt.platform = host.platform();
+    const argv = try argsFn(&rt, &.{}, span);
+    try std.testing.expectEqual(@as(usize, 2), argv.array.elems.len);
+    try std.testing.expectEqualStrings("bb", argv.array.elems[1].value.str);
+}
+
+test "platform intrinsics decline when no host is configured" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    var diags = diag.Diagnostics.init(std.testing.allocator);
+    defer diags.deinit();
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags };
+    const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
+
+    try std.testing.expectError(error.Halt, readFileFn(&rt, &.{.{ .str = "x" }}, span));
+    try std.testing.expectError(error.Halt, argsFn(&rt, &.{}, span));
 }
 
 test "str_to_int returns the option shape that $try none expects" {

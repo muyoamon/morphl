@@ -21,10 +21,13 @@ const interp = @import("interp");
 const max_source_bytes = 64 * 1024 * 1024;
 
 const usage =
-    \\usage: morphlc [--tokens|--run] <file.mpl>
+    \\usage: morphlc [--tokens|--run] <file.mpl> [program args...]
     \\
     \\  --tokens   print the token stream instead of the AST
     \\  --run      evaluate the file instead of printing the AST
+    \\
+    \\Arguments after <file.mpl> are passed to the program, where the `args`
+    \\intrinsic returns them.
     \\
 ;
 
@@ -61,6 +64,58 @@ const FileLoader = struct {
     }
 };
 
+/// The host behind `read_file`, `write_file` and `args`.
+///
+/// §4.16 makes the platform library code over `$extern` in a per-target root
+/// block; stage 0 has no `$extern`, so the driver supplies this instead. It
+/// lives here rather than in lib/interp/ so that the evaluator still cannot
+/// reach the filesystem on its own.
+const HostPlatform = struct {
+    io: Io,
+    dir: Io.Dir,
+    /// Arguments after the input file — what the *morphl program* was passed,
+    /// not what morphlc was passed.
+    argv: []const []const u8,
+
+    fn readFile(
+        ctx: *const anyopaque,
+        arena: Allocator,
+        path: []const u8,
+    ) interp.Platform.PlatformError![]const u8 {
+        const self: *const HostPlatform = @ptrCast(@alignCast(ctx));
+        return self.dir.readFileAlloc(self.io, path, arena, .limited(max_source_bytes)) catch
+            error.Failed;
+    }
+
+    fn writeFile(
+        ctx: *const anyopaque,
+        path: []const u8,
+        bytes: []const u8,
+    ) interp.Platform.PlatformError!void {
+        const self: *const HostPlatform = @ptrCast(@alignCast(ctx));
+        self.dir.writeFile(self.io, .{ .sub_path = path, .data = bytes }) catch
+            return error.Failed;
+    }
+
+    fn args(
+        ctx: *const anyopaque,
+        arena: Allocator,
+    ) interp.Platform.PlatformError![]const []const u8 {
+        _ = arena;
+        const self: *const HostPlatform = @ptrCast(@alignCast(ctx));
+        return self.argv;
+    }
+
+    fn platform(self: *const HostPlatform) interp.Platform {
+        return .{
+            .ctx = self,
+            .readFileFn = readFile,
+            .writeFileFn = writeFile,
+            .argsFn = args,
+        };
+    }
+};
+
 pub fn main(init: process.Init.Minimal) !void {
     var debug_gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = debug_gpa.deinit();
@@ -89,7 +144,18 @@ pub fn main(init: process.Init.Minimal) !void {
     var path: ?[]const u8 = null;
     var dump_tokens = false;
     var run = false;
-    for (args[1..]) |arg| {
+    // Everything after the input file belongs to the program, not to morphlc,
+    // and is what its `args` intrinsic returns.
+    var program_args: []const []const u8 = &.{};
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg: []const u8 = args[i];
+        if (path != null) {
+            const rest = try arena.alloc([]const u8, args.len - i);
+            for (args[i..], rest) |a, *slot| slot.* = a;
+            program_args = rest;
+            break;
+        }
         if (std.mem.eql(u8, arg, "--tokens")) {
             dump_tokens = true;
         } else if (std.mem.eql(u8, arg, "--run")) {
@@ -100,10 +166,6 @@ pub fn main(init: process.Init.Minimal) !void {
             return;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try err.print("morphlc: unknown option '{s}'\n\n{s}", .{ arg, usage });
-            try err.flush();
-            process.exit(2);
-        } else if (path != null) {
-            try err.writeAll("morphlc: one input file at a time\n");
             try err.flush();
             process.exit(2);
         } else {
@@ -144,7 +206,16 @@ pub fn main(init: process.Init.Minimal) !void {
                     .dir = Io.Dir.cwd(),
                     .base = Io.Dir.path.dirname(file_path) orelse "",
                 };
-                var it = try interp.Interp.init(arena, &diags, out, fl.loader());
+                const host: HostPlatform = .{
+                    .io = io,
+                    .dir = Io.Dir.cwd(),
+                    .argv = program_args,
+                };
+                var it = try interp.Interp.init(arena, &diags, .{
+                    .out = out,
+                    .loader = fl.loader(),
+                    .platform = host.platform(),
+                });
                 _ = it.runFile(parsed) catch |e| switch (e) {
                     // Both are already recorded as diagnostics; §7.8 makes a
                     // panic abort the whole program, with no catch.

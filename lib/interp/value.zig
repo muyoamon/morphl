@@ -18,6 +18,7 @@ const ast = @import("ast");
 
 const Span = diag.Span;
 const Node = ast.Node;
+pub const Platform = @import("platform.zig").Platform;
 
 pub const Value = union(enum) {
     /// `()` and `{}` (§2.3).
@@ -259,6 +260,9 @@ pub const Runtime = struct {
     arena: Allocator,
     diags: *diag.Diagnostics,
     out: ?*std.Io.Writer = null,
+    /// Supplied by the driver; absent when nothing injected one, in which case
+    /// the platform intrinsics decline rather than inventing an answer.
+    platform: ?Platform = null,
 
     pub fn fail(self: *Runtime, span: Span, comptime fmt: []const u8, args: anytype) Error {
         self.diags.add(span, fmt, args);

@@ -43,6 +43,7 @@ const Field = value.Field;
 const Error = value.Error;
 
 pub const Loader = @import("loader.zig").Loader;
+pub const Platform = @import("platform.zig").Platform;
 
 /// Guards against a Zig stack overflow from runaway *non-tail* recursion.
 ///
@@ -81,18 +82,27 @@ pub const Interp = struct {
         block: Value = .unit,
     };
 
-    pub fn init(
-        arena: Allocator,
-        diags: *Diagnostics,
-        out: ?*std.Io.Writer,
-        loader: ?Loader,
-    ) Error!Interp {
+    pub const Options = struct {
+        /// Where `print` goes.
+        out: ?*std.Io.Writer = null,
+        /// Resolves `$import` (§4.14).
+        loader: ?Loader = null,
+        /// Backs the platform intrinsics (§4.16's role, minus `$extern`).
+        platform: ?Platform = null,
+    };
+
+    pub fn init(arena: Allocator, diags: *Diagnostics, opts: Options) Error!Interp {
         var probe: u8 = undefined;
         var self: Interp = .{
             .arena = arena,
-            .rt = .{ .arena = arena, .diags = diags, .out = out },
+            .rt = .{
+                .arena = arena,
+                .diags = diags,
+                .out = opts.out,
+                .platform = opts.platform,
+            },
             .root = undefined,
-            .loader = loader,
+            .loader = opts.loader,
             .stack_base = @intFromPtr(&probe),
         };
         self.root = try builtins.rootScope(arena, &self.rt);
@@ -862,14 +872,14 @@ const Harness = struct {
     interp: Interp,
     result: Value = .unit,
 
-    fn run(src: []const u8, loader: ?Loader) !Harness {
+    fn run(src: []const u8, opts: Interp.Options) !Harness {
         var h: Harness = .{
             .arena_state = .init(testing.allocator),
             .diags = .init(testing.allocator),
             .interp = undefined,
         };
         const arena = h.arena_state.allocator();
-        h.interp = try Interp.init(arena, &h.diags, null, loader);
+        h.interp = try Interp.init(arena, &h.diags, opts);
         const tokens = try lexer.tokenize(arena, arena, src, &h.diags);
         const file = try parser.parseFile(arena, tokens, &h.diags);
         if (h.diags.any()) {
@@ -888,7 +898,7 @@ const Harness = struct {
 
 /// Evaluate `src`, then read a named field out of the resulting file block.
 fn evalField(src: []const u8, field: []const u8) !Value {
-    var h = try Harness.run(src, null);
+    var h = try Harness.run(src, .{});
     defer h.deinit();
     const v = h.result.block.find(field) orelse return error.NoSuchField;
     // Copy out scalars only; the arena dies with the harness.
@@ -920,7 +930,7 @@ fn expectFails(src: []const u8, expected_substring: []const u8) !void {
     };
     defer h.deinit();
     const arena = h.arena_state.allocator();
-    h.interp = try Interp.init(arena, &h.diags, null, null);
+    h.interp = try Interp.init(arena, &h.diags, .{});
     const tokens = try lexer.tokenize(arena, arena, src, &h.diags);
     const file = try parser.parseFile(arena, tokens, &h.diags);
     _ = h.interp.runFile(file) catch {};
@@ -1045,7 +1055,7 @@ test "props are visible throughout their block regardless of order (4.10)" {
 }
 
 test "props have no layout but are still projectable (4.10)" {
-    var h = try Harness.run("$decl b { $prop p 1  $decl d 2 }", null);
+    var h = try Harness.run("$decl b { $prop p 1  $decl d 2 }", .{});
     defer h.deinit();
     const b = h.result.block.find("b").?.block;
     try testing.expectEqual(@as(usize, 1), b.decls.len); // only `d` takes a slot
@@ -1086,7 +1096,7 @@ test "$fwd keeps the layout position of the $fwd, not the $decl (4.11)" {
         \\$fwd b
         \\$decl a 1
         \\$decl b 2
-    , null);
+    , .{});
     defer h.deinit();
     const blk = h.result.block;
     try testing.expectEqualStrings("b", blk.decls[0].name);
@@ -1144,7 +1154,7 @@ test "$try returns from the nearest enclosing $func (4.15)" {
     ;
     try expectInt(src, "ok", 7);
     // On the `none` branch the function returns the `none` block itself.
-    var h = try Harness.run(src, null);
+    var h = try Harness.run(src, .{});
     defer h.deinit();
     const bad = h.result.block.find("bad").?.deref();
     try testing.expectEqualStrings("none", bad.block.findProp("tag").?.str);
@@ -1254,6 +1264,104 @@ test "patterns outside the subset are refused by name" {
     try expectFails("$decl r $match 1 ($case { $decl d 1 } 1)", "only $prop members");
 }
 
+test "the subset expresses a recursive list with tag dispatch and TCE" {
+    // This is the BOOTSTRAP.md §5 gate that matters most: §12's list is
+    // generic and self-specializing, which §1.1 excludes, so the question is
+    // whether the *subset* can still hold a compiler's data structures.
+    const list =
+        \\$decl nil  { $prop tag "nil" }
+        \\$decl node $union (nil, { $prop tag "cons"  $decl head 0  $decl tail node })
+        \\$decl cons $func ($decl h 0, $decl t node) { $prop tag "cons"  $decl head h  $decl tail t }
+        \\$decl sum $func ($decl xs node, $decl acc 0) $match xs (
+        \\  $case {$prop tag "cons"} $call sum (xs.tail, $call add (acc, xs.head)),
+        \\  $case xs acc
+        \\)
+        \\$decl length $func ($decl xs node, $decl acc 0) $match xs (
+        \\  $case {$prop tag "cons"} $call length (xs.tail, $call add (acc, 1)),
+        \\  $case xs acc
+        \\)
+        \\$decl reverse $func ($decl xs node, $decl acc node) $match xs (
+        \\  $case {$prop tag "cons"} $call reverse (xs.tail, $call cons (xs.head, acc)),
+        \\  $case xs acc
+        \\)
+        \\$decl upto $func ($decl n 0, $decl acc node)
+        \\  $if ($call eq_int (n, 0)) acc ($call upto ($call sub (n, 1), $call cons (n, acc)))
+        \\
+    ;
+    try expectInt(list ++ "$decl r $call length ($call upto (6, nil), 0)", "r", 6);
+    try expectInt(list ++ "$decl r $call sum ($call upto (6, nil), 0)", "r", 21);
+    try expectInt(list ++ "$decl r $call sum ($call reverse ($call upto (6, nil), nil), 0)", "r", 21);
+    // Long enough that only real tail-call elimination survives it.
+    try expectInt(list ++ "$decl r $call sum ($call upto (20000, nil), 0)", "r", 200010000);
+    // The head of a reversed [1..6] is 6 — the list is really being rebuilt.
+    try expectInt(list ++ "$decl r ($call reverse ($call upto (6, nil), nil)).head", "r", 6);
+}
+
+// -------------------------------------------------------------- platform
+
+const FakeHost = struct {
+    contents: []const u8,
+
+    fn readFile(ctx: *const anyopaque, arena: Allocator, path: []const u8) Platform.PlatformError![]const u8 {
+        _ = arena;
+        const self: *const FakeHost = @ptrCast(@alignCast(ctx));
+        if (!std.mem.eql(u8, path, "known")) return error.Failed;
+        return self.contents;
+    }
+
+    fn writeFile(ctx: *const anyopaque, path: []const u8, bytes: []const u8) Platform.PlatformError!void {
+        _ = ctx;
+        _ = path;
+        _ = bytes;
+    }
+
+    fn args(ctx: *const anyopaque, arena: Allocator) Platform.PlatformError![]const []const u8 {
+        _ = ctx;
+        _ = arena;
+        return &.{ "one", "two" };
+    }
+
+    fn platform(self: *const FakeHost) Platform {
+        return .{
+            .ctx = self,
+            .readFileFn = readFile,
+            .writeFileFn = writeFile,
+            .argsFn = args,
+        };
+    }
+};
+
+test "read_file's option threads through $try, and args through the array intrinsics" {
+    const host: FakeHost = .{ .contents = "42" };
+    const src =
+        \\$decl load $func ($decl p "")
+        \\  { $decl c $try ($call read_file (p)) none
+        \\    $decl out ($call str_to_int (c.v)).v }.out
+        \\$decl good $call load ("known")
+        \\$decl argc $call alen ($call args ())
+        \\$decl first $call at ($call args (), 0)
+    ;
+    var h = try Harness.run(src, .{ .platform = host.platform() });
+    defer h.deinit();
+    try testing.expectEqual(@as(i64, 42), h.result.block.find("good").?.deref().int);
+    try testing.expectEqual(@as(i64, 2), h.result.block.find("argc").?.deref().int);
+    try testing.expectEqualStrings("one", h.result.block.find("first").?.deref().str);
+}
+
+test "a missing file comes back as none, not as a failure" {
+    const host: FakeHost = .{ .contents = "x" };
+    var h = try Harness.run(
+        \\$decl load $func ($decl p "")
+        \\  { $decl c $try ($call read_file (p)) none
+        \\    $decl out "read" }.out
+        \\$decl r $call load ("absent")
+    , .{ .platform = host.platform() });
+    defer h.deinit();
+    // `$try` fired, so the function returned the `none` block itself.
+    const r = h.result.block.find("r").?.deref();
+    try testing.expectEqualStrings("none", r.block.findProp("tag").?.str);
+}
+
 // -------------------------------------------------------------- imports
 
 const MapLoader = struct {
@@ -1279,7 +1387,7 @@ test "$import evaluates a file as a block (4.14)" {
     const modules: MapLoader = .{ .files = &.{
         .{ .name = "m", .source = "$decl answer 42" },
     } };
-    var h = try Harness.run("$decl m $import \"m\" $decl r m.answer", modules.loader());
+    var h = try Harness.run("$decl m $import \"m\" $decl r m.answer", .{ .loader = modules.loader() });
     defer h.deinit();
     try testing.expectEqual(@as(i64, 42), h.result.block.find("r").?.deref().int);
 }
@@ -1293,7 +1401,7 @@ test "$import is load-once, so file-level storage is shared (4.14)" {
         \\$decl b $import "counter"
         \\$decl ignored $set a.cell 5
         \\$decl r b.cell
-    , modules.loader());
+    , .{ .loader = modules.loader() });
     defer h.deinit();
     // Same block, so the write through `a` is visible through `b`.
     try testing.expectEqual(@as(i64, 5), h.result.block.find("r").?.deref().int);
@@ -1311,7 +1419,7 @@ test "import cycles are an error (4.14)" {
     };
     defer h.deinit();
     const arena = h.arena_state.allocator();
-    h.interp = try Interp.init(arena, &h.diags, null, modules.loader());
+    h.interp = try Interp.init(arena, &h.diags, .{ .loader = modules.loader() });
     const tokens = try lexer.tokenize(arena, arena, "$decl a $import \"a\"", &h.diags);
     const file = try parser.parseFile(arena, tokens, &h.diags);
     _ = h.interp.runFile(file) catch {};
@@ -1333,7 +1441,7 @@ test "a module sees the root block, not the importing scope (4.14)" {
     };
     defer h.deinit();
     const arena = h.arena_state.allocator();
-    h.interp = try Interp.init(arena, &h.diags, null, modules.loader());
+    h.interp = try Interp.init(arena, &h.diags, .{ .loader = modules.loader() });
     const tokens = try lexer.tokenize(arena, arena, "$decl outer_name 1 $decl m $import \"m\"", &h.diags);
     const file = try parser.parseFile(arena, tokens, &h.diags);
     _ = h.interp.runFile(file) catch {};
