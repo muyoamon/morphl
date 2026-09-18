@@ -1,0 +1,149 @@
+# morphl — Bootstrap Plan
+
+*Companion to `SPEC.md` (Draft 4). Where this document and the spec disagree about the language, the spec wins; this document only restricts.*
+
+## The two requirements
+
+The bootstrap subset is the intersection of two constraints, and every choice below follows from one of them:
+
+1. **Stage 0 must be able to run it.** Stage 0 is a dynamically-evaluating interpreter in Zig with no static type checking. Anything that requires inference to *execute* is out.
+2. **It must be fully valid statically-typed morphl.** Stage 2 is the stage-1 compiler compiling its own source with real type checking. Anything that merely "runs under the interpreter" but would not typecheck is a trap that detonates at stage 2.
+
+Requirement 2 is the one that bites. It is why `$union` stays in (recursive AST types need it) even though a dynamic interpreter has no use for it, and why the style rules in §4 are not optional.
+
+## Stages
+
+| Stage | What it is | Written in | Gate |
+|---|---|---|---|
+| 0 | Lexer, parser, dynamic evaluator, bootstrap root block | Zig 0.16 | Runs every example in `SPEC.md` §12 that fits the subset |
+| 1 | The real compiler: lexer, parser, inference, C backend | morphl (this subset) | Runs under stage 0 |
+| 2 | Stage 1 compiled by stage 1 under stage 0, via C | morphl | Typechecks its own source; binary reproduces stage 1's behavior |
+| 3 | Stage 2 compiling its own source again | morphl | **Stage 2 and stage 3 output identical byte-for-byte** |
+
+After stage 3 the Zig code stops growing. It is kept, not deleted: it is the reproducible bootstrap path, and §9 requires the finished compiler to evaluate build programs anyway.
+
+---
+
+## 1. Forms
+
+### 1.1 In the subset
+
+| Form | Bootstrap restriction |
+|---|---|
+| `$decl name e` | none |
+| `$prop name e` | initializer limited to literal, `true`/`false`, `$func`/`$template` literal, prop-only block, `$union`, `$specialize`, projection of a prop (this is §4.10 as written) |
+| `$fwd name` | mutual recursion only; plain self-recursion does not need it (§4.1 self-reference) |
+| `$new e` | none. Nothing is ever freed — every allocation is root-region (see §3) |
+| `$mut e` | none |
+| `$set target e` | none |
+| `$func params body` | none. Closures need no restriction: capture is by copy and bindings are immutable, so no closure can point into a dead frame (§7.3) |
+| `$call f args` | `f` must not be a template (see `$specialize`) |
+| `$match e arms` | patterns restricted — §1.3. **Must end in a catch-all** — §4 |
+| `$case pat body` | as above |
+| `$if c a b` | none |
+| `$do e1 e2` | none. This is how loops are written |
+| `$union members` | allowed anywhere, including the recursive type-only form. Stage 0 evaluates member 1 and **never inspects the rest** (§4.8a), so recursive members cost the interpreter nothing |
+| `$template T body` | single name only, **no bounds** (`$template (T bound)` is out), no self-specialization |
+| `$specialize t args` | **always explicit.** Never rely on `$call`-time inference of `T` (§4.9) |
+| `$import "name"` | none. Load-once, cycles are an error |
+| `$try e pat` | `pat` restricted to `err` / `none` / another prop-tagged block — §1.3 |
+
+### 1.2 Out of the subset
+
+| Excluded | Why, and what to write instead |
+|---|---|
+| `$overload` | The bootstrap root block is monomorphic (§2), so no overload set ever exists. Removes first-fit type-level resolution *and* the `R`-as-`⊥` rule (§5.5) from stage 0 entirely |
+| `$impl`, `$traitsof` | A compiler needs no traits. Removes witnesses, F-bounded conformance, and fat-reference dispatch |
+| `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap |
+| `$const`, all `&const` | Structural `&const` upcasts are the only thing that needs fat references and offset tables (§7.4). Use `&T` or `$mut`. |
+| `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and converted by the backend when emitting C — so the lexer still lexes them |
+| `allocator`, regions | Nothing is freed at stage 0 (§3) |
+| `sendable`, threads | Not needed to compile a file |
+| Implicit `$specialize` via `$call` | Requires parameter-default shape matching (§4.9) — inference work, in stage 0 |
+| Template bounds | Requires subtype checking, which stage 0 does not have |
+
+### 1.3 Pattern restriction (the important one)
+
+Type-only positions (§5.7) hold expressions that are **never evaluated** — only their static type is used. Stage 0 has no inference, so it cannot compute a pattern's type in general. Every pattern in bootstrap source must therefore be one of exactly four shapes, each testable against a runtime value with no inference and no recursion:
+
+1. **Prop-only block literal** — `{$prop tag "call"}`. Test: value carries that prop with that value. This is the workhorse; all AST dispatch uses it.
+2. **A name bound to a prop-only block** — `err`, `none`, or a locally declared tag prop. Same test.
+3. **An `Int` or `Str` literal** — `$case 0`, `$case ""`. Test: value's base type. This is how `Int`-vs-`Str` dispatch is written (§4.7: a literal pattern is its base type, not a singleton).
+4. **A bare name whose type is the scrutinee's full type** — the catch-all (§4.7).
+
+Nothing else. In particular **a pattern may never reference a recursive `$union` name**, because resolving that needs the μR knot of §5.5. Declaring such a union is fine; matching *on* one is not.
+
+Consequence for the AST representation: every node is a block with a `$prop tag "…"` discriminator, and all dispatch is shape 1. That is the intended style anyway (§12's tagged-block example).
+
+---
+
+## 2. The bootstrap root block
+
+Stage 0's root block is **not** the root block of §8, and it does not pretend to be. It is monomorphic, and it provides the platform as builtins rather than through `$extern`.
+
+| Group | Names |
+|---|---|
+| Int arithmetic | `add sub mul div mod neg lt` — `Int` only; overflow panics |
+| Comparison | `eq_int eq_str` — no polymorphic `eq` |
+| Strings | `concat len slice byte` — byte units, as §8 |
+| Conversion | `int_to_str` , `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works |
+| Arrays | `array at alen` — as §8; `at` returns a base+index handle |
+| Control | `panic` |
+| Shapes | `err none` — prop-tagged blocks, per §4.15 |
+| Platform | `print read_file write_file args` — opaque Zig builtins |
+
+**Migration.** Stage-1 source calls these names directly, so nothing in it changes when the real root block arrives: keep a small `boot.mpl` prelude that re-exports `add_int`-style names in terms of real overloaded intrinsics once `$overload` exists. Monomorphic names in stage-1 source are a deliberate, cheap-to-undo commitment.
+
+---
+
+## 3. What stage 0 must implement anyway
+
+Not everything is deferrable. These are load-bearing:
+
+- **Tail-call elimination (§7.7).** Loops *are* recursion; without TCE, any loop in stage-1 source blows the stack. Implement a trampoline in the evaluator from the start. Tail positions: `$func` body, `$match` arms in tail position, the second operand of `$do` in tail position, transitively — and never a call inside a block.
+- **Structural value tags (§7.5).** Every value carries enough shape to answer the four pattern tests, *including prop names and values*, since a prop's value is part of block type identity (§4.10).
+- **`$try` unwinding (§4.15).** Exits to the nearest enclosing `$func`; blocks, `$do`, arms, and groups are transparent.
+- **`$fwd` slots.** Reserve the slot with an uninitialized marker; reading it before its completing `$decl` is an error. Dynamically this is easy — by the time a `$func` body runs, the `$decl` has executed.
+- **Load-once `$import` (§4.14)** with a resolved-path cache and cycle detection.
+- **`$new` cells, never freed.** §7.6 says region inference *widens* rather than fails, so "everything in the root region" is a spec-legal stage 0 — it leaks, and that is the blessed failure mode.
+
+Two implementation notes that save real work:
+
+- **Block records can be shared, not copied.** §4.5 says copying a block copies its fields, but `$decl` bindings are immutable and only `$new` cells are mutable, so structural sharing of the record is unobservable. Do not deep-copy blocks.
+- **`$union` needs no shape analysis.** Evaluate member 1, discard the rest unexamined. This is what keeps recursive type declarations free.
+
+---
+
+## 4. Style rules for stage-1 source
+
+These exist because stage 0 does not check what stage 2 will. Violating one produces source that runs fine for months and then fails to compile at stage 2.
+
+1. **Every `$match` ends in a catch-all arm** naming the scrutinee. Stage 0 cannot verify exhaustiveness (§4.7 requires it); a trailing catch-all makes exhaustiveness unconditional, and stops dynamic first-fit from falling off the end.
+2. **Every `$match` arm and `$overload`-free dispatch is ordered specific-first.** First fit is semantic (§10.6).
+3. **Qualify parameters that are written through** as `$mut $new …`. Bare `&T` is the most capable type and rejects `&mut` arguments (§5.3, §10.8) — stage 0 won't notice, stage 2 will.
+4. **Return values via `{ … $decl r e }.r`.** A block never yields its last expression (§3.3).
+5. **Sequence effects with `$do`, not with block position**, wherever a tail call must follow an effect (§4.8b).
+6. **Compiler source files are ASCII.** `slice` takes byte offsets and panics if one splits a code point (§8). The *input* the lexer reads may be arbitrary UTF-8 — handle it with `byte`.
+7. **No name shadows a root-block name.** Intrinsics are ordinary shadowable values (§2.1), which makes accidental shadowing silent. Don't.
+
+---
+
+## 5. Build order for stage 0
+
+1. Lexer. Fixed token set from §2.1: `Int`, `Float` (text), `Str` with `\n \t \\ \"` and `\u{…}`, name, `$name`, `(` `)` `{` `}` `,` `;`, `.name` / `.1`, `//` and non-nesting `/* */`. `;` is whitespace with no meaning. Identifiers may not start with `$`; nothing special-cases `add` or `print`.
+2. Parser. Table-driven off §2.2 — each `$kw` reads exactly its arity. Fold `(e)` to `e`, unify `()` and `{}` as unit, bind postfix projection tightest. No precedence machinery exists.
+3. Evaluator, per §3.
+4. Root block, per §2.
+5. **Gate:** every §12 example inside the subset runs. `while`, the `$fwd` even/odd pair, tagged-block dispatch, and error propagation are the four that matter.
+
+`zig_rewrite`'s `lib/lexer/lexer.zig` is worth reading for step 1, but it predates Draft 4 — it emits whitespace as tokens and knows nothing of `$`-keyword arity.
+
+## 6. Error reporting, from the first line
+
+There is no annotation syntax, so every type in every diagnostic is one the compiler inferred and the user never wrote. Diagnostics must point at **expressions**. Carry a span on every AST node in stage 0 and on every type node in stage 1's inference engine from the beginning — provenance is extremely expensive to retrofit into a Simple-sub-style solver.
+
+## 7. Open bootstrap questions
+
+- Whether stage 1's C backend lowers tail calls to loops, to a trampoline, or to clang `musttail`. Mandatory TCE is the one guarantee C does not hand over for free.
+- Whether stage 1 emits one C file or one per morphl file (affects `$import` load-once semantics at the C level, not in the language).
+- Whether to keep monomorphic root-block names permanently or shim them (§2, *Migration*).
