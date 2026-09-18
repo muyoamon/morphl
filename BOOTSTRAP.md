@@ -159,11 +159,22 @@ These exist because stage 0 does not check what stage 2 will. Violating one prod
 
 There is no annotation syntax, so every type in every diagnostic is one the compiler inferred and the user never wrote. Diagnostics must point at **expressions**. Carry a span on every AST node in stage 0 and on every type node in stage 1's inference engine from the beginning — provenance is extremely expensive to retrofit into a Simple-sub-style solver.
 
+## 6a. Tail calls lower to loops
+
+§7.7 makes tail-call elimination mandatory, and C gives no such guarantee, so stage 1's backend has to produce the guarantee itself. **Decision: a tail call becomes a loop.**
+
+- **A direct self tail call** becomes `while (1) { … }` with `continue`. The one hazard is that parameters must be updated *in parallel*: compute every new argument into a temporary first, then assign, or a call like `$call f (b, a)` corrupts `b` before reading it.
+- **A direct mutual tail call** (§12's `even`/`odd`, reached through `$fwd`) is not a self loop. When the whole mutually-tail-recursive group is statically known — which `$fwd` guarantees, since the slots are completed in one block — the group merges into a single C function with a `state` variable and one dispatch loop, and each tail call assigns the next state and `continue`s. This is the standard contification, and `$fwd` is what makes the group identifiable.
+- **An indirect tail call**, through a function *value* rather than a name, cannot become a loop: the target is unknown until run time. `$func ($decl f $func () 0) $call f ()` is a legal tail call and §7.7 covers it. These fall back to a **trampoline**: the call returns a thunk to a driver loop. Portable C, no reliance on a particular compiler.
+
+Not chosen, and why: clang's `musttail` would handle every case including indirect ones, but it ties the bootstrap to one compiler and to one attribute's availability per target, against §9's expectation that a target needs only a root block and a C compiler.
+
+What this means before the backend exists: the two morphl functions the toolchain leans on hardest — `scan` in the lexer and `block_items` in the parser — are direct self tail calls, so they land in the cheap case. Nothing written so far needs the trampoline.
+
 ## 7. Open bootstrap questions
 
 - **§8 cannot build a character, only read one.** `byte` reads a byte out of a `Str`, and §3.1 says a character *is* a one-code-point substring — which only helps when the character already exists somewhere. Decoding the `\u{…}` escape that §2.1 requires means producing a code point that appears nowhere in the source, so a lexer written in morphl cannot do it with §8's intrinsics. Stage 0 adds `from_code (cp)` → `none | some Str`, validating so that §3.1's always-valid-UTF-8 invariant holds. §8 needs either that intrinsic or an explicit statement that `\u{…}` decoding stays a compiler builtin.
 - **Reading a value out of storage has no syntax.** `$decl y n` aliases (§5.4, and §12 says so outright), so snapshotting the contents of a cell into an immutable binding means passing it through something that expects a value. The prelude defines `ival`/`sval` identity functions for this, and stage 1's lexer needs them on almost every line that touches the cursor. §11 might want a `$copy`-style form, or §8 a blessed library identity.
 
-- Whether stage 1's C backend lowers tail calls to loops, to a trampoline, or to clang `musttail`. Mandatory TCE is the one guarantee C does not hand over for free.
 - Whether stage 1 emits one C file or one per morphl file (affects `$import` load-once semantics at the C level, not in the language).
 - Whether to keep monomorphic root-block names permanently or shim them (§2, *Migration*).
