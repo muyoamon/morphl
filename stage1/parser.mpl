@@ -44,7 +44,7 @@ $decl diags $specialize P.list proto_diag
 $decl n_int   $func ($decl v 0,     $decl l 0, $decl c 0) { $prop tag "int"   $decl line l  $decl col c  $decl value v }
 $decl n_float $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "float" $decl line l  $decl col c  $decl text t }
 $decl n_str   $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "str"   $decl line l  $decl col c  $decl text t }
-$decl n_bool  $func ($decl v true,  $decl l 0, $decl c 0) { $prop tag "bool"  $decl line l  $decl col c  $decl value v }
+$decl n_bool  $func ($decl v P.boolean, $decl l 0, $decl c 0) { $prop tag "bool"  $decl line l  $decl col c  $decl value v }
 $decl n_name  $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "name"  $decl line l  $decl col c  $decl text t }
 $decl n_unit  $func ($decl l 0,     $decl c 0)            { $prop tag "unit"  $decl line l  $decl col c }
 $decl n_err   $func ($decl m "",    $decl l 0, $decl c 0) { $prop tag "error" $decl line l  $decl col c  $decl msg m }
@@ -108,7 +108,10 @@ $decl proto_kw $call kw_entry ("", 0, "", "", "")
 $decl kws $specialize P.list proto_kw
 $decl no_kw $call kw_entry ("", -1, "", "", "")
 
-$decl kw_table $mut $new kws.nil
+// `kws.node` rather than `kws.nil`: `$new` takes the type of its operand
+// (§4.2), so initialising from `nil` would give storage that only a `nil`
+// fits into. §4.8a is exactly the way to name the union without branching.
+$decl kw_table $mut $new kws.node
 
 $decl add_kw $func ($decl n "", $decl a 0, $decl k1 "", $decl k2 "", $decl k3 "")
   $set kw_table ($call kws.cons ($call kw_entry (n, a, k1, k2, k3), kw_table))
@@ -150,25 +153,32 @@ $decl lookup_kw $func ($decl n "") $call find_kw (kw_table, n)
 
 $decl parser $func ($decl ts L.toks.node)
   { $decl rest $mut $new ts
-    $decl errs $mut $new diags.nil }
+    $decl errs $mut $new diags.node }
 
 $decl proto_parser $call parser (L.toks.nil)
 $decl eof_token $call L.token ("eof", "", 0, 0, 0)
 
-// Written with `is_nil` rather than `$match`: the scrutinee would be
-// `ps.rest`, which is storage, and there is no way to name a catch-all pattern
-// for it — `$decl` would preserve the reference (§5.4) and the pattern would
-// test `&list` against `list`.
+// The list is read out of storage first so that it can be `$match`ed: only
+// `$match` narrows (§4.7), and a bare `$if` would leave the union un-narrowed
+// with nothing to project. Binding it also gives the catch-all a name.
 $decl peek $func ($decl ps proto_parser)
-  $if ($call L.toks.is_nil (ps.rest)) eof_token ps.rest.head
+  { $decl rest $call L.toks.val (ps.rest)
+    $decl out $match rest (
+        $case {$prop tag "cons"} rest.head,
+        $case rest eof_token
+      ) }.out
 
 $decl at_kind $func ($decl ps proto_parser, $decl k "")
   $call eq_str (($call peek (ps)).kind, k)
 
 // Never advances past `eof`, so `peek` is always answerable.
 $decl bump $func ($decl ps proto_parser)
-  { $decl t $call peek (ps)
-    $decl moved $if ($call eq_str (t.kind, "eof")) () ($set ps.rest ps.rest.tail)
+  { $decl t    $call peek (ps)
+    $decl rest $call L.toks.val (ps.rest)
+    $decl moved $match rest (
+        $case {$prop tag "cons"} $if ($call eq_str (t.kind, "eof")) () ($set ps.rest rest.tail),
+        $case rest ()
+      )
     $decl out t }.out
 
 $decl note_at $func ($decl ps proto_parser, $decl m "", $decl l 0, $decl c 0)

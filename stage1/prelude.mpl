@@ -51,6 +51,10 @@ $decl list $template T {
 
   $prop cons $func ($decl h T, $decl t node) { $prop tag "cons"  $decl head h  $decl tail t }
 
+  // Reading a list out of storage, for the same reason `ival`/`sval` exist:
+  // §5.4 makes a reference transparent only where a value is expected.
+  $prop val $func ($decl xs node) xs
+
   $prop is_nil $func ($decl xs node) $match xs (
     $case {$prop tag "cons"} false,
     $case xs true

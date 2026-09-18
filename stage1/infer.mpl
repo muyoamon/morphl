@@ -85,6 +85,17 @@ $decl fwd_ent $func ($decl n "", $decl i 0) { $decl name n  $decl id i }
 $decl proto_fwd $call fwd_ent ("", 0)
 $decl fwd_list $specialize P.list proto_fwd
 
+// §5.5: "The resulting constraint (e.g. `R <: Int`) is checked after the knot
+// is tied; failure is reported at the recursive call." A check against a type
+// that still mentions an unresolved placeholder is parked here and re-run once
+// the system is solved. `line`/`col` come first so this carries a span (§5.1).
+$decl def_ent $func ($decl l 0, $decl c 0, $decl m "", $decl a T.proto_ty, $decl b T.proto_ty)
+  { $decl line l  $decl col c  $decl msg m  $decl sub a  $decl sup b }
+$decl proto_def $call def_ent (0, 0, "", T.t_bot, T.t_bot)
+$decl def_list $specialize P.list proto_def
+
+$decl ints $specialize P.list 0
+
 // One equation of the system: this placeholder resolves to this type.
 $decl res_ent $func ($decl i 0, $decl t T.proto_ty) { $decl id i  $decl ty t }
 $decl proto_res $call res_ent (0, T.t_bot)
@@ -103,6 +114,7 @@ $decl ctx $func ()
     $decl tmpls  $mut $new tmpl_list.nil
     $decl memo   $mut $new memo_list.nil
     $decl mods   $mut $new mod_list.nil
+    $decl defer  $mut $new def_list.nil
     // Where `$import` resolves from. §4.14 makes import names logical and hands
     // resolution to the build program; this is the stage-1 stand-in.
     $decl base   $mut $new "" }
@@ -115,6 +127,7 @@ $decl eval_memo  $func ($decl x memo_list.node) x
 $decl eval_mods  $func ($decl x mod_list.node) x
 $decl eval_fwds  $func ($decl x fwd_list.node) x
 $decl eval_res   $func ($decl x res_list.node) x
+$decl eval_defer $func ($decl x def_list.node) x
 $decl sval       P.sval
 
 $decl fresh $func ($decl cx proto_ctx)
@@ -174,6 +187,41 @@ $decl occurs $func ($decl t T.proto_ty, $decl i 0) $match t (
   $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
   $case t false
 )
+
+$decl mem_int $func ($decl xs ints.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head, i)) true ($call mem_int (xs.tail, i)),
+  $case xs false
+)
+
+$fwd hfv
+
+$decl hfv_tys $func ($decl xs T.tys.node, $decl bs ints.node) $match xs (
+  $case {$prop tag "cons"} $if ($call hfv (xs.head, bs)) true ($call hfv_tys (xs.tail, bs)),
+  $case xs false
+)
+
+$decl hfv_fields $func ($decl xs T.fields.node, $decl bs ints.node) $match xs (
+  $case {$prop tag "cons"} $if ($call hfv (xs.head.ty, bs)) true ($call hfv_fields (xs.tail, bs)),
+  $case xs false
+)
+
+// Does the type still mention a placeholder that nothing has resolved? A
+// variable bound by an enclosing `rec` is not one — that knot is already tied.
+$decl hfv $func ($decl t T.proto_ty, $decl bs ints.node) $match t (
+  $case {$prop tag "var"}   $call not ($call mem_int (bs, t.id)),
+  $case {$prop tag "rec"}   $call hfv (t.body, $call ints.cons (t.id, bs)),
+  $case {$prop tag "block"} $call hfv_fields (t.fields, bs),
+  $case {$prop tag "group"} $call hfv_tys (t.items, bs),
+  $case {$prop tag "func"}  $if ($call hfv_tys (t.params, bs)) true ($call hfv (t.result, bs)),
+  $case {$prop tag "ref"}   $call hfv (t.inner, bs),
+  $case {$prop tag "array"} $call hfv (t.elem, bs),
+  $case {$prop tag "union"} $call hfv_tys (t.members, bs),
+  $case {$prop tag "inter"} $call hfv_tys (t.members, bs),
+  $case {$prop tag "over"}  $call hfv_tys (t.cands, bs),
+  $case t false
+)
+
+$decl has_free_var $func ($decl t T.proto_ty) $call hfv (t, ints.nil)
 
 $decl close_rec $func ($decl t T.proto_ty, $decl i 0)
   // `μR. A | R` is `A` (see `T.drop_var`), so simplify before deciding whether
@@ -259,19 +307,37 @@ $decl infer_tys $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.n
 )
 
 // §4.6: projection reaches `$decl` fields and props uniformly (§4.10).
+
+$fwd proj_one
+
+$decl proj_members $func ($decl cx proto_ctx, $decl ms T.tys.node, $decl fld "",
+                          $decl n Pa.proto_node, $decl acc T.proto_ty) $match ms (
+  $case {$prop tag "cons"}
+    $call proj_members (cx, ms.tail, fld, n, $call T.join (acc, $call proj_one (cx, ms.head, fld, n))),
+  $case ms acc
+)
+
+$decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "", $decl n Pa.proto_node) $match tt (
+  $case {$prop tag "block"}
+    { $decl f $call T.find_field (tt.fields, fld)
+      $decl r $if ($call not ($call eq_str (f.name, ""))) f.ty
+          { $decl p $call T.find_prop (tt.props, fld)
+            $decl rr $if ($call not ($call eq_str (p.name, ""))) p.ty
+                ($call err (cx, $call concat ("block has no field '",
+                             $call concat (fld, "'")), n)) }.rr }.r,
+  // A union is usable wherever all of its members are (§5.1), so a field that
+  // every member carries is projectable from the union itself — which is the
+  // whole point of every node beginning with the same `line`/`col` prefix.
+  // A member without the field reports on its own behalf.
+  $case {$prop tag "union"} $call proj_members (cx, tt.members, fld, n, T.t_bot),
+  // Projection is the one place a recursive type has to be looked inside.
+  $case {$prop tag "rec"}   $call proj_one (cx, $call T.unroll (tt), fld, n),
+  $case tt ($call err (cx, $call concat ("cannot project '.",
+                $call concat (fld, $call concat ("' from ", $call T.show (tt)))), n))
+)
+
 $decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node)
-  { $decl tt $call deref_ty ($call infer (cx, e, n.target))
-    $decl out $match tt (
-        $case {$prop tag "block"}
-          { $decl f $call T.find_field (tt.fields, n.field)
-            $decl r $if ($call not ($call eq_str (f.name, ""))) f.ty
-                { $decl p $call T.find_prop (tt.props, n.field)
-                  $decl rr $if ($call not ($call eq_str (p.name, ""))) p.ty
-                      ($call err (cx, $call concat ("block has no field '",
-                                   $call concat (n.field, "'")), n)) }.rr }.r,
-        $case tt ($call err (cx, $call concat ("cannot project '.",
-                      $call concat (n.field, $call concat ("' from ", $call T.show (tt)))), n))
-      ) }.out
+  $call proj_one (cx, $call deref_ty ($call infer (cx, e, n.target)), n.field, n)
 
 $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node)
   { $decl tt $call deref_ty ($call infer (cx, e, n.target))
@@ -370,12 +436,20 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
           // §5.4: a parameter whose type is a reference wants storage; any
           // other parameter wants a value, so the argument dereferences.
           $decl at $if ($call is_ref (ps.head)) raw ($call deref_ty (raw))
+          $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
           $decl out $if ($call T.sub (at, ps.head))
               ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1)))
-              ($do ($call err (cx, $call concat ("argument ", $call concat ($call int_to_str (i),
-                        $call concat (" is ", $call concat ($call T.show (at),
-                        $call concat (", expected ", $call T.show (ps.head)))))), as.head))
-                   false) }.out,
+              // §5.5: a constraint on an unresolved `R` is checked after the
+              // knot is tied, not now — otherwise every call inside a recursive
+              // group would fail against its own placeholder.
+              ($if ($call or ($call has_free_var (at), $call has_free_var (ps.head)))
+                  ($do ($set cx.defer ($call def_list.cons (
+                            $call def_ent (as.head.line, as.head.col, why, at, ps.head),
+                            $call eval_defer (cx.defer))))
+                       ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1))))
+                  ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
+                            $call concat (", expected ", $call T.show (ps.head)))), as.head))
+                       false)) }.out,
       $case ps ($do ($call err (cx, "too many arguments", n)) false)
     ),
   // Fewer arguments than parameters is fine: the defaults fill in (§3.4).
@@ -850,6 +924,27 @@ $decl infer_items $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.nod
   $case items ()
 )
 
+$decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs res_list.node)
+  { $decl a $call subst_all (d.sub, rs)
+    $decl b $call subst_all (d.sup, rs)
+    $decl out $if ($call or ($call has_free_var (a), $call has_free_var (b)))
+        // Still unresolved: it belongs to an enclosing knot, so hand it on.
+        ($set cx.defer ($call def_list.cons ($call def_ent (d.line, d.col, d.msg, a, b),
+                                             $call eval_defer (cx.defer))))
+        ($if ($call T.sub (a, b)) T.t_unit
+             ($call err (cx, $call concat (d.msg, $call concat ($call T.show (a),
+                  $call concat (", expected ", $call T.show (b)))), d))) }.out
+
+$decl recheck_list $func ($decl cx proto_ctx, $decl ds def_list.node, $decl rs res_list.node) $match ds (
+  $case {$prop tag "cons"} $do ($call recheck_one (cx, ds.head, rs)) ($call recheck_list (cx, ds.tail, rs)),
+  $case ds ()
+)
+
+$decl recheck_defers $func ($decl cx proto_ctx, $decl rs res_list.node)
+  { $decl ds      $call eval_defer (cx.defer)
+    $decl cleared $set cx.defer def_list.nil
+    $decl out     $call recheck_list (cx, ds, rs) }.out
+
 // §3.3: a block's type is the ordered list of its `$decl` slots plus its props.
 $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.nodes.node)
   { $decl pe0    $call prebind_props (cx, items, e0)
@@ -866,6 +961,7 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
     $decl solved $call solve (eqns, $call res_list.length (eqns, 0))
     $decl flds   $call apply_res_fields ($call T.fields.reverse ($call eval_flds (s.flds), T.fields.nil),
                                          solved, T.fields.nil)
+    $decl late   $call recheck_defers (cx, solved)
     $decl out    $call T.t_block (flds, $call eval_prps (s.prps)) }.out
 
 // ------------------------------------------------------------------ dispatch
