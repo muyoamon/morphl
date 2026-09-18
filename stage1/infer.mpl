@@ -72,6 +72,14 @@ $decl memo_ent $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty t 
 $decl proto_memo $call memo_ent ("", T.t_bot)
 $decl memo_list $specialize P.list proto_memo
 
+// §4.14: "**Loaded once.** All imports of the same resolved file yield the same
+// block", and "**Cycles are an error.**" `state` is "loading" while a module is
+// being typed, which is what turns a cycle into a diagnostic instead of a hang.
+$decl mod_ent $func ($decl k "", $decl st "", $decl t T.proto_ty)
+  { $decl key k  $decl state st  $decl ty t }
+$decl proto_mod $call mod_ent ("", "", T.t_bot)
+$decl mod_list $specialize P.list proto_mod
+
 // -------------------------------------------------------------------- context
 
 $decl ctx $func ()
@@ -83,13 +91,19 @@ $decl ctx $func ()
     // reported once — by the pass that has the resolved types.
     $decl quiet  $mut $new false
     $decl tmpls  $mut $new tmpl_list.nil
-    $decl memo   $mut $new memo_list.nil }
+    $decl memo   $mut $new memo_list.nil
+    $decl mods   $mut $new mod_list.nil
+    // Where `$import` resolves from. §4.14 makes import names logical and hands
+    // resolution to the build program; this is the stage-1 stand-in.
+    $decl base   $mut $new "" }
 
 $decl proto_ctx $call ctx ()
 
 $decl eval_diags $func ($decl x Pa.diags.node) x
 $decl eval_tmpls $func ($decl x tmpl_list.node) x
 $decl eval_memo  $func ($decl x memo_list.node) x
+$decl eval_mods  $func ($decl x mod_list.node) x
+$decl sval       P.sval
 
 $decl fresh $func ($decl cx proto_ctx)
   { $decl i       $call ival (cx.next)
@@ -176,6 +190,51 @@ $decl group_items $func ($decl n Pa.proto_node) $match n (
   $case {$prop tag "group"} n.items,
   $case n ($call Pa.nodes.cons (n, Pa.nodes.nil))
 )
+
+// ------------------------------------------------------- the typed root block
+//
+// BOOTSTRAP.md §2's monomorphic root block, with types. §8 defines the numeric
+// intrinsics as `$overload` sets; dropping float arithmetic is what lets each
+// of these be a single function type.
+
+$decl ii_i $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int)
+$decl ii_b $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_bool)
+$decl ss_b $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)), T.t_bool)
+$decl ss_s $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)), T.t_str)
+$decl i_i  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_int)
+$decl s_i  $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_int)
+$decl i_s  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_str)
+$decl si_i $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int)
+$decl sii_s $call T.t_func ($call T.tys.cons (T.t_str,
+                            $call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil))), T.t_str)
+$decl s_u  $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_unit)
+$decl s_bot $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_bot)
+
+// §4.15's shapes, and the `option` that §8 requires failing operations to use.
+$decl t_none $call T.tag_block ("tag", "none")
+$decl t_err  $call T.tag_block ("tag", "err")
+
+$decl some_of $func ($decl t T.proto_ty)
+  $call T.t_block ($call T.f1 ("v", t), $call T.p1 ("tag", $call T.cv_str ("some")))
+
+$decl opt_int $call T.union2 (t_none, $call some_of (T.t_int))
+$decl opt_str $call T.union2 (t_none, $call some_of (T.t_str))
+
+$decl root_env
+  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
+  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
+  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
+  $call bind ($call bind ($call bind ($call bind (env.nil,
+    "add", ii_i), "sub", ii_i), "mul", ii_i), "div", ii_i), "mod", ii_i), "neg", i_i),
+    "lt", ii_b), "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "len", s_i),
+    "slice", sii_s), "byte", si_i), "int_to_str", i_s),
+    "str_to_int", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_int)),
+    "from_code", $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), opt_str)),
+    "panic", s_bot), "print", s_u),
+    "read_file", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_str)),
+    "write_file", $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
+                                  $call T.union2 (T.t_unit, t_err))),
+    "err", t_err), "none", t_none)
 
 // ------------------------------------------------------------------ the walk
 
@@ -475,6 +534,65 @@ $decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.p
                       $call T.show (tt)), n))
       ) }.out
 
+// -------------------------------------------------------------- $import (§4.14)
+
+$decl resolve_path $func ($decl base "", $decl nm "")
+  $if ($call eq_str (base, "")) ($call concat (nm, ".mpl"))
+      ($call concat (base, $call concat ("/", $call concat (nm, ".mpl"))))
+
+$decl read_module $func ($decl path "")
+  { $decl r $call read_file (path)
+    $decl out $match r (
+        $case {$prop tag "some"} r.v,
+        $case r ""
+      ) }.out
+
+$decl mod_find $func ($decl xs mod_list.node, $decl k "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.key, k)) xs.head ($call mod_find (xs.tail, k)),
+  $case xs ($call mod_ent ("", "", T.t_bot))
+)
+
+$decl note_mod_errs $func ($decl cx proto_ctx, $decl xs Pa.diags.node, $decl path "", $decl n Pa.proto_node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call err (cx, $call concat ("in ", $call concat (path,
+             $call concat (": ", xs.head.msg))), n))
+        ($call note_mod_errs (cx, xs.tail, path, n)),
+  $case xs T.t_bot
+)
+
+$decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node)
+  { $decl marked $set cx.mods
+        ($call mod_list.cons ($call mod_ent (key, "loading", T.t_bot), $call eval_mods (cx.mods)))
+    $decl src $call read_module (key)
+    $decl ty $if ($call eq_str (src, ""))
+        ($call err (cx, $call concat ("cannot read the file for $import \"",
+             $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n))
+        { $decl p $call Pa.parse (src)
+          // A module's own syntax errors are reported against the import site,
+          // tagged with the module's path: the diagnostic type carries a line
+          // and column but not a file.
+          $decl r $if ($call Pa.diags.is_nil (p.errs))
+              // §4.14: "A file sees the root block plus what it imports,
+              // nothing else" — so the module is typed in the root
+              // environment, never in the importer's.
+              ($call infer_block (cx, root_env, p.exprs))
+              ($call note_mod_errs (cx, p.errs, key, n)) }.r
+    $decl done $set cx.mods
+        ($call mod_list.cons ($call mod_ent (key, "done", ty), $call eval_mods (cx.mods)))
+    $decl out ty }.out
+
+// §4.14: "Loads a source file as a block ... the type is that block's type."
+$decl infer_import $func ($decl cx proto_ctx, $decl n Pa.proto_node)
+  { $decl nm  ($call op (n, 0)).text
+    $decl key $call resolve_path ($call sval (cx.base), nm)
+    $decl hit $call mod_find ($call eval_mods (cx.mods), key)
+    $decl out $if ($call eq_str (hit.state, "done")) hit.ty
+             ($if ($call eq_str (hit.state, "loading"))
+                  ($call err (cx, $call concat ("import cycle: \"", $call concat (nm,
+                      "\" is already being loaded; make one module a $template over the other")), n))
+                  ($call load_module (cx, key, nm, n))) }.out
+
 // ------------------------------------------------------------------- blocks
 
 $decl bst $func ($decl e0 env.node)
@@ -638,8 +756,9 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
       ($if ($call eq_str (k, "try"))   ($call infer_try (cx, e, n))
       ($if ($call eq_str (k, "template"))   ($call infer_template (cx, e, n))
       ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
+      ($if ($call eq_str (k, "import"))     ($call infer_import (cx, n))
            ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-      ))))))))))))
+      )))))))))))))
   }.out
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (
@@ -664,63 +783,27 @@ $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) 
   $case n T.t_bot
 )
 
-// ------------------------------------------------------- the typed root block
-//
-// BOOTSTRAP.md §2's monomorphic root block, with types. §8 defines the numeric
-// intrinsics as `$overload` sets; dropping float arithmetic is what lets each
-// of these be a single function type.
-
-$decl ii_i $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int)
-$decl ii_b $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_bool)
-$decl ss_b $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)), T.t_bool)
-$decl ss_s $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)), T.t_str)
-$decl i_i  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_int)
-$decl s_i  $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_int)
-$decl i_s  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_str)
-$decl si_i $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int)
-$decl sii_s $call T.t_func ($call T.tys.cons (T.t_str,
-                            $call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil))), T.t_str)
-$decl s_u  $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_unit)
-$decl s_bot $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_bot)
-
-// §4.15's shapes, and the `option` that §8 requires failing operations to use.
-$decl t_none $call T.tag_block ("tag", "none")
-$decl t_err  $call T.tag_block ("tag", "err")
-
-$decl some_of $func ($decl t T.proto_ty)
-  $call T.t_block ($call T.f1 ("v", t), $call T.p1 ("tag", $call T.cv_str ("some")))
-
-$decl opt_int $call T.union2 (t_none, $call some_of (T.t_int))
-$decl opt_str $call T.union2 (t_none, $call some_of (T.t_str))
-
-$decl root_env
-  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
-  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
-  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
-  $call bind ($call bind ($call bind ($call bind (env.nil,
-    "add", ii_i), "sub", ii_i), "mul", ii_i), "div", ii_i), "mod", ii_i), "neg", i_i),
-    "lt", ii_b), "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "len", s_i),
-    "slice", sii_s), "byte", si_i), "int_to_str", i_s),
-    "str_to_int", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_int)),
-    "from_code", $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), opt_str)),
-    "panic", s_bot), "print", s_u),
-    "read_file", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_str)),
-    "write_file", $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
-                                  $call T.union2 (T.t_unit, t_err))),
-    "err", t_err), "none", t_none)
-
 // ---------------------------------------------------------------------- entry
 
 $decl result $func ($decl t T.proto_ty, $decl ds Pa.diags.node) { $decl ty t  $decl errs ds }
 
 // §3.3: "A source file is a block."
-$decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node)
-  { $decl cx $call ctx ()
-    $decl t  $call infer_block (cx, e0, items)
+$decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base "")
+  { $decl cx     $call ctx ()
+    $decl rooted $set cx.base base
+    $decl t      $call infer_block (cx, e0, items)
     $decl out $call result (t, $call Pa.diags.reverse ($call eval_diags (cx.errs), Pa.diags.nil)) }.out
 
-$decl check_source $func ($decl src "")
+// `base` is the directory `$import` resolves from; it defaults to the working
+// directory so that existing single-file callers are unaffected (§3.4).
+$decl check_source $func ($decl src "", $decl base "")
   { $decl p $call Pa.parse (src)
     $decl out $if ($call Pa.diags.is_nil (p.errs))
-        ($call infer_file (p.exprs, root_env))
+        ($call infer_file (p.exprs, root_env, base))
         ($call result (T.t_bot, p.errs)) }.out
+
+// Imports resolve relative to the entry file, so that a module's imports mean
+// the same thing however the checker was invoked.
+$decl check_file $func ($decl path "")
+  { $decl src $call read_module (path)
+    $decl out $call check_source (src, $call P.dirname (path)) }.out

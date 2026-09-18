@@ -501,10 +501,12 @@ Every program is wrapped in an implicit **root block**, assembled by the build p
 Everything else — `not`, `and`, `or`, `max`, lists, maps, formatting — is library code. Sanity check that the core suffices:
 
 ```
-$decl not $func ($decl b true) $match b ($case true false, $case false true)
+$decl not $func ($decl b $union (true, false)) $match b ($case true false, $case false true)
 ```
 
 infers `Bool -> Bool`.
+
+The `$union` is load-bearing. §3.4 makes a parameter's default *fix* its type and §3.2 makes `true` a tag type of its own, so `$func ($decl b true)` would accept `true` and nothing else. Giving a parameter a union type without a runtime branch is exactly what §4.8a describes `$union` as being for.
 
 ---
 

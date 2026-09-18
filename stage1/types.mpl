@@ -34,13 +34,15 @@ $decl strs $specialize P.list ""
 // Needed for canonical form: props and union members are sorted by name and by
 // rendering respectively. §8 gives `lt` on Int only, so this is bytewise.
 
+// Written without an enclosing block so the recursion stays in tail position
+// (§7.7): a block would cost one stack frame per character, and these compare
+// whole rendered types. The price is reading each byte twice.
 $decl str_lt_at $func ($decl a "", $decl b "", $decl i 0)
   $if ($call not ($call lt (i, $call len (a)))) ($call lt (i, $call len (b)))
   ($if ($call not ($call lt (i, $call len (b)))) false
-  { $decl ca $call byte (a, i)
-    $decl cb $call byte (b, i)
-    $decl out $if ($call lt (ca, cb)) true
-             ($if ($call lt (cb, ca)) false ($call str_lt_at (a, b, $call add (i, 1)))) }.out)
+  ($if ($call lt ($call byte (a, i), $call byte (b, i))) true
+  ($if ($call lt ($call byte (b, i), $call byte (a, i))) false
+       ($call str_lt_at (a, b, $call add (i, 1))))))
 
 $decl str_lt $func ($decl a "", $decl b "") $call str_lt_at (a, b, 0)
 
@@ -199,6 +201,30 @@ $decl show_tys $func ($decl xs tys.node, $decl acc "", $decl first true) $match 
   $case xs acc
 )
 
+// Union and intersection members are a set, so the rendering sorts them — each
+// member rendered once, then the strings ordered. That keeps `show` canonical
+// (it is used as a cache key) without making construction pay for it.
+$decl strs_insert $func ($decl x "", $decl xs strs.node) $match xs (
+  $case {$prop tag "cons"} $if ($call str_lt (x, xs.head))
+      ($call strs.cons (x, xs))
+      ($call strs.cons (xs.head, $call strs_insert (x, xs.tail))),
+  $case xs ($call strs.cons (x, strs.nil))
+)
+
+$decl show_sorted_add $func ($decl xs tys.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} $call show_sorted_add (xs.tail, $call strs_insert ($call show (xs.head), acc)),
+  $case xs acc
+)
+
+$decl join_strs $func ($decl xs strs.node, $decl acc "", $decl first true) $match xs (
+  $case {$prop tag "cons"}
+    $call join_strs (xs.tail, $call concat (acc, $call concat ($if first "" ",", xs.head)), false),
+  $case xs acc
+)
+
+$decl show_set $func ($decl xs tys.node)
+  $call join_strs ($call show_sorted_add (xs, strs.nil), "", true)
+
 $decl show_fields $func ($decl xs fields.node, $decl acc "") $match xs (
   $case {$prop tag "cons"} $call show_fields (xs.tail,
       $call concat (acc, $call concat (xs.head.name,
@@ -232,8 +258,8 @@ $decl show $func ($decl t proto_ty) $match t (
                                  $call concat ("]->", $call show (t.result)))),
   $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual), $call show (t.inner)),
   $case {$prop tag "array"}  $call concat ("[]", $call show (t.elem)),
-  $case {$prop tag "union"}  $call concat ("<", $call concat ($call show_tys (t.members, "", true), ">")),
-  $case {$prop tag "inter"}  $call concat ("^", $call concat ($call show_tys (t.members, "", true), "^")),
+  $case {$prop tag "union"}  $call concat ("<", $call concat ($call show_set (t.members), ">")),
+  $case {$prop tag "inter"}  $call concat ("^", $call concat ($call show_set (t.members), "^")),
   $case {$prop tag "rec"}    $call concat ("mu", $call concat ($call int_to_str (t.id),
                                  $call concat (".", $call show (t.body)))),
   $case {$prop tag "over"}   $call concat ("O<", $call concat ($call show_tys (t.cands, "", true), ">")),
@@ -241,8 +267,102 @@ $decl show $func ($decl t proto_ty) $match t (
   $case t "?"
 )
 
-$decl ty_eq $func ($decl a proto_ty, $decl b proto_ty)
-  $call eq_str ($call show (a), $call show (b))
+// Structural equality, without rendering.
+//
+// `show` allocates a string proportional to the whole type, and equality is the
+// hottest operation in the checker — every subtype check starts with it. This
+// walks the two types together instead and stops at the first difference, so a
+// mismatch costs almost nothing and nothing is allocated. Props are compared in
+// order because `t_block` sorts them at construction.
+
+$fwd same
+
+$decl same_tys $func ($decl xs tys.node, $decl ys tys.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call same (xs.head, ys.head)) ($call same_tys (xs.tail, ys.tail)) false,
+      $case ys false
+    ),
+  $case xs ($call tys.is_nil (ys))
+)
+
+$decl same_fields $func ($decl xs fields.node, $decl ys fields.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (xs.head.name, ys.head.name))
+            ($if ($call same (xs.head.ty, ys.head.ty)) ($call same_fields (xs.tail, ys.tail)) false)
+            false,
+      $case ys false
+    ),
+  $case xs ($call fields.is_nil (ys))
+)
+
+$decl same_props $func ($decl xs props.node, $decl ys props.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (xs.head.name, ys.head.name))
+            ($if ($call cv_eq (xs.head.value, ys.head.value)) ($call same_props (xs.tail, ys.tail)) false)
+            false,
+      $case ys false
+    ),
+  $case xs ($call props.is_nil (ys))
+)
+
+$decl mem_ty $func ($decl xs tys.node, $decl t proto_ty) $match xs (
+  $case {$prop tag "cons"} $if ($call same (xs.head, t)) true ($call mem_ty (xs.tail, t)),
+  $case xs false
+)
+
+$decl subset_tys $func ($decl xs tys.node, $decl ys tys.node) $match xs (
+  $case {$prop tag "cons"} $if ($call mem_ty (ys, xs.head)) ($call subset_tys (xs.tail, ys)) false,
+  $case xs true
+)
+
+$decl same_set $func ($decl xs tys.node, $decl ys tys.node)
+  $if ($call eq_int ($call tys.length (xs, 0), $call tys.length (ys, 0)))
+      ($call subset_tys (xs, ys)) false
+
+$decl same $func ($decl a proto_ty, $decl b proto_ty) $match a (
+  $case {$prop tag "var"} $match b ($case {$prop tag "var"} $call eq_int (a.id, b.id), $case b false),
+  $case {$prop tag "block"} $match b (
+      $case {$prop tag "block"}
+        $if ($call same_fields (a.fields, b.fields)) ($call same_props (a.props, b.props)) false,
+      $case b false
+    ),
+  $case {$prop tag "group"} $match b (
+      $case {$prop tag "group"} $call same_tys (a.items, b.items), $case b false),
+  $case {$prop tag "func"} $match b (
+      $case {$prop tag "func"}
+        $if ($call same_tys (a.params, b.params)) ($call same (a.result, b.result)) false,
+      $case b false
+    ),
+  $case {$prop tag "ref"} $match b (
+      $case {$prop tag "ref"}
+        $if ($call eq_str (a.qual, b.qual)) ($call same (a.inner, b.inner)) false,
+      $case b false
+    ),
+  $case {$prop tag "array"} $match b (
+      $case {$prop tag "array"} $call same (a.elem, b.elem), $case b false),
+  // §3.6 makes these *sets*, so membership decides equality, not order. That is
+  // what lets construction skip sorting entirely.
+  $case {$prop tag "union"} $match b (
+      $case {$prop tag "union"} $call same_set (a.members, b.members), $case b false),
+  $case {$prop tag "inter"} $match b (
+      $case {$prop tag "inter"} $call same_set (a.members, b.members), $case b false),
+  $case {$prop tag "rec"} $match b (
+      $case {$prop tag "rec"}
+        $if ($call eq_int (a.id, b.id)) ($call same (a.body, b.body)) false,
+      $case b false
+    ),
+  $case {$prop tag "over"} $match b (
+      $case {$prop tag "over"} $call same_tys (a.cands, b.cands), $case b false),
+  $case {$prop tag "tmpl"} $match b (
+      $case {$prop tag "tmpl"} $call eq_int (a.id, b.id), $case b false),
+  // The leaf types carry nothing, so equal renderings mean equal types.
+  $case a ($call eq_str ($call show (a), $call show (b)))
+)
+
+$decl ty_eq $func ($decl a proto_ty, $decl b proto_ty) $call same (a, b)
 
 // ------------------------------------------------- unions and intersections
 //
@@ -250,14 +370,13 @@ $decl ty_eq $func ($decl a proto_ty, $decl b proto_ty)
 // duplicates, in a fixed order. Normalising here rather than at comparison
 // time is what lets `ty_eq` be a string comparison.
 
-$decl tys_insert $func ($decl t proto_ty, $decl xs tys.node) $match xs (
-  $case {$prop tag "cons"}
-    $if ($call ty_eq (t, xs.head)) xs
-    ($if ($call str_lt ($call show (t), $call show (xs.head)))
-         ($call tys.cons (t, xs))
-         ($call tys.cons (xs.head, $call tys_insert (t, xs.tail)))),
-  $case xs ($call tys.cons (t, tys.nil))
-)
+// Adding a member deduplicates but does not sort. Sorting here meant rendering
+// every member on every insertion — quadratic in the number of members and
+// linear in the size of each, which is what made checking a file full of
+// recursive types run out of memory. Canonical *order* is only needed when a
+// type is rendered, so `show` sorts instead.
+$decl tys_insert $func ($decl t proto_ty, $decl xs tys.node)
+  $if ($call mem_ty (xs, t)) xs ($call tys.cons (t, xs))
 
 $fwd union_add
 
@@ -498,13 +617,23 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl seen strs.node) 
     )
 )
 
+$decl is_rec $func ($decl t proto_ty) $match t (
+  $case {$prop tag "rec"} true,
+  $case t false
+)
+
+// The assumption set only matters where a goal can recur, which is only under a
+// recursive type. Rendering both sides to build a key on *every* subtype check
+// was the checker's dominant cost — the strings are proportional to the whole
+// type and nothing is ever freed (BOOTSTRAP.md §3) — so the key is built only
+// when one side is a `rec`.
 $decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl seen strs.node)
-  { $decl sa  $call show (a)
-    $decl sb  $call show (b)
-    $decl key $call concat (sa, $call concat (" <: ", sb))
-    $decl out $if ($call eq_str (sa, sb)) true
-             ($if ($call mem_str (seen, key)) true
-                  ($call sub_step (a, b, $call strs.cons (key, seen)))) }.out
+  $if ($call same (a, b)) true
+  ($if ($call or ($call is_rec (a), $call is_rec (b)))
+      { $decl key $call concat ($call show (a), $call concat (" <: ", $call show (b)))
+        $decl out $if ($call mem_str (seen, key)) true
+                      ($call sub_step (a, b, $call strs.cons (key, seen))) }.out
+      ($call sub_step (a, b, seen)))
 
 $decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, strs.nil)
 
@@ -551,16 +680,32 @@ $decl keep_covered $func ($decl xs tys.node, $decl pat proto_ty, $decl acc tys.n
   $case xs acc
 )
 
-$decl restrict $func ($decl t proto_ty, $decl pat proto_ty)
-  { $decl u $call unroll (t)
-    $decl out $match u (
-        $case {$prop tag "union"}
-          { $decl kept $call keep_covered (u.members, pat, tys.nil)
-            // No member selected: fall back to the general meet, which reports
-            // the mismatch honestly rather than inventing a member.
-            $decl r $if ($call tys.is_nil (kept)) ($call meet (t, pat)) ($call t_union (kept)) }.r,
-        $case u ($call meet (t, pat))
-      ) }.out
+// Substitute the recursion back into just the members that survived.
+$decl subst_kept $func ($decl xs tys.node, $decl i 0, $decl r proto_ty, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call subst_kept (xs.tail, i, r, $call tys.cons ($call subst (xs.head, i, r), acc)),
+  $case xs acc
+)
+
+$decl restrict $func ($decl t proto_ty, $decl pat proto_ty) $match t (
+  // Selecting does not need the type unrolled. A pattern is a tag block, and
+  // §5.1 compares a block's *props* — which every member carries as it stands.
+  // Unrolling first would rebuild the whole type on every `$match` arm, which
+  // is quadratic in a checker that matches on a recursive type constantly.
+  $case {$prop tag "rec"}
+    { $decl bd t.body
+      $decl out $match bd (
+          $case {$prop tag "union"}
+            { $decl kept $call keep_covered (bd.members, pat, tys.nil)
+              $decl r $if ($call tys.is_nil (kept)) ($call meet ($call unroll (t), pat))
+                          ($call t_union ($call subst_kept (kept, t.id, t, tys.nil))) }.r,
+          $case bd ($call meet ($call unroll (t), pat))
+        ) }.out,
+  $case {$prop tag "union"}
+    { $decl kept $call keep_covered (t.members, pat, tys.nil)
+      $decl r $if ($call tys.is_nil (kept)) ($call meet (t, pat)) ($call t_union (kept)) }.r,
+  $case t ($call meet (t, pat))
+)
 
 // `μR. A | R` is `A`.
 //

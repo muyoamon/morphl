@@ -56,6 +56,12 @@ $decl n_err   $func ($decl m "",    $decl l 0, $decl c 0) { $prop tag "error" $d
 // `nodes` — all declared *below* this point. That is §5.5's knot doing exactly
 // the job it exists for: a recursive type, named before its parts exist, with
 // no forward declaration and no hoisting.
+// The aggregate shapes are written out rather than named through their
+// constructors. §5.7 lets a type-only position reference a declaration that is
+// *in progress* — which `proto_node` is, inside its own `$union` — but not one
+// that has not started, and the constructors below have not. Naming them here
+// would be the forward reference §4.11 forbids; it only appeared to work
+// because a type-only position is never evaluated.
 $decl proto_node $union (
   $call n_int   (0, 0, 0),
   $call n_float ("", 0, 0),
@@ -64,11 +70,11 @@ $decl proto_node $union (
   $call n_name  ("", 0, 0),
   $call n_unit  (0, 0),
   $call n_err   ("", 0, 0),
-  $call n_group (nodes.nil, 0, 0),
-  $call n_block (nodes.nil, 0, 0),
-  $call n_projn (proto_node, "", 0, 0),
-  $call n_proji (proto_node, 0, 0, 0),
-  $call n_form  ("", nodes.nil, 0, 0)
+  { $prop tag "group"      $decl line 0  $decl col 0  $decl items ($specialize P.list proto_node).node },
+  { $prop tag "block"      $decl line 0  $decl col 0  $decl items ($specialize P.list proto_node).node },
+  { $prop tag "proj_name"  $decl line 0  $decl col 0  $decl target proto_node  $decl field "" },
+  { $prop tag "proj_index" $decl line 0  $decl col 0  $decl target proto_node  $decl index 0 },
+  { $prop tag "form"       $decl line 0  $decl col 0  $decl keyword ""  $decl operands ($specialize P.list proto_node).node }
 )
 
 $decl nodes $specialize P.list proto_node

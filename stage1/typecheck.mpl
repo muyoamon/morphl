@@ -8,8 +8,7 @@ $decl argv $call args ()
 $decl path $if ($call lt (0, $call alen (argv))) ($call at (argv, 0))
     ($do ($call nl ("usage: morphlc --run stage1/typecheck.mpl <file.mpl>")) ($call panic ("no input")))
 
-$decl load $func ($decl p "") { $decl c $try ($call read_file (p)) none  $decl out c.v }.out
-$decl r $call I.check_source ($call load (path))
+$decl r $call I.check_file (path)
 
 $decl show_errs $func ($decl xs Pa.diags.node, $decl p "") $match xs (
   $case {$prop tag "cons"}

@@ -6,16 +6,25 @@
 // first, values read out of storage explicitly, and tail position preserved
 // wherever a function recurses.
 
-// §8's sanity check that the core suffices, verbatim.
-$decl not $func ($decl b true) $match b ($case true false, $case false true)
+// An example of `Bool`, for parameters that accept either tag.
+//
+// §3.4 makes a default *fix* its parameter's type and §3.2 makes `true` its own
+// nullary tag type, so `$func ($decl b true)` accepts `true` and nothing else.
+// §4.8a: `$union` "is the way to give a name, parameter, or bound a union type
+// without a runtime branch" — and it evaluates to its first member, so the
+// default value is still `true`.
+$decl boolean $union (true, false)
+
+// §8's sanity check that the core suffices.
+$decl not $func ($decl b boolean) $match b ($case true false, $case false true)
 
 // **Strict, not short-circuiting.** Evaluation is left to right and arguments
 // are always evaluated (§7.1), so `$call and (p, q)` evaluates `q` even when
 // `p` is false. A guard whose second operand is only safe when the first holds
 // must use nested `$if` instead. The lexer avoids the problem by making `peek`
 // return -1 past the end rather than panicking.
-$decl and $func ($decl a true, $decl b true) $if a b false
-$decl or  $func ($decl a true, $decl b true) $if a true b
+$decl and $func ($decl a boolean, $decl b boolean) $if a b false
+$decl or  $func ($decl a boolean, $decl b boolean) $if a true b
 
 // Read a value *out of* storage.
 //
@@ -74,3 +83,15 @@ $decl list $template T {
 // payoff of the prefix rule in this codebase.
 $decl proto_span { $decl line 0  $decl col 0 }
 $decl span_of $func ($decl x proto_span) { $decl line x.line  $decl col x.col }
+
+// Path helpers, for resolving `$import` (§4.14).
+$decl c_slash $call byte ("/", 0)
+
+$decl last_slash $func ($decl p "", $decl i 0, $decl best -1)
+  $if ($call not ($call lt (i, $call len (p)))) best
+      ($call last_slash (p, $call add (i, 1),
+          $if ($call eq_int ($call byte (p, i), c_slash)) i best))
+
+$decl dirname $func ($decl p "")
+  { $decl i $call last_slash (p, 0, -1)
+    $decl out $if ($call lt (i, 0)) "" ($call slice (p, 0, i)) }.out

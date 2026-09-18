@@ -59,8 +59,10 @@ const max_stack_bytes = 4 * 1024 * 1024;
 const max_specialize_depth = 64;
 
 /// Bound on structural pattern comparison, since `$new` cells can alias
-/// cyclically.
-const max_shape_depth = 32;
+/// cyclically. Real inferred types nest deeply — a μ-recursive list type
+/// reaches well past 32 — so this is generous; the identity short-circuit in
+/// `shapeMatches` is what keeps the common case cheap regardless.
+const max_shape_depth = 256;
 
 pub const Interp = struct {
     arena: Allocator,
@@ -717,6 +719,16 @@ pub const Interp = struct {
     /// exactly, elementwise on groups.
     fn shapeMatches(pat: Value, val: Value, depth: u32) bool {
         if (depth == 0) return false;
+        // §4.7's catch-all arm — `$match x ($case x …)` — tests a value against
+        // itself. Recognising that by identity makes it O(1) and, more
+        // importantly, independent of how deeply the value nests.
+        switch (pat) {
+            .block => |p| if (val == .block and val.block == p) return true,
+            .group => |p| if (val == .group and val.group.ptr == p.ptr and val.group.len == p.len) return true,
+            .ref => |p| if (val == .ref and val.ref == p) return true,
+            .array => |p| if (val == .array and val.array == p) return true,
+            else => {},
+        }
         return switch (pat) {
             .unit => val == .unit,
             .int => val == .int,
