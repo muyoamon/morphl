@@ -39,6 +39,10 @@ pub const Diagnostic = struct {
     /// Owned by the `Diagnostics` that produced it, unless `msg_static`.
     msg: []const u8,
     msg_static: bool = false,
+    /// Which file the span belongs to. `null` means the compilation's main
+    /// input; `$import` (§4.14) sets it while a module is being evaluated, so
+    /// an error inside a module names the module.
+    file: ?[]const u8 = null,
 };
 
 /// A growable list of errors. Stages report into this and keep going where they
@@ -46,6 +50,8 @@ pub const Diagnostic = struct {
 pub const Diagnostics = struct {
     gpa: Allocator,
     items: std.ArrayList(Diagnostic) = .empty,
+    /// Stamped onto new diagnostics. Set while evaluating an imported module.
+    current_file: ?[]const u8 = null,
 
     pub fn init(gpa: Allocator) Diagnostics {
         return .{ .gpa = gpa };
@@ -71,10 +77,15 @@ pub const Diagnostics = struct {
                 .span = span,
                 .msg = "out of memory while formatting this diagnostic",
                 .msg_static = true,
+                .file = self.current_file,
             }) catch {};
             return;
         };
-        self.items.append(self.gpa, .{ .span = span, .msg = msg }) catch {
+        self.items.append(self.gpa, .{
+            .span = span,
+            .msg = msg,
+            .file = self.current_file,
+        }) catch {
             self.gpa.free(msg);
         };
     }
@@ -92,9 +103,12 @@ pub const Diagnostics = struct {
         }.lessThan);
     }
 
-    /// Render as `path:line:col: error: message`, one per line.
-    pub fn render(self: *const Diagnostics, w: *std.Io.Writer, path: []const u8) !void {
+    /// Render as `path:line:col: error: message`, one per line. `main_path`
+    /// names the compilation's main input, used for diagnostics that carry no
+    /// file of their own.
+    pub fn render(self: *const Diagnostics, w: *std.Io.Writer, main_path: []const u8) !void {
         for (self.items.items) |d| {
+            const path = d.file orelse main_path;
             try w.print("{s}:{d}:{d}: error: {s}\n", .{ path, d.span.line, d.span.col, d.msg });
         }
     }

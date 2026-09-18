@@ -44,6 +44,16 @@ pub fn build(b: *std.Build) void {
     parser.addImport("lexer", lexer);
     parser.addImport("ast", ast);
 
+    const interp = b.addModule("interp", .{
+        .root_source_file = b.path("lib/interp/interp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    interp.addImport("diag", diag);
+    interp.addImport("ast", ast);
+    interp.addImport("lexer", lexer);
+    interp.addImport("parser", parser);
+
     const main_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -54,6 +64,7 @@ pub fn build(b: *std.Build) void {
     main_mod.addImport("lexer", lexer);
     main_mod.addImport("ast", ast);
     main_mod.addImport("parser", parser);
+    main_mod.addImport("interp", interp);
 
     const exe = b.addExecutable(.{
         .name = "morphlc",
@@ -70,7 +81,7 @@ pub fn build(b: *std.Build) void {
     // directly, e.g. `zig test -Mroot=lib/lexer/lexer.zig ...` — but the
     // import wiring makes `zig build test` the path of least friction.
     const test_step = b.step("test", "Run all tests");
-    for ([_]*std.Build.Module{ diag, keyword, lexer, ast, parser, main_mod }) |mod| {
+    for ([_]*std.Build.Module{ diag, keyword, lexer, ast, parser, interp, main_mod }) |mod| {
         const t = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }

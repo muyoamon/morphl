@@ -1,27 +1,65 @@
 //! morphlc — stage 0 driver.
 //!
-//! Today it lexes and parses; the evaluator is BOOTSTRAP.md §5 step 3.
+//! Lexes, parses and evaluates (BOOTSTRAP.md §5 steps 1–3). Stage 0 does no
+//! static type checking at all; see lib/interp/interp.zig.
 //!
 //!   morphlc <file.mpl>            print the parsed AST as S-expressions
 //!   morphlc --tokens <file.mpl>   print the token stream
+//!   morphlc --run <file.mpl>      evaluate the file
 
 const std = @import("std");
 const process = std.process;
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 
 const diag = @import("diag");
 const lexer = @import("lexer");
 const parser = @import("parser");
 const ast = @import("ast");
+const interp = @import("interp");
 
 const max_source_bytes = 64 * 1024 * 1024;
 
 const usage =
-    \\usage: morphlc [--tokens] <file.mpl>
+    \\usage: morphlc [--tokens|--run] <file.mpl>
     \\
     \\  --tokens   print the token stream instead of the AST
+    \\  --run      evaluate the file instead of printing the AST
     \\
 ;
+
+/// Resolves `$import "name"` to `<entry file's directory>/name.mpl`.
+///
+/// §4.14 makes import names logical and hands resolution to the build program
+/// ("search roots and an explicit name→file map"). This is the stage-0
+/// placeholder for that, and it is why the evaluator takes a resolver rather
+/// than opening files itself. Resolving relative to the entry file rather than
+/// the process's working directory is what makes a module's imports mean the
+/// same thing however morphlc was invoked.
+const FileLoader = struct {
+    io: Io,
+    dir: Io.Dir,
+    base: []const u8,
+
+    fn resolve(
+        ctx: *const anyopaque,
+        arena: Allocator,
+        name: []const u8,
+    ) interp.Loader.LoadError!interp.Loader.Resolved {
+        const self: *const FileLoader = @ptrCast(@alignCast(ctx));
+        const path = if (self.base.len == 0)
+            try std.fmt.allocPrint(arena, "{s}.mpl", .{name})
+        else
+            try std.fmt.allocPrint(arena, "{s}/{s}.mpl", .{ self.base, name });
+        const source = self.dir.readFileAlloc(self.io, path, arena, .limited(max_source_bytes)) catch
+            return error.ReadFailed;
+        return .{ .key = path, .source = source };
+    }
+
+    fn loader(self: *const FileLoader) interp.Loader {
+        return .{ .ctx = self, .resolveFn = resolve };
+    }
+};
 
 pub fn main(init: process.Init.Minimal) !void {
     var debug_gpa: std.heap.DebugAllocator(.{}) = .init;
@@ -50,9 +88,12 @@ pub fn main(init: process.Init.Minimal) !void {
     const args = try init.args.toSlice(arena);
     var path: ?[]const u8 = null;
     var dump_tokens = false;
+    var run = false;
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--tokens")) {
             dump_tokens = true;
+        } else if (std.mem.eql(u8, arg, "--run")) {
+            run = true;
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try out.writeAll(usage);
             try out.flush();
@@ -96,7 +137,25 @@ pub fn main(init: process.Init.Minimal) !void {
         }
     } else {
         const parsed = try parser.parseFile(arena, tokens, &diags);
-        if (!diags.any()) try parsed.dump(out);
+        if (run) {
+            if (!diags.any()) {
+                const fl: FileLoader = .{
+                    .io = io,
+                    .dir = Io.Dir.cwd(),
+                    .base = Io.Dir.path.dirname(file_path) orelse "",
+                };
+                var it = try interp.Interp.init(arena, &diags, out, fl.loader());
+                _ = it.runFile(parsed) catch |e| switch (e) {
+                    // Both are already recorded as diagnostics; §7.8 makes a
+                    // panic abort the whole program, with no catch.
+                    error.Halt, error.Panicked => {},
+                    error.TryReturn => unreachable, // runFile turns this into a diagnostic
+                    error.OutOfMemory => return error.OutOfMemory,
+                };
+            }
+        } else if (!diags.any()) {
+            try parsed.dump(out);
+        }
     }
     try out.flush();
 
@@ -139,4 +198,5 @@ test {
     _ = lexer;
     _ = parser;
     _ = ast;
+    _ = interp;
 }

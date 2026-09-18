@@ -69,9 +69,12 @@ Type-only positions (§5.7) hold expressions that are **never evaluated** — on
 1. **Prop-only block literal** — `{$prop tag "call"}`. Test: value carries that prop with that value. This is the workhorse; all AST dispatch uses it.
 2. **A name bound to a prop-only block** — `err`, `none`, or a locally declared tag prop. Same test.
 3. **An `Int` or `Str` literal** — `$case 0`, `$case ""`. Test: value's base type. This is how `Int`-vs-`Str` dispatch is written (§4.7: a literal pattern is its base type, not a singleton).
-4. **A bare name whose type is the scrutinee's full type** — the catch-all (§4.7).
+4. **A `true` or `false` literal** — `$case true`. Test: the **exact tag**, not the base type. This is the one asymmetry with shape 3, and it comes from §3.2: `true` and `false` are distinct nullary tag types, whereas §3.1 gives `Int` and `Str` no singleton literal types at all. Without this shape `$if` could not be sugar for `$match` and §8's `not` would be unwritable, so it is required, not optional.
+5. **A bare name whose type is the scrutinee's full type** — the catch-all (§4.7).
 
 Nothing else. In particular **a pattern may never reference a recursive `$union` name**, because resolving that needs the μR knot of §5.5. Declaring such a union is fine; matching *on* one is not.
+
+Shapes 2 and 5 need no separate mechanism: a name pattern tests the scrutinee against the structural shape of whatever the name is bound to, so when it names the scrutinee it matches by construction, exactly as §4.7 describes.
 
 Consequence for the AST representation: every node is a block with a `$prop tag "…"` discriminator, and all dispatch is shape 1. That is the intended style anyway (§12's tagged-block example).
 
@@ -90,7 +93,7 @@ Stage 0's root block is **not** the root block of §8, and it does not pretend t
 | Arrays | `array at alen` — as §8; `at` returns a base+index handle |
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
-| Platform | `print read_file write_file args` — opaque Zig builtins |
+| Platform | `print read_file write_file args` — opaque Zig builtins. `print` is an evaluator builtin; the other three need the driver's `Io`, so they arrive with it rather than with the evaluator |
 
 **Migration.** Stage-1 source calls these names directly, so nothing in it changes when the real root block arrives: keep a small `boot.mpl` prelude that re-exports `add_int`-style names in terms of real overloaded intrinsics once `$overload` exists. Monomorphic names in stage-1 source are a deliberate, cheap-to-undo commitment.
 
