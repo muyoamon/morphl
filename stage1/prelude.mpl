@@ -65,3 +65,12 @@ $decl list $template T {
     $case xs ($call panic ("nth: index out of range"))
   )
 }
+
+// A span, and a reader for it.
+//
+// §5.1 matches blocks by ordered prefix, and every token and every AST node
+// begins with `line` then `col`, so this one accessor is typed to accept all of
+// them — no per-kind dispatch, and the upcast is free (§7.4). It is the clearest
+// payoff of the prefix rule in this codebase.
+$decl proto_span { $decl line 0  $decl col 0 }
+$decl span_of $func ($decl x proto_span) { $decl line x.line  $decl col x.col }

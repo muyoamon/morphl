@@ -35,14 +35,19 @@ $decl diags $specialize P.list proto_diag
 // ------------------------------------------------------------------ AST nodes
 //
 // Leaf shapes first: the union below needs one of them evaluated.
+//
+// Every node starts with `line` and `col`. §5.1 matches blocks by ordered
+// prefix, so that shared prefix is what makes `{line:Int, col:Int}` a supertype
+// of every node type *and* of the token type — one span accessor, no per-kind
+// dispatch, and the upcast is free (§7.4).
 
-$decl n_int   $func ($decl v 0,     $decl l 0, $decl c 0) { $prop tag "int"   $decl value v  $decl line l  $decl col c }
-$decl n_float $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "float" $decl text t   $decl line l  $decl col c }
-$decl n_str   $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "str"   $decl text t   $decl line l  $decl col c }
-$decl n_bool  $func ($decl v true,  $decl l 0, $decl c 0) { $prop tag "bool"  $decl value v  $decl line l  $decl col c }
-$decl n_name  $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "name"  $decl text t   $decl line l  $decl col c }
-$decl n_unit  $func ($decl l 0,     $decl c 0)            { $prop tag "unit"  $decl line l   $decl col c }
-$decl n_err   $func ($decl m "",    $decl l 0, $decl c 0) { $prop tag "error" $decl msg m    $decl line l  $decl col c }
+$decl n_int   $func ($decl v 0,     $decl l 0, $decl c 0) { $prop tag "int"   $decl line l  $decl col c  $decl value v }
+$decl n_float $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "float" $decl line l  $decl col c  $decl text t }
+$decl n_str   $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "str"   $decl line l  $decl col c  $decl text t }
+$decl n_bool  $func ($decl v true,  $decl l 0, $decl c 0) { $prop tag "bool"  $decl line l  $decl col c  $decl value v }
+$decl n_name  $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "name"  $decl line l  $decl col c  $decl text t }
+$decl n_unit  $func ($decl l 0,     $decl c 0)            { $prop tag "unit"  $decl line l  $decl col c }
+$decl n_err   $func ($decl m "",    $decl l 0, $decl c 0) { $prop tag "error" $decl line l  $decl col c  $decl msg m }
 
 // The node type.
 //
@@ -70,19 +75,19 @@ $decl nodes $specialize P.list proto_node
 
 // Aggregate shapes, now that there is a list of nodes to hold.
 $decl n_group $func ($decl xs nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "group" $decl items xs  $decl line l  $decl col c }
+  { $prop tag "group" $decl line l  $decl col c  $decl items xs }
 
 $decl n_block $func ($decl xs nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "block" $decl items xs  $decl line l  $decl col c }
+  { $prop tag "block" $decl line l  $decl col c  $decl items xs }
 
 $decl n_projn $func ($decl tgt proto_node, $decl f "", $decl l 0, $decl c 0)
-  { $prop tag "proj_name" $decl target tgt  $decl field f  $decl line l  $decl col c }
+  { $prop tag "proj_name" $decl line l  $decl col c  $decl target tgt  $decl field f }
 
 $decl n_proji $func ($decl tgt proto_node, $decl i 0, $decl l 0, $decl c 0)
-  { $prop tag "proj_index" $decl target tgt  $decl index i  $decl line l  $decl col c }
+  { $prop tag "proj_index" $decl line l  $decl col c  $decl target tgt  $decl index i }
 
 $decl n_form $func ($decl kw "", $decl ops nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "form" $decl keyword kw  $decl operands ops  $decl line l  $decl col c }
+  { $prop tag "form" $decl line l  $decl col c  $decl keyword kw  $decl operands ops }
 
 // ------------------------------------------------------- the §2.2 arity table
 //
@@ -162,6 +167,11 @@ $decl bump $func ($decl ps proto_parser)
 
 $decl note_at $func ($decl ps proto_parser, $decl m "", $decl l 0, $decl c 0)
   $set ps.errs ($call diags.cons ($call diag (m, l, c), ps.errs))
+
+// Accepts any node *or* token, because both begin with `line`/`col` and §5.1
+// makes `{line:Int, col:Int}` a prefix supertype of each.
+$decl note_at_span $func ($decl ps proto_parser, $decl m "", $decl x P.proto_span)
+  $call note_at (ps, m, x.line, x.col)
 
 $decl note $func ($decl ps proto_parser, $decl m "")
   { $decl t $call peek (ps)
@@ -378,9 +388,9 @@ $decl validate_arm $func ($decl a proto_node, $decl ps proto_parser) $match a (
       // The pattern is a type-only position (§5.7) and is never evaluated, but
       // it is still an expression and can still hide a stray `$case`.
       ($call validate_list (a.operands, ps))
-      ($do ($call note_at (ps, "$match arms must be $case forms", a.line, a.col))
+      ($do ($call note_at_span (ps, "$match arms must be $case forms", a))
            ($call validate (a, ps))),
-  $case a ($call note_at (ps, "$match arms must be $case forms", a.line, a.col))
+  $case a ($call note_at_span (ps, "$match arms must be $case forms", a))
 )
 
 $decl validate_arm_items $func ($decl xs nodes.node, $decl ps proto_parser) $match xs (
@@ -393,7 +403,7 @@ $decl validate_arm_items $func ($decl xs nodes.node, $decl ps proto_parser) $mat
 $decl validate_arms $func ($decl arms proto_node, $decl ps proto_parser) $match arms (
   $case {$prop tag "form"} $call validate_arm (arms, ps),
   $case {$prop tag "group"} $call validate_arm_items (arms.items, ps),
-  $case arms ($call note_at (ps, "$match arms must be a group of $case forms", arms.line, arms.col))
+  $case arms ($call note_at_span (ps, "$match arms must be a group of $case forms", arms))
 )
 
 $decl validate $func ($decl n proto_node, $decl ps proto_parser) $match n (
@@ -402,7 +412,7 @@ $decl validate $func ($decl n proto_node, $decl ps proto_parser) $match n (
         ($do ($call validate ($call nodes.nth (n.operands, 0), ps))
              ($call validate_arms ($call nodes.nth (n.operands, 1), ps)))
         ($if ($call eq_str (n.keyword, "case"))
-             ($do ($call note_at (ps, "$case is only valid as an arm of $match", n.line, n.col))
+             ($do ($call note_at_span (ps, "$case is only valid as an arm of $match", n))
                   ($call validate_list (n.operands, ps)))
              ($call validate_list (n.operands, ps))),
   $case {$prop tag "group"}      $call validate_list (n.items, ps),

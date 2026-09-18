@@ -95,6 +95,7 @@ pub fn build(b: *std.Build) void {
         "stage1/lexer_test.mpl",
         "stage1/parser_test.mpl",
         "stage1/types_test.mpl",
+        "stage1/infer_test.mpl",
     }) |suite| {
         const suite_run = b.addRunArtifact(exe);
         suite_run.addArgs(&.{ "--run", suite });

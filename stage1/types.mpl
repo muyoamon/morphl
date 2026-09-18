@@ -115,7 +115,27 @@ $decl proto_ty $union (
 )
 
 $decl field $func ($decl n "", $decl t proto_ty) { $decl name n  $decl ty t }
-$decl prop_entry $func ($decl n "", $decl c proto_cv) { $decl name n  $decl value c }
+
+// The type a compile-time value has. For everything but an opaque value it is
+// determined by the value, which is why a prop's *value* alone is enough for
+// type identity (§4.10, §5.1).
+$decl cv_type $func ($decl c proto_cv) $match c (
+  $case {$prop tag "cint"}  t_int,
+  $case {$prop tag "cstr"}  t_str,
+  $case {$prop tag "cbool"} $if c.v t_true t_false,
+  $case {$prop tag "cunit"} t_unit,
+  // A function- or template-valued prop: the producer supplies the real type.
+  $case c t_bot
+)
+
+// A prop carries both its value and its type: §5.1 compares *values* for
+// subtyping, while §4.6 projection needs the type. `show` renders only the
+// value, since for every non-opaque value the type follows from it.
+$decl prop_typed $func ($decl n "", $decl c proto_cv, $decl t proto_ty)
+  { $decl name n  $decl value c  $decl ty t }
+
+$decl prop_entry $func ($decl n "", $decl c proto_cv)
+  $call prop_typed (n, c, $call cv_type (c))
 
 $decl proto_field $call field ("", proto_ty)
 $decl proto_prop  $call prop_entry ("", cv_unit)
@@ -494,6 +514,24 @@ $decl is_base $func ($decl t proto_ty) $match t (
 
 $decl join $func ($decl a proto_ty, $decl b proto_ty)
   $if ($call sub (a, b)) b ($if ($call sub (b, a)) a ($call union2 (a, b)))
+
+// `T & ¬P`, as far as a union can express it: drop the members `P` covers.
+//
+// §4.15 narrows the value of a failed `$try` this way, and §4.7 narrows a
+// `$match` scrutinee across arms. There is no general complement in the type
+// language — and none is needed, because every use is a union of tag shapes,
+// where removing the covered members *is* the complement.
+$decl remove_covered $func ($decl xs tys.node, $decl pat proto_ty, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call remove_covered (xs.tail, pat,
+        $if ($call sub (xs.head, pat)) acc ($call tys.cons (xs.head, acc))),
+  $case xs acc
+)
+
+$decl minus $func ($decl t proto_ty, $decl pat proto_ty) $match t (
+  $case {$prop tag "union"} $call t_union ($call remove_covered (t.members, pat, tys.nil)),
+  $case t ($if ($call sub (t, pat)) t_bot t)
+)
 
 $decl meet $func ($decl a proto_ty, $decl b proto_ty)
   $if ($call sub (a, b)) a

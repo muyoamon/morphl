@@ -1,0 +1,237 @@
+// Tests for stage 1's inference traversal:
+//
+//   morphlc --run stage1/infer_test.mpl
+//
+// Each expectation is the rendered type of a source fragment, so the whole
+// pipeline — lexer, parser, types, inference — is exercised end to end.
+
+$decl I  $import "infer"
+$decl T  $import "types"
+$decl Pa $import "parser"
+$decl P  $import "prelude"
+
+$decl not P.not
+$decl and P.and
+
+$decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
+
+$decl check $func ($decl name "", $decl ok true)
+  $if ok
+      ($do ($call print ("ok   ")) ($call nl (name)))
+      ($do ($call print ("FAIL ")) ($do ($call nl (name)) ($call panic (name))))
+
+$decl check_str $func ($decl name "", $decl got "", $decl want "")
+  $if ($call eq_str (got, want))
+      ($do ($call print ("ok   ")) ($call nl (name)))
+      ($do ($call print ("FAIL "))
+      ($do ($call nl (name))
+      ($do ($call nl ($call concat ("       want: ", want)))
+      ($do ($call nl ($call concat ("       got:  ", got)))
+           ($call panic (name))))))
+
+// The type of the last `$decl` in a fragment, rendered.
+$decl field_ty $func ($decl src "", $decl nm "")
+  { $decl r $call I.check_source (src)
+    $decl f $call T.find_field (r.ty.fields, nm)
+    $decl out $if ($call eq_str (f.name, "")) "<no such field>" ($call T.show (f.ty)) }.out
+
+$decl errs_of $func ($decl src "")
+  { $decl r $call I.check_source (src)
+    $decl out $if ($call Pa.diags.is_nil (r.errs)) "" r.errs.head.msg }.out
+
+$decl n_errs $func ($decl src "")
+  { $decl r $call I.check_source (src)
+    $decl out $call Pa.diags.length (r.errs, 0) }.out
+
+// ------------------------------------------------------------------- literals
+
+$decl t01 $call check_str ("an integer literal is Int",
+  $call field_ty ("$decl x 1", "x"), "Int")
+$decl t02 $call check_str ("a string literal is Str",
+  $call field_ty ("$decl x \"s\"", "x"), "Str")
+$decl t03 $call check_str ("a float literal is Float",
+  $call field_ty ("$decl x 1.5", "x"), "Float")
+// §3.2: a boolean literal's type is its own tag type, narrower than Bool.
+$decl t04 $call check_str ("true has type true, not Bool",
+  $call field_ty ("$decl x true", "x"), "true")
+$decl t05 $call check_str ("unit", $call field_ty ("$decl x ()", "x"), "()")
+$decl t06 $call check_str ("the empty block is unit too (§2.3)",
+  $call field_ty ("$decl x {}", "x"), "()")
+
+// ---------------------------------------------------------- blocks and groups
+
+$decl t07 $call check_str ("a group is a tuple",
+  $call field_ty ("$decl x (1, \"s\")", "x"), "(Int,Str)")
+// §3.3: a block's type is its ordered `$decl` slots plus its props.
+$decl t08 $call check_str ("a block records its fields in order",
+  $call field_ty ("$decl x { $decl a 1  $decl b \"s\" }", "x"), "{a:Int,b:Str,}")
+$decl t09 $call check_str ("a prop is in the type but takes no slot (§4.10)",
+  $call field_ty ("$decl x { $prop k \"c\"  $decl a 1 }", "x"), "{a:Int,k=s\"c\",}")
+$decl t10 $call check_str ("a trailing expression is discarded (§3.3, §10.1)",
+  $call field_ty ("$decl x { $decl a 1  $call add (a, 1) }", "x"), "{a:Int,}")
+$decl t11 $call check_str ("projection reads a field",
+  $call field_ty ("$decl b { $decl a 1 }  $decl x b.a", "x"), "Int")
+$decl t12 $call check_str ("projection reads a prop too (§4.10)",
+  $call field_ty ("$decl b { $prop p 7 }  $decl x b.p", "x"), "Int")
+$decl t13 $call check_str ("a group index",
+  $call field_ty ("$decl g (1, \"s\")  $decl x g.2", "x"), "Str")
+$decl t14 $call check_str ("a missing field is reported",
+  $call errs_of ("$decl b { $decl a 1 }  $decl x b.zz"), "block has no field 'zz'")
+
+// ------------------------------------------------------------------- storage
+
+// §4.2: `$new` is the only way storage comes into existence.
+$decl t15 $call check_str ("$new gives a reference",
+  $call field_ty ("$decl x $new 0", "x"), "&Int")
+$decl t16 $call check_str ("$mut gives a mutable view",
+  $call field_ty ("$decl x $mut $new 0", "x"), "&mut Int")
+// §4.2: "If `e` is itself a reference, it is dereferenced first."
+$decl t17 $call check_str ("$new of a reference copies rather than nests",
+  $call field_ty ("$decl n $new 0  $decl x $new n", "x"), "&Int")
+$decl t18 $call check_str ("$mut needs storage (§4.3)",
+  $call errs_of ("$decl x $mut 0"), "$mut expects storage, found Int; only $new creates storage")
+// §4.4: `$set` writes through storage and evaluates to the written value.
+$decl t19 $call check_str ("$set yields the written value",
+  $call field_ty ("$decl n $mut $new 0  $decl x $set n 5", "x"), "Int")
+$decl t20 $call check_str ("$set rejects a value field",
+  $call errs_of ("$decl a 0  $decl x $set a 1"), "$set needs storage on the left, found Int")
+$decl t21 $call check_str ("$set checks the written type",
+  $call errs_of ("$decl n $mut $new 0  $decl x $set n \"s\""),
+  "cannot write Str into storage of Int")
+// §5.4: a reference is transparent where a value is expected.
+$decl t22 $call check_str ("storage derefs into a call argument",
+  $call field_ty ("$decl n $mut $new 5  $decl x $call add (n, 1)", "x"), "Int")
+
+// ----------------------------------------------------------------- functions
+
+// §3.4: each parameter's default fixes its type — which is why inference needs
+// no unification variables here.
+$decl t23 $call check_str ("a function type comes from its defaults and body",
+  $call field_ty ("$decl f $func ($decl a 0, $decl b \"\") a", "f"), "[Int,Str]->Int")
+$decl t24 $call check_str ("a nullary function",
+  $call field_ty ("$decl f $func () 1", "f"), "[]->Int")
+$decl t25 $call check_str ("a call yields the result type",
+  $call field_ty ("$decl f $func ($decl a 0) a  $decl x $call f 1", "x"), "Int")
+$decl t26 $call check_str ("an argument is checked against the parameter",
+  $call errs_of ("$decl f $func ($decl a 0) a  $decl x $call f \"s\""),
+  "argument 1 is Str, expected Int")
+$decl t27 $call check_str ("too many arguments is reported",
+  $call errs_of ("$decl f $func ($decl a 0) a  $decl x $call f (1, 2)"), "too many arguments")
+$decl t28 $call check ("fewer arguments is fine: defaults fill in (§3.4)",
+  $call eq_int ($call n_errs ("$decl f $func ($decl a 0, $decl b 0) a  $decl x $call f 1"), 0))
+$decl t29 $call check_str ("calling a non-function is reported",
+  $call errs_of ("$decl x $call 1 2"), "Int is not callable")
+// §5.4: a parameter whose type is a reference wants storage, not a value.
+$decl t30 $call check_str ("a storage parameter keeps the reference",
+  $call field_ty ("$decl f $func ($decl c $mut $new 0) $set c 1  $decl n $mut $new 0  $decl x $call f (n)", "x"),
+  "Int")
+$decl t31 $call check_str ("...and rejects a plain value (§5.4)",
+  $call errs_of ("$decl f $func ($decl c $mut $new 0) $set c 1  $decl x $call f (0)"),
+  "argument 1 is Int, expected &mut Int")
+
+// --------------------------------------------------------------- control flow
+
+$decl t32 $call check_str ("$if joins its arms",
+  $call field_ty ("$decl x $if true 1 \"s\"", "x"), "<Int,Str>")
+$decl t33 $call check_str ("$if with one type does not widen",
+  $call field_ty ("$decl x $if true 1 2", "x"), "Int")
+$decl t34 $call check_str ("the condition must be Bool",
+  $call errs_of ("$decl x $if 1 1 2"), "$if condition must be Bool, found Int")
+$decl t35 $call check ("a Bool-valued call is an acceptable condition",
+  $call eq_int ($call n_errs ("$decl x $if ($call eq_int (1, 1)) 1 2"), 0))
+$decl t36 $call check_str ("$do has the type of its second operand (§4.8b)",
+  $call field_ty ("$decl x $do 1 \"s\"", "x"), "Str")
+
+// §4.8a: the value is the first member, the type is the union of all of them.
+$decl t37 $call check_str ("$union joins every member's type",
+  $call field_ty ("$decl x $union (1, \"s\")", "x"), "<Int,Str>")
+
+// §4.7: arms are joined, and the scrutinee narrows inside each arm.
+$decl t38 $call check_str ("$match joins its arms",
+  $call field_ty ("$decl x $match 1 ($case 0 \"s\", $case x 1)", "x"), "<Int,Str>")
+$decl t39 $call check_str ("the scrutinee narrows inside an arm (§4.7)",
+  $call field_ty (
+    "$decl c { $prop tag \"c\"  $decl r 1 }\n$decl s $union (c, 0)\n$decl x $match s ($case {$prop tag \"c\"} s.r, $case s 0)",
+    "x"),
+  "Int")
+
+// ---------------------------------------------------------- recursion (§5.5)
+
+// "the result is μR. B(R), or simply B if R does not occur."
+// A function whose only result is its own call never returns: §3.6's ⊥.
+$decl t40 $call check_str ("a function that only recurses has result bottom",
+  $call field_ty ("$decl f $func ($decl n 0) $call f (n)", "f"), "[Int]->!")
+$decl t41 $call check_str ("a non-recursive function has no binder",
+  $call field_ty ("$decl f $func ($decl n 0) n", "f"), "[Int]->Int")
+// The list from §5.5's own example, inferred rather than declared.
+$decl t42 $call check_str ("recursive data is inferred, not declared",
+  $call field_ty (
+    "$decl f $func ($decl n 0) $if ($call eq_int (n, 0)) {} { $decl head n  $decl tail $call f ($call sub (n, 1)) }",
+    "f"),
+  "[Int]->mu1.<(),{head:Int,tail:v1,}>")
+
+// §4.10: props are visible throughout their block regardless of order.
+// Asserted through the projection rather than the rendered block, so the test
+// does not pin the fresh-variable counter.
+$decl t43 $call check_str ("a prop may name a later prop",
+  $call field_ty ("$decl b { $prop a c  $prop c 7 }  $decl x b.a", "x"), "Int")
+// §4.10: "not ordered siblings (there is no instance to read them from)."
+$decl t44 $call check_str ("a prop may not name an ordered sibling",
+  $call errs_of ("$decl b { $decl d 1  $prop p d }"), "unknown name 'd'")
+
+// §4.11: the slot's layout position is the `$fwd`, not the `$decl`.
+$decl t45 $call check_str ("$fwd holds the layout position",
+  $call field_ty ("$decl b { $fwd y  $decl a 1  $decl y 2 }", "b"), "{y:Int,a:Int,}")
+
+// ------------------------------------------------------------ errors (§4.15)
+
+// "The enclosing function's inferred return type gains `type(e) & pat` as
+// union members. Error sets are therefore inferred."
+$decl t46 $call check_str ("$try adds to the inferred return type",
+  $call field_ty (
+    "$decl f $func ($decl s \"\") { $decl v $try ($call str_to_int (s)) none  $decl out v.v }.out",
+    "f"),
+  "[Str]-><Int,{tag=s\"none\",}>")
+$decl t47 $call check_str ("a function with no $try is unaffected",
+  $call field_ty ("$decl f $func ($decl s \"\") 1", "f"), "[Str]->Int")
+// §4.15: the target is the *nearest* enclosing `$func`, so error sets do not leak.
+$decl t48 $call check_str ("an inner function's error set stays inside it",
+  $call field_ty (
+    "$decl f $func ($decl s \"\") { $decl g $func ($decl t \"\") { $decl v $try ($call str_to_int (t)) none  $decl o v.v }.o  $decl out 1 }.out",
+    "f"),
+  "[Str]->Int")
+
+// --------------------------------------------------- unknown names and shapes
+
+$decl t49 $call check_str ("an unknown name is reported",
+  $call errs_of ("$decl x nope"), "unknown name 'nope'")
+// A reported error is ⊥, and ⊥ <: everything (§3.6), so it does not cascade.
+$decl t50 $call check ("one mistake yields one diagnostic",
+  $call eq_int ($call n_errs ("$decl x $call add (nope, 1)"), 1))
+
+// ------------------------------------------- the intrinsics have real types
+
+$decl t51 $call check_str ("concat", $call field_ty ("$decl x $call concat (\"a\", \"b\")", "x"), "Str")
+$decl t52 $call check_str ("len", $call field_ty ("$decl x $call len (\"a\")", "x"), "Int")
+$decl t53 $call check_str ("eq_int yields Bool",
+  $call field_ty ("$decl x $call eq_int (1, 2)", "x"), "<false,true>")
+$decl t54 $call check_str ("panic yields bottom (§8)",
+  $call field_ty ("$decl x $call panic (\"boom\")", "x"), "!")
+$decl t55 $call check_str ("str_to_int yields an option (§8)",
+  $call field_ty ("$decl x $call str_to_int (\"1\")", "x"),
+  "<{tag=s\"none\",},{v:Int,tag=s\"some\",}>")
+$decl t56 $call check_str ("an intrinsic's argument is checked",
+  $call errs_of ("$decl x $call len (1)"), "argument 1 is Int, expected Str")
+
+// §10.4: "Recursive return types are inferred, so adding a base case changes
+// the function's type and errors surface at call sites."
+$decl t57 $call check_str ("a prefix supertype is accepted as an argument (§5.1)",
+  $call field_ty (
+    "$decl f $func ($decl p { $decl a 0 }) p.a  $decl x $call f ({ $decl a 1  $decl b 2 })",
+    "x"),
+  "Int")
+$decl t58 $call check_str ("...but a reordered block is not",
+  $call errs_of ("$decl f $func ($decl p { $decl a 0 }) p.a  $decl x $call f ({ $decl b 2  $decl a 1 })"),
+  "argument 1 is {b:Int,a:Int,}, expected {a:Int,}")
+
+$decl done $call nl ("all inference tests passed")

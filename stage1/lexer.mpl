@@ -91,8 +91,11 @@ $decl is_space $func ($decl ch 0)
 
 // -------------------------------------------------------------------- tokens
 
+// `line` and `col` come first so that `{line:Int, col:Int}` is a prefix of the
+// token type — and of every AST node type. Under §5.1's prefix rule that makes
+// one structurally-typed span accessor work for both (see `P.span_of`).
 $decl token $func ($decl k "", $decl t "", $decl n 0, $decl l 0, $decl c 0)
-  { $decl kind k  $decl text t  $decl num n  $decl line l  $decl col c }
+  { $decl line l  $decl col c  $decl kind k  $decl text t  $decl num n }
 
 $decl proto_token $call token ("eof", "", 0, 0, 0)
 $decl toks $specialize P.list proto_token
