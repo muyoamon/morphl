@@ -90,11 +90,13 @@ pub fn build(b: *std.Build) void {
     // their own source by path, so the run has to happen from the build root.
     // Debug is ~9x slower than ReleaseFast here; for real stage-1 work build
     // with `-Doptimize=ReleaseFast`.
-    const stage1_tests = b.addRunArtifact(exe);
-    stage1_tests.addArgs(&.{ "--run", "stage1/lexer_test.mpl" });
-    stage1_tests.setCwd(b.path("."));
-    stage1_tests.expectExitCode(0);
     const stage1_step = b.step("test-stage1", "Run stage 1's morphl tests under stage 0");
-    stage1_step.dependOn(&stage1_tests.step);
-    test_step.dependOn(&stage1_tests.step);
+    for ([_][]const u8{ "stage1/lexer_test.mpl", "stage1/parser_test.mpl" }) |suite| {
+        const suite_run = b.addRunArtifact(exe);
+        suite_run.addArgs(&.{ "--run", suite });
+        suite_run.setCwd(b.path("."));
+        suite_run.expectExitCode(0);
+        stage1_step.dependOn(&suite_run.step);
+        test_step.dependOn(&suite_run.step);
+    }
 }

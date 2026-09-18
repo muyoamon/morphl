@@ -443,7 +443,12 @@ pub const Interp = struct {
         }
 
         const fnc = try self.arena.create(Func);
-        fnc.* = .{ .params = params, .body = &ops[1], .scope = scope };
+        fnc.* = .{
+            .params = params,
+            .body = &ops[1],
+            .scope = scope,
+            .file = self.rt.diags.current_file,
+        };
         return .{ .func = fnc };
     }
 
@@ -502,7 +507,7 @@ pub const Interp = struct {
 
     const Step = union(enum) {
         value: Value,
-        tail: struct { node: *const Node, scope: *Scope },
+        tail: struct { node: *const Node, scope: *Scope, file: ?[]const u8 = null },
     };
 
     /// The trampoline. §7.7 makes tail-call elimination mandatory, so a tail
@@ -516,6 +521,12 @@ pub const Interp = struct {
         }
         self.call_depth += 1;
         defer self.call_depth -= 1;
+
+        // Diagnostics raised inside this call belong to the file the function
+        // was written in, not the one that called it.
+        const caller_file = self.rt.diags.current_file;
+        defer self.rt.diags.current_file = caller_file;
+        self.rt.diags.current_file = f0.file;
 
         var scope = try self.bindParams(f0, args0, span);
         var body = f0.body;
@@ -538,6 +549,8 @@ pub const Interp = struct {
                 .tail => |t| {
                     body = t.node;
                     scope = t.scope;
+                    // A tail call can land in a function from another file.
+                    self.rt.diags.current_file = t.file;
                 },
             }
         }
@@ -549,22 +562,27 @@ pub const Interp = struct {
     /// `eval`, which is exactly why "a call inside a block is never in tail
     /// position" needs no special case: blocks are `eval`'s business.
     fn step(self: *Interp, node: *const Node, scope: *Scope) Error!Step {
+        const cur_file = self.rt.diags.current_file;
         if (node.data == .form) {
             const f = node.data.form;
             const ops = f.operands;
             switch (f.keyword) {
                 .do => {
                     _ = try self.eval(&ops[0], scope);
-                    return .{ .tail = .{ .node = &ops[1], .scope = scope } };
+                    return .{ .tail = .{ .node = &ops[1], .scope = scope, .file = cur_file } };
                 },
-                .@"if" => return .{ .tail = .{ .node = try self.selectIf(node, scope), .scope = scope } },
-                .match => return .{ .tail = .{ .node = try self.selectArm(node, scope), .scope = scope } },
+                .@"if" => return .{ .tail = .{ .node = try self.selectIf(node, scope), .scope = scope, .file = cur_file } },
+                .match => return .{ .tail = .{ .node = try self.selectArm(node, scope), .scope = scope, .file = cur_file } },
                 .call => {
                     const callee = (try self.eval(&ops[0], scope)).deref();
                     const args = try self.evalArgs(&ops[1], scope);
                     if (callee == .func) {
                         const callee_scope = try self.bindParams(callee.func, args, node.span);
-                        return .{ .tail = .{ .node = callee.func.body, .scope = callee_scope } };
+                        return .{ .tail = .{
+                            .node = callee.func.body,
+                            .scope = callee_scope,
+                            .file = callee.func.file,
+                        } };
                     }
                     return .{ .value = try self.callValue(callee, args, node.span) };
                 },

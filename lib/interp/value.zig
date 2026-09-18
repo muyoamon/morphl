@@ -132,6 +132,13 @@ pub const Func = struct {
     /// recursive function reads its own name through the very slot that its
     /// `$decl` fills after the closure is built.
     scope: *Scope,
+    /// The file this `$func` literal was written in.
+    ///
+    /// A span says where, but not in which file, and `$import` (§4.14) means a
+    /// function is routinely *called* from a file other than the one it was
+    /// written in. Without this, an error raised inside an imported function
+    /// gets labelled with the importing file's path.
+    file: ?[]const u8 = null,
 };
 
 pub const Param = struct {

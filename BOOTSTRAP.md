@@ -76,6 +76,11 @@ Nothing else. In particular **a pattern may never reference a recursive `$union`
 
 Shapes 2 and 5 need no separate mechanism: a name pattern tests the scrutinee against the structural shape of whatever the name is bound to, so when it names the scrutinee it matches by construction, exactly as §4.7 describes.
 
+Two consequences of that, both of which bite in practice:
+
+- **A catch-all needs a name to point at.** §4.7's idiom is `$match x ($case x …)`, which only works when the scrutinee *is* a name. Matching on an expression means binding it first — and `$decl` preserves references (§5.4), so binding storage gives a pattern that tests `&T` against `T` and never matches. Either bind a value, or dispatch with `$if` instead of `$match`.
+- **A `$union`-typed name is not a dynamic catch-all.** `$case some_union_name` has the whole union as its *static* type, but stage 0 has only the value, which §4.8a makes the union's *first member*. So it matches that member alone. Stage 1 will get this right because it will have types; stage-0 source must not rely on it.
+
 Consequence for the AST representation: every node is a block with a `$prop tag "…"` discriminator, and all dispatch is shape 1. That is the intended style anyway (§12's tagged-block example).
 
 ---
