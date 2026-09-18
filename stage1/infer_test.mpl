@@ -235,3 +235,81 @@ $decl t58 $call check_str ("...but a reordered block is not",
   "argument 1 is {b:Int,a:Int,}, expected {a:Int,}")
 
 $decl done $call nl ("all inference tests passed")
+
+// ------------------------------------------------------- $template (§4.9)
+
+// §4.9: "`body` is **not** type-checked at declaration."
+$decl t59 $call check ("a template body is not checked at declaration",
+  $call eq_int ($call n_errs ("$decl t $template T $call nope_undefined (T)"), 0))
+$decl t60 $call check_str ("...but it is checked at specialization",
+  $call errs_of ("$decl t $template T $call nope_undefined (T)  $decl x $specialize t 0"),
+  "unknown name 'nope_undefined'")
+
+// §4.9: the argument is bound to the generic name, so the body types with it.
+$decl t61 $call check_str ("a generic name stands for the argument's type",
+  $call field_ty ("$decl id $template T $func ($decl x T) x  $decl f $specialize id 0", "f"),
+  "[Int]->Int")
+$decl t62 $call check_str ("...and a different argument gives a different type",
+  $call field_ty ("$decl id $template T $func ($decl x T) x  $decl f $specialize id \"\"", "f"),
+  "[Str]->Str")
+$decl t63 $call check_str ("a template over a block",
+  $call field_ty ("$decl p $template T { $decl a T  $decl b T }  $decl x $specialize p 1", "x"),
+  "{a:Int,b:Int,}")
+$decl t64 $call check_str ("several generic parameters take a group",
+  $call field_ty ("$decl two $template (A, B) { $decl a A  $decl b B }  $decl x $specialize two (1, \"s\")", "x"),
+  "{a:Int,b:Str,}")
+$decl t65 $call check_str ("the wrong number of arguments is reported",
+  $call errs_of ("$decl two $template (A, B) A  $decl x $specialize two 1"),
+  "this template has 2 generic parameters, found 1")
+$decl t66 $call check_str ("specializing a non-template is reported",
+  $call errs_of ("$decl x $specialize 1 0"), "$specialize expects a template, found Int")
+// BOOTSTRAP.md §1.1 drops §4.9's `$call`-time inference of `T`.
+$decl t67 $call check_str ("calling a template directly is reported",
+  $call errs_of ("$decl id $template T $func ($decl x T) x  $decl y $call id 5"),
+  "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)")
+
+// The prelude's list, specialized — recursive data inside a template body.
+// Built with `concat` because a morphl string literal never spans a newline,
+// and morphl needs no separators anyway.
+$decl list_src $call concat (
+  "$decl list $template T { $prop nil { $prop tag \"nil\" } ",
+  $call concat (
+  "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail node }) ",
+  $call concat (
+  "$prop cons $func ($decl h T, $decl t node) { $prop tag \"cons\"  $decl head h  $decl tail t } ",
+  $call concat (
+  "$prop length $func ($decl xs node, $decl acc 0) $match xs ( $case {$prop tag \"cons\"} $call length (xs.tail, $call add (acc, 1)), $case xs acc ) } ",
+  "$decl ints $specialize list 0 "))))
+
+$decl t68 $call check ("a template holding recursive data types cleanly",
+  $call eq_int ($call n_errs (list_src), 0))
+// The raw type, for assertions that should not pin a variable's number.
+$decl ty_of $func ($decl src "", $decl nm "")
+  { $decl r $call I.check_source (src)
+    $decl f $call T.find_field (r.ty.fields, nm)
+    $decl out f.ty }.out
+
+// §5.5's knot, asserted by what it means rather than by how it renders: a cell
+// built by `cons` is a member of the recursive type `node` names.
+$decl t69 $call check ("a cons cell is a subtype of the inferred list type",
+  $call T.sub ($call ty_of ($call concat (list_src, "$decl c $call ints.cons (5, ints.nil)"), "c"),
+               $call ty_of ($call concat (list_src, "$decl n ints.node"), "n")))
+$decl t70 $call check_str ("nil carries its tag",
+  $call field_ty ($call concat (list_src, "$decl n ints.nil"), "n"), "{tag=s\"nil\",}")
+$decl t71 $call check_str ("a prop function over the recursive type returns Int",
+  $call field_ty ($call concat (list_src, "$decl l $call ints.length (ints.nil, 0)"), "l"), "Int")
+// The element type really is the one the list was specialized at.
+$decl t71b $call check_str ("cons rejects the wrong element type",
+  $call errs_of ($call concat (list_src, "$decl c $call ints.cons (\"s\", ints.nil)")),
+  "argument 1 is Str, expected Int")
+
+// §4.9: "Typing is memoized per **argument type**."
+$decl t72 $call check ("specializing twice at the same type is consistent",
+  $call eq_str ($call field_ty ($call concat (list_src, "$decl a ints.nil  $decl b ($specialize list 0).nil"), "a"),
+                $call field_ty ($call concat (list_src, "$decl a ints.nil  $decl b ($specialize list 0).nil"), "b")))
+$decl t73 $call check ("two element types give two lists",
+  $call not ($call eq_str (
+    $call field_ty ($call concat (list_src, "$decl a ints.node"), "a"),
+    $call field_ty ($call concat (list_src, "$decl s ($specialize list \"\").node"), "s"))))
+
+$decl done2 $call nl ("all template tests passed")

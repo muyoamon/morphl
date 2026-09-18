@@ -53,6 +53,25 @@ $decl lookup $func ($decl e env.node, $decl n "") $match e (
 $decl bind $func ($decl e env.node, $decl n "", $decl t T.proto_ty)
   $call env.cons ($call binding (n, t), e)
 
+// ------------------------------------------------------------------ templates
+//
+// §4.9: "`body` is **not** type-checked at declaration." A template's type is
+// therefore only an identity; what makes specialization possible is kept here —
+// the generic names, the body, and the environment the template was written in.
+
+$decl strs $specialize P.list ""
+
+$decl tmpl_rec $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en env.node)
+  { $decl id i  $decl generics gs  $decl body bd  $decl env en }
+
+$decl proto_tmpl $call tmpl_rec (0, strs.nil, Pa.proto_node, env.nil)
+$decl tmpl_list $specialize P.list proto_tmpl
+
+// §4.9: "Typing is memoized per **argument type**."
+$decl memo_ent $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty t }
+$decl proto_memo $call memo_ent ("", T.t_bot)
+$decl memo_list $specialize P.list proto_memo
+
 // -------------------------------------------------------------------- context
 
 $decl ctx $func ()
@@ -62,11 +81,15 @@ $decl ctx $func ()
     $decl tryset $mut $new T.t_bot
     // Set while the first of the two prop passes runs, so that a diagnostic is
     // reported once — by the pass that has the resolved types.
-    $decl quiet  $mut $new false }
+    $decl quiet  $mut $new false
+    $decl tmpls  $mut $new tmpl_list.nil
+    $decl memo   $mut $new memo_list.nil }
 
 $decl proto_ctx $call ctx ()
 
 $decl eval_diags $func ($decl x Pa.diags.node) x
+$decl eval_tmpls $func ($decl x tmpl_list.node) x
+$decl eval_memo  $func ($decl x memo_list.node) x
 
 $decl fresh $func ($decl cx proto_ctx)
   { $decl i       $call ival (cx.next)
@@ -127,7 +150,10 @@ $decl occurs $func ($decl t T.proto_ty, $decl i 0) $match t (
 )
 
 $decl close_rec $func ($decl t T.proto_ty, $decl i 0)
-  $if ($call occurs (t, i)) ($call T.t_rec (i, t)) t
+  // `μR. A | R` is `A` (see `T.drop_var`), so simplify before deciding whether
+  // a binder is needed at all.
+  { $decl r   $call T.drop_var (t, i)
+    $decl out $if ($call occurs (r, i)) ($call T.t_rec (i, r)) r }.out
 
 // ------------------------------------------------------------------ helpers
 
@@ -294,6 +320,10 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
             $decl r  $if ok ft.result T.t_bot }.r,
         // §3.6: a call on ⊥ stays ⊥ rather than reporting a second error.
         $case {$prop tag "bottom"} T.t_bot,
+        // §4.9 would infer `T` from the argument shapes; BOOTSTRAP.md §1.1
+        // drops that, so the call site has to say what it means.
+        $case {$prop tag "tmpl"} ($call err (cx,
+            "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)", n)),
         $case ft ($call err (cx, $call concat ($call T.show (ft), " is not callable"), n))
       ) }.out
 
@@ -326,7 +356,8 @@ $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.pro
       // A pattern is a type-only position (§5.7): never evaluated, only its
       // type used — which is exactly what `infer` returns.
       $decl pt $call infer (cx, e, $call op (a, 0))
-      $decl e2 $call narrow (e, scrut, $call T.meet (st, pt))
+      // §4.7: narrowed to `type(e) & P` — as a selection, not an intersection.
+      $decl e2 $call narrow (e, scrut, $call T.restrict (st, pt))
       $decl bt $call infer (cx, e2, $call op (a, 1))
       $decl out $call infer_arms (cx, e, scrut, st, arms.tail, $call T.join (acc, bt)) }.out,
   $case arms acc
@@ -343,11 +374,106 @@ $decl infer_try $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_no
   { $decl vt $call infer (cx, e, $call op (n, 0))
     $decl pt $call infer (cx, e, $call op (n, 1))
     $decl added $set cx.tryset
-        ($call T.join ($call tval (cx.tryset), $call T.meet ($call deref_ty (vt), pt)))
+        ($call T.join ($call tval (cx.tryset), $call T.restrict ($call deref_ty (vt), pt)))
     // §4.15: "otherwise the expression's value is `e`, narrowed to
     // `type(e) & ¬pat`." For a union of tag shapes — which is what every
     // fallible result is — that is exactly dropping the covered members.
     $decl out $call T.minus (vt, pt) }.out
+
+// ------------------------------------------------ $template and $specialize
+
+$fwd generic_names_list
+
+$decl generic_names $func ($decl n Pa.proto_node, $decl acc strs.node) $match n (
+  $case {$prop tag "name"}  $call strs.cons (n.text, acc),
+  $case {$prop tag "group"} $call generic_names_list (n.items, acc),
+  $case n acc
+)
+
+$decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call generic_names_list (xs.tail, $call strs.cons ($call name_of (xs.head), acc)),
+  $case xs ($call strs.reverse (acc, strs.nil))
+)
+
+// §4.9: the declaration itself checks nothing. It records what specialization
+// will need and hands back an identity.
+$decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node)
+  { $decl gs    $call generic_names ($call op (n, 0), strs.nil)
+    $decl id    $call fresh (cx)
+    $decl rec   $call tmpl_rec (id, gs, $call op (n, 1), e)
+    $decl added $set cx.tmpls ($call tmpl_list.cons (rec, $call eval_tmpls (cx.tmpls)))
+    $decl out   $call T.t_tmpl (id) }.out
+
+$decl find_tmpl $func ($decl xs tmpl_list.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.id, i)) xs.head ($call find_tmpl (xs.tail, i)),
+  $case xs ($call tmpl_rec (-1, strs.nil, Pa.proto_node, env.nil))
+)
+
+$decl memo_find $func ($decl xs memo_list.node, $decl k "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.key, k)) ($call found (true, xs.head.ty)) ($call memo_find (xs.tail, k)),
+  $case xs ($call found (false, T.t_bot))
+)
+
+$decl memo_key $func ($decl i 0, $decl ats T.tys.node, $decl acc "") $match ats (
+  $case {$prop tag "cons"}
+    $call memo_key (i, ats.tail, $call concat (acc, $call concat ("|", $call T.show (ats.head)))),
+  $case ats ($call concat ($call int_to_str (i), acc))
+)
+
+// §4.9: "binds it to the corresponding generic name, as if `$decl T arg` were
+// prepended to `body`". At the type level that is binding the name to the
+// argument's type.
+$decl bind_generics $func ($decl e env.node, $decl gs strs.node, $decl ats T.tys.node) $match gs (
+  $case {$prop tag "cons"} $match ats (
+      $case {$prop tag "cons"}
+        $call bind_generics ($call bind (e, gs.head, ats.head), gs.tail, ats.tail),
+      $case ats e
+    ),
+  $case gs e
+)
+
+$decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
+                             $decl argn Pa.proto_node, $decl n Pa.proto_node)
+  { $decl r  $call find_tmpl ($call eval_tmpls (cx.tmpls), id)
+    $decl ng $call strs.length (r.generics, 0)
+    // §2.3 again: with one generic the whole operand is the argument; with
+    // several it has to be a group.
+    $decl args $if ($call eq_int (ng, 1))
+        ($call Pa.nodes.cons (argn, Pa.nodes.nil))
+        ($call group_items (argn))
+    $decl na  $call Pa.nodes.length (args, 0)
+    $decl ats $call infer_tys (cx, e, args, T.tys.nil)
+    $decl out $if ($call not ($call eq_int (ng, na)))
+        ($call err (cx, $call concat ("this template has ", $call concat ($call int_to_str (ng),
+            $call concat (" generic parameters, found ", $call int_to_str (na)))), n))
+        { $decl key $call memo_key (id, ats, "")
+          $decl hit $call memo_find ($call eval_memo (cx.memo), key)
+          $decl rr $if hit.ok hit.ty
+              { $decl benv $call bind_generics (r.env, r.generics, ats)
+                // Memoised *before* the body is typed, with a placeholder, so a
+                // template that reaches itself terminates — §4.9: "hitting an
+                // in-progress entry returns its `R`."
+                $decl ph  $call T.t_var ($call fresh (cx))
+                $decl m0  $set cx.memo ($call memo_list.cons ($call memo_ent (key, ph), $call eval_memo (cx.memo)))
+                $decl ty0 $call infer (cx, benv, r.body)
+                // §5.5 discharges the placeholder if the body reached back.
+                $decl ty  $call close_rec (ty0, $call var_id (ph))
+                $decl m1  $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty), $call eval_memo (cx.memo)))
+                $decl res ty }.res }.rr }.out
+
+// §4.9 steps 2 and 3: type the substituted expression with ordinary rules, and
+// have exactly its type.
+$decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node)
+  { $decl tt $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+    $decl out $match tt (
+        $case {$prop tag "tmpl"}   $call specialize_with (cx, e, tt.id, $call op (n, 1), n),
+        $case {$prop tag "bottom"} T.t_bot,
+        $case tt ($call err (cx, $call concat ("$specialize expects a template, found ",
+                      $call T.show (tt)), n))
+      ) }.out
 
 // ------------------------------------------------------------------- blocks
 
@@ -510,8 +636,10 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
       ($if ($call eq_str (k, "union")) ($call infer_union (cx, e, n))
       ($if ($call eq_str (k, "match")) ($call infer_match (cx, e, n))
       ($if ($call eq_str (k, "try"))   ($call infer_try (cx, e, n))
+      ($if ($call eq_str (k, "template"))   ($call infer_template (cx, e, n))
+      ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
            ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-      ))))))))))
+      ))))))))))))
   }.out
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (

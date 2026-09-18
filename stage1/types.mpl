@@ -111,7 +111,8 @@ $decl proto_ty $union (
   $call raw_union (tys.nil),
   $call raw_inter (tys.nil),
   $call t_rec (0, proto_ty),
-  $call t_over (tys.nil)
+  $call t_over (tys.nil),
+  $call t_tmpl (0)
 )
 
 $decl field $func ($decl n "", $decl t proto_ty) { $decl name n  $decl ty t }
@@ -160,6 +161,12 @@ $decl t_ref   $func ($decl q "", $decl t proto_ty) { $prop tag "ref" $decl qual 
 $decl t_array $func ($decl e proto_ty) { $prop tag "array" $decl elem e }
 $decl t_rec   $func ($decl i 0, $decl b proto_ty) { $prop tag "rec" $decl id i  $decl body b }
 $decl t_over  $func ($decl cs tys.node) { $prop tag "over" $decl cands cs }
+
+// A template (§4.9). Its body is *not* type-checked at declaration, so there is
+// nothing structural to record here: the type is an identity, and whoever built
+// it keeps the body and the environment it was written in. Two templates are
+// the same type when they are the same template.
+$decl t_tmpl  $func ($decl i 0) { $prop tag "tmpl" $decl id i }
 
 // Props have no layout (§4.10), so their order is not part of the type.
 // Sorting them at construction is what makes the rendering below canonical.
@@ -230,6 +237,7 @@ $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "rec"}    $call concat ("mu", $call concat ($call int_to_str (t.id),
                                  $call concat (".", $call show (t.body)))),
   $case {$prop tag "over"}   $call concat ("O<", $call concat ($call show_tys (t.cands, "", true), ">")),
+  $case {$prop tag "tmpl"}   $call concat ("Tmpl", $call int_to_str (t.id)),
   $case t "?"
 )
 
@@ -526,6 +534,51 @@ $decl remove_covered $func ($decl xs tys.node, $decl pat proto_ty, $decl acc tys
     $call remove_covered (xs.tail, pat,
         $if ($call sub (xs.head, pat)) acc ($call tys.cons (xs.head, acc))),
   $case xs acc
+)
+
+// `T & P` as a narrowing, rather than as an opaque intersection.
+//
+// §4.7 narrows a `$match` scrutinee to `type(e) & P` inside each arm, and §4.15
+// does the same for the value `$try` returns. When `T` is a union of tag shapes
+// — which is what every scrutinee worth matching on is — the useful answer is
+// the members `P` selects, not `T ^ P`: an intersection has no fields to
+// project, so `xs.tail` inside a `$case {$prop tag "cons"}` arm would have
+// nothing to read. Unrolling first is what makes this work on a recursive type.
+$decl keep_covered $func ($decl xs tys.node, $decl pat proto_ty, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call keep_covered (xs.tail, pat,
+        $if ($call sub (xs.head, pat)) ($call tys.cons (xs.head, acc)) acc),
+  $case xs acc
+)
+
+$decl restrict $func ($decl t proto_ty, $decl pat proto_ty)
+  { $decl u $call unroll (t)
+    $decl out $match u (
+        $case {$prop tag "union"}
+          { $decl kept $call keep_covered (u.members, pat, tys.nil)
+            // No member selected: fall back to the general meet, which reports
+            // the mismatch honestly rather than inventing a member.
+            $decl r $if ($call tys.is_nil (kept)) ($call meet (t, pat)) ($call t_union (kept)) }.r,
+        $case u ($call meet (t, pat))
+      ) }.out
+
+// `μR. A | R` is `A`.
+//
+// A recursion variable that occurs as a *direct member* of the union it binds
+// adds nothing: unrolling it yields `A | (A | (A | …))`, which is `A`. This
+// happens to every tail-recursive accumulator — the recursive call contributes
+// `R` and the base case contributes the real answer — so without this the
+// inferred return type would be a recursive union instead of the base type.
+$decl drop_var_members $func ($decl xs tys.node, $decl i 0, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call drop_var_members (xs.tail, i,
+        $if ($call ty_eq (xs.head, $call t_var (i))) acc ($call tys.cons (xs.head, acc))),
+  $case xs acc
+)
+
+$decl drop_var $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "union"} $call t_union ($call drop_var_members (t.members, i, tys.nil)),
+  $case t t
 )
 
 $decl minus $func ($decl t proto_ty, $decl pat proto_ty) $match t (
