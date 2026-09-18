@@ -326,8 +326,10 @@ Binds a C function. `symbol` is a string literal; `sig` is a type-only position 
 `S <: T` when a value of `S` can be used wherever `T` is expected. Rules:
 
 - **Base types**: `Int`, `Float`, `Str` are unrelated. `true <: Bool`, `false <: Bool`.
-- **Blocks (width & depth)**: `S <: T` if for every field `(n, T_n)` of `T`, `S` has `n` with `S_n <: T_n`, and for every prop of `T`, `S` has the same prop with the **same value**. Order is ignored for subtyping.
-- **Block identity**: block types are **ordered**; type *equality* is order-sensitive because layout is. Coercion to a differently-ordered supertype reorders (copy for values, offset table for `&const` references).
+- **Blocks (prefix & depth)**: `S <: T` if `T`'s `$decl` fields are an ordered **prefix** of `S`'s — the same names at the same positions, each with `S_n <: T_n` — and for every prop of `T`, `S` has the same prop with the **same value**. Props are unordered, because props have no layout (§4.10).
+- **Block identity**: layout *is* the type. `S <: T` and `T <: S` exactly when `S` and `T` have the same fields in the same order and the same props — so mutual subtyping is equality, and nothing is ever reordered to satisfy a coercion.
+
+Prefix rather than unordered width, for three reasons. Subtyping stays antisymmetric, so mutual subtyping and equality coincide and a canonical form is meaningful. A supertype's fields sit at the same offsets as the subtype's, so every structural upcast is free and stays a thin pointer (§7.4). And a block's field *order* becomes part of its published interface, which is checkable by reading the declaration rather than by computing a coercion.
 - **Groups**: elementwise, same arity.
 - **Functions**: contravariant in parameters, covariant in result.
 - **Unions/intersections**: standard lattice rules. `⊥` is a subtype of everything.
@@ -430,9 +432,12 @@ Storage is created only by `$new`. References alias; values copy. **Closures cap
 
 ### 7.4 Coercion cost
 
-- Value → wider/reordered block type: copy.
-- `&const S → &const T` with `T` a width supertype or different order: a **fat reference** carrying a field-offset table (as in Go interfaces). When the coercion goes through a trait, that table is the `$impl` witness, emitted statically.
+Prefix subtyping (§5.1) makes structural coercion nearly free: a supertype's fields are at the same offsets as the subtype's, so no reordering and no offset table ever arise.
+
+- Value → block prefix supertype: a prefix copy. No field-by-field scatter.
+- `&const S → &const T` with `T` a prefix supertype: **free**, and still a thin pointer.
 - `&mut` never coerces structurally (invariant), so it is always a thin pointer.
+- **Fat references remain only for trait objects**: a `&const trait` carries the `$impl` witness (§4.12), emitted statically. That table exists because the trait's props are function implementations, not because of layout.
 
 ### 7.5 Runtime type information
 
@@ -545,7 +550,7 @@ These follow from stated rules and are accepted by design:
 6. Overload and match order is semantic (first fit); reordering can change meaning, mitigated by the unreachable lint.
 7. Template bodies are checked only at specialization.
 8. Bare `&T` in parameter position rejects `&mut` arguments; qualify parameters.
-9. Structural subtyping on references is not free: `&const` upcasts produce fat references.
+9. Structural upcasts are free and stay thin pointers, because a supertype is a prefix. The price is paid at declaration instead: **field order is part of a block's interface**. A field may be added compatibly only at the end, and reordering fields is a breaking change for every supertype that named them.
 10. `$traitsof` abstracts by structural type equality, so any parameter whose type equals the source block's type becomes `Self`.
 11. Region inference never fails, it widens: a long-running program with unbounded live-set churn must opt into an explicit allocator or it leaks. The compiler names the allocations.
 
@@ -555,6 +560,7 @@ These follow from stated rules and are accepted by design:
 
 - Growable vector over `array` (library).
 - Variadic templates (abstraction over group arity).
+- Whether `&mut S` may widen to a prefix supertype `&mut T`. Under prefix layout a write through the narrowed view leaves `S`'s tail intact, so width (not depth) coercion looks sound; §5.3 keeps `&mut` invariant for now.
 - `$fwd (name, example)` — optional type operand, must be a group.
 - `static` — per-type mutable storage, deliberately distinct from `$prop`.
 - Specializing with an overload argument producing an overloaded result (currently an error).

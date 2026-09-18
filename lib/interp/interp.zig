@@ -367,7 +367,7 @@ pub const Interp = struct {
 
             // BOOTSTRAP.md §1.2. These parse (the parser covers all of §2.2)
             // but stage 0 declines to run them.
-            .@"const" => self.outOfSubset(node.span, "$const", "stage 0 has no &const, because structural &const upcasts are the only thing needing fat references (§7.4)"),
+            .@"const" => self.outOfSubset(node.span, "$const", "stage 0 has no read-only views; nothing in stage 1 needs one"),
             .overload => self.outOfSubset(node.span, "$overload", "the bootstrap root block is monomorphic, so no overload set exists"),
             .impl => self.outOfSubset(node.span, "$impl", "traits are not needed to compile a file"),
             .traitsof => self.outOfSubset(node.span, "$traitsof", "traits are not needed to compile a file"),
@@ -713,8 +713,8 @@ pub const Interp = struct {
     /// Does `val` satisfy the *shape* of the example value `pat`?
     ///
     /// This is §5.1 structural subtyping, restricted to what a dynamic value
-    /// can answer: width and depth on blocks, prop values compared exactly,
-    /// elementwise on groups.
+    /// can answer: an ordered field prefix with depth, prop values compared
+    /// exactly, elementwise on groups.
     fn shapeMatches(pat: Value, val: Value, depth: u32) bool {
         if (depth == 0) return false;
         return switch (pat) {
@@ -732,11 +732,13 @@ pub const Interp = struct {
                     const sf = s.findProp(pf.name) orelse break :blk false;
                     if (!value.equal(pf.value, sf, depth - 1)) break :blk false;
                 }
-                // Width and depth on the ordered fields. Order is ignored for
-                // subtyping (§5.1), even though it is part of type equality.
-                for (p.decls) |pf| {
-                    const sf = s.findDecl(pf.name) orelse break :blk false;
-                    if (!shapeMatches(pf.value, sf, depth - 1)) break :blk false;
+                // §5.1: the pattern's fields must be an ordered *prefix* of the
+                // value's — same names at the same positions. Layout is the
+                // type, so nothing is matched out of order.
+                if (p.decls.len > s.decls.len) break :blk false;
+                for (p.decls, s.decls[0..p.decls.len]) |pf, sf| {
+                    if (!std.mem.eql(u8, pf.name, sf.name)) break :blk false;
+                    if (!shapeMatches(pf.value, sf.value, depth - 1)) break :blk false;
                 }
                 break :blk true;
             },

@@ -46,6 +46,9 @@ $decl fld2 $func ($decl n1 "", $decl t1 T.proto_ty, $decl n2 "", $decl t2 T.prot
   $call T.fields.cons ($call T.field (n1, t1),
   $call T.fields.cons ($call T.field (n2, t2), T.fields.nil))
 
+$decl fld2_block $func ($decl n1 "", $decl t1 T.proto_ty, $decl n2 "", $decl t2 T.proto_ty)
+  $call T.t_block ($call fld2 (n1, t1, n2, t2), T.props.nil)
+
 // ------------------------------------------------------------ canonical form
 
 $decl t01 $call check_str ("base types render", $call T.show (int), "Int")
@@ -104,13 +107,26 @@ $decl t20 $call check ("bottom <: Int", $call T.sub (bot, int))
 $decl t21 $call check ("bottom <: a block", $call T.sub (bot, ab))
 $decl t22 $call check ("Int is not <: bottom", $call not ($call T.sub (int, bot)))
 
-// §5.1: blocks, width and depth. Order ignored for subtyping.
+// §5.1: blocks match by ordered prefix, with depth inside the prefix.
 $decl abc $call T.t_block ($call T.fields.cons ($call T.field ("a", int), $call fld2 ("b", str, "c", flt)), T.props.nil)
 $decl just_a $call T.t_block ($call T.f1 ("a", int), T.props.nil)
-$decl t23 $call check ("width: more fields is a subtype of fewer", $call T.sub (abc, just_a))
+$decl t23 $call check ("a longer block is a subtype of its prefix", $call T.sub (abc, just_a))
 $decl t24 $call check ("...but not the other way", $call not ($call T.sub (just_a, abc)))
-$decl t25 $call check ("order is ignored for subtyping even though it decides equality",
-  $call and ($call T.sub (ab, ba), $call T.sub (ba, ab)))
+// §5.1: order is part of subtyping, not only of equality.
+$decl t25 $call check ("a reordered block is not a subtype in either direction",
+  $call and ($call not ($call T.sub (ab, ba)), $call not ($call T.sub (ba, ab))))
+
+// The point of prefix matching: mutual subtyping and equality coincide, so
+// subtyping is antisymmetric and a canonical form means something.
+$decl t25b $call check ("mutual subtyping is equality",
+  $call and ($call and ($call T.sub (ab, ab), $call T.sub (ab, ab)), $call T.ty_eq (ab, ab)))
+$decl t25c $call check ("a field in the wrong position is not a subtype",
+  $call not ($call T.sub ($call fld2_block ("b", str, "a", int), just_a)))
+$decl t25d $call check ("a prefix supertype is still a supertype",
+  $call T.sub ($call fld2_block ("a", int, "b", str), just_a))
+$decl t25e $call check ("...and a suffix is not",
+  $call not ($call T.sub ($call fld2_block ("b", str, "a", int),
+                          $call T.t_block ($call T.f1 ("a", int), T.props.nil))))
 $decl t26 $call check ("a missing field is not a subtype",
   $call not ($call T.sub ($call T.t_block ($call T.f1 ("z", int), T.props.nil), just_a)))
 $decl t27 $call check ("depth: a field must be a subtype",
@@ -158,9 +174,9 @@ $decl t41 $call check ("&const T is not <: &mut T", $call not ($call T.sub (r_co
 
 // Consequence (§10.8): a bare `&T` parameter rejects a `&mut` argument, which
 // is why idiomatic code qualifies parameters.
-$decl t42 $call check ("&mut is invariant, so width subtyping is unavailable",
+$decl t42 $call check ("&mut is invariant, so prefix subtyping is unavailable",
   $call not ($call T.sub ($call T.t_ref ("mut", abc), $call T.t_ref ("mut", just_a))))
-$decl t43 $call check ("...but &const is covariant, so it is available there",
+$decl t43 $call check ("...but &const is covariant, so it is available there — and free (§7.4)",
   $call T.sub ($call T.t_ref ("const", abc), $call T.t_ref ("const", just_a)))
 
 // §3.6 lattice rules for unions and intersections.

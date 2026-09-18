@@ -55,7 +55,7 @@ After stage 3 the Zig code stops growing. It is kept, not deleted: it is the rep
 | `$overload` | The bootstrap root block is monomorphic (§2), so no overload set ever exists. Removes first-fit type-level resolution *and* the `R`-as-`⊥` rule (§5.5) from stage 0 entirely |
 | `$impl`, `$traitsof` | A compiler needs no traits. Removes witnesses, F-bounded conformance, and fat-reference dispatch |
 | `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap |
-| `$const`, all `&const` | Structural `&const` upcasts are the only thing that needs fat references and offset tables (§7.4). Use `&T` or `$mut`. |
+| `$const`, all `&const` | Nothing in stage 1 needs a read-only view. (This exclusion used to be justified by fat references; under §5.1's prefix rule a `&const` upcast is free and thin, so the reason is now only that it is unused.) Use `&T` or `$mut`. |
 | `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and converted by the backend when emitting C — so the lexer still lexes them |
 | `allocator`, regions | Nothing is freed at stage 0 (§3) |
 | `sendable`, threads | Not needed to compile a file |

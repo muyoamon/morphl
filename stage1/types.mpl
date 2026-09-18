@@ -376,6 +376,8 @@ $decl subs_zip_flipped $func ($decl xs tys.node, $decl ys tys.node, $decl seen s
   $case xs ($call tys.is_nil (ys))
 )
 
+// Used by projection typing, not by subtyping: §5.1 matches fields by position
+// now, but `e.name` still looks a field up by name (§4.6).
 $decl find_field $func ($decl xs fields.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.name, n)) ($call field (n, xs.head.ty)) ($call find_field (xs.tail, n)),
@@ -388,15 +390,20 @@ $decl find_prop $func ($decl xs props.node, $decl n "") $match xs (
   $case xs ($call prop_entry ("", $call cv_opaque (-1)))
 )
 
-// Width and depth (§5.1): every field `T` requires, `S` must have, at a
-// subtype. Order is ignored here even though it decides equality.
+// Prefix and depth (§5.1): `T`'s fields must be an ordered *prefix* of `S`'s —
+// same names at the same positions, each at a subtype. Running out of required
+// fields means the prefix is satisfied; running out of `S`'s fields first means
+// `T` demands more than `S` has.
 $decl sub_fields $func ($decl s fields.node, $decl want fields.node, $decl seen strs.node) $match want (
-  $case {$prop tag "cons"}
-    { $decl f $call find_field (s, want.head.name)
-      $decl out $if ($call eq_str (f.name, ""))
-          false
-          ($if ($call sub_seen (f.ty, want.head.ty, seen))
-               ($call sub_fields (s, want.tail, seen)) false) }.out,
+  $case {$prop tag "cons"} $match s (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (s.head.name, want.head.name))
+            ($if ($call sub_seen (s.head.ty, want.head.ty, seen))
+                 ($call sub_fields (s.tail, want.tail, seen))
+                 false)
+            false,
+      $case s false
+    ),
   $case want true
 )
 
