@@ -213,8 +213,10 @@ pub const Scope = struct {
     }
 
     pub fn findLocal(self: *Scope, name: []const u8) ?Entry {
-        // Later slots shadow earlier ones; walk backwards so a completed
-        // `$decl` wins over an earlier reservation of the same name.
+        // Later slots shadow earlier ones, so walk backwards. A linear scan
+        // is deliberate: it was measured against a hash index over `decls` and
+        // the difference was lost in the noise, because scopes are small and
+        // resolution is not where the time goes.
         var i = self.decls.items.len;
         while (i > 0) {
             i -= 1;
@@ -243,8 +245,8 @@ pub const Scope = struct {
         return true;
     }
 
-    /// The most recent slot reserved by `$fwd` for `name` and still awaiting
-    /// its `$decl` (§4.11: "Layout position is the `$fwd`, not the `$decl`").
+    /// The slot reserved by `$fwd` for `name` and still awaiting its `$decl`
+    /// (§4.11: "Layout position is the `$fwd`, not the `$decl`").
     pub fn pendingSlot(self: *Scope, name: []const u8) ?usize {
         for (self.decls.items, 0..) |slot, i| {
             if (slot.value == null and std.mem.eql(u8, slot.name, name)) return i;

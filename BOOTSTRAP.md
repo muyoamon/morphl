@@ -90,6 +90,7 @@ Stage 0's root block is **not** the root block of §8, and it does not pretend t
 | Comparison | `eq_int eq_str` — no polymorphic `eq` |
 | Strings | `concat len slice byte` — byte units, as §8 |
 | Conversion | `int_to_str` , `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works |
+| Characters | `from_code (cp)` → `none \| some Str`. **An addition to §8, not an implementation of it** — see §7 |
 | Arrays | `array at alen` — as §8; `at` returns a base+index handle |
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
@@ -154,6 +155,9 @@ These exist because stage 0 does not check what stage 2 will. Violating one prod
 There is no annotation syntax, so every type in every diagnostic is one the compiler inferred and the user never wrote. Diagnostics must point at **expressions**. Carry a span on every AST node in stage 0 and on every type node in stage 1's inference engine from the beginning — provenance is extremely expensive to retrofit into a Simple-sub-style solver.
 
 ## 7. Open bootstrap questions
+
+- **§8 cannot build a character, only read one.** `byte` reads a byte out of a `Str`, and §3.1 says a character *is* a one-code-point substring — which only helps when the character already exists somewhere. Decoding the `\u{…}` escape that §2.1 requires means producing a code point that appears nowhere in the source, so a lexer written in morphl cannot do it with §8's intrinsics. Stage 0 adds `from_code (cp)` → `none | some Str`, validating so that §3.1's always-valid-UTF-8 invariant holds. §8 needs either that intrinsic or an explicit statement that `\u{…}` decoding stays a compiler builtin.
+- **Reading a value out of storage has no syntax.** `$decl y n` aliases (§5.4, and §12 says so outright), so snapshotting the contents of a cell into an immutable binding means passing it through something that expects a value. The prelude defines `ival`/`sval` identity functions for this, and stage 1's lexer needs them on almost every line that touches the cursor. §11 might want a `$copy`-style form, or §8 a blessed library identity.
 
 - Whether stage 1's C backend lowers tail calls to loops, to a trampoline, or to clang `musttail`. Mandatory TCE is the one guarantee C does not hand over for free.
 - Whether stage 1 emits one C file or one per morphl file (affects `$import` load-once semantics at the C level, not in the language).

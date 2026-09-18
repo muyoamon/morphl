@@ -196,6 +196,27 @@ fn byteFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return .{ .int = s[@intCast(i)] };
 }
 
+/// `from_code (cp)` → `none | some Str` — one code point as a `Str`.
+///
+/// **This is an addition to SPEC.md §8, not an implementation of it.** §8 gives
+/// `byte` to read a byte out of a `Str` but nothing to build a `Str` from a
+/// code point, and §3.1 says "There is no character type: a character is a
+/// one-code-point substring" — which only helps if the character already
+/// exists in some `Str`. Decoding the `\u{…}` escape that §2.1 requires means
+/// producing a code point that appears nowhere in the source, so a lexer
+/// written in morphl cannot do it with §8's intrinsics alone.
+///
+/// Validating here is what keeps §3.1's invariant: surrogates and
+/// out-of-range values come back as `none` rather than as an invalid `Str`.
+/// See BOOTSTRAP.md §7.
+fn fromCodeFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const cp = try wantInt(rt, args, 0, "from_code", span);
+    const c: u21 = std.math.cast(u21, cp) orelse return tagBlock(rt.arena, "none");
+    var buf: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(c, &buf) catch return tagBlock(rt.arena, "none");
+    return some(rt.arena, .{ .str = try rt.arena.dupe(u8, buf[0..n]) });
+}
+
 fn intToStrFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const v = try wantInt(rt, args, 0, "int_to_str", span);
     return .{ .str = try std.fmt.allocPrint(rt.arena, "{d}", .{v}) };
@@ -330,6 +351,7 @@ const table = [_]value.Builtin{
     .{ .name = "byte", .arity = 2, .func = byteFn },
     .{ .name = "int_to_str", .arity = 1, .func = intToStrFn },
     .{ .name = "str_to_int", .arity = 1, .func = strToIntFn },
+    .{ .name = "from_code", .arity = 1, .func = fromCodeFn },
     .{ .name = "array", .arity = 2, .func = arrayFn },
     .{ .name = "at", .arity = 2, .func = atFn },
     .{ .name = "alen", .arity = 1, .func = alenFn },
@@ -436,6 +458,26 @@ const FakePlatform = struct {
         };
     }
 };
+
+test "from_code builds one code point and validates it" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    var diags = diag.Diagnostics.init(std.testing.allocator);
+    defer diags.deinit();
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags };
+    const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
+
+    const a = try fromCodeFn(&rt, &.{.{ .int = 65 }}, span);
+    try std.testing.expectEqualStrings("A", a.block.findDecl("v").?.str);
+    const emoji = try fromCodeFn(&rt, &.{.{ .int = 0x1F600 }}, span);
+    try std.testing.expectEqualStrings("\u{1F600}", emoji.block.findDecl("v").?.str);
+
+    // A surrogate and an out-of-range value must not produce an invalid Str.
+    for ([_]i64{ 0xD800, 0x110000, -1 }) |bad| {
+        const r = try fromCodeFn(&rt, &.{.{ .int = bad }}, span);
+        try std.testing.expectEqualStrings("none", r.block.findProp("tag").?.str);
+    }
+}
 
 test "read_file returns option Str and refuses non-UTF-8 bytes (3.1, 4.16)" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);

@@ -85,4 +85,16 @@ pub fn build(b: *std.Build) void {
         const t = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }
+
+    // Stage 1's own tests, written in morphl and run by stage 0. They read
+    // their own source by path, so the run has to happen from the build root.
+    // Debug is ~9x slower than ReleaseFast here; for real stage-1 work build
+    // with `-Doptimize=ReleaseFast`.
+    const stage1_tests = b.addRunArtifact(exe);
+    stage1_tests.addArgs(&.{ "--run", "stage1/lexer_test.mpl" });
+    stage1_tests.setCwd(b.path("."));
+    stage1_tests.expectExitCode(0);
+    const stage1_step = b.step("test-stage1", "Run stage 1's morphl tests under stage 0");
+    stage1_step.dependOn(&stage1_tests.step);
+    test_step.dependOn(&stage1_tests.step);
 }
