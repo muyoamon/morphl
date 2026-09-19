@@ -78,6 +78,17 @@ pub const Interp = struct {
     specialize_depth: u32 = 0,
     /// The value carried by an in-flight `error.TryReturn`.
     try_payload: Value = .unit,
+    /// Scopes whose call has returned without anything capturing them.
+    scope_pool: std.ArrayListUnmanaged(*Scope) = .empty,
+    /// Scratch for evaluated call arguments.
+    ///
+    /// An argument list is dead the moment `bindParams` copies it into the
+    /// callee's scope, or the moment an intrinsic returns — but nothing is ever
+    /// freed (§7.6), so allocating one per call leaks a few dozen bytes every
+    /// time. A stack works because the lists nest exactly like calls do: an
+    /// argument that is itself a call pushes above ours and pops back.
+    arg_stack: []Value = &.{},
+    arg_top: usize = 0,
 
     const Module = struct {
         state: enum { loading, done },
@@ -108,6 +119,7 @@ pub const Interp = struct {
             .stack_base = @intFromPtr(&probe),
         };
         self.root = try builtins.rootScope(arena, &self.rt);
+        self.arg_stack = try arena.alloc(Value, 64 * 1024);
         return self;
     }
 
@@ -124,6 +136,63 @@ pub const Interp = struct {
             error.TryReturn => self.rt.fail(.{ .start = 0, .end = 0, .line = 1, .col = 1 }, "$try outside a $func: it returns from the nearest enclosing function, and there is none here", .{}),
             else => err,
         };
+    }
+
+    /// §7.3: capture is of the scope *chain*, so capturing one scope pins every
+    /// scope above it. The walk stops at the first already-marked scope, since
+    /// marking always proceeds upward.
+    fn markCaptured(s: *Scope) void {
+        var cur: ?*Scope = s;
+        while (cur) |x| {
+            if (x.captured) return;
+            x.captured = true;
+            cur = x.parent;
+        }
+    }
+
+    fn acquireScope(self: *Interp, parent: *Scope, slots: usize) Error!*Scope {
+        if (self.scope_pool.pop()) |s| {
+            s.parent = parent;
+            s.props = &.{};
+            s.captured = false;
+            s.decls.clearRetainingCapacity();
+            if (slots != 0) try s.decls.ensureTotalCapacityPrecise(self.arena, slots);
+            return s;
+        }
+        return Scope.initCapacity(self.arena, parent, slots);
+    }
+
+    /// Reserve `n` argument slots. Falls back to the arena if the scratch is
+    /// exhausted, so depth is never a correctness limit.
+    fn pushArgs(self: *Interp, n: usize) Error![]Value {
+        if (self.arg_top + n <= self.arg_stack.len) {
+            const slice = self.arg_stack[self.arg_top..][0..n];
+            self.arg_top += n;
+            return slice;
+        }
+        return self.arena.alloc(Value, n);
+    }
+
+    fn releaseScope(self: *Interp, s: *Scope) void {
+        if (s.captured) return;
+        self.scope_pool.append(self.arena, s) catch {};
+    }
+
+    /// Can anything in this subtree capture the scope it runs in? Only a
+    /// closure can — a `$func` or `$template` literal, or a `$prop`, whose
+    /// initializer environment outlives the block.
+    fn mayCapture(n: *const Node) bool {
+        switch (n.data) {
+            .form => |f| switch (f.keyword) {
+                .func, .template, .prop => return true,
+                else => {},
+            },
+            else => {},
+        }
+        for (n.children()) |*c| {
+            if (mayCapture(c)) return true;
+        }
+        return false;
     }
 
     // ------------------------------------------------------------- names
@@ -172,7 +241,11 @@ pub const Interp = struct {
 
     /// Evaluate a block body in a fresh scope and return the block value.
     fn evalBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope, span: Span) Error!Value {
-        const scope = try Scope.init(self.arena, parent);
+        var slots: usize = 0;
+        for (exprs) |*e| {
+            if (e.isForm(.decl) or e.isForm(.fwd)) slots += 1;
+        }
+        const scope = try Scope.initCapacity(self.arena, parent, slots);
         try self.collectProps(exprs, scope);
 
         for (exprs) |*e| try self.evalBlockItem(e, scope);
@@ -329,6 +402,8 @@ pub const Interp = struct {
             .func => self.makeFunc(node, scope),
             .call => blk: {
                 const callee = (try self.eval(&ops[0], scope)).deref();
+                const base = self.arg_top;
+                defer self.arg_top = base;
                 const args = try self.evalArgs(&ops[1], scope);
                 break :blk self.callValue(callee, args, node.span);
             },
@@ -444,11 +519,13 @@ pub const Interp = struct {
             };
         }
 
+        markCaptured(scope);
         const fnc = try self.arena.create(Func);
         fnc.* = .{
             .params = params,
             .body = &ops[1],
             .scope = scope,
+            .may_capture = mayCapture(&ops[1]),
             .file = self.rt.diags.current_file,
         };
         return .{ .func = fnc };
@@ -475,13 +552,22 @@ pub const Interp = struct {
         switch (args_node.data) {
             .unit => return &.{},
             .group => |elems| {
-                const vals = try self.arena.alloc(Value, elems.len);
-                for (elems, vals) |*el, *slot| slot.* = try self.eval(el, scope);
+                // Evaluate first, then reserve: an argument may itself be a
+                // call, and its own scratch must sit above ours, not overlap it.
+                var tmp: [8]Value = undefined;
+                const staged: []Value = if (elems.len <= tmp.len)
+                    tmp[0..elems.len]
+                else
+                    try self.arena.alloc(Value, elems.len);
+                for (elems, staged) |*el, *slot| slot.* = try self.eval(el, scope);
+                const vals = try self.pushArgs(elems.len);
+                @memcpy(vals, staged);
                 return vals;
             },
             else => {
-                const vals = try self.arena.alloc(Value, 1);
-                vals[0] = try self.eval(args_node, scope);
+                const v = try self.eval(args_node, scope);
+                const vals = try self.pushArgs(1);
+                vals[0] = v;
                 return vals;
             },
         }
@@ -509,7 +595,13 @@ pub const Interp = struct {
 
     const Step = union(enum) {
         value: Value,
-        tail: struct { node: *const Node, scope: *Scope, file: ?[]const u8 = null },
+        tail: struct {
+            node: *const Node,
+            scope: *Scope,
+            file: ?[]const u8 = null,
+            /// Whether the scope handed over may be captured by its body.
+            may_capture: bool = true,
+        },
     };
 
     /// The trampoline. §7.7 makes tail-call elimination mandatory, so a tail
@@ -532,6 +624,8 @@ pub const Interp = struct {
 
         var scope = try self.bindParams(f0, args0, span);
         var body = f0.body;
+        // Only a scope whose body provably cannot close over it is recycled.
+        var recyclable = !f0.may_capture;
 
         while (true) {
             const st = self.step(body, scope) catch |err| switch (err) {
@@ -547,8 +641,15 @@ pub const Interp = struct {
                 else => return err,
             };
             switch (st) {
-                .value => |v| return v,
+                .value => |v| {
+                    if (recyclable) self.releaseScope(scope);
+                    return v;
+                },
                 .tail => |t| {
+                    // The frame this one replaces is gone (§7.7), so unless a
+                    // closure captured it, its scope can be reused.
+                    if (recyclable and t.scope != scope) self.releaseScope(scope);
+                    recyclable = !t.may_capture;
                     body = t.node;
                     scope = t.scope;
                     // A tail call can land in a function from another file.
@@ -571,12 +672,17 @@ pub const Interp = struct {
             switch (f.keyword) {
                 .do => {
                     _ = try self.eval(&ops[0], scope);
-                    return .{ .tail = .{ .node = &ops[1], .scope = scope, .file = cur_file } };
+                    return .{ .tail = .{ .node = &ops[1], .scope = scope, .file = cur_file, .may_capture = true } };
                 },
-                .@"if" => return .{ .tail = .{ .node = try self.selectIf(node, scope), .scope = scope, .file = cur_file } },
-                .match => return .{ .tail = .{ .node = try self.selectArm(node, scope), .scope = scope, .file = cur_file } },
+                .@"if" => return .{ .tail = .{ .node = try self.selectIf(node, scope), .scope = scope, .file = cur_file, .may_capture = true } },
+                .match => return .{ .tail = .{ .node = try self.selectArm(node, scope), .scope = scope, .file = cur_file, .may_capture = true } },
                 .call => {
                     const callee = (try self.eval(&ops[0], scope)).deref();
+                    const base = self.arg_top;
+                    // `bindParams` copies the arguments out, and an intrinsic
+                    // has returned by the time this unwinds, so the scratch is
+                    // reclaimed either way.
+                    defer self.arg_top = base;
                     const args = try self.evalArgs(&ops[1], scope);
                     if (callee == .func) {
                         const callee_scope = try self.bindParams(callee.func, args, node.span);
@@ -584,6 +690,7 @@ pub const Interp = struct {
                             .node = callee.func.body,
                             .scope = callee_scope,
                             .file = callee.func.file,
+                            .may_capture = callee.func.may_capture,
                         } };
                     }
                     return .{ .value = try self.callValue(callee, args, node.span) };
@@ -601,7 +708,7 @@ pub const Interp = struct {
                 args.len, if (args.len == 1) "" else "s",
             });
         }
-        const scope = try Scope.init(self.arena, f.scope);
+        const scope = try self.acquireScope(f.scope, f.params.len);
         for (f.params, 0..) |p, i| {
             var v: Value = if (i < args.len)
                 args[i]
@@ -801,6 +908,7 @@ pub const Interp = struct {
             },
             else => return self.rt.fail(names_node.span, "$template expects a name or a group of names", .{}),
         };
+        markCaptured(scope);
         const t = try self.arena.create(Template);
         t.* = .{ .generics = generics, .body = &ops[1], .scope = scope };
         return .{ .template = t };

@@ -100,21 +100,30 @@ $decl t_bot   { $prop tag "bottom" }
 // A recursion variable. §5.5's placeholder `R`, bound by `rec`.
 $decl t_var $func ($decl i 0) { $prop tag "var" $decl id i }
 
-// The type of types. Members after the first are type-only positions (§5.7),
-// so they may name the constructors and lists declared below.
+// The type of types.
+//
+// The shapes are written out rather than named through the constructors below.
+// §5.7 lets a type-only position reference a declaration that is *in progress* —
+// which `proto_ty` is, inside its own `$union` — but not one that has not
+// started. Naming the constructors here would be the forward reference §4.11
+// forbids; it only looked like it worked because a type-only position is never
+// evaluated. Field orders must match the constructors exactly, since §5.1 makes
+// layout part of the type.
 $decl proto_ty $union (
   t_int, t_float, t_str, t_true, t_false, t_unit, t_bot,
   $call t_var (0),
-  $call raw_block (fields.nil, props.nil),
-  $call t_group (tys.nil),
-  $call t_func (tys.nil, proto_ty),
-  $call t_ref ("", proto_ty),
-  $call t_array (proto_ty),
-  $call raw_union (tys.nil),
-  $call raw_inter (tys.nil),
-  $call t_rec (0, proto_ty),
-  $call t_over (tys.nil),
-  $call t_tmpl (0)
+  { $prop tag "block"
+    $decl fields ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
+    $decl props  ($specialize P.list { $decl name ""  $decl value cv_unit  $decl ty proto_ty }).node },
+  { $prop tag "group" $decl items ($specialize P.list proto_ty).node },
+  { $prop tag "func"  $decl params ($specialize P.list proto_ty).node  $decl result proto_ty },
+  { $prop tag "ref"   $decl qual ""  $decl inner proto_ty },
+  { $prop tag "array" $decl elem proto_ty },
+  { $prop tag "union" $decl members ($specialize P.list proto_ty).node },
+  { $prop tag "inter" $decl members ($specialize P.list proto_ty).node },
+  { $prop tag "rec"   $decl id 0  $decl body proto_ty },
+  { $prop tag "over"  $decl cands ($specialize P.list proto_ty).node },
+  { $prop tag "tmpl"  $decl id 0 }
 )
 
 $decl field $func ($decl n "", $decl t proto_ty) { $decl name n  $decl ty t }
@@ -195,7 +204,7 @@ $decl t_block $func ($decl fs fields.node, $decl ps props.node)
 
 $fwd show
 
-$decl show_tys $func ($decl xs tys.node, $decl acc "", $decl first true) $match xs (
+$decl show_tys $func ($decl xs tys.node, $decl acc "", $decl first P.boolean) $match xs (
   $case {$prop tag "cons"} $call show_tys (xs.tail,
       $call concat (acc, $call concat ($if first "" ",", $call show (xs.head))), false),
   $case xs acc
@@ -216,7 +225,7 @@ $decl show_sorted_add $func ($decl xs tys.node, $decl acc strs.node) $match xs (
   $case xs acc
 )
 
-$decl join_strs $func ($decl xs strs.node, $decl acc "", $decl first true) $match xs (
+$decl join_strs $func ($decl xs strs.node, $decl acc "", $decl first P.boolean) $match xs (
   $case {$prop tag "cons"}
     $call join_strs (xs.tail, $call concat (acc, $call concat ($if first "" ",", xs.head)), false),
   $case xs acc
@@ -435,6 +444,35 @@ $decl t_bool $call union2 (t_true, t_false)
 // which is what makes `μR.{}|{head:Int,tail:R}` and its one-step expansion the
 // same type.
 
+// Does this variable occur free in the type? A `rec` binding the same id
+// shadows it. Used to keep substitution from rebuilding subtrees it would not
+// change — see `subst`.
+$fwd occurs
+
+$decl occurs_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call occurs (xs.head, i)) true ($call occurs_tys (xs.tail, i)),
+  $case xs false
+)
+
+$decl occurs_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call occurs (xs.head.ty, i)) true ($call occurs_fields (xs.tail, i)),
+  $case xs false
+)
+
+$decl occurs $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "var"}   $call eq_int (t.id, i),
+  $case {$prop tag "block"} $call occurs_fields (t.fields, i),
+  $case {$prop tag "group"} $call occurs_tys (t.items, i),
+  $case {$prop tag "func"}  $if ($call occurs_tys (t.params, i)) true ($call occurs (t.result, i)),
+  $case {$prop tag "ref"}   $call occurs (t.inner, i),
+  $case {$prop tag "array"} $call occurs (t.elem, i),
+  $case {$prop tag "union"} $call occurs_tys (t.members, i),
+  $case {$prop tag "inter"} $call occurs_tys (t.members, i),
+  $case {$prop tag "rec"}   $if ($call eq_int (t.id, i)) false ($call occurs (t.body, i)),
+  $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
+  $case t false
+)
+
 $fwd subst
 
 $decl subst_tys $func ($decl xs tys.node, $decl i 0, $decl r proto_ty, $decl acc tys.node) $match xs (
@@ -450,7 +488,16 @@ $decl subst_fields $func ($decl xs fields.node, $decl i 0, $decl r proto_ty, $de
   $case xs ($call fields.reverse (acc, fields.nil))
 )
 
-$decl subst $func ($decl t proto_ty, $decl i 0, $decl r proto_ty) $match t (
+// Substitution rebuilds every node it walks, and rebuilding a union re-runs its
+// normalisation — so walking a subtree the variable does not even occur in is
+// pure waste, and quadratic waste at that. Checking first costs one allocation-
+// free traversal and lets the unchanged subtree be shared.
+$fwd subst_at
+
+$decl subst $func ($decl t proto_ty, $decl i 0, $decl r proto_ty)
+  $if ($call not ($call occurs (t, i))) t ($call subst_at (t, i, r))
+
+$decl subst_at $func ($decl t proto_ty, $decl i 0, $decl r proto_ty) $match t (
   $case {$prop tag "var"}   $if ($call eq_int (t.id, i)) r t,
   // Props hold values, never types, so they need no substitution.
   $case {$prop tag "block"} $call raw_block ($call subst_fields (t.fields, i, r, fields.nil), t.props),
@@ -511,7 +558,7 @@ $decl find_binder $func ($decl bs binder_list.node, $decl i 0) $match bs (
 // solved (§5.5). It is **unrelated** to everything but itself — not ⊥. Treating
 // it as ⊥ would make it a subtype of anything, and `join` would then swallow
 // the placeholder instead of keeping it in the union for the solver to resolve.
-$decl unfolded $func ($decl o true, $decl t proto_ty) { $decl ok o  $decl ty t }
+$decl unfolded $func ($decl o P.boolean, $decl t proto_ty) { $decl ok o  $decl ty t }
 
 $decl unfold_var $func ($decl st proto_actx, $decl i 0)
   { $decl bt $call find_binder (st.binders, i)
@@ -533,6 +580,20 @@ $decl mem_pair $func ($decl ps pair_list.node, $decl x 0, $decl y 0) $match ps (
 // repeated goal is assumed to hold. That is what terminates on recursive types
 // — the assumption is discharged by the structure around it.
 
+// Used by projection typing, not by subtyping: §5.1 matches fields by position
+// now, but `e.name` still looks a field up by name (§4.6).
+$decl find_field $func ($decl xs fields.node, $decl n "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.name, n)) ($call field (n, xs.head.ty)) ($call find_field (xs.tail, n)),
+  $case xs ($call field ("", t_bot))
+)
+
+$decl find_prop $func ($decl xs props.node, $decl n "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.name, n)) xs.head ($call find_prop (xs.tail, n)),
+  $case xs ($call prop_entry ("", $call cv_opaque (-1)))
+)
+
 $fwd sub_seen
 
 $decl subs_all_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_actx) $match xs (
@@ -541,9 +602,32 @@ $decl subs_all_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_a
   $case xs true
 )
 
+// §5.1: "for every prop of `T`, `S` has the same prop with the **same value**."
+// Two blocks carrying *different* tags can therefore never be related, and that
+// is decidable by reading one prop. Without this, matching a block against a
+// seventeen-member union descends into all seventeen.
+$decl tag_of $func ($decl t proto_ty) $match t (
+  $case {$prop tag "block"}
+    { $decl p  $call find_prop (t.props, "tag")
+      $decl cv p.value
+      $decl out $match cv (
+          $case {$prop tag "cstr"} cv.v,
+          $case cv ""
+        ) }.out,
+  $case t ""
+)
+
+$decl tags_differ $func ($decl a proto_ty, $decl b proto_ty)
+  { $decl ta $call tag_of (a)
+    $decl tb $call tag_of (b)
+    $decl out $call and ($call and ($call not ($call eq_str (ta, "")),
+                                    $call not ($call eq_str (tb, ""))),
+                         $call not ($call eq_str (ta, tb))) }.out
+
 $decl subs_any_right $func ($decl a proto_ty, $decl ys tys.node, $decl st proto_actx) $match ys (
   $case {$prop tag "cons"}
-    $if ($call sub_seen (a, ys.head, st)) true ($call subs_any_right (a, ys.tail, st)),
+    $if ($call tags_differ (a, ys.head)) ($call subs_any_right (a, ys.tail, st))
+    ($if ($call sub_seen (a, ys.head, st)) true ($call subs_any_right (a, ys.tail, st))),
   $case ys false
 )
 
@@ -579,20 +663,6 @@ $decl subs_zip_flipped $func ($decl xs tys.node, $decl ys tys.node, $decl st pro
   $case xs ($call tys.is_nil (ys))
 )
 
-// Used by projection typing, not by subtyping: §5.1 matches fields by position
-// now, but `e.name` still looks a field up by name (§4.6).
-$decl find_field $func ($decl xs fields.node, $decl n "") $match xs (
-  $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.name, n)) ($call field (n, xs.head.ty)) ($call find_field (xs.tail, n)),
-  $case xs ($call field ("", t_bot))
-)
-
-$decl find_prop $func ($decl xs props.node, $decl n "") $match xs (
-  $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.name, n)) xs.head ($call find_prop (xs.tail, n)),
-  $case xs ($call prop_entry ("", $call cv_opaque (-1)))
-)
-
 // Prefix and depth (§5.1): `T`'s fields must be an ordered *prefix* of `S`'s —
 // same names at the same positions, each at a subtype. Running out of required
 // fields means the prefix is satisfied; running out of `S`'s fields first means
@@ -624,7 +694,13 @@ $decl sub_props $func ($decl s props.node, $decl want props.node) $match want (
 // §5.3: `&T <: &mut T <: &const T`. `&T` and `&mut T` are invariant in `T`;
 // only `&const T` is covariant, which is why structural width subtyping on
 // storage is available exclusively through read-only views.
-$decl sub_ref $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
+// Parameters are declared at the *ref* shape, not at the whole type union:
+// §3.4 makes a default fix its parameter's type, and a `$match` arm's narrowing
+// does not cross a call boundary. `$call t_ref …` is the example expression
+// whose type is exactly the member this function handles.
+$decl proto_ref $call t_ref ("", proto_ty)
+
+$decl sub_ref $func ($decl a proto_ref, $decl b proto_ref, $decl st proto_actx)
   $if ($call eq_str (b.qual, "const")) ($call sub_seen (a.inner, b.inner, st))
   ($if ($call eq_str (b.qual, "mut"))
        ($call and ($call not ($call eq_str (a.qual, "const")), $call ty_eq (a.inner, b.inner)))
@@ -632,7 +708,10 @@ $decl sub_ref $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
 
 // A variable on the left. Pairing it with a variable on the right is the only
 // goal that can recur, so that is the pair worth assuming.
-$decl sub_var_left $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match b (
+$decl proto_var $call t_var (0)
+
+// Same reason as `sub_ref`: this handles the variable shape, so it says so.
+$decl sub_var_left $func ($decl a proto_var, $decl b proto_ty, $decl st proto_actx) $match b (
   $case {$prop tag "var"}
     $if ($call mem_pair (st.pairs, a.id, b.id)) true
         { $decl ua $call unfold_var (st, a.id)
@@ -705,6 +784,16 @@ $decl is_rec $func ($decl t proto_ty) $match t (
 // was the checker's dominant cost — the strings are proportional to the whole
 // type and nothing is ever freed (BOOTSTRAP.md §3) — so the key is built only
 // when one side is a `rec`.
+// KNOWN INCOMPLETE. Pairing two *variables* closes the loop whenever both sides
+// are folded the same way, which covers everything the test suite and three of
+// the four stage-1 files need. It does not cover a goal that recurs through a
+// recursive type unfolded structurally — `X <: μ…` reducing to itself — which
+// inference produces whenever it rebuilds a value of a recursive type.
+//
+// Amadio–Cardelli's assumption set is over *goals* for that reason. Adding one
+// here was measured: it changed `types.mpl` from 9 errors in ~2GB to 12 errors
+// in ~6GB, so it is not simply the missing piece, and it is not worth its cost
+// until the extra failures are understood. See the note in BOOTSTRAP.md §7.
 $decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
   $if ($call same (a, b)) true ($call sub_step (a, b, st))
 
@@ -746,6 +835,14 @@ $decl remove_covered $func ($decl xs tys.node, $decl pat proto_ty, $decl acc tys
 // the members `P` selects, not `T ^ P`: an intersection has no fields to
 // project, so `xs.tail` inside a `$case {$prop tag "cons"}` arm would have
 // nothing to read. Unrolling first is what makes this work on a recursive type.
+$decl meet $func ($decl a proto_ty, $decl b proto_ty)
+  $if ($call sub (a, b)) a
+  ($if ($call sub (b, a)) b
+  // Two distinct base types have no common values (§5.1: they are unrelated),
+  // so their intersection is uninhabited rather than merely unsatisfied.
+  ($if ($call and ($call is_base (a), $call is_base (b))) t_bot
+       ($call t_inter ($call tys.cons (a, $call tys.cons (b, tys.nil))))))
+
 $decl keep_covered $func ($decl xs tys.node, $decl pat proto_ty, $decl acc tys.node) $match xs (
   $case {$prop tag "cons"}
     $call keep_covered (xs.tail, pat,
@@ -760,7 +857,15 @@ $decl subst_kept $func ($decl xs tys.node, $decl i 0, $decl r proto_ty, $decl ac
   $case xs acc
 )
 
-$decl restrict $func ($decl t proto_ty, $decl pat proto_ty) $match t (
+$fwd restrict_at
+
+$decl restrict $func ($decl t proto_ty, $decl pat proto_ty)
+  // §4.7's catch-all arm narrows the scrutinee by its own type, and `T & T` is
+  // `T`. Without this the common arm re-checks every member against every
+  // member, which is quadratic for no information.
+  $if ($call same (t, pat)) t ($call restrict_at (t, pat))
+
+$decl restrict_at $func ($decl t proto_ty, $decl pat proto_ty) $match t (
   // Selecting does not need the type unrolled. A pattern is a tag block, and
   // §5.1 compares a block's *props* — which every member carries as it stands.
   // Unrolling first would rebuild the whole type on every `$match` arm, which
@@ -803,14 +908,6 @@ $decl minus $func ($decl t proto_ty, $decl pat proto_ty) $match t (
   $case {$prop tag "union"} $call t_union ($call remove_covered (t.members, pat, tys.nil)),
   $case t ($if ($call sub (t, pat)) t_bot t)
 )
-
-$decl meet $func ($decl a proto_ty, $decl b proto_ty)
-  $if ($call sub (a, b)) a
-  ($if ($call sub (b, a)) b
-  // Two distinct base types have no common values (§5.1: they are unrelated),
-  // so their intersection is uninhabited rather than merely unsatisfied.
-  ($if ($call and ($call is_base (a), $call is_base (b))) t_bot
-       ($call t_inter ($call tys.cons (a, $call tys.cons (b, tys.nil))))))
 
 // -------------------------------------------------------------- convenience
 

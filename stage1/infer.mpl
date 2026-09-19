@@ -142,6 +142,14 @@ $decl err $func ($decl cx proto_ctx, $decl m "", $decl x P.proto_span)
         ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, x.line, x.col), cx.errs)))
     $decl out   T.t_bot }.out
 
+// §5.5: park a check whose types still mention an unresolved placeholder. It is
+// re-run once the knot is tied, and reported then if it fails.
+$decl defer_check $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl b T.proto_ty,
+                         $decl m "", $decl x P.proto_span)
+  { $decl noted $set cx.defer ($call def_list.cons ($call def_ent (x.line, x.col, m, a, b),
+                                                    $call eval_defer (cx.defer)))
+    $decl out T.t_unit }.out
+
 // §5.4: a reference behaves as its pointee wherever a value is expected.
 $decl deref_ty $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "ref"} $call deref_ty (t.inner),
@@ -365,8 +373,10 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_no
     $decl out $match tgt (
         $case {$prop tag "ref"}
           $if ($call T.sub (val, tgt.inner)) val
-              ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
-                           $call concat (" into storage of ", $call T.show (tgt.inner)))), n)),
+              ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
+                  ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
+                  ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
+                               $call concat (" into storage of ", $call T.show (tgt.inner)))), n))),
         $case tgt ($call err (cx, $call concat ("$set needs storage on the left, found ",
                        $call T.show (tgt)), n))
       ) }.out
@@ -443,9 +453,7 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
               // knot is tied, not now — otherwise every call inside a recursive
               // group would fail against its own placeholder.
               ($if ($call or ($call has_free_var (at), $call has_free_var (ps.head)))
-                  ($do ($set cx.defer ($call def_list.cons (
-                            $call def_ent (as.head.line, as.head.col, why, at, ps.head),
-                            $call eval_defer (cx.defer))))
+                  ($do ($call defer_check (cx, at, ps.head, why, as.head))
                        ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1))))
                   ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
                             $call concat (", expected ", $call T.show (ps.head)))), as.head))
@@ -476,8 +484,10 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
 $decl infer_if $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node)
   { $decl c   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
     $decl chk $if ($call T.sub (c, T.t_bool)) T.t_unit
+              ($if ($call has_free_var (c))
+                  ($call defer_check (cx, c, T.t_bool, "$if condition is ", n))
                   ($call err (cx, $call concat ("$if condition must be Bool, found ",
-                                  $call T.show (c)), n))
+                                  $call T.show (c)), n)))
     $decl a $call infer (cx, e, $call op (n, 1))
     $decl b $call infer (cx, e, $call op (n, 2))
     $decl out $call T.join (a, b) }.out

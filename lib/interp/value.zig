@@ -132,6 +132,11 @@ pub const Func = struct {
     /// recursive function reads its own name through the very slot that its
     /// `$decl` fills after the closure is built.
     scope: *Scope,
+    /// Whether this body can create a closure at all — a `$func`, `$template`
+    /// or `$prop` anywhere inside it. When it cannot, nothing can capture the
+    /// call's scope, so the scope is provably dead at return and its allocation
+    /// can be reused. Computed once per `$func` literal, not per call.
+    may_capture: bool = true,
     /// The file this `$func` literal was written in.
     ///
     /// A span says where, but not in which file, and `$import` (§4.14) means a
@@ -177,6 +182,14 @@ pub const Scope = struct {
     decls: std.ArrayList(Slot) = .empty,
     props: []PropSlot = &.{},
     arena: Allocator,
+    /// Set when a `$func` or `$template` value captures this scope — or any
+    /// scope below it, since §7.3's capture is of the whole chain by pointer.
+    ///
+    /// A scope that nothing captured is dead the moment its call returns, and
+    /// since nothing is ever freed (§7.6) that is the difference between
+    /// reusing one allocation and leaking one per call. Only closures can keep
+    /// a scope alive: block *values* hold resolved fields, not scopes.
+    captured: bool = false,
 
     /// An ordered slot. `value == null` means the slot was reserved by `$fwd`
     /// and its completing `$decl` has not run yet (§4.11).
@@ -214,8 +227,19 @@ pub const Scope = struct {
     };
 
     pub fn init(arena: Allocator, parent: ?*Scope) Allocator.Error!*Scope {
+        return initCapacity(arena, parent, 0);
+    }
+
+    /// `slots` is how many `$decl`/`$fwd` slots this scope will hold.
+    ///
+    /// Sizing exactly matters more than it looks: nothing is ever freed
+    /// (§7.6), and `ArrayList` grows geometrically, so a two-parameter call
+    /// would reserve eight slots and keep them for the life of the program.
+    /// Every call allocates a scope, and a type checker makes millions.
+    pub fn initCapacity(arena: Allocator, parent: ?*Scope, slots: usize) Allocator.Error!*Scope {
         const s = try arena.create(Scope);
         s.* = .{ .parent = parent, .arena = arena };
+        if (slots != 0) try s.decls.ensureTotalCapacityPrecise(arena, slots);
         return s;
     }
 

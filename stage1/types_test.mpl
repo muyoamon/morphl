@@ -236,3 +236,45 @@ $decl t60 $call check ("meet of two blocks keeps both fields",
                           $call T.t_block ($call T.f1 ("b", str), T.props.nil))))
 
 $decl done $call nl ("all type tests passed")
+
+// A union of a recursive type with one of its own members must be a subtype of
+// that recursive type — this is the shape an inferred return type takes when
+// one arm returns the whole type and another returns a single case.
+$decl t61 $call check ("union of a rec type and its member is a subtype of it",
+  $call T.sub ($call T.union2 (list_ty, two_elem), list_ty))
+$decl t62 $call check ("...and each side separately",
+  $call and ($call T.sub (list_ty, list_ty), $call T.sub (two_elem, list_ty)))
+
+// Equirecursion: a member written with the recursion *expanded* must relate to
+// the same member written with the bound variable. Inference produces the
+// expanded form whenever it rebuilds a value of a recursive type.
+$decl rec1 $call T.t_rec (1,
+  $call T.union2 ($call T.t_block ($call T.f1 ("ty", $call T.t_var (1)), T.props.nil), unit))
+$decl folded_member   $call T.t_block ($call T.f1 ("ty", $call T.t_var (1)), T.props.nil)
+$decl expanded_member $call T.t_block ($call T.f1 ("ty", rec1), T.props.nil)
+
+$decl t63 $call check ("an expanded member is a subtype of its recursive type",
+  $call T.sub (expanded_member, rec1))
+$decl t64 $call check ("...and the recursive type accepts the union of both forms",
+  $call T.sub ($call T.union2 (rec1, expanded_member), rec1))
+
+// The shape inference actually produces: the expansion sits inside a *second*
+// recursive type (a list) whose binder differs between the two sides.
+$decl nil_ty $call T.tag_block ("tag", "nil")
+$decl cons_of $func ($decl elem T.proto_ty, $decl selfid 0)
+  $call T.t_block ($call fld2 ("head", elem, "tail", $call T.t_var (selfid)),
+                   $call T.p1 ("tag", $call T.cv_str ("cons")))
+$decl list_of $func ($decl elem T.proto_ty, $decl selfid 0)
+  $call T.t_rec (selfid, $call T.union2 ($call cons_of (elem, selfid), nil_ty))
+
+$decl elem_folded $call T.t_block ($call T.f1 ("ty", $call T.t_var (119)), T.props.nil)
+$decl blk_folded  $call T.t_block ($call T.f1 ("fields", $call list_of (elem_folded, 126)),
+                                   $call T.p1 ("tag", $call T.cv_str ("blk")))
+$decl outer $call T.t_rec (119, $call T.union2 (blk_folded, unit))
+
+$decl elem_expanded $call T.t_block ($call T.f1 ("ty", outer), T.props.nil)
+$decl blk_expanded  $call T.t_block ($call T.f1 ("fields", $call list_of (elem_expanded, 372)),
+                                     $call T.p1 ("tag", $call T.cv_str ("blk")))
+
+$decl t65 $call check ("expansion nested in a second recursive type still relates",
+  $call T.sub (blk_expanded, outer))
