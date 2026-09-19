@@ -144,6 +144,9 @@ pub const Func = struct {
     /// written in. Without this, an error raised inside an imported function
     /// gets labelled with the importing file's path.
     file: ?[]const u8 = null,
+    /// The name this `$func` was declared under, when it had one. Only for
+    /// diagnostics and the allocation profile; nothing in evaluation reads it.
+    name: ?[]const u8 = null,
 };
 
 pub const Param = struct {

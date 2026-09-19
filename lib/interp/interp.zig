@@ -84,6 +84,11 @@ pub const Interp = struct {
     try_payload: Value = .unit,
     /// Scopes whose call has returned without anything capturing them.
     scope_pool: std.ArrayListUnmanaged(*Scope) = .empty,
+    /// Allocation profile, when the driver asked for one: bytes and calls
+    /// attributed to the innermost morphl function at the moment of the
+    /// allocation. Nothing is ever freed (§7.6), so bytes allocated *is* peak
+    /// memory, and this says which function is responsible for it.
+    stats: ?*Stats = null,
     /// Scratch for evaluated call arguments.
     ///
     /// An argument list is dead the moment `bindParams` copies it into the
@@ -93,6 +98,95 @@ pub const Interp = struct {
     /// argument that is itself a call pushes above ours and pops back.
     arg_stack: []Value = &.{},
     arg_top: usize = 0,
+
+    pub const Stats = struct {
+        backing: Allocator,
+        /// Innermost named function currently running.
+        current: []const u8 = "(top level)",
+        rows: std.StringHashMapUnmanaged(Row) = .empty,
+        total: u64 = 0,
+        scopes_fresh: u64 = 0,
+        scopes_pooled: u64 = 0,
+
+        pub const Row = struct { bytes: u64 = 0, calls: u64 = 0, allocs: u64 = 0 };
+
+        fn note(self: *Stats, len: usize) void {
+            self.total += len;
+            const e = self.rows.getOrPut(self.backing, self.current) catch return;
+            if (!e.found_existing) e.value_ptr.* = .{};
+            e.value_ptr.bytes += len;
+            e.value_ptr.allocs += 1;
+        }
+
+        fn enter(self: *Stats, name: []const u8) void {
+            const e = self.rows.getOrPut(self.backing, name) catch return;
+            if (!e.found_existing) e.value_ptr.* = .{};
+            e.value_ptr.calls += 1;
+        }
+
+        fn alloc(ctx: *anyopaque, len: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
+            const self: *Stats = @ptrCast(@alignCast(ctx));
+            const p = self.backing.rawAlloc(len, a, ra);
+            if (p != null) self.note(len);
+            return p;
+        }
+        fn resize(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) bool {
+            const self: *Stats = @ptrCast(@alignCast(ctx));
+            return self.backing.rawResize(m, a, n, ra);
+        }
+        fn remap(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) ?[*]u8 {
+            const self: *Stats = @ptrCast(@alignCast(ctx));
+            return self.backing.rawRemap(m, a, n, ra);
+        }
+        fn free(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, ra: usize) void {
+            const self: *Stats = @ptrCast(@alignCast(ctx));
+            self.backing.rawFree(m, a, ra);
+        }
+
+        const vtable: Allocator.VTable = .{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        };
+
+        pub fn allocator(self: *Stats) Allocator {
+            return .{ .ptr = self, .vtable = &vtable };
+        }
+
+        /// Highest first, to stderr.
+        const Entry = struct { name: []const u8, row: Row };
+
+        pub fn report(self: *Stats, w: *std.Io.Writer) !void {
+            var list: std.ArrayListUnmanaged(Entry) = .empty;
+            var it = self.rows.iterator();
+            while (it.next()) |e| try list.append(self.backing, .{ .name = e.key_ptr.*, .row = e.value_ptr.* });
+            std.mem.sort(Entry, list.items, {}, struct {
+                fn lt(_: void, x: Entry, y: Entry) bool {
+                    return x.row.bytes > y.row.bytes;
+                }
+            }.lt);
+            try w.print("\n{d:.2} GB allocated in total; bytes are charged to the innermost function running.\n\n", .{
+                @as(f64, @floatFromInt(self.total)) / (1024.0 * 1024.0 * 1024.0),
+            });
+            try w.print("scopes: {d} taken from the pool, {d} allocated fresh\n\n", .{ self.scopes_pooled, self.scopes_fresh });
+            try w.print("{s:>9}  {s:>7}  {s:>12}  {s:>12}  {s:>8}  {s}\n", .{ "bytes", "share", "calls", "allocs", "avg", "function" });
+            var shown: usize = 0;
+            for (list.items) |row| {
+                if (shown >= 25) break;
+                shown += 1;
+                try w.print("{d:>8.2}M  {d:>6.1}%  {d:>12}  {d:>12}  {d:>7.0}B  {s}\n", .{
+                    @as(f64, @floatFromInt(row.row.bytes)) / (1024.0 * 1024.0),
+                    100.0 * @as(f64, @floatFromInt(row.row.bytes)) / @as(f64, @floatFromInt(self.total)),
+                    row.row.calls,
+                    row.row.allocs,
+                    if (row.row.allocs == 0) 0.0 else @as(f64, @floatFromInt(row.row.bytes)) / @as(f64, @floatFromInt(row.row.allocs)),
+                    row.name,
+                });
+            }
+            try w.flush();
+        }
+    };
 
     const Module = struct {
         state: enum { loading, done },
@@ -109,12 +203,16 @@ pub const Interp = struct {
         /// Stack the interpreter may use, which only the caller knows: it is
         /// the caller that chose the thread this runs on.
         stack_bytes: usize = default_stack_bytes,
+        /// Collect an allocation profile into this.
+        stats: ?*Stats = null,
     };
 
-    pub fn init(arena: Allocator, diags: *Diagnostics, opts: Options) Error!Interp {
+    pub fn init(arena_in: Allocator, diags: *Diagnostics, opts: Options) Error!Interp {
         var probe: u8 = undefined;
+        const arena = if (opts.stats) |st| st.allocator() else arena_in;
         var self: Interp = .{
             .arena = arena,
+            .stats = opts.stats,
             .rt = .{
                 .arena = arena,
                 .diags = diags,
@@ -159,6 +257,9 @@ pub const Interp = struct {
     }
 
     fn acquireScope(self: *Interp, parent: *Scope, slots: usize) Error!*Scope {
+        if (self.stats) |st| {
+            if (self.scope_pool.items.len == 0) st.scopes_fresh += 1 else st.scopes_pooled += 1;
+        }
         if (self.scope_pool.pop()) |s| {
             s.parent = parent;
             s.props = &.{};
@@ -193,6 +294,13 @@ pub const Interp = struct {
         switch (n.data) {
             .form => |f| switch (f.keyword) {
                 .func, .template, .prop => return true,
+                // §5.7: a `$case` pattern is a *type-only position*, never
+                // evaluated, so nothing written in it can build a closure. A
+                // pattern matching a tag is a block full of `$prop`, and
+                // counting those kept the scope of every function that matches
+                // on a tag — which in the type checker is most of them — out of
+                // the pool.
+                .case => return mayCapture(&f.operands[1]),
                 else => {},
             },
             else => {},
@@ -351,6 +459,12 @@ pub const Interp = struct {
         // once the `$decl` completes.
         const index = scope.pendingSlot(name) orelse try scope.reserve(name, span);
         const v = try self.eval(init_node, scope);
+        if (self.stats != null) switch (v) {
+            .func => |f| if (f.name == null) {
+                f.name = name;
+            },
+            else => {},
+        };
         _ = scope.complete(index, v);
     }
 
@@ -624,6 +738,16 @@ pub const Interp = struct {
         self.call_depth += 1;
         defer self.call_depth -= 1;
 
+        var saved_fn: []const u8 = undefined;
+        if (self.stats) |st| {
+            saved_fn = st.current;
+            st.current = f0.name orelse "(anonymous $func)";
+            st.enter(st.current);
+        }
+        defer if (self.stats) |st| {
+            st.current = saved_fn;
+        };
+
         // Diagnostics raised inside this call belong to the file the function
         // was written in, not the one that called it.
         const caller_file = self.rt.diags.current_file;
@@ -811,6 +935,23 @@ pub const Interp = struct {
                         return self.rt.fail(e.span, "a block pattern may contain only $prop members (BOOTSTRAP.md §1.3)", .{});
                     }
                 }
+                // Almost every pattern in stage 1 is `{$prop tag "…"}`, whose
+                // props are literals. Building the block to then read one prop
+                // back off it is a scope, a prop-slot array and a block per arm
+                // *tested* — and a 13-arm `$match` tests most of them. Since
+                // `shapeMatches` on a prop-only pattern is exactly "the value
+                // is a block carrying these props with these values", the
+                // literal case answers that without building anything.
+                if (allLiteralProps(exprs)) {
+                    if (scrutinee != .block) return false;
+                    const blk = scrutinee.block;
+                    for (exprs) |*e| {
+                        const f = e.data.form;
+                        const got = blk.findProp(f.operands[0].data.name) orelse return false;
+                        if (!value.equal(literalOf(&f.operands[1]).?, got, max_shape_depth)) return false;
+                    }
+                    return true;
+                }
                 const pv = try self.evalBlockExprs(exprs, scope, pat.span);
                 return shapeMatches(pv, scrutinee, max_shape_depth);
             },
@@ -825,6 +966,26 @@ pub const Interp = struct {
 
             else => return self.rt.fail(pat.span, "this pattern is outside the bootstrap subset (BOOTSTRAP.md §1.3): patterns must be a prop-only block, a name, or an Int/Str/Bool literal", .{}),
         }
+    }
+
+    /// A pattern prop whose value is written as a literal, so testing it needs
+    /// no evaluation and therefore no scope.
+    fn literalOf(n: *const Node) ?Value {
+        return switch (n.data) {
+            .int => |v| .{ .int = v },
+            .str => |v| .{ .str = v },
+            .float => |v| .{ .float = v },
+            .bool_lit => |v| .{ .bool = v },
+            .unit => .unit,
+            else => null,
+        };
+    }
+
+    fn allLiteralProps(exprs: []const Node) bool {
+        for (exprs) |*e| {
+            if (literalOf(&e.data.form.operands[1]) == null) return false;
+        }
+        return true;
     }
 
     /// Does `val` satisfy the *shape* of the example value `pat`?

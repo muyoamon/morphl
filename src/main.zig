@@ -32,10 +32,13 @@ const RunCtx = struct {
     diags: *diag.Diagnostics,
     file: ast.File,
     opts: interp.Interp.Options,
+    stats: ?*interp.Interp.Stats = null,
     failed: ?anyerror = null,
 
     fn run(self: *RunCtx) void {
-        var it = interp.Interp.init(self.arena, self.diags, self.opts) catch |e| {
+        var opts = self.opts;
+        opts.stats = self.stats;
+        var it = interp.Interp.init(self.arena, self.diags, opts) catch |e| {
             self.failed = e;
             return;
         };
@@ -257,8 +260,15 @@ pub fn main(init: process.Init.Minimal) !void {
                         .stack_bytes = interp_stack_bytes - 64 * 1024 * 1024,
                     },
                 };
+                // An allocation profile, when asked for. Nothing is ever freed
+                // (§7.6), so bytes allocated is peak memory, and the profile
+                // says which morphl function spent it.
+                var stats: interp.Interp.Stats = .{ .backing = arena };
+                if (init.environ.getPosix("MORPHL_STATS") != null) ctx.stats = &stats;
+
                 const th = try std.Thread.spawn(.{ .stack_size = interp_stack_bytes }, RunCtx.run, .{&ctx});
                 th.join();
+                if (ctx.stats) |st| try st.report(err);
                 if (ctx.failed) |e| return e;
             }
         } else if (!diags.any()) {
