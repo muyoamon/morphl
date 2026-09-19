@@ -90,7 +90,9 @@ $decl mem_str $func ($decl xs strs.node, $decl s "") $match xs (
 
 $decl cv_int    $func ($decl x 0)    { $prop tag "cint"    $decl v x }
 $decl cv_str    $func ($decl x "")   { $prop tag "cstr"    $decl v x }
-$decl cv_bool   $func ($decl x true) { $prop tag "cbool"   $decl v x }
+// §3.2: `true` and `false` are distinct types, so a parameter defaulted `true`
+// takes only `true`. This one holds either.
+$decl cv_bool   $func ($decl x P.boolean) { $prop tag "cbool"   $decl v x }
 $decl cv_unit                        { $prop tag "cunit" }
 $decl cv_opaque $func ($decl i 0)    { $prop tag "copaque" $decl id i }
 

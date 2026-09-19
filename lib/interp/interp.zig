@@ -361,7 +361,22 @@ pub const Interp = struct {
         for (exprs) |*e| {
             if (e.isForm(.decl) or e.isForm(.fwd)) slots += 1;
         }
-        const scope = try Scope.initCapacity(self.arena, parent, slots);
+        // A block's scope is dead once its value is built: the value holds
+        // copies of the slots, not the scope. The exception is a closure made
+        // inside it, which captures the chain — the same test `callFunc` uses
+        // for a call's scope. `$prop` counts as capturing, so a block with
+        // props keeps its scope, which `collectProps` needs anyway.
+        var recyclable = true;
+        for (exprs) |*e| {
+            if (mayCapture(e)) {
+                recyclable = false;
+                break;
+            }
+        }
+        const scope = if (recyclable)
+            try self.acquireScope(parent, slots)
+        else
+            try Scope.initCapacity(self.arena, parent, slots);
         try self.collectProps(exprs, scope);
 
         for (exprs) |*e| try self.evalBlockItem(e, scope);
@@ -388,6 +403,7 @@ pub const Interp = struct {
         _ = span;
         const b = try self.arena.create(value.Block);
         b.* = .{ .decls = decls, .props = props };
+        if (recyclable) self.releaseScope(scope);
         return .{ .block = b };
     }
 
