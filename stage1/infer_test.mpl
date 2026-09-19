@@ -168,7 +168,7 @@ $decl t42 $call check_str ("recursive data is inferred, not declared",
   $call field_ty (
     "$decl f $func ($decl n 0) $if ($call eq_int (n, 0)) {} { $decl head n  $decl tail $call f ($call sub (n, 1)) }",
     "f"),
-  "[Int]->mu1.<(),{head:Int,tail:v1,}>")
+  "[Int]->mu.<(),{head:Int,tail:b0,}>")
 
 // §4.10: props are visible throughout their block regardless of order.
 // Asserted through the projection rather than the rendered block, so the test

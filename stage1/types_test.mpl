@@ -193,10 +193,10 @@ $decl t47 $call check ("an intersection is a subtype of each member",
 $decl cons_cell $func ($decl tail T.proto_ty)
   $call T.t_block ($call fld2 ("head", int, "tail", tail), T.props.nil)
 
-$decl list_ty $call T.t_rec (1, $call T.union2 (unit, $call cons_cell ($call T.t_var (1))))
+$decl list_ty $call T.close_var ($call T.union2 (unit, $call cons_cell ($call T.t_var (1))), 1)
 
 $decl t48 $call check_str ("the inferred list type renders",
-  $call T.show (list_ty), "mu1.<(),{head:Int,tail:v1,}>")
+  $call T.show (list_ty), "mu.<(),{head:Int,tail:b0,}>")
 
 // Equirecursive: one unrolling is the same type.
 $decl t49 $call check ("a recursive type equals its unrolling",
@@ -213,11 +213,15 @@ $decl t52 $call check ("a Str-headed cell is not",
   $call not ($call T.sub ($call cons_cell ($call T.t_block ($call fld2 ("head", str, "tail", unit), T.props.nil)),
                           list_ty)))
 
-// A recursive type whose variable is shadowed by an inner binder of the same
-// id must not be substituted through.
-$decl shadowed $call T.t_rec (1, $call T.t_rec (1, $call T.t_var (1)))
-$decl t53 $call check ("an inner binder shadows the outer one",
-  $call T.ty_eq ($call T.unroll (shadowed), $call T.t_rec (1, $call T.t_var (1))))
+// Unrolling the outer binder must leave a variable bound by an inner one
+// alone. As de Bruijn indices that is not a name clash but an index: `b0` under
+// two binders belongs to the inner one, and only `b1` would belong to the outer.
+$decl shadowed $call T.t_rec ($call T.t_rec ($call T.t_bnd (0)))
+$decl t53 $call check ("unrolling does not reach a variable of an inner binder",
+  $call T.ty_eq ($call T.unroll (shadowed), $call T.t_rec ($call T.t_bnd (0))))
+$decl t53b $call check ("...and does reach one that names the outer binder",
+  $call T.ty_eq ($call T.unroll ($call T.t_rec ($call T.t_rec ($call T.t_bnd (1)))),
+                 $call T.t_rec ($call T.t_rec ($call T.t_rec ($call T.t_bnd (1))))))
 
 // ----------------------------------------------------------------- lattice
 
@@ -248,9 +252,8 @@ $decl t62 $call check ("...and each side separately",
 // Equirecursion: a member written with the recursion *expanded* must relate to
 // the same member written with the bound variable. Inference produces the
 // expanded form whenever it rebuilds a value of a recursive type.
-$decl rec1 $call T.t_rec (1,
-  $call T.union2 ($call T.t_block ($call T.f1 ("ty", $call T.t_var (1)), T.props.nil), unit))
-$decl folded_member   $call T.t_block ($call T.f1 ("ty", $call T.t_var (1)), T.props.nil)
+$decl rec1 $call T.close_var (
+  $call T.union2 ($call T.t_block ($call T.f1 ("ty", $call T.t_var (1)), T.props.nil), unit), 1)
 $decl expanded_member $call T.t_block ($call T.f1 ("ty", rec1), T.props.nil)
 
 $decl t63 $call check ("an expanded member is a subtype of its recursive type",
@@ -259,18 +262,20 @@ $decl t64 $call check ("...and the recursive type accepts the union of both form
   $call T.sub ($call T.union2 (rec1, expanded_member), rec1))
 
 // The shape inference actually produces: the expansion sits inside a *second*
-// recursive type (a list) whose binder differs between the two sides.
+// recursive type (a list) built from a different placeholder on each side — 126
+// against 372, as two declarations would give it. Tying the knot discards those
+// ids for an index, so the two lists come out as the same value.
 $decl nil_ty $call T.tag_block ("tag", "nil")
 $decl cons_of $func ($decl elem T.proto_ty, $decl selfid 0)
   $call T.t_block ($call fld2 ("head", elem, "tail", $call T.t_var (selfid)),
                    $call T.p1 ("tag", $call T.cv_str ("cons")))
 $decl list_of $func ($decl elem T.proto_ty, $decl selfid 0)
-  $call T.t_rec (selfid, $call T.union2 ($call cons_of (elem, selfid), nil_ty))
+  $call T.close_var ($call T.union2 ($call cons_of (elem, selfid), nil_ty), selfid)
 
 $decl elem_folded $call T.t_block ($call T.f1 ("ty", $call T.t_var (119)), T.props.nil)
 $decl blk_folded  $call T.t_block ($call T.f1 ("fields", $call list_of (elem_folded, 126)),
                                    $call T.p1 ("tag", $call T.cv_str ("blk")))
-$decl outer $call T.t_rec (119, $call T.union2 (blk_folded, unit))
+$decl outer $call T.close_var ($call T.union2 (blk_folded, unit), 119)
 
 $decl elem_expanded $call T.t_block ($call T.f1 ("ty", outer), T.props.nil)
 $decl blk_expanded  $call T.t_block ($call T.f1 ("fields", $call list_of (elem_expanded, 372)),

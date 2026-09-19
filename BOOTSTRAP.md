@@ -173,7 +173,27 @@ What this means before the backend exists: the two morphl functions the toolchai
 
 ## 7. Open bootstrap questions
 
-- **Subtyping needs a goal-level assumption set, and the cheap form is not enough.** `sub` currently assumes pairs of *recursion variables* (two integers, allocation-free), which closes the loop whenever both sides are folded the same way. It does not close a goal that recurs through a recursive type unfolded *structurally* — `X <: μ…` reducing to itself — which inference produces whenever it rebuilds a value of a recursive type: the rebuilt block's field type mentions the function's own result placeholder, so proving it is a member of the recursive type is coinductive with neither side a variable. That is the whole of the 9 errors left in `types.mpl`. Amadio–Cardelli's assumption set is over goals for exactly this reason, but adding one was measured: `types.mpl` went from 9 errors in ~2GB to 12 errors in ~6GB, so it is not simply the missing piece — the extra failures need understanding before the cost is worth paying.
+- **Subtyping needed a goal-level assumption set, and binder identity was what blocked it. Resolved.** `sub` used to assume pairs of *recursion variables* — two integers, allocation-free — which closes the loop only when both sides are folded the same way. It could not close a goal that recurs through a recursive type unfolded *structurally* (`X <: μ…` reducing to itself), which inference produces whenever it rebuilds a value of a recursive type. That was the whole of the 9 errors left in `types.mpl`.
+
+  Amadio–Cardelli's assumption set is over goals for exactly that reason, but adding one was measured as *worse* — 12 errors in ~6GB against 9 in ~2GB — because the real obstacle was underneath it. A μ binder took its id from a global counter, so the same type inferred at two declarations came out as `mu126` and `mu372` and compared unequal: goals could not repeat, so assuming them bought nothing. An alpha-normal form was tried at four insertion points and every one made things worse, because numbering binders by depth from the root is context-dependent and destroys the value *sharing* that equality was leaning on instead:
+
+  | canonicalise at | `parser.mpl` | `types.mpl` |
+  | --- | --- | --- |
+  | (baseline) | 0 | 9 |
+  | `close_rec`, i.e. stored types | 32 | 113 |
+  | `sub` entry | 19 | — |
+  | `ty_eq` | 0 | 18 |
+  | `$specialize` memo key | 0 | 17 |
+
+  The fix is the representation. A binder carries no id, and a variable names the number of binders between it and its binder (`t_bnd`). Alpha-equivalence is then structural identity, `same` recognises it for nothing, and the assumption set holds goal pairs — Amadio–Cardelli as written. **`types.mpl`: 9 errors to 0.**
+
+  Three things fell out of it:
+
+  - The four walks that rewrote a type — substitute a placeholder, renumber, substitute a bound variable, bind one — are *one* walk with the leaf case parameterised (`remap`). All four count binders on the way down and differ only at a leaf, and writing them separately cost four 12-arm matches in a file that type-checks itself, which was enough on its own to exhaust memory.
+  - The checker needed a real stack. `sub` descends structurally through a recursive type and that recursion is not in tail position, so §7.7 cannot eliminate it. Stage 0 now runs the interpreter on a 256MB thread, which moved the reportable depth from 476 nested calls to over 23000; the guard's budget is an `Options` field, since only the caller knows what stack it gave. Before this, tracing a failing check used enough extra stack to change the answer.
+  - Not done, and measured: pruning the right-hand side of a check by tag *before* unrolling it — which looks sound, since a member's tag is a prop it carries as it stands (§5.1) and `subs_any_right` rejects on it anyway — gives 18 errors instead of 0, at any memory cap. The reason is not understood, and until it is, the full unrolling stays.
+
+- **A module type-checks as the main file but not when it is imported.** `types.mpl` checks clean; a file whose entire content is `$decl T $import "types"` exhausts memory, and so therefore does `infer.mpl`. Bisecting the module by prefix puts the boundary exactly at `sub_seen` — the declaration completing the `$fwd` that `sub_step` forward-references — so it is the mutual-recursion knot, tied in a context the import path sets up differently from `check_file`. Memory grows linearly with the cap and never converges (~1GB per 1.2s), so it is a runaway rather than a large but finite check. This is the next thing to fix.
 
 - **§8 cannot build a character, only read one.** `byte` reads a byte out of a `Str`, and §3.1 says a character *is* a one-code-point substring — which only helps when the character already exists somewhere. Decoding the `\u{…}` escape that §2.1 requires means producing a code point that appears nowhere in the source, so a lexer written in morphl cannot do it with §8's intrinsics. Stage 0 adds `from_code (cp)` → `none | some Str`, validating so that §3.1's always-valid-UTF-8 invariant holds. §8 needs either that intrinsic or an explicit statement that `\u{…}` decoding stays a compiler builtin.
 - **Reading a value out of storage has no syntax.** `$decl y n` aliases (§5.4, and §12 says so outright), so snapshotting the contents of a cell into an immutable binding means passing it through something that expects a value. The prelude defines `ival`/`sval` identity functions for this, and stage 1's lexer needs them on almost every line that touches the cursor. §11 might want a `$copy`-style form, or §8 a blessed library identity.

@@ -94,7 +94,6 @@ $decl def_ent $func ($decl l 0, $decl c 0, $decl m "", $decl a T.proto_ty, $decl
 $decl proto_def $call def_ent (0, 0, "", T.t_bot, T.t_bot)
 $decl def_list $specialize P.list proto_def
 
-$decl ints $specialize P.list 0
 
 // One equation of the system: this placeholder resolves to this type.
 $decl res_ent $func ($decl i 0, $decl t T.proto_ty) { $decl id i  $decl ty t }
@@ -190,52 +189,49 @@ $decl occurs $func ($decl t T.proto_ty, $decl i 0) $match t (
   $case {$prop tag "array"} $call occurs (t.elem, i),
   $case {$prop tag "union"} $call occurs_tys (t.members, i),
   $case {$prop tag "inter"} $call occurs_tys (t.members, i),
-  // A nested binder for the same id shadows this one.
-  $case {$prop tag "rec"}   $if ($call eq_int (t.id, i)) false ($call occurs (t.body, i)),
+  // A binder binds no placeholder, so there is nothing to shadow here.
+  $case {$prop tag "rec"}   $call occurs (t.body, i),
   $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
   $case t false
 )
 
-$decl mem_int $func ($decl xs ints.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call eq_int (xs.head, i)) true ($call mem_int (xs.tail, i)),
-  $case xs false
-)
-
 $fwd hfv
 
-$decl hfv_tys $func ($decl xs T.tys.node, $decl bs ints.node) $match xs (
-  $case {$prop tag "cons"} $if ($call hfv (xs.head, bs)) true ($call hfv_tys (xs.tail, bs)),
+$decl hfv_tys $func ($decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"} $if ($call hfv (xs.head)) true ($call hfv_tys (xs.tail)),
   $case xs false
 )
 
-$decl hfv_fields $func ($decl xs T.fields.node, $decl bs ints.node) $match xs (
-  $case {$prop tag "cons"} $if ($call hfv (xs.head.ty, bs)) true ($call hfv_fields (xs.tail, bs)),
+$decl hfv_fields $func ($decl xs T.fields.node) $match xs (
+  $case {$prop tag "cons"} $if ($call hfv (xs.head.ty)) true ($call hfv_fields (xs.tail)),
   $case xs false
 )
 
 // Does the type still mention a placeholder that nothing has resolved? A
-// variable bound by an enclosing `rec` is not one — that knot is already tied.
-$decl hfv $func ($decl t T.proto_ty, $decl bs ints.node) $match t (
-  $case {$prop tag "var"}   $call not ($call mem_int (bs, t.id)),
-  $case {$prop tag "rec"}   $call hfv (t.body, $call ints.cons (t.id, bs)),
-  $case {$prop tag "block"} $call hfv_fields (t.fields, bs),
-  $case {$prop tag "group"} $call hfv_tys (t.items, bs),
-  $case {$prop tag "func"}  $if ($call hfv_tys (t.params, bs)) true ($call hfv (t.result, bs)),
-  $case {$prop tag "ref"}   $call hfv (t.inner, bs),
-  $case {$prop tag "array"} $call hfv (t.elem, bs),
-  $case {$prop tag "union"} $call hfv_tys (t.members, bs),
-  $case {$prop tag "inter"} $call hfv_tys (t.members, bs),
-  $case {$prop tag "over"}  $call hfv_tys (t.cands, bs),
+// variable bound by an enclosing `rec` is not one — that knot is already tied —
+// and now it is not a `var` either: tying the knot turns it into a de Bruijn
+// index, so every `var` left is by construction unresolved.
+$decl hfv $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "var"}   true,
+  $case {$prop tag "rec"}   $call hfv (t.body),
+  $case {$prop tag "block"} $call hfv_fields (t.fields),
+  $case {$prop tag "group"} $call hfv_tys (t.items),
+  $case {$prop tag "func"}  $if ($call hfv_tys (t.params)) true ($call hfv (t.result)),
+  $case {$prop tag "ref"}   $call hfv (t.inner),
+  $case {$prop tag "array"} $call hfv (t.elem),
+  $case {$prop tag "union"} $call hfv_tys (t.members),
+  $case {$prop tag "inter"} $call hfv_tys (t.members),
+  $case {$prop tag "over"}  $call hfv_tys (t.cands),
   $case t false
 )
 
-$decl has_free_var $func ($decl t T.proto_ty) $call hfv (t, ints.nil)
+$decl has_free_var $func ($decl t T.proto_ty) $call hfv (t)
 
 $decl close_rec $func ($decl t T.proto_ty, $decl i 0)
   // `μR. A | R` is `A` (see `T.drop_var`), so simplify before deciding whether
   // a binder is needed at all.
   { $decl r   $call T.drop_var (t, i)
-    $decl out $if ($call occurs (r, i)) ($call T.t_rec (i, r)) r }.out
+    $decl out $if ($call occurs (r, i)) ($call T.close_var (r, i)) r }.out
 
 // ------------------------------------------------------------------ helpers
 
@@ -455,9 +451,10 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
               ($if ($call or ($call has_free_var (at), $call has_free_var (ps.head)))
                   ($do ($call defer_check (cx, at, ps.head, why, as.head))
                        ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1))))
-                  ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
-                            $call concat (", expected ", $call T.show (ps.head)))), as.head))
-                       false)) }.out,
+                  ($do ($call T.explain (at, ps.head))
+                       ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
+                                 $call concat (", expected ", $call T.show (ps.head)))), as.head))
+                            false))) }.out,
       $case ps ($do ($call err (cx, "too many arguments", n)) false)
     ),
   // Fewer arguments than parameters is fine: the defaults fill in (§3.4).
@@ -942,8 +939,9 @@ $decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs res_lis
         ($set cx.defer ($call def_list.cons ($call def_ent (d.line, d.col, d.msg, a, b),
                                              $call eval_defer (cx.defer))))
         ($if ($call T.sub (a, b)) T.t_unit
-             ($call err (cx, $call concat (d.msg, $call concat ($call T.show (a),
-                  $call concat (", expected ", $call T.show (b)))), d))) }.out
+             ($do ($call T.explain (a, b))
+                  ($call err (cx, $call concat (d.msg, $call concat ($call T.show (a),
+                       $call concat (", expected ", $call T.show (b)))), d)))) }.out
 
 $decl recheck_list $func ($decl cx proto_ctx, $decl ds def_list.node, $decl rs res_list.node) $match ds (
   $case {$prop tag "cons"} $do ($call recheck_one (cx, ds.head, rs)) ($call recheck_list (cx, ds.tail, rs)),

@@ -20,6 +20,35 @@ const interp = @import("interp");
 
 const max_source_bytes = 64 * 1024 * 1024;
 
+/// Stack for the interpreter thread. The guard in `interp.zig` fires well below
+/// this, so the size only has to leave that guard room to report rather than
+/// let the thread hit the real end of the stack.
+const interp_stack_bytes = 256 * 1024 * 1024;
+
+/// Running the interpreter on a spawned thread, since a thread's stack size is
+/// ours to choose and the main thread's is not.
+const RunCtx = struct {
+    arena: Allocator,
+    diags: *diag.Diagnostics,
+    file: ast.File,
+    opts: interp.Interp.Options,
+    failed: ?anyerror = null,
+
+    fn run(self: *RunCtx) void {
+        var it = interp.Interp.init(self.arena, self.diags, self.opts) catch |e| {
+            self.failed = e;
+            return;
+        };
+        _ = it.runFile(self.file) catch |e| switch (e) {
+            // Both are already recorded as diagnostics; §7.8 makes a panic
+            // abort the whole program, with no catch.
+            error.Halt, error.Panicked => {},
+            error.TryReturn => unreachable, // runFile turns this into a diagnostic
+            error.OutOfMemory => self.failed = e,
+        };
+    }
+};
+
 const usage =
     \\usage: morphlc [--tokens|--run] <file.mpl> [program args...]
     \\
@@ -211,18 +240,26 @@ pub fn main(init: process.Init.Minimal) !void {
                     .dir = Io.Dir.cwd(),
                     .argv = program_args,
                 };
-                var it = try interp.Interp.init(arena, &diags, .{
-                    .out = out,
-                    .loader = fl.loader(),
-                    .platform = host.platform(),
-                });
-                _ = it.runFile(parsed) catch |e| switch (e) {
-                    // Both are already recorded as diagnostics; §7.8 makes a
-                    // panic abort the whole program, with no catch.
-                    error.Halt, error.Panicked => {},
-                    error.TryReturn => unreachable, // runFile turns this into a diagnostic
-                    error.OutOfMemory => return error.OutOfMemory,
+                // On its own thread, for the stack: a subtype check descends
+                // structurally through a recursive type and that recursion is
+                // not in tail position, so §7.7 cannot eliminate it. The main
+                // thread's 8MB was enough to run stage 1 but not to *check* it.
+                var ctx: RunCtx = .{
+                    .arena = arena,
+                    .diags = &diags,
+                    .file = parsed,
+                    .opts = .{
+                        .out = out,
+                        .loader = fl.loader(),
+                        .platform = host.platform(),
+                        // Leaves the guard room to report rather than let the
+                        // thread run off the end of its stack.
+                        .stack_bytes = interp_stack_bytes - 64 * 1024 * 1024,
+                    },
                 };
+                const th = try std.Thread.spawn(.{ .stack_size = interp_stack_bytes }, RunCtx.run, .{&ctx});
+                th.join();
+                if (ctx.failed) |e| return e;
             }
         } else if (!diags.any()) {
             try parsed.dump(out);

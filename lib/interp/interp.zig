@@ -52,7 +52,9 @@ pub const Platform = @import("platform.zig").Platform;
 /// frame *count* is the wrong unit, since one morphl call spans several Zig
 /// frames of varying size; measuring headroom from the stack position at
 /// `init` turns a hard crash into a diagnostic regardless of frame size.
-const max_stack_bytes = 4 * 1024 * 1024;
+/// Safe on an ordinary 8MB thread. A caller that gives the interpreter a bigger
+/// stack raises it through `Options.stack_bytes`.
+const default_stack_bytes = 4 * 1024 * 1024;
 
 /// §4.9: "there is a fixed instantiation depth limit and exceeding it is an
 /// error."
@@ -75,6 +77,8 @@ pub const Interp = struct {
     call_depth: u32 = 0,
     /// Stack position at `init`, for the headroom check in `callFunc`.
     stack_base: usize = 0,
+    /// How much of it that check may spend.
+    stack_bytes: usize = default_stack_bytes,
     specialize_depth: u32 = 0,
     /// The value carried by an in-flight `error.TryReturn`.
     try_payload: Value = .unit,
@@ -102,6 +106,9 @@ pub const Interp = struct {
         loader: ?Loader = null,
         /// Backs the platform intrinsics (§4.16's role, minus `$extern`).
         platform: ?Platform = null,
+        /// Stack the interpreter may use, which only the caller knows: it is
+        /// the caller that chose the thread this runs on.
+        stack_bytes: usize = default_stack_bytes,
     };
 
     pub fn init(arena: Allocator, diags: *Diagnostics, opts: Options) Error!Interp {
@@ -117,6 +124,7 @@ pub const Interp = struct {
             .root = undefined,
             .loader = opts.loader,
             .stack_base = @intFromPtr(&probe),
+            .stack_bytes = opts.stack_bytes,
         };
         self.root = try builtins.rootScope(arena, &self.rt);
         self.arg_stack = try arena.alloc(Value, 64 * 1024);
@@ -610,7 +618,7 @@ pub const Interp = struct {
         var probe: u8 = undefined;
         const here = @intFromPtr(&probe);
         const used = if (here < self.stack_base) self.stack_base - here else here - self.stack_base;
-        if (used > max_stack_bytes) {
+        if (used > self.stack_bytes) {
             return self.rt.fail(span, "call depth limit exceeded at {d} nested calls: this recursion is not in tail position, so §7.7 cannot eliminate it", .{self.call_depth});
         }
         self.call_depth += 1;
