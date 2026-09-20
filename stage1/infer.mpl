@@ -356,11 +356,24 @@ $decl some_of $func ($decl t T.proto_ty)
 $decl opt_int $call T.union2 (t_none, $call some_of (T.t_int))
 $decl opt_str $call T.union2 (t_none, $call some_of (T.t_str))
 
+// §8's arrays, monomorphic like the rest of the bootstrap root block
+// (BOOTSTRAP.md §2): the only array stage 1 handles is `args ()`, an array of
+// `Str`. §7.6 makes `at` return a base+index handle rather than an interior
+// pointer, which is a reference — so reading one is §5.4's transparency, and
+// `$decl p $call at (a, 0)` binds a reference, not a copy.
+$decl arr_str  $call T.t_array (T.t_str)
+$decl args_t   $call T.t_func (T.tys.nil, arr_str)
+$decl array_t  $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_str, T.tys.nil)), arr_str)
+$decl at_t     $call T.t_func ($call T.tys.cons (arr_str, $call T.tys.cons (T.t_int, T.tys.nil)),
+                               $call T.t_ref ("mut", T.t_str))
+$decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
+
 $decl root_env
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
-  $call bind ($call bind ($call bind ($call bind (env.nil,
+  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
+  $call bind ($call bind (env.nil,
     "add", ii_i), "sub", ii_i), "mul", ii_i), "div", ii_i), "mod", ii_i), "neg", i_i),
     "lt", ii_b), "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "len", s_i),
     "slice", sii_s), "byte", si_i), "int_to_str", i_s),
@@ -370,6 +383,7 @@ $decl root_env
     "read_file", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_str)),
     "write_file", $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
                                   $call T.union2 (T.t_unit, t_err))),
+    "array", array_t), "at", at_t), "alen", alen_t), "args", args_t),
     "err", t_err), "none", t_none)
 
 // ------------------------------------------------------------------ the walk

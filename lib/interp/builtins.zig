@@ -375,7 +375,7 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
         // Numeric, comparison, strings, conversion, arrays, control.
         "add",        "sub",        "mul",   "div",  "mod",   "neg",   "lt",
         "eq_int",     "eq_str",     "concat", "len", "slice", "byte",
-        "int_to_str", "str_to_int", "array", "at",   "alen",  "panic",
+        "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.
         "err",        "none",       "print", "read_file", "write_file", "args",
     }) |name| {
@@ -386,6 +386,78 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
     }
     // §8 defines these as overload sets; the bootstrap block must not have them.
     try std.testing.expect(scope.findLocal("eq") == null);
+}
+
+// Stage 0's root block and stage 1's `root_env` must name exactly the same
+// things.
+//
+// They are two hand-written lists of the same set — one here as values, one in
+// `stage1/infer.mpl` as types — and nothing but this test keeps them in step.
+// Four names (`array`, `at`, `alen`, `args`) were missing from stage 1's for
+// long enough that every driver reported unknown names against itself, which
+// is what a missing entry looks like: stage-1 source calls something the
+// checker has never heard of, and only the file that calls it fails.
+//
+// Stage 0's side is read from `rootScope`, not from `table`, because `err` and
+// `none` are §4.15 shapes rather than builtins. Stage 1's side is scraped from
+// the text of its `root_env` declaration, so keep the type expressions in
+// there to *named* helpers — a string literal written inline would read as a
+// name.
+test "the two root blocks name the same things" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diags = diag.Diagnostics.init(std.testing.allocator);
+    defer diags.deinit();
+    var rt: Runtime = .{ .arena = arena, .diags = &diags };
+
+    const scope = try rootScope(arena, &rt);
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const tio = threaded.io();
+
+    const src = std.Io.Dir.cwd().readFileAlloc(
+        tio,
+        "stage1/infer.mpl",
+        std.testing.allocator,
+        .limited(1 << 22),
+    ) catch |e| {
+        std.debug.print("cannot read stage1/infer.mpl ({s}); the test needs the build root as cwd\n", .{@errorName(e)});
+        return e;
+    };
+    defer std.testing.allocator.free(src);
+
+    // The `root_env` declaration runs to the next top-level `$decl`.
+    const start = std.mem.indexOf(u8, src, "\n$decl root_env") orelse return error.NoRootEnv;
+    const rest = src[start + 1 ..];
+    const end = std.mem.indexOf(u8, rest, "\n$decl ") orelse rest.len;
+    const span = rest[0..end];
+
+    var named: std.StringHashMapUnmanaged(void) = .empty;
+    defer named.deinit(std.testing.allocator);
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, span, i, '"')) |open| {
+        const close = std.mem.indexOfScalarPos(u8, span, open + 1, '"') orelse break;
+        try named.put(std.testing.allocator, span[open + 1 .. close], {});
+        i = close + 1;
+    }
+
+    var missing: usize = 0;
+    for (scope.decls.items) |slot| {
+        if (!named.contains(slot.name)) {
+            std.debug.print("stage 1's root_env is missing '{s}'\n", .{slot.name});
+            missing += 1;
+        }
+    }
+    var it = named.keyIterator();
+    while (it.next()) |name| {
+        if (scope.findLocal(name.*) == null) {
+            std.debug.print("stage 0's root block is missing '{s}'\n", .{name.*});
+            missing += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), missing);
 }
 
 test "overflow and division by zero panic" {

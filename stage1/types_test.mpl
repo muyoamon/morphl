@@ -12,7 +12,7 @@ $decl and P.and
 
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
-$decl check $func ($decl name "", $decl ok true)
+$decl check $func ($decl name "", $decl ok P.boolean)
   $if ok
       ($do ($call print ("ok   ")) ($call nl (name)))
       ($do ($call print ("FAIL ")) ($do ($call nl (name)) ($call panic (name))))

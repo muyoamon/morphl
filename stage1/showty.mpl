@@ -10,7 +10,13 @@ $decl path $call at (argv, 0)
 $decl name $call at (argv, 1)
 
 $decl r $call I.check_file (path)
-$decl f $call T.find_field (r.ty.fields, name)
+// §3.3 makes a file a block, but the inferred type is still the whole union
+// until a `$match` narrows it — and narrowing is by the scrutinee's *name*.
+$decl rty r.ty
+$decl f $match rty (
+  $case {$prop tag "block"} ($call T.find_field ($call T.fields.val (rty.fields), name)),
+  $case rty T.proto_field
+)
 $decl out $if ($call eq_str (f.name, ""))
     ($call nl ("<no such declaration>"))
     ($call nl ($call T.show (f.ty)))

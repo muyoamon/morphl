@@ -20,11 +20,14 @@ $decl path $if ($call lt (0, $call alen (argv)))
     ($do ($call print ("usage: morphlc --run stage1/parse_dump.mpl <file.mpl>\n"))
          ($call panic ("no input file")))
 
-$decl src $func ($decl p "")
-  { $decl c $try ($call read_file (p)) none
-    $decl out c.v }.out
-
-$decl text $call src (path)
+// Matched rather than `$try`d: §4.15 returns from the nearest enclosing
+// `$func`, and a driver's top level is not one — a helper using `$try` would
+// give itself the type `Str | none` and hand the problem back here anyway.
+$decl rf   $call read_file (path)
+$decl text $match rf (
+  $case {$prop tag "some"} rf.v,
+  $case rf ($call panic ($call concat ("cannot read ", path)))
+)
 
 $decl parsed $call Pa.parse (text)
 

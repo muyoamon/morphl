@@ -17,7 +17,7 @@ $decl and P.and
 
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
-$decl check $func ($decl name "", $decl ok true)
+$decl check $func ($decl name "", $decl ok P.boolean)
   $if ok
       ($do ($call print ("ok   ")) ($call nl (name)))
       ($do ($call print ("FAIL ")) ($do ($call nl (name)) ($call panic (name))))
@@ -43,7 +43,13 @@ $decl dump_all $func ($decl src "")
 
 $decl first_err $func ($decl src "")
   { $decl p $call Pa.parse (src)
-    $decl out $if ($call Pa.diags.is_nil (p.errs)) "" p.errs.head.msg }.out
+    // Narrowing is by the scrutinee's name (§4.7), and `$if` does not narrow
+    // at all — so the list is bound and matched.
+    $decl es $call Pa.diags.val (p.errs)
+    $decl out $match es (
+        $case {$prop tag "cons"} es.head.msg,
+        $case es ""
+      ) }.out
 
 $decl err_count $func ($decl src "")
   { $decl p $call Pa.parse (src)
@@ -160,8 +166,11 @@ $decl t49 $call check_str ("the lexer's message survives",
 // ------------------------------------------------ the one that actually matters
 
 $decl load $func ($decl p "")
-  { $decl c $try ($call read_file (p)) none
-    $decl out c.v }.out
+  { $decl c $call read_file (p)
+    $decl out $match c (
+        $case {$prop tag "some"} c.v,
+        $case c ($call panic ($call concat ("cannot read ", p)))
+      ) }.out
 
 $decl parse_clean $func ($decl p "")
   { $decl src $call load (p)

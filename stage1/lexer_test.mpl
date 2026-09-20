@@ -18,7 +18,7 @@ $decl toks L.toks
 
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
-$decl check $func ($decl name "", $decl ok true)
+$decl check $func ($decl name "", $decl ok P.boolean)
   $if ok
       ($do ($call print ("ok   ")) ($call nl (name)))
       ($do ($call print ("FAIL ")) ($do ($call nl (name)) ($call panic (name))))
@@ -139,8 +139,11 @@ $decl t38 $call check ("several errors in one run",
 // an `invalid` token, stage 1 cannot read stage 1.
 
 $decl self_src $func ($decl p "")
-  { $decl c $try ($call read_file (p)) none
-    $decl out c.v }.out
+  { $decl c $call read_file (p)
+    $decl out $match c (
+        $case {$prop tag "some"} c.v,
+        $case c ($call panic ($call concat ("cannot read ", p)))
+      ) }.out
 
 $decl src $call self_src ("stage1/lexer.mpl")
 $decl t39 $call check ("its own source is readable", $call not ($call eq_str (src, "")))

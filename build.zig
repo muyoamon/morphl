@@ -83,7 +83,11 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
     for ([_]*std.Build.Module{ diag, keyword, lexer, ast, parser, interp, main_mod }) |mod| {
         const t = b.addTest(.{ .root_module = mod });
-        test_step.dependOn(&b.addRunArtifact(t).step);
+        const mod_run = b.addRunArtifact(t);
+        // From the build root, so a test may read a source file by path — the
+        // root-block agreement test reads `stage1/infer.mpl`.
+        mod_run.setCwd(b.path("."));
+        test_step.dependOn(&mod_run.step);
     }
 
     // Stage 1's own tests, written in morphl and run by stage 0. They read
@@ -96,6 +100,9 @@ pub fn build(b: *std.Build) void {
         "stage1/parser_test.mpl",
         "stage1/types_test.mpl",
         "stage1/infer_test.mpl",
+        "stage1/ir_test.mpl",
+        "stage1/lower_test.mpl",
+        "stage1/emit_test.mpl",
     }) |suite| {
         const suite_run = b.addRunArtifact(exe);
         suite_run.addArgs(&.{ "--run", suite });
@@ -103,5 +110,38 @@ pub fn build(b: *std.Build) void {
         suite_run.expectExitCode(0);
         stage1_step.dependOn(&suite_run.step);
         test_step.dependOn(&suite_run.step);
+    }
+
+    // The round trip stage 2 will need: morphl → C → binary → the right answer.
+    // Compiled at -O0 on purpose, so that a tail call surviving as a call would
+    // overflow rather than be optimised into a loop behind our backs — the loop
+    // has to be ours (§6a).
+    const emit_step = b.step("test-emit", "Compile each fixture to C, build it, run it");
+    for ([_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "stage1/fixtures/fact.mpl", .want = "3628800\n" },
+        .{ .src = "stage1/fixtures/blocks.mpl", .want = "16\n" },
+        .{ .src = "stage1/fixtures/strings.mpl", .want = "hello, world! 9 a\n" },
+        .{ .src = "stage1/fixtures/storage.mpl", .want = "154\n" },
+        .{ .src = "stage1/fixtures/match.mpl", .want = "25\n" },
+        .{ .src = "stage1/fixtures/closures.mpl", .want = "42\n" },
+        .{ .src = "stage1/fixtures/try.mpl", .want = "5\n" },
+        .{ .src = "stage1/fixtures/mutual.mpl", .want = "1\n" },
+    }) |fixture| {
+        const emit_run = b.addRunArtifact(exe);
+        emit_run.addArgs(&.{ "--run", "stage1/emit_c.mpl", fixture.src });
+        emit_run.setCwd(b.path("."));
+        const c_file = emit_run.captureStdOut(.{ .basename = "out.c" });
+
+        // A compiler legitimately emits a static function nothing calls; the
+        // rest of -Werror is worth keeping.
+        const cc = b.addSystemCommand(&.{ "cc", "-O0", "-Wall", "-Wno-unused-function", "-Werror", "-o" });
+        const bin = cc.addOutputFileArg("fixture");
+        cc.addFileArg(c_file);
+
+        const run_bin = std.Build.Step.Run.create(b, "run the emitted binary");
+        run_bin.addFileArg(bin);
+        run_bin.expectStdOutEqual(fixture.want);
+        emit_step.dependOn(&run_bin.step);
+        test_step.dependOn(&run_bin.step);
     }
 }

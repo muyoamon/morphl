@@ -15,7 +15,7 @@ $decl and P.and
 
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
-$decl check $func ($decl name "", $decl ok true)
+$decl check $func ($decl name "", $decl ok P.boolean)
   $if ok
       ($do ($call print ("ok   ")) ($call nl (name)))
       ($do ($call print ("FAIL ")) ($do ($call nl (name)) ($call panic (name))))
@@ -32,12 +32,21 @@ $decl check_str $func ($decl name "", $decl got "", $decl want "")
 // The type of the last `$decl` in a fragment, rendered.
 $decl field_ty $func ($decl src "", $decl nm "")
   { $decl r $call I.check_source (src)
-    $decl f $call T.find_field (r.ty.fields, nm)
+    $decl rty r.ty
+    $decl f $match rty (
+      $case {$prop tag "block"} ($call T.find_field ($call T.fields.val (rty.fields), nm)),
+      $case rty T.proto_field
+    )
     $decl out $if ($call eq_str (f.name, "")) "<no such field>" ($call T.show (f.ty)) }.out
 
 $decl errs_of $func ($decl src "")
   { $decl r $call I.check_source (src)
-    $decl out $if ($call Pa.diags.is_nil (r.errs)) "" r.errs.head.msg }.out
+    // `$if` does not narrow (§4.7 narrows a `$match` scrutinee, by its name).
+    $decl es $call Pa.diags.val (r.errs)
+    $decl out $match es (
+        $case {$prop tag "cons"} es.head.msg,
+        $case es ""
+      ) }.out
 
 $decl n_errs $func ($decl src "")
   { $decl r $call I.check_source (src)
@@ -300,7 +309,11 @@ $decl t68b $call check ("a recursive type that does not pass through storage is 
 // The raw type, for assertions that should not pin a variable's number.
 $decl ty_of $func ($decl src "", $decl nm "")
   { $decl r $call I.check_source (src)
-    $decl f $call T.find_field (r.ty.fields, nm)
+    $decl rty r.ty
+    $decl f $match rty (
+      $case {$prop tag "block"} ($call T.find_field ($call T.fields.val (rty.fields), nm)),
+      $case rty T.proto_field
+    )
     $decl out f.ty }.out
 
 // §5.5's knot, asserted by what it means rather than by how it renders: a cell
