@@ -29,6 +29,19 @@ $decl or   P.or
 
 $decl strs $specialize P.list ""
 
+// Integer subtraction, captured *now*.
+//
+// §2.1 makes an intrinsic an ordinary shadowable name, and `$decl sub` below
+// shadows it for the whole file — not from its own line onward, because a name
+// in a `$func` body resolves against the finished block, not against the
+// prefix that existed when the body was written. So `$call sub (n, 1)` in any
+// function here is a subtype check between two Ints, returning a Bool.
+//
+// This `$decl` is different: it runs at *this* point in source order (§4.10,
+// no hoisting), when the block has no `sub` slot yet, so it resolves to the
+// root block's intrinsic and keeps it.
+$decl isub sub
+
 // ------------------------------------------------------------------ tracing
 //
 // A failing subtype check is the hardest thing in the checker to reason about:
@@ -37,26 +50,19 @@ $decl strs $specialize P.list ""
 // tracing on, and only when it has already failed — that keeps the output to
 // the one goal tree that matters.
 //
-// Declared here because `spaces` needs the intrinsic `sub`, which the subtyping
-// function of the same name shadows from its declaration onward (§2.1: an
-// intrinsic is an ordinary shadowable name).
+// `spaces` needs integer subtraction, which `$decl sub` below shadows for the
+// whole file — see `isub`. Declaring these early does *not* protect them.
 // §4.2 gives `$new` the type of its operand, so a bare `false` makes storage
 // that only `false` fits into. `$union (false, true)` widens the type to Bool
 // while keeping `false` as the value — §4.8a: the union *evaluates* to its
 // first member, so member order is what picks the initial value.
 $decl want_trace $mut $new ($union (false, true))
 $decl trace_on   $mut $new ($union (false, true))
-$decl tdepth     $mut $new 0
 $decl tbudget    $mut $new 0
-// The deepest goal that returned false, recorded without building any strings:
-// the recursion here runs hundreds of levels deep, so anything per-level that
-// allocates or calls is enough to exhaust the stack before the trace prints.
-$decl deep_d $mut $new -1
-
 $decl bval $func ($decl b P.boolean) b
 
 $decl spaces $func ($decl n 0, $decl acc "")
-  $if ($call lt (n, 1)) acc ($call spaces ($call sub (n, 1), $call concat (acc, ". ")))
+  $if ($call lt (n, 1)) acc ($call spaces ($call isub (n, 1), $call concat (acc, ". ")))
 
 $decl enable_trace $func () $set want_trace true
 
@@ -155,25 +161,27 @@ $decl proto_ty $union (
   t_int, t_float, t_str, t_true, t_false, t_unit, t_bot,
   $call t_var (0),
   $call t_bnd (0),
+  // §5.5: every field that reaches a type again goes through storage. A list
+  // is boxed as a whole — a cons cell holds its element inline, so its size
+  // needs the element's — while a `field`'s own `ty` stays inline, since by
+  // then the type it names already has a size.
   { $prop tag "block"
-    $decl fields ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
+    $decl fields $new ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
     // `value` is any compile-time value, not just unit: a prop holding a
     // function renders as `copaque`, and writing `cv_unit` here said no block
     // with such a prop was a type at all.
-    $decl props  ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node },
-  { $prop tag "group" $decl items ($specialize P.list proto_ty).node },
-  { $prop tag "func"  $decl params ($specialize P.list proto_ty).node  $decl result proto_ty },
-  { $prop tag "ref"   $decl qual ""  $decl inner proto_ty },
-  { $prop tag "array" $decl elem proto_ty },
-  { $prop tag "union" $decl members ($specialize P.list proto_ty).node },
-  { $prop tag "inter" $decl members ($specialize P.list proto_ty).node },
-  { $prop tag "rec"   $decl body proto_ty },
-  { $prop tag "over"  $decl cands ($specialize P.list proto_ty).node },
+    $decl props  $new ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node },
+  { $prop tag "group" $decl items $new ($specialize P.list proto_ty).node },
+  { $prop tag "func"  $decl params $new ($specialize P.list proto_ty).node  $decl result $new proto_ty },
+  { $prop tag "ref"   $decl qual ""  $decl inner $new proto_ty },
+  { $prop tag "array" $decl elem $new proto_ty },
+  { $prop tag "union" $decl members $new ($specialize P.list proto_ty).node },
+  { $prop tag "inter" $decl members $new ($specialize P.list proto_ty).node },
+  { $prop tag "rec"   $decl body $new proto_ty },
+  { $prop tag "over"  $decl cands $new ($specialize P.list proto_ty).node },
   { $prop tag "tmpl"  $decl id 0 }
 )
 
-$decl deep_a $mut $new proto_ty
-$decl deep_b $mut $new proto_ty
 $decl tval $func ($decl t proto_ty) t
 
 $decl field $func ($decl n "", $decl t proto_ty) { $decl name n  $decl ty t }
@@ -209,19 +217,19 @@ $decl props  $specialize P.list proto_prop
 // Raw constructors. `raw_union`/`raw_inter` are not for general use — build
 // unions with `t_union`, which normalises.
 $decl raw_block $func ($decl fs fields.node, $decl ps props.node)
-  { $prop tag "block" $decl fields fs  $decl props ps }
+  { $prop tag "block" $decl fields $new fs  $decl props $new ps }
 
-$decl raw_union $func ($decl ms tys.node) { $prop tag "union" $decl members ms }
-$decl raw_inter $func ($decl ms tys.node) { $prop tag "inter" $decl members ms }
+$decl raw_union $func ($decl ms tys.node) { $prop tag "union" $decl members $new ms }
+$decl raw_inter $func ($decl ms tys.node) { $prop tag "inter" $decl members $new ms }
 
-$decl t_group $func ($decl xs tys.node)  { $prop tag "group" $decl items xs }
-$decl t_func  $func ($decl ps tys.node, $decl r proto_ty) { $prop tag "func" $decl params ps  $decl result r }
+$decl t_group $func ($decl xs tys.node)  { $prop tag "group" $decl items $new xs }
+$decl t_func  $func ($decl ps tys.node, $decl r proto_ty) { $prop tag "func" $decl params $new ps  $decl result $new r }
 
 // §5.3: `qual` is "" for `&T`, "mut" for `&mut T`, "const" for `&const T`.
-$decl t_ref   $func ($decl q "", $decl t proto_ty) { $prop tag "ref" $decl qual q  $decl inner t }
-$decl t_array $func ($decl e proto_ty) { $prop tag "array" $decl elem e }
-$decl t_rec   $func ($decl b proto_ty) { $prop tag "rec" $decl body b }
-$decl t_over  $func ($decl cs tys.node) { $prop tag "over" $decl cands cs }
+$decl t_ref   $func ($decl q "", $decl t proto_ty) { $prop tag "ref" $decl qual q  $decl inner $new t }
+$decl t_array $func ($decl e proto_ty) { $prop tag "array" $decl elem $new e }
+$decl t_rec   $func ($decl b proto_ty) { $prop tag "rec" $decl body $new b }
+$decl t_over  $func ($decl cs tys.node) { $prop tag "over" $decl cands $new cs }
 
 // A template (§4.9). Its body is *not* type-checked at declaration, so there is
 // nothing structural to record here: the type is an identity, and whoever built
@@ -613,6 +621,50 @@ $decl unroll $func ($decl t proto_ty) $match t (
   $case t t
 )
 
+// §5.5: recursion must pass through storage.
+//
+// `μR.B` has a layout only if every occurrence of `R` is pointer-represented: a
+// reference, an array element, or anywhere inside a function type — a function
+// is two words whatever its signature, since §7.3 keeps captures out of the
+// type. An occurrence held inline by a block field, a group element or a union
+// member makes `size(R)` depend on itself, and no layout exists. The fix is
+// `$new` at that position, which is the same rule as everywhere else: storage
+// exists only where it was written.
+$fwd unguarded
+
+$decl unguarded_tys $func ($decl xs tys.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"} $if ($call unguarded (xs.head, k)) true ($call unguarded_tys (xs.tail, k)),
+  $case xs false
+)
+
+$decl unguarded_fields $func ($decl xs fields.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call unguarded (xs.head.ty, k)) true ($call unguarded_fields (xs.tail, k)),
+  $case xs false
+)
+
+$decl unguarded $func ($decl t proto_ty, $decl k 0) $match t (
+  $case {$prop tag "bnd"}   $call eq_int (t.idx, k),
+  // Pointer-represented, so the recursion is bounded from here down.
+  $case {$prop tag "ref"}   false,
+  $case {$prop tag "array"} false,
+  $case {$prop tag "func"}  false,
+  // A nested binder shifts the index of the one being tested.
+  $case {$prop tag "rec"}   $call unguarded (t.body, $call add (k, 1)),
+  $case {$prop tag "block"} $call unguarded_fields (t.fields, k),
+  $case {$prop tag "group"} $call unguarded_tys (t.items, k),
+  $case {$prop tag "union"} $call unguarded_tys (t.members, k),
+  $case {$prop tag "inter"} $call unguarded_tys (t.members, k),
+  $case {$prop tag "over"}  $call unguarded_tys (t.cands, k),
+  $case t false
+)
+
+// True when `t` is a recursive type reached without passing through storage.
+$decl unguarded_rec $func ($decl t proto_ty) $match t (
+  $case {$prop tag "rec"} $call unguarded (t.body, 0),
+  $case t false
+)
+
 // ------------------------------------------------- the comparison state
 //
 // Amadio–Cardelli: a goal `A <: B` reached again under itself is *assumed*
@@ -856,32 +908,31 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
     )
 )
 
-$decl trace_line $func ($decl s "")
+// Indented by the number of assumptions in scope, which is how deep into
+// recursive types the goal sits — and needs no counter to restore afterwards,
+// which is what let the trace keep its tail calls.
+$decl trace_line $func ($decl s "", $decl ind 0)
   { $decl n $call P.ival (tbudget)
     $decl out $if ($call lt (0, n))
-        ($do ($set tbudget ($call sub (n, 1)))
-             ($do ($call print ($call concat ($call spaces ($call P.ival (tdepth), ""), s)))
+        ($do ($set tbudget ($call isub (n, 1)))
+             ($do ($call print ($call concat ($call spaces (ind, ""), s)))
                   ($call print "\n")))
         () }.out
 
 $decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
-  // The flag is read directly rather than through a helper: this is the hottest
-  // path in the checker and these goals already run near the stack limit, so
-  // even two extra calls per level change which checks succeed.
+  // §4.8b: `$do` runs the trace line for effect and leaves the check itself in
+  // tail position. A block would not — §7.7 says a call inside a block is never
+  // in tail position — and this recursion is eliminated everywhere else, so
+  // instrumenting it with a block did not slow the check down, it changed its
+  // space complexity: ~170 frames became 23000, deep enough to hit the depth
+  // guard and change which checks succeeded. That is the reason `$do` exists.
+  //
+  // The flag is read directly rather than through a helper: this is the
+  // hottest path in the checker.
   $if trace_on
-      { $decl d $call P.ival (tdepth)
-        // Only the first few levels are printed; deeper ones would cost more
-        // stack than the recursion can spare.
-        $decl shown $if ($call lt (d, 4))
-            ($call trace_line ($call concat ($call desc (a), $call concat (" <: ", $call desc (b))))) ()
-        $decl up   $set tdepth ($call add (d, 1))
-        $decl r    $if ($call same (a, b)) true ($call sub_step (a, b, st))
-        $decl down $set tdepth d
-        $decl kept $if r ()
-            ($if ($call lt ($call P.ival (deep_d), d))
-                ($do ($set deep_d d) ($do ($set deep_a a) ($set deep_b b)))
-                ())
-        $decl out  r }.out
+      ($do ($call trace_line ($call concat ($call desc (a), $call concat (" <: ", $call desc (b))),
+                              $call goal_list.length (st.goals, 0)))
+           ($if ($call same (a, b)) true ($call sub_step (a, b, st))))
       ($if ($call same (a, b)) true ($call sub_step (a, b, st)))
 
 $decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, proto_actx)
@@ -890,19 +941,15 @@ $decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, proto
 // unless the driver asked for it.
 $decl explain $func ($decl a proto_ty, $decl b proto_ty)
   $if ($call not ($call bval (want_trace))) ()
+      // Every level is printed now, under a line budget: with the recursion's
+      // tail calls intact the trace costs no stack, so there is no reason to
+      // stop at the shallow goals. The innermost failing goal is the deepest
+      // indented line the tree reaches.
       { $decl hdr $call print "--- why not a subtype:\n"
         $decl b1  $set tbudget 400
-        $decl d1  $set tdepth 0
-        $decl d0  $set deep_d -1
         $decl on  $set trace_on true
         $decl r   $call sub (a, b)
         $decl off $set trace_on false
-        $decl dd  $call P.ival (deep_d)
-        $decl rep $if ($call lt (dd, 0)) ()
-            ($do ($call print ($call concat ("deepest failure at depth ", $call int_to_str (dd))))
-            ($do ($call print ($call concat ("\n  left : ", $call show ($call tval (deep_a)))))
-            ($do ($call print ($call concat ("\n  right: ", $call show ($call tval (deep_b)))))
-                 ($call print "\n"))))
         $decl out () }.out
 
 // ------------------------------------------------------ lattice operations

@@ -107,6 +107,27 @@ pub const Interp = struct {
         total: u64 = 0,
         scopes_fresh: u64 = 0,
         scopes_pooled: u64 = 0,
+        /// One function to measure *inclusively* — every byte allocated
+        /// between its entry and its return, nested calls included. Counted
+        /// only for the outermost activation, so recursion is not double
+        /// counted. For a function returning a scalar this is exactly the
+        /// garbage it produces, since nothing it built can have escaped.
+        incl_name: ?[]const u8 = null,
+        incl_depth: u32 = 0,
+        incl_bytes: u64 = 0,
+        incl_calls: u64 = 0,
+        /// How much of the total is `$new` storage versus block *values*.
+        /// Stage 0 heap-allocates every value; compiled, only `$new` is heap
+        /// (§4.2) and a value lives in its frame — so this says how much of
+        /// the run's allocation is even a candidate for the heap.
+        /// Deepest nesting reached, and the stack it cost. The stack unwinds
+        /// like any other — this is the high-water mark, not a total.
+        max_depth: u32 = 0,
+        max_stack: usize = 0,
+        cell_bytes: u64 = 0,
+        cell_n: u64 = 0,
+        blk_bytes: u64 = 0,
+        blk_n: u64 = 0,
 
         pub const Row = struct { bytes: u64 = 0, calls: u64 = 0, allocs: u64 = 0 };
 
@@ -169,7 +190,20 @@ pub const Interp = struct {
             try w.print("\n{d:.2} GB allocated in total; bytes are charged to the innermost function running.\n\n", .{
                 @as(f64, @floatFromInt(self.total)) / (1024.0 * 1024.0 * 1024.0),
             });
-            try w.print("scopes: {d} taken from the pool, {d} allocated fresh\n\n", .{ self.scopes_pooled, self.scopes_fresh });
+            // A high `fresh` count means scopes are not being recycled, which
+            // is the difference between reusing one allocation per call and
+            // leaking one (§7.6: nothing is ever freed).
+            try w.print("scopes: {d} taken from the pool, {d} allocated fresh\n", .{ self.scopes_pooled, self.scopes_fresh });
+            if (self.incl_name) |n| try w.print("inclusive: {d:.2} MB across {d} outermost calls to `{s}`\n", .{
+                @as(f64, @floatFromInt(self.incl_bytes)) / (1024.0 * 1024.0), self.incl_calls, n,
+            });
+            try w.print("deepest nesting: {d} calls, {d:.1} MB of stack at the high-water mark\n", .{
+                self.max_depth, @as(f64, @floatFromInt(self.max_stack)) / (1024.0 * 1024.0),
+            });
+            try w.print("$new storage: {d:.1} MB in {d} cells; block values: {d:.1} MB in {d} blocks\n\n", .{
+                @as(f64, @floatFromInt(self.cell_bytes)) / (1024.0 * 1024.0), self.cell_n,
+                @as(f64, @floatFromInt(self.blk_bytes)) / (1024.0 * 1024.0), self.blk_n,
+            });
             try w.print("{s:>9}  {s:>7}  {s:>12}  {s:>12}  {s:>8}  {s}\n", .{ "bytes", "share", "calls", "allocs", "avg", "function" });
             var shown: usize = 0;
             for (list.items) |row| {
@@ -293,7 +327,13 @@ pub const Interp = struct {
     fn mayCapture(n: *const Node) bool {
         switch (n.data) {
             .form => |f| switch (f.keyword) {
-                .func, .template, .prop => return true,
+                // `$prop` is not here: `evalBlockExprs` forces every prop and
+                // copies its *value* into the block before returning, so the
+                // slots do not outlive the scope. Only a `$func` or `$template`
+                // literal keeps the chain alive (§7.3). Counting `$prop` meant
+                // no constructor in stage 1 — every one of which builds a
+                // `{$prop tag "…" …}` — could ever recycle its scope.
+                .func, .template => return true,
                 // §5.7: a `$case` pattern is a *type-only position*, never
                 // evaluated, so nothing written in it can build a closure. A
                 // pattern matching a tag is a block full of `$prop`, and
@@ -401,6 +441,10 @@ pub const Interp = struct {
         for (scope.props, props) |p, *f| f.* = .{ .name = p.name, .value = p.value };
 
         _ = span;
+        if (self.stats) |st| {
+            st.blk_n += 1;
+            st.blk_bytes += @sizeOf(value.Block) + decls.len * @sizeOf(Field) + props.len * @sizeOf(Field);
+        }
         const b = try self.arena.create(value.Block);
         b.* = .{ .decls = decls, .props = props };
         if (recyclable) self.releaseScope(scope);
@@ -525,7 +569,23 @@ pub const Interp = struct {
 
             // §4.2: the only way storage comes into existence. The operand is
             // dereferenced first, so `$new r` is a copy, not an alias.
-            .new => value.newCell(self.arena, (try self.eval(&ops[0], scope)).deref()),
+            .new => blk: {
+                const v = (try self.eval(&ops[0], scope)).deref();
+                if (self.stats) |st| {
+                    st.cell_n += 1;
+                    // What this storage would cost *compiled*: the value lives
+                    // in the storage (§4.2), props occupy no space (§7.2), and
+                    // a field is one word for a scalar or a reference. A rough
+                    // figure, but the right order — stage 0's `Cell` holds a
+                    // pointer to a separately allocated block instead.
+                    st.cell_bytes += switch (v) {
+                        .block => |b| 8 + b.decls.len * 8,
+                        .group => |g| g.len * 8,
+                        else => 8,
+                    };
+                }
+                break :blk value.newCell(self.arena, v);
+            },
 
             // §4.3: `$mut` requires a reference. Stage 0 draws no runtime
             // distinction between `&T` and `&mut T` (§5.3 is static), so this
@@ -753,14 +813,34 @@ pub const Interp = struct {
         }
         self.call_depth += 1;
         defer self.call_depth -= 1;
+        if (self.stats) |st| {
+            if (self.call_depth > st.max_depth) st.max_depth = self.call_depth;
+            if (used > st.max_stack) st.max_stack = used;
+        }
 
         var saved_fn: []const u8 = undefined;
+        var incl_at: u64 = 0;
+        var incl_outer = false;
         if (self.stats) |st| {
             saved_fn = st.current;
             st.current = f0.name orelse "(anonymous $func)";
             st.enter(st.current);
+            if (st.incl_name) |want| if (std.mem.eql(u8, want, st.current)) {
+                if (st.incl_depth == 0) {
+                    incl_outer = true;
+                    incl_at = st.total;
+                    st.incl_calls += 1;
+                }
+                st.incl_depth += 1;
+            };
         }
         defer if (self.stats) |st| {
+            if (incl_outer) {
+                st.incl_bytes += st.total - incl_at;
+            }
+            if (st.incl_name) |want| if (std.mem.eql(u8, want, st.current)) {
+                st.incl_depth -= 1;
+            };
             st.current = saved_fn;
         };
 
@@ -797,7 +877,14 @@ pub const Interp = struct {
                     // The frame this one replaces is gone (§7.7), so unless a
                     // closure captured it, its scope can be reused.
                     if (recyclable and t.scope != scope) self.releaseScope(scope);
-                    recyclable = !t.may_capture;
+                    // Only a tail *call* moves to another scope and so decides
+                    // afresh whether it can be recycled. `$do`, `$if` and
+                    // `$match` stay in this one and report `may_capture = true`
+                    // because they have no callee to ask — taking that at face
+                    // value made the first `$match` in a body poison recycling
+                    // for the rest of the trampoline, which in stage 1 is
+                    // nearly every function.
+                    if (t.scope != scope) recyclable = !t.may_capture;
                     body = t.node;
                     scope = t.scope;
                     // A tail call can land in a function from another file.

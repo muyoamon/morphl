@@ -269,20 +269,34 @@ $decl t67 $call check_str ("calling a template directly is reported",
   "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)")
 
 // The prelude's list, specialized — recursive data inside a template body.
+// §5.5 requires the recursion to pass through storage, so the tail is `$new`;
+// without it the type has no layout and the specialization is rejected.
 // Built with `concat` because a morphl string literal never spans a newline,
 // and morphl needs no separators anyway.
 $decl list_src $call concat (
   "$decl list $template T { $prop nil { $prop tag \"nil\" } ",
   $call concat (
-  "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail node }) ",
+  "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail $new node }) ",
   $call concat (
-  "$prop cons $func ($decl h T, $decl t node) { $prop tag \"cons\"  $decl head h  $decl tail t } ",
+  "$prop cons $func ($decl h T, $decl t node) { $prop tag \"cons\"  $decl head h  $decl tail $new t } ",
   $call concat (
   "$prop length $func ($decl xs node, $decl acc 0) $match xs ( $case {$prop tag \"cons\"} $call length (xs.tail, $call add (acc, 1)), $case xs acc ) } ",
   "$decl ints $specialize list 0 "))))
 
 $decl t68 $call check ("a template holding recursive data types cleanly",
   $call eq_int ($call n_errs (list_src), 0))
+
+// ...and the same list with the tail left as a value is rejected: §5.5 needs
+// the recursion to pass through storage or the type has no layout. The error
+// lands on the specialization, since a template body is checked there (§10.7).
+$decl unguarded_src $call concat (
+  "$decl list $template T { $prop nil { $prop tag \"nil\" } ",
+  $call concat (
+  "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail node }) } ",
+  "$decl ints $specialize list 0 "))
+
+$decl t68b $call check ("a recursive type that does not pass through storage is rejected",
+  $call lt (0, $call n_errs (unguarded_src)))
 // The raw type, for assertions that should not pin a variable's number.
 $decl ty_of $func ($decl src "", $decl nm "")
   { $decl r $call I.check_source (src)

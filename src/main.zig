@@ -20,10 +20,93 @@ const interp = @import("interp");
 
 const max_source_bytes = 64 * 1024 * 1024;
 
+/// A bump allocator over fixed-size chunks.
+///
+/// `std.heap.ArenaAllocator` sizes each new chunk at 1.5x everything allocated
+/// so far and keeps every earlier one, so the address space it reserves runs to
+/// about 2.5x the bytes actually handed out. Stage 0 never frees (BOOTSTRAP
+/// §3), so that multiplier lands directly on the `ulimit -v` a whole-file check
+/// needs. Fixed chunks make the reservation the bytes plus one chunk.
+const ChunkArena = struct {
+    child: Allocator,
+    head: ?*Chunk = null,
+    /// Next free address, and the end of the current chunk.
+    ptr: usize = 0,
+    end: usize = 0,
+
+    const chunk_size: usize = 64 << 20;
+
+    const Chunk = struct { next: ?*Chunk, size: usize };
+
+    pub fn allocator(self: *ChunkArena) Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ctx: *anyopaque, n: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *ChunkArena = @ptrCast(@alignCast(ctx));
+        const align_bytes = a.toByteUnits();
+        var p = std.mem.alignForward(usize, self.ptr, align_bytes);
+        if (p + n > self.end) {
+            @branchHint(.cold);
+            const want = @max(chunk_size, @sizeOf(Chunk) + align_bytes + n);
+            const raw = self.child.rawAlloc(want, .of(Chunk), ra) orelse return null;
+            const c: *Chunk = @ptrCast(@alignCast(raw));
+            c.* = .{ .next = self.head, .size = want };
+            self.head = c;
+            self.ptr = @intFromPtr(raw) + @sizeOf(Chunk);
+            self.end = @intFromPtr(raw) + want;
+            p = std.mem.alignForward(usize, self.ptr, align_bytes);
+        }
+        self.ptr = p + n;
+        return @ptrFromInt(p);
+    }
+
+    /// Only the most recent allocation can grow in place — which is the one
+    /// that matters, since that is how an `ArrayList` appends.
+    fn resize(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
+        const self: *ChunkArena = @ptrCast(@alignCast(ctx));
+        if (@intFromPtr(buf.ptr) + buf.len != self.ptr) return new_len <= buf.len;
+        if (@intFromPtr(buf.ptr) + new_len > self.end) return false;
+        self.ptr = @intFromPtr(buf.ptr) + new_len;
+        return true;
+    }
+
+    fn remap(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        return if (resize(ctx, buf, a, new_len, ra)) buf.ptr else null;
+    }
+
+    /// Rolls back the most recent allocation; anything else is a no-op (§7.6's
+    /// model, and stage 0's: nothing is freed).
+    fn free(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
+        const self: *ChunkArena = @ptrCast(@alignCast(ctx));
+        if (@intFromPtr(buf.ptr) + buf.len == self.ptr) self.ptr = @intFromPtr(buf.ptr);
+    }
+
+    pub fn deinit(self: *ChunkArena) void {
+        var it = self.head;
+        while (it) |c| {
+            const next = c.next;
+            self.child.rawFree(@as([*]u8, @ptrCast(c))[0..c.size], .of(Chunk), @returnAddress());
+            it = next;
+        }
+    }
+};
+
 /// Stack for the interpreter thread. The guard in `interp.zig` fires well below
 /// this, so the size only has to leave that guard room to report rather than
 /// let the thread hit the real end of the stack.
-const interp_stack_bytes = 256 * 1024 * 1024;
+///
+/// Checking stage 1's largest file peaks at ~170 nested calls and under 2MB, so
+/// this is roughly 30x headroom. It was 256MB when the measured depth came from
+/// a run with tracing on — and the tracing was the cause: it wraps the
+/// recursion in a block, and §7.7 makes a call inside a block a real frame
+/// where it was a tail call.
+const interp_stack_bytes = 64 * 1024 * 1024;
 
 /// Running the interpreter on a spawned thread, since a thread's stack size is
 /// ours to choose and the main thread's is not.
@@ -160,7 +243,7 @@ pub fn main(init: process.Init.Minimal) !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    var arena_state: ChunkArena = .{ .child = std.heap.page_allocator };
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
@@ -257,7 +340,7 @@ pub fn main(init: process.Init.Minimal) !void {
                         .platform = host.platform(),
                         // Leaves the guard room to report rather than let the
                         // thread run off the end of its stack.
-                        .stack_bytes = interp_stack_bytes - 64 * 1024 * 1024,
+                        .stack_bytes = interp_stack_bytes - 16 * 1024 * 1024,
                     },
                 };
                 // An allocation profile, when asked for. Nothing is ever freed
@@ -265,6 +348,10 @@ pub fn main(init: process.Init.Minimal) !void {
                 // says which morphl function spent it.
                 var stats: interp.Interp.Stats = .{ .backing = arena };
                 if (init.environ.getPosix("MORPHL_STATS") != null) ctx.stats = &stats;
+                if (init.environ.getPosix("MORPHL_INCLUSIVE")) |n| {
+                    stats.incl_name = n;
+                    ctx.stats = &stats;
+                }
 
                 const th = try std.Thread.spawn(.{ .stack_size = interp_stack_bytes }, RunCtx.run, .{&ctx});
                 th.join();

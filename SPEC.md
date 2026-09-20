@@ -314,7 +314,7 @@ Binds a C function. `symbol` is a string literal; `sig` is a type-only position 
 
 **Rules.**
 1. Extern calls are **unsafe by declaration** — the same status as non-default allocators. Memory returned by C is outside every region; wrapping it as a reference is the author's responsibility. The compiler treats every extern call as opaque.
-2. **C callbacks must be capture-free.** A `$func` maps to a C function pointer only if its captured set is empty (closures capture by copy, so the set is static). Otherwise it is a compile error; pass state through the C-side `void*` argument.
+2. **C callbacks must be capture-free.** A `$func` maps to a C function pointer only if its captured set is empty (closures capture by copy, so the set is static per literal). Captures are not in the type (§7.3), so this is a property of the *expression* in the argument position: it holds when the compiler can see which `$func` literal the value came from, and a closure arriving through a mutable function slot is rejected because it cannot be seen. Otherwise it is a compile error; pass state through the C-side `void*` argument.
 3. `$extern` is the **only door to the platform**. I/O, threads, atomics, locks, files, sockets, and `malloc`-backed allocators are library code in a per-target root block.
 
 ---
@@ -368,10 +368,14 @@ While typing a body that refers to a name whose type is not yet known, that name
 $decl list_of $func ($decl n 0)
   $if ($call eq (n, 0))
     {}
-    { $decl head n  $decl tail $call list_of ($call sub (n, 1)) }
+    { $decl head n  $decl tail $new ($call list_of ($call sub (n, 1))) }
 ```
 
-infers `μR. {} | {head: Int, tail: R}` — a list type — with no declaration. Recursive data is always obtained this way.
+infers `μR. {} | {head: Int, tail: &R}` — a list type — with no declaration. Recursive data is always obtained this way.
+
+**Recursion must pass through storage.** In `μR. B`, every occurrence of `R` in `B` must sit in a position whose representation is a pointer: under a reference (`&`, `&mut`, `&const`), as an array element, or inside a function type. A block field, group element or union member holds its value inline, so `R` there would make the type's size satisfy `size(R) = … + size(R)` and no layout exists. An unguarded `R` is an error, reported at the recursive construction, and the fix is `$new` — the same rule as everywhere else: storage exists only where it was written (§4.2).
+
+This is checked once the knot is tied, alongside the overload constraints above. Inference itself stays total; what fails is the well-formedness of the type it produced.
 
 **Overloads on `R`**: while solving, `R` resolves overloads as if it were `⊥` (first candidate fitting the other arguments wins). The resulting constraint (e.g. `R <: Int`) is checked after the knot is tied; failure is reported at the recursive call.
 
@@ -426,9 +430,19 @@ Strict, left to right, source order. Block initialization is source order; nothi
 
 A block's layout is its `$decl` (and `$fwd`) slots in source order. Props occupy no space. Groups are laid out elementwise. Layout is part of block type identity.
 
+**A type determines its size.** Every binding is a value of a statically known type, and size follows from the type alone: a block is the sum of its slots, a group of its elements, a union the largest member plus its discriminator (§7.5), a reference one word, a `Str` two, a function two (§7.3), and a template contributes nothing until specialized, which fixes the argument types. The two constructs that would otherwise have no size are closed by rule: recursion must pass through storage (§5.5), and a function's captures are not in its type (§7.3).
+
+So a frame's size is the sum of its slots, known at compile time, and the compiler can report it per function. Whole-program stack usage is bounded only where the non-tail call graph is acyclic — §7.7 makes tail calls cost nothing, so only non-tail recursion grows the stack, but its depth is data-dependent in general.
+
+Nothing can point into a frame: there is no way to take a reference to a value field (§10.2) and no closure points into a dead frame (§7.3). Stack allocation of values therefore needs no escape analysis.
+
 ### 7.3 Aliasing
 
 Storage is created only by `$new`. References alias; values copy. **Closures capture bindings by copy.** Bindings are immutable, so this is unobservable: a captured binding that holds a reference still aliases the same storage. No closure ever points into a dead frame.
+
+**A closure's captures belong to its body, not to its type.** A function's type is `params -> result` (§3.4) and says nothing about what it captured; two functions of the same type are interchangeable however they were built. Every function value is therefore represented the same way — a code pointer and an environment pointer, two words — so a function-typed slot has a size, and `$set` on storage holding a function accepts any function of that type. The body it runs changes; the type does not.
+
+A capture-free `$func` has an empty environment and is one pointer plus a null. A capturing one needs its copies to live somewhere, so the `$func` literal allocates its environment into the region inference gives it (§7.6) — an allocation at a point the source names, which is why it needs no `$new` of its own. Storing a closure into longer-lived storage widens its environment's region accordingly, and §7.6 requires the compiler to report the allocation if that region is the root or a loop's.
 
 ### 7.4 Coercion cost
 
@@ -554,7 +568,10 @@ These follow from stated rules and are accepted by design:
 8. Bare `&T` in parameter position rejects `&mut` arguments; qualify parameters.
 9. Structural upcasts are free and stay thin pointers, because a supertype is a prefix. The price is paid at declaration instead: **field order is part of a block's interface**. A field may be added compatibly only at the end, and reordering fields is a breaking change for every supertype that named them.
 10. `$traitsof` abstracts by structural type equality, so any parameter whose type equals the source block's type becomes `Self`.
-11. Region inference never fails, it widens: a long-running program with unbounded live-set churn must opt into an explicit allocator or it leaks. The compiler names the allocations.
+11. A recursive type whose recursion does not pass through storage is an error rather than an inferred type (§5.5), so `$new` appears in every recursive data constructor — the library's `list` included. This is the price of `$new` being the only allocation in the language.
+12. A function's type does not record its captures (§7.3), so **capture-freeness is a property of an expression, not of a type**. §4.16's C-callback rule is checkable exactly when the compiler can see which `$func` literal a value came from; a closure reaching a callback parameter through a mutable function slot cannot be checked and is rejected.
+13. For the same reason, an `$impl` witness (§4.12) is a static table exactly when its function props are capture-free, which is the ordinary case; a witness whose props capture is an ordinary runtime block.
+14. Region inference never fails, it widens: a long-running program with unbounded live-set churn must opt into an explicit allocator or it leaks. The compiler names the allocations.
 
 ---
 
@@ -607,8 +624,10 @@ $decl area $func ($decl s $union (circle, square)) $match s (
 ```
 $decl list $template T {
   $prop nil  { $prop tag "nil" }
-  $prop node $union (nil, { $prop tag "cons"  $decl head T  $decl tail node })
-  $prop cons $func ($decl head T, $decl tail node) { $prop tag "cons"  $decl head head  $decl tail tail }
+  $prop node $union (nil, { $prop tag "cons"  $decl head T  $decl tail $new node })
+  // The tail is storage (§5.5), so `cons` takes a reference and keeps it —
+  // `$new tail` would deref and copy the whole list (§4.2).
+  $prop cons $func ($decl head T, $decl tail $new node) { $prop tag "cons"  $decl head head  $decl tail tail }
   $prop fold $template A $func ($decl xs node, $decl acc A, $decl f $func ($decl a A, $decl x T) A)
     $match xs (
       $case {$prop tag "nil"} acc,

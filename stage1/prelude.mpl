@@ -47,9 +47,14 @@ $decl list $template T {
   // Recursive data the only way §5.5 offers: a `$union` whose later member
   // names the type being defined. That member is a type-only position (§5.7),
   // so it is never evaluated.
-  $prop node $union (nil, { $prop tag "cons"  $decl head T  $decl tail node })
+  // §5.5: the recursion goes through storage, so a cons cell is a fixed size —
+  // an element, a tag and a pointer — and only the chain is unbounded.
+  $prop node $union (nil, { $prop tag "cons"  $decl head T  $decl tail $new node })
 
-  $prop cons $func ($decl h T, $decl t node) { $prop tag "cons"  $decl head h  $decl tail t }
+  // `$new t` copies one cell, not the list: everything below the tail is
+  // already behind the pointer that cell holds (§4.2). One allocation per cons,
+  // which is what a linked list costs anywhere.
+  $prop cons $func ($decl h T, $decl t node) { $prop tag "cons"  $decl head h  $decl tail $new t }
 
   // Reading a list out of storage, for the same reason `ival`/`sval` exist:
   // §5.4 makes a reference transparent only where a value is expected.

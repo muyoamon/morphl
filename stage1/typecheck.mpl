@@ -12,7 +12,10 @@ $decl r $call I.check_file (path)
 
 $decl show_errs $func ($decl xs Pa.diags.node, $decl p "") $match xs (
   $case {$prop tag "cons"}
-    $do ($call nl ($call concat (p, $call concat (":", $call concat ($call int_to_str (xs.head.line),
+    // The diagnostic names its own file; `p` is only the fallback for one that
+    // predates the stamp.
+    $do ($call nl ($call concat ($if ($call eq_str (xs.head.file, "")) p xs.head.file,
+         $call concat (":", $call concat ($call int_to_str (xs.head.line),
          $call concat (":", $call concat ($call int_to_str (xs.head.col),
          $call concat (": ", xs.head.msg)))))))) ($call show_errs (xs.tail, p)),
   $case xs ()

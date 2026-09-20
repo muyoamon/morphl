@@ -26,10 +26,14 @@ $decl ival P.ival
 // inferred, so a diagnostic must point at an expression. Spans live on nodes
 // and tokens from the start for that reason.
 
-$decl diag $func ($decl m "", $decl l 0, $decl c 0)
-  { $decl msg m  $decl line l  $decl col c }
+// `file` last, so the record stays a prefix extension of what it was (§5.1)
+// and every existing reader keeps working. The parser leaves it empty — it is
+// handed a source string and does not know where it came from; whoever did the
+// reading fills it in.
+$decl diag $func ($decl m "", $decl l 0, $decl c 0, $decl f "")
+  { $decl msg m  $decl line l  $decl col c  $decl file f }
 
-$decl proto_diag $call diag ("", 0, 0)
+$decl proto_diag $call diag ("", 0, 0, "")
 $decl diags $specialize P.list proto_diag
 
 // ------------------------------------------------------------------ AST nodes
@@ -70,30 +74,34 @@ $decl proto_node $union (
   $call n_name  ("", 0, 0),
   $call n_unit  (0, 0),
   $call n_err   ("", 0, 0),
-  { $prop tag "group"      $decl line 0  $decl col 0  $decl items ($specialize P.list proto_node).node },
-  { $prop tag "block"      $decl line 0  $decl col 0  $decl items ($specialize P.list proto_node).node },
-  { $prop tag "proj_name"  $decl line 0  $decl col 0  $decl target proto_node  $decl field "" },
-  { $prop tag "proj_index" $decl line 0  $decl col 0  $decl target proto_node  $decl index 0 },
-  { $prop tag "form"       $decl line 0  $decl col 0  $decl keyword ""  $decl operands ($specialize P.list proto_node).node }
+  // §5.5: every field that reaches a node again goes through storage. Boxing
+  // the *list* is enough for a list of nodes — a cons cell holds its element
+  // inline, so its size needs the node's, and putting the list behind a pointer
+  // is what breaks that circle. The elements themselves stay values.
+  { $prop tag "group"      $decl line 0  $decl col 0  $decl items $new ($specialize P.list proto_node).node },
+  { $prop tag "block"      $decl line 0  $decl col 0  $decl items $new ($specialize P.list proto_node).node },
+  { $prop tag "proj_name"  $decl line 0  $decl col 0  $decl target $new proto_node  $decl field "" },
+  { $prop tag "proj_index" $decl line 0  $decl col 0  $decl target $new proto_node  $decl index 0 },
+  { $prop tag "form"       $decl line 0  $decl col 0  $decl keyword ""  $decl operands $new ($specialize P.list proto_node).node }
 )
 
 $decl nodes $specialize P.list proto_node
 
 // Aggregate shapes, now that there is a list of nodes to hold.
 $decl n_group $func ($decl xs nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "group" $decl line l  $decl col c  $decl items xs }
+  { $prop tag "group" $decl line l  $decl col c  $decl items $new xs }
 
 $decl n_block $func ($decl xs nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "block" $decl line l  $decl col c  $decl items xs }
+  { $prop tag "block" $decl line l  $decl col c  $decl items $new xs }
 
 $decl n_projn $func ($decl tgt proto_node, $decl f "", $decl l 0, $decl c 0)
-  { $prop tag "proj_name" $decl line l  $decl col c  $decl target tgt  $decl field f }
+  { $prop tag "proj_name" $decl line l  $decl col c  $decl target $new tgt  $decl field f }
 
 $decl n_proji $func ($decl tgt proto_node, $decl i 0, $decl l 0, $decl c 0)
-  { $prop tag "proj_index" $decl line l  $decl col c  $decl target tgt  $decl index i }
+  { $prop tag "proj_index" $decl line l  $decl col c  $decl target $new tgt  $decl index i }
 
 $decl n_form $func ($decl kw "", $decl ops nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "form" $decl line l  $decl col c  $decl keyword kw  $decl operands ops }
+  { $prop tag "form" $decl line l  $decl col c  $decl keyword kw  $decl operands $new ops }
 
 // ------------------------------------------------------- the §2.2 arity table
 //
@@ -182,7 +190,7 @@ $decl bump $func ($decl ps proto_parser)
     $decl out t }.out
 
 $decl note_at $func ($decl ps proto_parser, $decl m "", $decl l 0, $decl c 0)
-  $set ps.errs ($call diags.cons ($call diag (m, l, c), ps.errs))
+  $set ps.errs ($call diags.cons ($call diag (m, l, c, ""), ps.errs))
 
 // Accepts any node *or* token, because both begin with `line`/`col` and §5.1
 // makes `{line:Int, col:Int}` a prefix supertype of each.
