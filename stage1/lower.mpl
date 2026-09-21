@@ -395,8 +395,36 @@ $decl fresh_var $func ($decl st proto_lst)
     $decl n $set st.nvars ($call add (i, 1))
     $decl r i }.r
 
+// Everything a pass can add that outlives it. The first pass of a recursive
+// member exists *only* to find its type — §5.5's knot has to be closed before
+// the body can be lowered for real — so nothing it built may survive: the
+// specialisations it memoised are keyed on the placeholder, and the functions
+// it lifted for them would be dead code carrying a type that is not a layout.
+$decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $decl nm 0,
+                   $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0)
+  { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
+    $decl specs sp   $decl tmpls tm    $decl ntmpls nt }
+
+$decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
+                      tmpls_list.nil, 0)
+
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
+
+$decl take_snap $func ($decl st proto_lst)
+  $call lsnap ($call IR.fns.val (st.lifted), $call P.ival (st.nlifted),
+      $call eval_mods (st.mods), $call P.ival (st.nmods),
+      $call eval_specs (st.specs), $call eval_tmpls (st.tmpls), $call P.ival (st.ntmpls))
+
+$decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
+  { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
+    $decl b $set st.nlifted sn.nlifted
+    $decl c $set st.mods    ($call mods_list.val (sn.mods))
+    $decl d $set st.nmods   sn.nmods
+    $decl e $set st.specs   ($call specs_list.val (sn.specs))
+    $decl f $set st.tmpls   ($call tmpls_list.val (sn.tmpls))
+    $decl g $set st.ntmpls  sn.ntmpls
+    $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
                         $decl en benv.node)
@@ -848,6 +876,20 @@ $decl disc_of $func ($decl ms T.tys.node, $decl pat T.proto_ty, $decl i 0,
 // else, so it costs nothing to ask first — and asking is not optional now that
 // a specialised template derives its own recursive types (§4.9) rather than
 // reading inference's already-unrolled answers.
+// The interned table's own copy of a type.
+//
+// §3.6 makes a union a *set*, so `T.same` answers yes for two orderings of the
+// same members and interning returns whichever ordering got there first. But
+// §7.5's discriminator is a **position**, and the backend reads positions off
+// the table entry. So anything that computes a discriminator has to ask the
+// table, not the copy it happens to be holding, or the two disagree about
+// which member is which.
+$decl ty_at $func ($decl st proto_lst, $decl i 0)
+  $call T.tys.nth ($call T.tys.val ($call eval_tys (st.types)), i)
+
+$decl canon_ty $func ($decl st proto_lst, $decl t T.proto_ty)
+  $call ty_at (st, $call intern (st, t))
+
 $decl members_of $func ($decl t0 T.proto_ty)
   { $decl t $call T.unroll (t0)
     $decl r $match t (
@@ -1140,22 +1182,43 @@ $decl resolve_path $func ($decl base "", $decl nm "")
   $if ($call eq_str (base, "")) ($call concat (nm, ".mpl"))
       ($call concat (base, $call concat ("/", $call concat (nm, ".mpl"))))
 
-// A file's top level, as module members. §4.11's `$fwd` reserves a layout slot
-// and names no value, and the completing `$decl` is here anyway — and because
-// a module binds all its members before lowering any of them, the forward
-// reference `$fwd` existed for resolves without it.
-$decl file_props $func ($decl xs Pa.nodes.node, $decl acc mprops.node) $match xs (
+$decl find_completing $func ($decl xs Pa.nodes.node, $decl nm "") $match xs (
   $case {$prop tag "cons"}
-    $call file_props ($call Pa.nodes.val (xs.tail),
-        $if ($call is_form (xs.head, "decl"))
-            ($call mprops.cons ($call mprop ($call name_of ($call op (xs.head, 0)),
-                 $call op (xs.head, 1), "decl"), acc))
-            ($if ($call is_form (xs.head, "prop"))
-                 ($call mprops.cons ($call mprop ($call name_of ($call op (xs.head, 0)),
-                      $call op (xs.head, 1), "prop"), acc))
-                 acc)),
+    $if ($call and ($call is_form (xs.head, "decl"),
+                    $call eq_str ($call name_of ($call op (xs.head, 0)), nm)))
+        xs.head ($call find_completing ($call Pa.nodes.val (xs.tail), nm)),
+  $case xs ($call Pa.n_err ("no completing $decl", 0, 0))
+)
+
+// A file's top level, as module members, **in the order they become visible**.
+//
+// §4.10 makes that source order for a `$decl`, and §4.11 makes `$fwd` the way
+// to move it earlier: "`$fwd` reserves a layout slot at its own position". So a
+// `$fwd`'d name enters the list where the `$fwd` stands, carrying the value its
+// completing `$decl` gives it — and the completing `$decl` is then skipped,
+// having already been counted. That ordering is what `with_scope` reads.
+$decl file_props_at $func ($decl all Pa.nodes.node, $decl xs Pa.nodes.node,
+                           $decl acc mprops.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl nm  $if ($call is_form (xs.head, "fwd"))
+            ($call name_of ($call op (xs.head, 0)))
+            ($if ($call is_form (xs.head, "decl")) ($call name_of ($call op (xs.head, 0)))
+                 ($if ($call is_form (xs.head, "prop")) ($call name_of ($call op (xs.head, 0))) ""))
+      $decl seen $if ($call eq_str (nm, "")) true
+                     ($call not ($call mprops.is_nil ($call find_mprop (acc, nm))))
+      $decl a2 $if seen acc
+          ($if ($call is_form (xs.head, "fwd"))
+               ($call mprops.cons ($call mprop (nm,
+                    $call op ($call find_completing (all, nm), 1), "decl"), acc))
+          ($if ($call is_form (xs.head, "prop"))
+               ($call mprops.cons ($call mprop (nm, $call op (xs.head, 1), "prop"), acc))
+               ($call mprops.cons ($call mprop (nm, $call op (xs.head, 1), "decl"), acc))))
+      $decl r $call file_props_at (all, $call Pa.nodes.val (xs.tail), a2) }.r,
   $case xs ($call mprops.reverse (acc, mprops.nil))
 )
+
+$decl file_props $func ($decl xs Pa.nodes.node, $decl acc mprops.node)
+  $call file_props_at (xs, xs, acc)
 
 $decl force_props $func ($decl st proto_lst, $decl mid 0, $decl xs mprops.node,
                          $decl n Pa.proto_node) $match xs (
@@ -1213,7 +1276,8 @@ $decl lower_match $func ($decl st proto_lst, $decl e benv.node, $decl n proto_fo
     $decl items $call group_items ($call op (n, 1))
     $decl out $if ($call T.same (scrut.ty, T.t_bool))
         ($call lower_bool_match (st, e, scrut, items, tail))
-        { $decl a $call lower_arms (st, e, items, tail, $call members_of (scrut.ty),
+        { $decl a $call lower_arms (st, e, items, tail,
+                      $call members_of ($call canon_ty (st, scrut.ty)),
                       $call name_of (sn), IR.ints.nil, IR.arms.nil, T.t_bot)
           $decl r $call lres (
               $call IR.e_switch ($call intern (st, a.ty), scrut.ir, a.arms, a.default), a.ty) }.r }.out
@@ -1272,7 +1336,8 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       ($if ($call eq_str (k, "try"))
         { $decl v   $call lval ($call lower (st, e, $call op (n, 0), false))
           $decl pty $call pattern_ty (st, e, $call op (n, 1))
-          $decl ds  $call disc_of ($call members_of (v.ty), pty, 0, IR.ints.nil, IR.ints.nil)
+          $decl ds  $call disc_of ($call members_of ($call canon_ty (st, v.ty)), pty, 0,
+                        IR.ints.nil, IR.ints.nil)
           // `type(e) & ¬pat` — what the value is once the matching member has
           // been taken away.
           $decl rest $call T.minus (v.ty, pty)
@@ -1401,6 +1466,30 @@ $decl fn_ty $func ($decl st proto_lst, $decl f IR.proto_fn)
 // prop-only block, a `$func`, a `$template` — become `cv_opaque`, an identity
 // rather than code. So lowering keeps the source and answers from that.
 
+// What a *`$decl`* member's initializer may name. §4.10 is source order: a
+// `$decl` is visible from its own position onward, which is why `$fwd` exists
+// to reserve an earlier one — and why `types.mpl`'s `$decl isub sub` at the
+// top captures the integer intrinsic before the file's own `sub` shadows it.
+// A `$prop` is different: it is visible throughout its block regardless of
+// order, so props are bound wherever they stand.
+//
+// A `$func` member's *body* is not this: it resolves against the finished
+// block, which is what `with_props` gives it.
+$decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $decl nm "",
+                        $decl seen P.boolean) $match xs (
+  $case {$prop tag "cons"}
+    { $decl hit $call eq_str (xs.head.name, nm)
+      // Up to and *including* the member itself: §5.7 lets a type-only position
+      // name a declaration that is in progress, which is how a recursive type
+      // is written at all (§5.5). Only what comes after is out of scope.
+      $decl vis $if ($call eq_str (xs.head.kind, "prop")) true ($if seen false true)
+      $decl e2  $if vis
+          ($call benv.cons ($call bind_ent6 (xs.head.name, "prop", 0, T.t_bot, mid, -1), e)) e
+      $decl sn  $if seen true hit
+      $decl r   $call with_scope (e2, $call mprops.val (xs.tail), mid, nm, sn) }.r,
+  $case xs e
+)
+
 $decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $match xs (
   $case {$prop tag "cons"}
     $call with_props ($call benv.cons ($call bind_ent5 (xs.head.name, "prop", 0, T.t_bot, mid), e),
@@ -1495,19 +1584,28 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
   { $decl pe $call with_props ($call benv.val (m.env), $call mprops.val (m.props), m.id)
+    $decl self $call mem_str ($call free_names (pn, strs.nil), nm)
     $decl pv $call fresh_var (st)
     $decl p0 $call note_prop (st, m.id, $call mdone (nm, "pend", pv, T.t_bot, -1, -1))
-    $decl v  $call lval ($call lower (st, pe, pn, false))
-    $decl ty $if ($call T.occurs (v.ty, pv)) ($call T.close_var (v.ty, pv)) ($call T.tval (v.ty))
+    $decl sn $call take_snap (st)
+    $decl v0 $call lval ($call lower (st, pe, pn, false))
+    $decl und $if self ($call put_snap (st, sn)) 0
+    $decl ty $if ($call T.occurs (v0.ty, pv)) ($call T.close_var (v0.ty, pv)) ($call T.tval (v0.ty))
     $decl gd $if ($call T.unguarded_rec (ty))
         ($call err (st, $call concat (
             "this recursive prop has no layout: it recurs through a value, not storage. Write $new at the recursive position (§5.5). Derived ",
             $call T.show (ty)), n))
         0
+    // Tied: the knot is closed, so a self-reference in the second pass gets
+    // the real type rather than the placeholder. Lowering again is what puts
+    // that type on the nodes *inside* the body, whose indices were handed out
+    // while the placeholder stood.
+    $decl p1 $call note_prop (st, m.id, $call mdone (nm, "tied", 0, ty, v0.mod, v0.tmpl))
+    $decl v  $if self ($call lval ($call lower (st, pe, pn, false))) v0
     // Remembered as what it *is*: re-lowering would build a second module or
     // register the template twice, and then two mentions of one name would
     // name two different things.
-    $decl p1 $call note_prop (st, m.id, $call mdone (nm, "value", 0, ty, v.mod, v.tmpl))
+    $decl p2 $call note_prop (st, m.id, $call mdone (nm, "value", 0, ty, v.mod, v.tmpl))
     $decl r  $call lres4 (v.ir, ty, v.mod, v.tmpl) }.r
 
 // §4.9: a template has no runtime value at all, so it is registered once and
@@ -1526,9 +1624,21 @@ $decl lower_prop_tmpl $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 // each, initialised once in source order (§4.10), which is a thunk. That is
 // the whole difference from a `$prop`, whose value is compile-time and is
 // lowered afresh wherever it is named.
+$decl tbody $func ($decl v proto_lres, $decl ss IR.ints.node) { $decl val v  $decl slots ss }
+
+// A member's body lowered as a thunk body, with the enclosing frame put aside
+// and restored — so it can be done twice and the second result used.
+$decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.proto_node)
+  { $decl o $call take_slots (st)
+    $decl v $call lval ($call lower (st, pe, pn, true))
+    $decl r $call tbody (v, $call take_slots (st))
+    $decl b $call restore_slots (st, o)
+    $decl z r }.z
+
 $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe   $call with_props ($call benv.val (m.env), $call mprops.val (m.props), m.id)
+  { $decl pe   $call with_scope ($call benv.val (m.env), $call mprops.val (m.props), m.id, nm,
+                   ($union (false, true)))
     $decl chk  $call no_caps (st, pe, pn)
     $decl idx  $call reserve_lifted (st)
     // §5.5 again, and for the same reason as a `$prop`: a module's members are
@@ -1536,23 +1646,34 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
     // top-level `$decl` whose `$union` names itself — and inside a module
     // lowering derives rather than reads, so the knot is tied here. The index
     // is reserved for a self *call*; the placeholder is for a self *type*.
+    // A member that names itself is lowered **twice**, and it is the same
+    // reason a self-naming `$prop` function is: lowering derives rather than
+    // solves, so during the first pass the member's own type is §5.5's
+    // placeholder — and not only its result. Every node inside that reached it
+    // holds the placeholder too, and a node's type is an interned *index*, so
+    // those cannot be revised afterwards. Closing the knot and lowering again
+    // is what gives them the real type. The first pass exists only to find it.
+    $decl self $call mem_str ($call free_names (pn, strs.nil), nm)
     $decl pv   $call fresh_var (st)
     $decl p0   $call note_prop (st, m.id, $call mdone (nm, "global", idx, $call T.t_var (pv), -1, -1))
-    $decl o    $call take_slots (st)
-    $decl v    $call lval ($call lower (st, pe, pn, true))
-    $decl t    $if ($call T.occurs (v.ty, pv)) ($call T.close_var (v.ty, pv)) ($call T.tval (v.ty))
+    $decl sn   $call take_snap (st)
+    $decl b0   $call thunk_body (st, pe, pn)
+    $decl und  $if self ($call put_snap (st, sn)) 0
+    $decl t    $if ($call T.occurs (b0.val.ty, pv)) ($call T.close_var (b0.val.ty, pv))
+                   ($call T.tval (b0.val.ty))
     $decl gd   $if ($call T.unguarded_rec (t))
         ($call err (st, $call concat (
             "this recursive member has no layout: it recurs through a value, not storage. Write $new at the recursive position (§5.5). Derived ",
             $call T.show (t)), n))
         0
+    $decl p1   $call note_prop (st, m.id, $call mdone (nm, "global", idx, t,
+                   b0.val.mod, b0.val.tmpl))
+    $decl bd   $if self ($call thunk_body (st, pe, pn)) b0
     $decl vty  $call intern (st, t)
-    $decl f    $call IR.fn (nm, IR.ints.nil, vty, $call take_slots (st), v.ir, false, true,
-                    IR.ints.nil)
-    $decl b    $call restore_slots (st, o)
+    $decl f    $call IR.fn (nm, IR.ints.nil, vty, $call IR.ints.val (bd.slots), bd.val.ir,
+                    false, true, IR.ints.nil)
     $decl put  $call put_lifted (st, idx, f)
-    $decl p1   $call note_prop (st, m.id, $call mdone (nm, "global", idx, t, v.mod, v.tmpl))
-    $decl r    $call lres4 ($call IR.e_global (vty, idx), t, v.mod, v.tmpl) }.r
+    $decl r    $call lres4 ($call IR.e_global (vty, idx), t, bd.val.mod, bd.val.tmpl) }.r
 
 $decl lower_prop_ast $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                             $decl pn Pa.proto_node, $decl n Pa.proto_node, $decl kd "")
@@ -1585,6 +1706,7 @@ $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
         $case {$prop tag "cons"}
           ($if ($call eq_str (d.head.kind, "global")) ($call prop_global (st, d.head))
           ($if ($call eq_str (d.head.kind, "tmpl"))   ($call prop_const (st, d.head))
+          ($if ($call eq_str (d.head.kind, "tied"))   ($call prop_const (st, d.head))
           ($if ($call eq_str (d.head.kind, "value"))
                ($if ($call has_fields (d.head.ty)) ($call lower_prop_new (st, m, nm, n))
                     ($call prop_const (st, d.head)))
@@ -1596,7 +1718,7 @@ $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                // knot is tied on; the node's own type index is not, because
                // the node is discarded and a placeholder is not a layout.
                ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)),
-                   $call T.t_var (d.head.idx)))))),
+                   $call T.t_var (d.head.idx))))))),
         $case d ($call lower_prop_new (st, m, nm, n))
       ) }.r
 
@@ -1859,14 +1981,6 @@ $decl fns_acc $func ($decl fs IR.fns.node, $decl n 0) { $decl funcs fs  $decl co
 // them in lockstep would misalign every name after the first forward
 // declaration. The fields are the authority on order, so this walks those and
 // finds each one's completing `$decl`.
-$decl find_completing $func ($decl xs Pa.nodes.node, $decl nm "") $match xs (
-  $case {$prop tag "cons"}
-    $if ($call and ($call is_form (xs.head, "decl"),
-                    $call eq_str ($call name_of ($call op (xs.head, 0)), nm)))
-        xs.head ($call find_completing ($call Pa.nodes.val (xs.tail), nm)),
-  $case xs ($call Pa.n_err ("no completing $decl", 0, 0))
-)
-
 // A lowered top-level `$decl`: the function it became, and — when its value
 // was compile-time — the module or template it is.
 $decl topfn $func ($decl f IR.proto_fn, $decl m 0, $decl tm 0)

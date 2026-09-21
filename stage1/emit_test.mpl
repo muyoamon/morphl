@@ -409,4 +409,25 @@ $decl t31 $call check ("the recursive field is a pointer, which is why the layou
 $decl t32 $call check ("the type a recursive binder names is a discriminated union (§7.5)",
   $call has (rec_c.code, "{ int64_t tag; union {"))
 
+// --------------------------------------------- union into union (§7.4)
+//
+// §3.6 makes a union a set and §7.5 makes its order the discriminator, so
+// using `<a,b>` where `<c,a,b>` is expected is a re-tag, not a copy: the same
+// member sits at a different position in each.
+$decl u2u_src $call concat (
+  "$decl a { $prop tag \"a\"  $decl v 1 }  $decl b { $prop tag \"b\"  $decl v 2 } ",
+  $call concat ("$decl c { $prop tag \"c\"  $decl v 3 }  $decl small $union (a, b)  $decl big $union (c, a, b) ",
+                "$decl widen $func ($decl x big) $match x ($case {$prop tag \"a\"} x.v, $case x x.v) "))
+
+$decl u2u_c $call compile ($call concat (u2u_src, "$decl main $func () $call widen (small) "))
+
+$decl t33 $call check ("a union coerced into a larger union emits cleanly",
+  $call eq_int (u2u_c.nerrs, 0))
+
+$decl t34 $call check ("...as a switch on the source's discriminator",
+  $call has (u2u_c.code, "switch ((int)"))
+
+$decl t35 $call check ("...that writes the target's position, not the source's",
+  $call has (u2u_c.code, ".tag = 2;"))
+
 $decl done $call nl ("all C backend tests passed")
