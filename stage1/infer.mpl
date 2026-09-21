@@ -200,33 +200,10 @@ $decl is_ref $func ($decl t T.proto_ty) $match t (
 // expression `B(R)`; the result is `μR. B(R)`, or simply `B` if `R` does not
 // occur."
 
-$fwd occurs
-
-$decl occurs_tys $func ($decl xs T.tys.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call occurs (xs.head, i)) true ($call occurs_tys (xs.tail, i)),
-  $case xs false
-)
-
-$decl occurs_fields $func ($decl xs T.fields.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call occurs (xs.head.ty, i)) true ($call occurs_fields (xs.tail, i)),
-  $case xs false
-)
-
-$decl occurs $func ($decl t T.proto_ty, $decl i 0) $match t (
-  $case {$prop tag "var"}   $call eq_int (t.id, i),
-  $case {$prop tag "block"} $call occurs_fields (t.fields, i),
-  $case {$prop tag "group"} $call occurs_tys (t.items, i),
-  $case {$prop tag "func"}
-    $if ($call occurs_tys (t.params, i)) true ($call occurs (t.result, i)),
-  $case {$prop tag "ref"}   $call occurs (t.inner, i),
-  $case {$prop tag "array"} $call occurs (t.elem, i),
-  $case {$prop tag "union"} $call occurs_tys (t.members, i),
-  $case {$prop tag "inter"} $call occurs_tys (t.members, i),
-  // A binder binds no placeholder, so there is nothing to shadow here.
-  $case {$prop tag "rec"}   $call occurs (t.body, i),
-  $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
-  $case t false
-)
+// §5.5's occurrence check. It belongs to the type language, so it lives in
+// `types.mpl` — lowering needs it too, now that a specialised template's types
+// are derived rather than handed over (§4.9).
+$decl occurs T.occurs
 
 $fwd hfv
 

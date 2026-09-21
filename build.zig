@@ -109,6 +109,10 @@ pub fn build(b: *std.Build) void {
         suite_run.addArgs(&.{ "--run", suite });
         suite_run.setCwd(b.path("."));
         suite_run.expectExitCode(0);
+        // The suite reads its `.mpl` sources at *run* time, so the build graph
+        // does not know they are inputs and would serve a cached success after
+        // stage 1 changed. These are tests; running them every time is right.
+        suite_run.has_side_effects = true;
         stage1_step.dependOn(&suite_run.step);
         test_step.dependOn(&suite_run.step);
     }
@@ -128,6 +132,11 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/try.mpl", .want = "5\n" },
         .{ .src = "stage1/fixtures/mutual.mpl", .want = "1\n" },
         .{ .src = "stage1/fixtures/unions.mpl", .want = "91\n" },
+        .{ .src = "stage1/fixtures/props.mpl", .want = "169\n" },
+        .{ .src = "stage1/fixtures/template.mpl", .want = "43\n" },
+        .{ .src = "stage1/fixtures/import.mpl", .want = "57\n" },
+        .{ .src = "stage1/fixtures/list.mpl", .want = "20\n" },
+        .{ .src = "stage1/fixtures/group.mpl", .want = "49\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -138,6 +147,9 @@ pub fn build(b: *std.Build) void {
             const emit_run = b.addRunArtifact(exe);
             emit_run.addArgs(&.{ "--run", driver, fixture.src });
             emit_run.setCwd(b.path("."));
+            // Same reason as above: the compiler is stage-1 source read at run
+            // time, so a cached run would compile the previous compiler.
+            emit_run.has_side_effects = true;
             const c_file = emit_run.captureStdOut(.{ .basename = "out.c" });
 
             // A compiler legitimately emits a static function nothing calls;

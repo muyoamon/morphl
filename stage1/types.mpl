@@ -426,8 +426,27 @@ $decl same $func ($decl a proto_ty, $decl b proto_ty) $match a (
       $case {$prop tag "over"} $call same_tys (a.cands, b.cands), $case b false),
   $case {$prop tag "tmpl"} $match b (
       $case {$prop tag "tmpl"} $call eq_int (a.id, b.id), $case b false),
-  // The leaf types carry nothing, so equal renderings mean equal types.
-  $case a ($call eq_str ($call show (a), $call show (b)))
+  // The leaf types carry nothing, so equal renderings mean equal types — but
+  // only once `b` is known to be one too. Reaching here says nothing about
+  // `b`, and `show` of a compound renders the whole type: `same (Int, <big
+  // union>)` would build that union's string to answer `false`. `intern`
+  // scans its table with `same` for every type it interns, so that was
+  // quadratic *and* allocating, and it dominated lowering a large file.
+  $case a $match b (
+      $case {$prop tag "var"}   false,
+      $case {$prop tag "block"} false,
+      $case {$prop tag "group"} false,
+      $case {$prop tag "func"}  false,
+      $case {$prop tag "ref"}   false,
+      $case {$prop tag "array"} false,
+      $case {$prop tag "union"} false,
+      $case {$prop tag "inter"} false,
+      $case {$prop tag "rec"}   false,
+      $case {$prop tag "bnd"}   false,
+      $case {$prop tag "over"}  false,
+      $case {$prop tag "tmpl"}  false,
+      $case b ($call eq_str ($call show (a), $call show (b)))
+    )
 )
 
 $decl ty_eq $func ($decl a proto_ty, $decl b proto_ty) $call same (a, b)
@@ -613,6 +632,68 @@ $decl subst_bnd $func ($decl t proto_ty, $decl k 0, $decl r proto_ty)
   $call remap (t, $call rop_bnd (r), k)
 
 // `μR. B(R)`, built from a body that still mentions the placeholder `R`.
+// §5.5: "the result is `μR. B(R)`, or simply `B` if `R` does not occur."
+// Deciding which needs this.
+$fwd occurs
+
+$decl occurs_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call occurs (xs.head, i)) true ($call occurs_tys (xs.tail, i)),
+  $case xs false
+)
+
+$decl occurs_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call occurs (xs.head.ty, i)) true ($call occurs_fields (xs.tail, i)),
+  $case xs false
+)
+
+$decl occurs $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "var"}   $call eq_int (t.id, i),
+  $case {$prop tag "block"} $call occurs_fields (t.fields, i),
+  $case {$prop tag "group"} $call occurs_tys (t.items, i),
+  $case {$prop tag "func"}
+    $if ($call occurs_tys (t.params, i)) true ($call occurs (t.result, i)),
+  $case {$prop tag "ref"}   $call occurs (t.inner, i),
+  $case {$prop tag "array"} $call occurs (t.elem, i),
+  $case {$prop tag "union"} $call occurs_tys (t.members, i),
+  $case {$prop tag "inter"} $call occurs_tys (t.members, i),
+  // A binder binds no placeholder, so there is nothing to shadow here.
+  $case {$prop tag "rec"}   $call occurs (t.body, i),
+  $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
+  $case t false
+)
+
+// Whether *any* placeholder survives in a type. A `$var` that is still here
+// is by construction unsolved (§5.5), so such a type is not a layout and
+// nothing at run time has it — which is what lets the backend skip it rather
+// than fail on it.
+$fwd has_var
+
+$decl has_var_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call has_var (xs.head, 0)) true ($call has_var_tys (xs.tail, 0)),
+  $case xs false
+)
+
+$decl has_var_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call has_var (xs.head.ty, 0)) true ($call has_var_fields (xs.tail, 0)),
+  $case xs false
+)
+
+$decl has_var $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "var"}   true,
+  $case {$prop tag "block"} ($call has_var_fields (t.fields, 0)),
+  $case {$prop tag "group"} ($call has_var_tys (t.items, 0)),
+  $case {$prop tag "func"}
+    $if ($call has_var_tys (t.params, 0)) true ($call has_var (t.result, 0)),
+  $case {$prop tag "ref"}   ($call has_var (t.inner, 0)),
+  $case {$prop tag "array"} ($call has_var (t.elem, 0)),
+  $case {$prop tag "union"} ($call has_var_tys (t.members, 0)),
+  $case {$prop tag "inter"} ($call has_var_tys (t.members, 0)),
+  $case {$prop tag "rec"}   ($call has_var (t.body, 0)),
+  $case {$prop tag "over"}  ($call has_var_tys (t.cands, 0)),
+  $case t false
+)
+
 $decl close_var $func ($decl t proto_ty, $decl i 0)
   $call t_rec ($call remap (t, $call rop_abs (i), 0))
 

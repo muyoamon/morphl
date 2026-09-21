@@ -127,13 +127,20 @@ $decl t10 $call check ("a program using blocks emits cleanly",
   $call eq_int (blk_c.nerrs, 0))
 
 // §7.2: the layout is the `$decl` order, so `point` is two fields by position.
+//
+// Every struct is *declared* first and defined separately, because §5.5 lets a
+// type reach itself through storage and a pointer to a struct needs only the
+// declaration. That is what lets a recursive type be laid out at all.
 $decl t11 $call check ("a block becomes a struct in $decl order",
-  $call has (blk_c.code, "typedef struct { int64_t f0; int64_t f1; } mpl_t1;"))
+  $call has (blk_c.code, "struct mpl_t1 { int64_t f0; int64_t f1; };"))
+
+$decl t11b $call check ("...declared before it is defined",
+  $call has (blk_c.code, "typedef struct mpl_t1 mpl_t1;"))
 
 // §4.10: a prop is in the type but occupies no space, so this struct has one
 // field, not two.
 $decl t12 $call check ("a $prop takes no space in the struct",
-  $call has (blk_c.code, "typedef struct { int64_t f0; } mpl_t"))
+  $call has (blk_c.code, "{ int64_t f0; };"))
 
 // Blocks nest by value, and the inner struct must be declared first — which it
 // is, because lowering interns a field's type before the block containing it,
@@ -376,5 +383,30 @@ $decl t51 $call check ("a Bool union stays a machine word",
 
 $decl t52 $call check ("...and a $match on one is an $if, not a switch",
   $call not ($call has (bool_c.code, "switch")))
+
+// ------------------------------------------------- recursive types (§5.5)
+//
+// A `μ` is laid out as its unrolling: the cons cell is a struct of its own and
+// the union the `μ` names embeds it by value, so the cell has to be *defined*
+// first — which is not the order they were interned in, since the cell names
+// the `μ`. What makes that order exist is §5.5's guardedness: every recursive
+// edge goes through storage, so it is a pointer, and a pointer needs only the
+// forward declaration.
+$decl rec_src $call concat (
+  "$decl lst $template T { $prop nil { $prop tag \"nil\" } ",
+  $call concat ("$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail $new node }) ",
+  $call concat ("$prop cons $func ($decl h T, $decl t node) { $prop tag \"cons\"  $decl head h  $decl tail $new t } } ",
+                "$decl ints $specialize lst 0  $decl main $func () ($call ints.cons (1, ints.nil)).head ")))
+
+$decl rec_c $call compile (rec_src)
+
+$decl t30 $call check ("a program with a recursive type emits cleanly",
+  $call eq_int (rec_c.nerrs, 0))
+
+$decl t31 $call check ("the recursive field is a pointer, which is why the layout terminates",
+  $call has (rec_c.code, " * f1; };"))
+
+$decl t32 $call check ("the type a recursive binder names is a discriminated union (§7.5)",
+  $call has (rec_c.code, "{ int64_t tag; union {"))
 
 $decl done $call nl ("all C backend tests passed")

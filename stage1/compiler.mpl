@@ -103,18 +103,18 @@ $decl infer $func ($decl p proto_parsed)
       ($call typed (T.t_bot, $call Pa.diags.val (p.diagnostics)))
 
 
-$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty)
+$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "")
   { $decl st    $call L.lstate ()
     // §2's root block, straight from inference: a `binding` is `{name, ty}`,
     // which is a `T.field`, so one converter reads both (§5.1).
     $decl prims $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil)
-    $decl prog  $call L.lower_file (st, items, fty, prims)
+    $decl prog  $call L.lower_file (st, items, fty, prims, base)
     $decl out   $call checked (prog, $call L.eval_diags (st.errs)) }.out
 
 $decl check_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "")
   { $decl r   $call infer_ok (items, base, path)
     $decl out $if ($call Pa.diags.is_nil ($call Pa.diags.val (r.diagnostics)))
-        ($call lower_ok (items, $call T.tval (r.ty)))
+        ($call lower_ok (items, $call T.tval (r.ty), base))
         ($call checked (empty_program, $call Pa.diags.val (r.diagnostics))) }.out
 
 $decl check $func ($decl p proto_parsed)

@@ -188,10 +188,16 @@ $decl vslots $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.bslots.n
 
 // An arm's body is in tail position exactly when the `$match` is (§7.7), which
 // is what makes a `$match` in tail position able to end in a tail call at all.
+// An arm's slot is -1 when there is nothing to bind: §4.7 narrows to the member
+// the discriminator selected, and an arm answering for *several* members
+// narrows to their union, which is what the scrutinee already had. The backend
+// reads -1 the same way and loads nothing, so it is a value here and not an
+// index.
 $decl varms $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.arms.node,
                    $decl tl P.boolean) $match xs (
   $case {$prop tag "cons"}
-    $do ($do ($call need (st, cx, xs.head.body.id, xs.head.slot, cx.nslots, "arm slot"))
+    $do ($do ($if ($call eq_int (xs.head.slot, -1)) 0
+                  ($call need (st, cx, xs.head.body.id, xs.head.slot, cx.nslots, "arm slot")))
              ($call vexpr (st, cx, xs.head.body, tl)))
         ($call varms (st, cx, $call IR.arms.val (xs.tail), tl)),
   $case xs 0
@@ -213,6 +219,14 @@ $decl env_of $func ($decl cx proto_vcx, $decl i 0)
 $decl in_funcs $func ($decl cx proto_vcx, $decl i 0)
   $call and ($call not ($call lt (i, 0)), $call lt (i, cx.nfuncs))
 
+// A top-level `$decl` that is not a `$func` is a thunk: its index names a
+// static holding a value (§4.10), so a call *to* it is an indirect call
+// through the function that static holds, and its own `params` — none —
+// describe the thunk rather than the call. There is nothing to check the
+// argument count against here.
+$decl is_thunk $func ($decl cx proto_vcx, $decl i 0)
+  ($call IR.fns.nth ($call IR.fns.val (cx.funcs), i)).thunk
+
 $decl vcount $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0,
                     $decl got 0, $decl want 0, $decl what "")
   $if ($call eq_int (got, want)) 0
@@ -229,8 +243,9 @@ $decl mark_self $func ($decl st proto_vst)
 $decl vcallee $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0, $decl fn 0,
                      $decl nargs 0, $decl marked P.boolean)
   $if ($call in_funcs (cx, fn))
-      ($do ($call vcount (st, cx, id, nargs, $call arity_of (cx, fn), "arguments"))
-           ($if ($call and (marked, $call eq_int (fn, cx.self))) ($call mark_self (st)) 0))
+      ($if ($call is_thunk (cx, fn)) 0
+          ($do ($call vcount (st, cx, id, nargs, $call arity_of (cx, fn), "arguments"))
+               ($if ($call and (marked, $call eq_int (fn, cx.self))) ($call mark_self (st)) 0)))
       0
 
 // §7.7 decides where a tail call may be, §6a decides what to do with one. A
