@@ -103,6 +103,7 @@ pub fn build(b: *std.Build) void {
         "stage1/ir_test.mpl",
         "stage1/lower_test.mpl",
         "stage1/emit_test.mpl",
+        "stage1/compiler_test.mpl",
     }) |suite| {
         const suite_run = b.addRunArtifact(exe);
         suite_run.addArgs(&.{ "--run", suite });
@@ -126,22 +127,30 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/closures.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/try.mpl", .want = "5\n" },
         .{ .src = "stage1/fixtures/mutual.mpl", .want = "1\n" },
+        .{ .src = "stage1/fixtures/unions.mpl", .want = "91\n" },
     }) |fixture| {
-        const emit_run = b.addRunArtifact(exe);
-        emit_run.addArgs(&.{ "--run", "stage1/emit_c.mpl", fixture.src });
-        emit_run.setCwd(b.path("."));
-        const c_file = emit_run.captureStdOut(.{ .basename = "out.c" });
+        // Every fixture twice: once straight, once with §9.2's pass in the
+        // middle. The answer has to be the same both ways — that is the whole
+        // claim, from either side. "The compiler never assumes a pass ran", so
+        // `emit_c` must be right on unoptimised input; a pass may not change
+        // what the program means, so `opt_c` must agree with it.
+        for ([_][]const u8{ "stage1/emit_c.mpl", "stage1/opt_c.mpl" }) |driver| {
+            const emit_run = b.addRunArtifact(exe);
+            emit_run.addArgs(&.{ "--run", driver, fixture.src });
+            emit_run.setCwd(b.path("."));
+            const c_file = emit_run.captureStdOut(.{ .basename = "out.c" });
 
-        // A compiler legitimately emits a static function nothing calls; the
-        // rest of -Werror is worth keeping.
-        const cc = b.addSystemCommand(&.{ "cc", "-O0", "-Wall", "-Wno-unused-function", "-Werror", "-o" });
-        const bin = cc.addOutputFileArg("fixture");
-        cc.addFileArg(c_file);
+            // A compiler legitimately emits a static function nothing calls;
+            // the rest of -Werror is worth keeping.
+            const cc = b.addSystemCommand(&.{ "cc", "-O0", "-Wall", "-Wno-unused-function", "-Werror", "-o" });
+            const bin = cc.addOutputFileArg("fixture");
+            cc.addFileArg(c_file);
 
-        const run_bin = std.Build.Step.Run.create(b, "run the emitted binary");
-        run_bin.addFileArg(bin);
-        run_bin.expectStdOutEqual(fixture.want);
-        emit_step.dependOn(&run_bin.step);
-        test_step.dependOn(&run_bin.step);
+            const run_bin = std.Build.Step.Run.create(b, "run the emitted binary");
+            run_bin.addFileArg(bin);
+            run_bin.expectStdOutEqual(fixture.want);
+            emit_step.dependOn(&run_bin.step);
+            test_step.dependOn(&run_bin.step);
+        }
     }
 }

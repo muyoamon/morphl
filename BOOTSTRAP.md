@@ -33,7 +33,8 @@ After stage 3 the Zig code stops growing. It is kept, not deleted: it is the rep
 | `$decl name e` | none |
 | `$prop name e` | initializer limited to literal, `true`/`false`, `$func`/`$template` literal, prop-only block, `$union`, `$specialize`, projection of a prop (this is §4.10 as written) |
 | `$fwd name` | mutual recursion only; plain self-recursion does not need it (§4.1 self-reference) |
-| `$new e` | none. Nothing is ever freed — every allocation is root-region (see §3) |
+| `$new e` | none. Frame storage, and §5.3a's escape check applies — stage 1's checker must implement it |
+| `$alloc e` | none. Draws from the root block's default `allocator`, which never frees (§3) |
 | `$mut e` | none |
 | `$set target e` | none |
 | `$func params body` | none. Closures need no restriction: capture is by copy and bindings are immutable, so no closure can point into a dead frame (§7.3) |
@@ -57,7 +58,7 @@ After stage 3 the Zig code stops growing. It is kept, not deleted: it is the rep
 | `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap |
 | `$const`, all `&const` | Nothing in stage 1 needs a read-only view. (This exclusion used to be justified by fat references; under §5.1's prefix rule a `&const` upcast is free and thin, so the reason is now only that it is unused.) Use `&T` or `$mut`. |
 | `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and converted by the backend when emitting C — so the lexer still lexes them |
-| `allocator`, regions | Nothing is freed at stage 0 (§3) |
+| Releasing an allocator | Nothing is freed at stage 0 (§3), so the default `allocator` is malloc-and-never-free. `$alloc` itself is *in* the subset — §5.3a makes it the only way a container outlives its builder, so stage 1 cannot be written without it. |
 | `sendable`, threads | Not needed to compile a file |
 | Implicit `$specialize` via `$call` | Requires parameter-default shape matching (§4.9) — inference work, in stage 0 |
 | Template bounds | Requires subtype checking, which stage 0 does not have |

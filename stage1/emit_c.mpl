@@ -2,11 +2,10 @@
 //
 //   morphlc --run stage1/emit_c.mpl <file.mpl>
 //
-// §9's pipeline minus the link step: parse, check, lower, emit.
-$decl I  $import "infer"
-$decl L  $import "lower"
-$decl E  $import "emit"
-$decl IR $import "ir"
+// §9's pipeline through `emit`, with `verify` in between — which is the shape
+// §9.2 asks a build program to have while a pass is being developed, and there
+// is no reason for the compiler's own driver to be less careful than that.
+$decl C  $import "compiler"
 $decl Pa $import "parser"
 $decl P  $import "prelude"
 
@@ -28,16 +27,11 @@ $decl src $match rf (
   $case rf ($call panic ($call concat ("cannot read ", path)))
 )
 
-$decl r   $call I.check_source (src, $call P.dirname (path), path)
-$decl ast $call Pa.parse (src)
-$decl st  $call L.lstate ()
-$decl prims $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil)
-$decl prog  $call L.lower_file (st, $call Pa.nodes.val (ast.exprs), r.ty, prims)
+$decl ckd $call C.check ($call C.parse (src, path))
+$decl bad $call C.verify (ckd.program)
+$decl out $call C.emit (ckd.program)
 
-$decl est $call E.estate ()
-$decl c   $call E.emit_program (est, prog)
-
-$decl e0 $call show_errs (r.errs, "check")
-$decl e1 $call show_errs ($call L.eval_diags (st.errs), "lower")
-$decl e2 $call show_errs ($call E.emit_errs (est), "emit")
-$decl out $call print (c)
+$decl e0 $call show_errs ($call Pa.diags.val (ckd.diagnostics), "check")
+$decl e1 $call show_errs (bad, "verify")
+$decl e2 $call show_errs ($call Pa.diags.val (out.diagnostics), "emit")
+$decl e3 $call print ($call P.sval (out.text))

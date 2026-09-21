@@ -176,7 +176,7 @@ $decl fresh_opaque $func ($decl st proto_lst)
 // the derivation wants.
 
 $decl lres $func ($decl e IR.proto_expr, $decl t T.proto_ty) { $decl ir e  $decl ty t }
-$decl proto_lres $call lres ({ $prop tag "unit" $decl ty 0 }, T.t_bot)
+$decl proto_lres $call lres ({ $prop tag "unit" $decl ty 0  $decl id 0 }, T.t_bot)
 
 // The identity at `proto_lres`. `lower` is completed through a `$fwd`, so above
 // that completion its result is still §5.5's placeholder and projecting `.ir`

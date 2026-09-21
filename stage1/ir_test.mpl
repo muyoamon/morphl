@@ -12,6 +12,8 @@ $decl IR $import "ir"
 $decl T  $import "types"
 $decl P  $import "prelude"
 
+$decl not P.not
+
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
 $decl check_str $func ($decl name "", $decl got "", $decl want "")
@@ -119,5 +121,22 @@ $decl list_b $call T.close_var ($call T.union2 (T.t_unit,
 $decl t8 $call check ("two spellings of one recursive type intern to one entry",
   { $decl f $call IR.find_ty ($call T.tys.cons (list_a, T.tys.nil), list_b)
     $decl out $if f.hit ($call eq_int (f.id, 0)) false }.out)
+
+// §9.3: every node carries an index of its own. A pass keys a side table on it
+// — which it has to, because §7.4 makes a node extended with an extra field a
+// prefix *copy* on the way into anything expecting the plain node, so an
+// annotation written into the tree would not survive the trip.
+$decl n1 $call IR.e_int (t_int, 1)
+$decl n2 $call IR.e_int (t_int, 1)
+
+$decl t9 $call check ("two nodes built alike still have different ids",
+  $call not ($call eq_int ($call IR.id_of (n1), $call IR.id_of (n2))))
+
+// `ty` then `id` are the first two slots of every node, so `any_node` is a
+// prefix supertype of all of them (§5.1) and one accessor reads any shape.
+$decl t10 $call check ("the accessors read a node of any shape",
+  $if ($call eq_int ($call IR.ty_of (clo), t_int))
+      ($call not ($call eq_int ($call IR.id_of (clo), $call IR.id_of (sw))))
+      false)
 
 $decl done $call nl ("all typed-tree tests passed")

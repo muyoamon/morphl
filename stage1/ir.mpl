@@ -55,6 +55,32 @@ $decl strs $specialize P.list ""
 
 $decl tyid $func ($decl i 0) i
 
+// ----------------------------------------------------------------- identity
+//
+// Every node carries an index of its own, distinct within a program. It is
+// what a pass keys an annotation on: §7.4 makes a node extended with an extra
+// field a *prefix copy* on the way into any function expecting the plain one,
+// so analysis results live beside the tree rather than inside it (§9.3) — and
+// a side table needs something to key on.
+//
+// Ids come from a counter, which is the one piece of mutable state here. They
+// are therefore assigned in construction order, and construction order is
+// deterministic — which the bootstrap's byte-identical gate depends on.
+$decl next_id $mut $new 0
+
+$decl fresh_id $func ()
+  { $decl i $call P.ival (next_id)
+    $decl n $set next_id ($call add (i, 1))
+    $decl r i }.r
+
+// `ty` then `id` are the first two slots of every node, so this block is a
+// prefix supertype of all of them (§5.1) — which is how a pass reads either
+// without knowing the shape.
+$decl any_node { $decl ty 0  $decl id 0 }
+
+$decl id_of $func ($decl n any_node) n.id
+$decl ty_of $func ($decl n any_node) n.ty
+
 // --------------------------------------------------------------- expressions
 //
 // Every node carries its type. The shapes are written out rather than named
@@ -70,41 +96,41 @@ $decl tyid $func ($decl i 0) i
 
 $decl proto_expr $union (
   // Literals. §3.1: `Float` is carried as its source text, never parsed.
-  { $prop tag "int"     $decl ty 0  $decl v 0 },
-  { $prop tag "float"   $decl ty 0  $decl text "" },
-  { $prop tag "str"     $decl ty 0  $decl text "" },
-  { $prop tag "bool"    $decl ty 0  $decl v P.boolean },
-  { $prop tag "unit"    $decl ty 0 },
+  { $prop tag "int"     $decl ty 0  $decl id 0  $decl v 0 },
+  { $prop tag "float"   $decl ty 0  $decl id 0  $decl text "" },
+  { $prop tag "str"     $decl ty 0  $decl id 0  $decl text "" },
+  { $prop tag "bool"    $decl ty 0  $decl id 0  $decl v P.boolean },
+  { $prop tag "unit"    $decl ty 0  $decl id 0 },
 
   // §7.8: `panic` aborts, so it is a terminator rather than a call — it has
   // type ⊥ and no continuation.
-  { $prop tag "panic"   $decl ty 0  $decl msg "" },
+  { $prop tag "panic"   $decl ty 0  $decl id 0  $decl msg "" },
 
   // A frame slot: a parameter or a `$decl` of the enclosing function, numbered
   // in source order. §4.11's `$fwd` reserves its slot at its own position, so a
   // forward-completed name is an ordinary slot here and `$fwd` disappears.
-  { $prop tag "local"   $decl ty 0  $decl slot 0 },
+  { $prop tag "local"   $decl ty 0  $decl id 0  $decl slot 0 },
   // A copied binding from the closure's environment (§7.3: capture by copy).
-  { $prop tag "capture" $decl ty 0  $decl slot 0 },
+  { $prop tag "capture" $decl ty 0  $decl id 0  $decl slot 0 },
   // A top-level function, by index into `program.funcs`.
-  { $prop tag "global"  $decl ty 0  $decl fn 0 },
+  { $prop tag "global"  $decl ty 0  $decl id 0  $decl fn 0 },
   // A root-block intrinsic (§8), by name: the backend maps these to C.
-  { $prop tag "prim"    $decl ty 0  $decl name "" },
+  { $prop tag "prim"    $decl ty 0  $decl id 0  $decl name "" },
 
   // §4.6, as a layout position (§7.2).
-  { $prop tag "field"   $decl ty 0  $decl target $new proto_expr  $decl index 0 },
+  { $prop tag "field"   $decl ty 0  $decl id 0  $decl target $new proto_expr  $decl index 0 },
 
   // §4.2. `new` is the only allocation in the language, so it is the only node
   // the region pass (§7.6) has to look at when there is one.
-  { $prop tag "new"     $decl ty 0  $decl init $new proto_expr },
+  { $prop tag "new"     $decl ty 0  $decl id 0  $decl init $new proto_expr },
   // §5.4's implicit read, made explicit.
-  { $prop tag "deref"   $decl ty 0  $decl src $new proto_expr },
+  { $prop tag "deref"   $decl ty 0  $decl id 0  $decl src $new proto_expr },
   // §4.4: writes *through* storage.
-  { $prop tag "set"     $decl ty 0  $decl target $new proto_expr  $decl value $new proto_expr },
+  { $prop tag "set"     $decl ty 0  $decl id 0  $decl target $new proto_expr  $decl value $new proto_expr },
 
   // §7.4: a value coerced to a prefix supertype. A prefix copy, no scatter.
   // A reference coercion costs nothing and produces no node.
-  { $prop tag "copy"    $decl ty 0  $decl src $new proto_expr },
+  { $prop tag "copy"    $decl ty 0  $decl id 0  $decl src $new proto_expr },
 
   // §4.5: a block's value is its `$decl` slots, in layout order. Non-`$decl`
   // expressions ran for effect during lowering and are `do` chains by now.
@@ -115,38 +141,38 @@ $decl proto_expr $union (
   // slot number is carried rather than implied by position: a nested block
   // inside an initializer takes slots of its own, so a block's are not
   // contiguous.
-  { $prop tag "block"   $decl ty 0
+  { $prop tag "block"   $decl ty 0  $decl id 0
     $decl slots $new ($specialize P.list { $decl slot 0  $decl init proto_expr }).node },
-  { $prop tag "group"   $decl ty 0  $decl items $new ($specialize P.list proto_expr).node },
+  { $prop tag "group"   $decl ty 0  $decl id 0  $decl items $new ($specialize P.list proto_expr).node },
 
   // §7.3: a function value is a code pointer and an environment, two words
   // whatever its signature — which is what lets a function type be a valid
   // recursion guard and a function-typed slot have a size.
-  { $prop tag "closure" $decl ty 0  $decl fn 0
+  { $prop tag "closure" $decl ty 0  $decl id 0  $decl fn 0
     $decl captures $new ($specialize P.list proto_expr).node },
 
   // §7.7 decides `tail`, §6a decides what the backend does with it.
-  { $prop tag "call"    $decl ty 0  $decl callee $new proto_expr
+  { $prop tag "call"    $decl ty 0  $decl id 0  $decl callee $new proto_expr
     $decl args $new ($specialize P.list proto_expr).node  $decl tail P.boolean },
 
-  { $prop tag "if"      $decl ty 0  $decl cond $new proto_expr
+  { $prop tag "if"      $decl ty 0  $decl id 0  $decl cond $new proto_expr
     $decl then $new proto_expr  $decl els $new proto_expr },
 
   // §4.7 lowered: §7.5 gives a union value a discriminator, and §1.3 keeps
   // patterns to tag blocks and literals, so an arm is a discriminator test.
   // Exhaustiveness was checked (§5.6), so `default` is the catch-all every
   // `$match` must end in.
-  { $prop tag "switch"  $decl ty 0  $decl scrut $new proto_expr
+  { $prop tag "switch"  $decl ty 0  $decl id 0  $decl scrut $new proto_expr
     $decl arms $new ($specialize P.list { $decl discs ($specialize P.list 0).node  $decl slot 0  $decl body proto_expr }).node
     $decl default $new proto_expr },
 
   // §4.8b. The reason this form exists at all is that a call inside a block is
   // never in tail position, so it is the only way to sequence and keep §7.7.
-  { $prop tag "do"      $decl ty 0  $decl first $new proto_expr  $decl then $new proto_expr },
+  { $prop tag "do"      $decl ty 0  $decl id 0  $decl first $new proto_expr  $decl then $new proto_expr },
 
   // §4.15, the only non-local exit: if the value matches, return it from the
   // enclosing function. `disc` is the discriminator the pattern selects.
-  { $prop tag "try"     $decl ty 0  $decl value $new proto_expr  $decl disc 0 }
+  { $prop tag "try"     $decl ty 0  $decl id 0  $decl value $new proto_expr  $decl disc 0 }
 )
 
 // Reading a child out of storage: §5.4 makes a reference transparent only
@@ -156,7 +182,7 @@ $decl eval $func ($decl e proto_expr) e
 $decl exprs $specialize P.list proto_expr
 
 $decl bslot $func ($decl i 0, $decl e proto_expr) { $decl slot i  $decl init e }
-$decl proto_bslot $call bslot (0, { $prop tag "unit" $decl ty 0 })
+$decl proto_bslot $call bslot (0, { $prop tag "unit" $decl ty 0  $decl id 0 })
 $decl bslots $specialize P.list proto_bslot
 
 // One source arm, and the discriminators it covers: §4.7 is first fit, so an
@@ -164,53 +190,53 @@ $decl bslots $specialize P.list proto_bslot
 // C is several `case` labels on one body, not a body per member.
 $decl arm $func ($decl d ints.node, $decl s 0, $decl b proto_expr)
   { $decl discs d  $decl slot s  $decl body b }
-$decl proto_arm $call arm (ints.nil, 0, { $prop tag "unit" $decl ty 0 })
+$decl proto_arm $call arm (ints.nil, 0, { $prop tag "unit" $decl ty 0  $decl id 0 })
 $decl arms $specialize P.list proto_arm
 
 // ------------------------------------------------------------- constructors
 
-$decl e_int   $func ($decl t 0, $decl n 0)    { $prop tag "int"   $decl ty t  $decl v n }
-$decl e_float $func ($decl t 0, $decl s "")   { $prop tag "float" $decl ty t  $decl text s }
-$decl e_str   $func ($decl t 0, $decl s "")   { $prop tag "str"   $decl ty t  $decl text s }
-$decl e_bool  $func ($decl t 0, $decl b P.boolean) { $prop tag "bool" $decl ty t  $decl v b }
-$decl e_unit  $func ($decl t 0)               { $prop tag "unit"  $decl ty t }
-$decl e_panic $func ($decl t 0, $decl m "")   { $prop tag "panic" $decl ty t  $decl msg m }
+$decl e_int   $func ($decl t 0, $decl n 0)    { $prop tag "int"   $decl ty t  $decl id ($call fresh_id ())  $decl v n }
+$decl e_float $func ($decl t 0, $decl s "")   { $prop tag "float" $decl ty t  $decl id ($call fresh_id ())  $decl text s }
+$decl e_str   $func ($decl t 0, $decl s "")   { $prop tag "str"   $decl ty t  $decl id ($call fresh_id ())  $decl text s }
+$decl e_bool  $func ($decl t 0, $decl b P.boolean) { $prop tag "bool" $decl ty t  $decl id ($call fresh_id ())  $decl v b }
+$decl e_unit  $func ($decl t 0)               { $prop tag "unit"  $decl ty t  $decl id ($call fresh_id ()) }
+$decl e_panic $func ($decl t 0, $decl m "")   { $prop tag "panic" $decl ty t  $decl id ($call fresh_id ())  $decl msg m }
 
-$decl e_local   $func ($decl t 0, $decl i 0) { $prop tag "local"   $decl ty t  $decl slot i }
-$decl e_capture $func ($decl t 0, $decl i 0) { $prop tag "capture" $decl ty t  $decl slot i }
-$decl e_global  $func ($decl t 0, $decl i 0) { $prop tag "global"  $decl ty t  $decl fn i }
-$decl e_prim    $func ($decl t 0, $decl n "") { $prop tag "prim"   $decl ty t  $decl name n }
+$decl e_local   $func ($decl t 0, $decl i 0) { $prop tag "local"   $decl ty t  $decl id ($call fresh_id ())  $decl slot i }
+$decl e_capture $func ($decl t 0, $decl i 0) { $prop tag "capture" $decl ty t  $decl id ($call fresh_id ())  $decl slot i }
+$decl e_global  $func ($decl t 0, $decl i 0) { $prop tag "global"  $decl ty t  $decl id ($call fresh_id ())  $decl fn i }
+$decl e_prim    $func ($decl t 0, $decl n "") { $prop tag "prim"   $decl ty t  $decl id ($call fresh_id ())  $decl name n }
 
 $decl e_field $func ($decl t 0, $decl e proto_expr, $decl i 0)
-  { $prop tag "field" $decl ty t  $decl target $new e  $decl index i }
+  { $prop tag "field" $decl ty t  $decl id ($call fresh_id ())  $decl target $new e  $decl index i }
 
-$decl e_new   $func ($decl t 0, $decl e proto_expr) { $prop tag "new"   $decl ty t  $decl init $new e }
-$decl e_deref $func ($decl t 0, $decl e proto_expr) { $prop tag "deref" $decl ty t  $decl src $new e }
-$decl e_copy  $func ($decl t 0, $decl e proto_expr) { $prop tag "copy"  $decl ty t  $decl src $new e }
+$decl e_new   $func ($decl t 0, $decl e proto_expr) { $prop tag "new"   $decl ty t  $decl id ($call fresh_id ())  $decl init $new e }
+$decl e_deref $func ($decl t 0, $decl e proto_expr) { $prop tag "deref" $decl ty t  $decl id ($call fresh_id ())  $decl src $new e }
+$decl e_copy  $func ($decl t 0, $decl e proto_expr) { $prop tag "copy"  $decl ty t  $decl id ($call fresh_id ())  $decl src $new e }
 
 $decl e_set $func ($decl t 0, $decl dst proto_expr, $decl v proto_expr)
-  { $prop tag "set" $decl ty t  $decl target $new dst  $decl value $new v }
+  { $prop tag "set" $decl ty t  $decl id ($call fresh_id ())  $decl target $new dst  $decl value $new v }
 
-$decl e_block $func ($decl t 0, $decl xs bslots.node) { $prop tag "block" $decl ty t  $decl slots $new xs }
-$decl e_group $func ($decl t 0, $decl xs exprs.node) { $prop tag "group" $decl ty t  $decl items $new xs }
+$decl e_block $func ($decl t 0, $decl xs bslots.node) { $prop tag "block" $decl ty t  $decl id ($call fresh_id ())  $decl slots $new xs }
+$decl e_group $func ($decl t 0, $decl xs exprs.node) { $prop tag "group" $decl ty t  $decl id ($call fresh_id ())  $decl items $new xs }
 
 $decl e_closure $func ($decl t 0, $decl f 0, $decl cs exprs.node)
-  { $prop tag "closure" $decl ty t  $decl fn f  $decl captures $new cs }
+  { $prop tag "closure" $decl ty t  $decl id ($call fresh_id ())  $decl fn f  $decl captures $new cs }
 
 $decl e_call $func ($decl t 0, $decl f proto_expr, $decl xs exprs.node, $decl tl P.boolean)
-  { $prop tag "call" $decl ty t  $decl callee $new f  $decl args $new xs  $decl tail tl }
+  { $prop tag "call" $decl ty t  $decl id ($call fresh_id ())  $decl callee $new f  $decl args $new xs  $decl tail tl }
 
 $decl e_if $func ($decl t 0, $decl c proto_expr, $decl a proto_expr, $decl b proto_expr)
-  { $prop tag "if" $decl ty t  $decl cond $new c  $decl then $new a  $decl els $new b }
+  { $prop tag "if" $decl ty t  $decl id ($call fresh_id ())  $decl cond $new c  $decl then $new a  $decl els $new b }
 
 $decl e_switch $func ($decl t 0, $decl s proto_expr, $decl xs arms.node, $decl d proto_expr)
-  { $prop tag "switch" $decl ty t  $decl scrut $new s  $decl arms $new xs  $decl default $new d }
+  { $prop tag "switch" $decl ty t  $decl id ($call fresh_id ())  $decl scrut $new s  $decl arms $new xs  $decl default $new d }
 
 $decl e_do $func ($decl t 0, $decl a proto_expr, $decl b proto_expr)
-  { $prop tag "do" $decl ty t  $decl first $new a  $decl then $new b }
+  { $prop tag "do" $decl ty t  $decl id ($call fresh_id ())  $decl first $new a  $decl then $new b }
 
 $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
-  { $prop tag "try" $decl ty t  $decl value $new v  $decl disc d }
+  { $prop tag "try" $decl ty t  $decl id ($call fresh_id ())  $decl value $new v  $decl disc d }
 
 // ---------------------------------------------------------------- functions
 //

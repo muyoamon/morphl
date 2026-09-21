@@ -2,9 +2,9 @@
 //
 //   morphlc --run stage1/lower_dump.mpl <file.mpl>
 //
-// The pipeline §9 calls parse / check / emit, minus the emit.
-$decl I  $import "infer"
-$decl L  $import "lower"
+// §9's pipeline stopped after `check` — which is where the typed tree is, so
+// this is the view a pass author has of what they are being handed (§9.2).
+$decl C  $import "compiler"
 $decl IR $import "ir"
 $decl T  $import "types"
 $decl Pa $import "parser"
@@ -26,25 +26,28 @@ $decl show_fns $func ($decl fs IR.fns.node, $decl i 0) $match fs (
   $case fs ()
 )
 
+$decl show_errs $func ($decl xs Pa.diags.node, $decl what "") $match xs (
+  $case {$prop tag "cons"}
+    $do ($call nl ($call concat (what, $call concat (": ", xs.head.msg))))
+        ($call show_errs ($call Pa.diags.val (xs.tail), what)),
+  $case xs ()
+)
+
 // `read_file` answers `none | {$prop tag "some" $decl v Str}` (§8).
 $decl rf  $call read_file (path)
 $decl src $match rf (
   $case {$prop tag "some"} rf.v,
   $case rf ($call panic ("cannot read the file"))
 )
-$decl r   $call I.check_source (src, $call P.dirname (path), path)
-$decl ast $call Pa.parse (src)
 
-$decl st  $call L.lstate ()
-// §2's root block, straight from inference: a `binding` is `{name, ty}`, which
-// is a `T.field`, so the same converter reads both (§5.1, prefix identity).
-$decl prims $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil)
-$decl prog $call L.lower_file (st, $call Pa.nodes.val (ast.exprs), r.ty, prims)
+$decl ckd $call C.check ($call C.parse (src, path))
+$decl prog ckd.program
+$decl bad $call C.verify (prog)
 
-// Lowering a file inference rejected would be lowering nonsense, so say so.
 $decl e0 $call nl ($call concat ("check errors: ",
-    $call int_to_str ($call Pa.diags.length (r.errs, 0))))
-$decl e1 $call nl ($call concat ("lower errors: ",
-    $call int_to_str ($call Pa.diags.length ($call L.eval_diags (st.errs), 0))))
-$decl a $call nl ($call concat ("types: ", $call int_to_str ($call T.tys.length (prog.types, 0))))
+    $call int_to_str ($call Pa.diags.length ($call Pa.diags.val (ckd.diagnostics), 0))))
+$decl e1 $call show_errs ($call Pa.diags.val (ckd.diagnostics), "  ")
+$decl e2 $call nl ($call concat ("verify errors: ", $call int_to_str ($call Pa.diags.length (bad, 0))))
+$decl e3 $call show_errs (bad, "  ")
+$decl a $call nl ($call concat ("types: ", $call int_to_str ($call T.tys.length ($call T.tys.val (prog.types), 0))))
 $decl b $call show_fns ($call IR.fns.val (prog.funcs), 0)

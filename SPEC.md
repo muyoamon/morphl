@@ -48,6 +48,7 @@ Newlines are whitespace. The language does not dictate formatting.
 | `$prop name e` | 2 | name, compile-time expression |
 | `$fwd name` | 1 | name |
 | `$new e` | 1 | expression |
+| `$alloc e` | 1 | expression |
 | `$mut e` / `$const e` | 1 | reference-typed expression |
 | `$set target e` | 2 | `&mut` target, expression |
 | `$func params body` | 2 | group of decls, expression |
@@ -114,6 +115,18 @@ A function's type is `params -> result`, where `result` is the type of `body`.
 
 `&T`, `&mut T`, `&const T` — storage holding a `T`. See §5.3.
 
+Storage also has a **kind**, fixed where it is created and carried in its type:
+
+- **frame** storage (`$new`, §4.2) lives in the enclosing scope and is released
+  when that scope exits. It is free — no allocator, no bookkeeping — and it may
+  not outlive the scope that made it (§5.3a).
+- **allocated** storage (`$alloc`, §4.2a) comes from an `allocator` and lives
+  until that allocator releases it. It may outlive anything.
+
+The kind is written `&T` for frame and `&^T` for allocated *in diagnostics only*
+— there is still no syntax for writing a type (§1). Which kind an expression has
+follows from which form created the storage.
+
 ### 3.6 Unions, intersections, bottom
 
 Types form a lattice with `|` (union) and `&` (intersection), and `⊥` (bottom, the type of `panic`). Unions arise from `$if`/`$match`, recursion, and the `$union` form (§4.8a); there is still no type syntax — `$union` takes example expressions.
@@ -142,7 +155,25 @@ In *type-only positions* (§5.7) a name may be referenced while its own declarat
 
 Allocates storage holding the value of `e` and evaluates to a reference `&T`, where `T` is the type of `e`. If `e` is itself a reference, it is dereferenced first (so `$new r` is a copy, not an alias).
 
-`$new` is the **only** way storage comes into existence. A `$decl` never creates a cell.
+`$new` makes **frame** storage: it lives in the enclosing scope and is released
+when that scope exits, at no cost and with no allocator. In exchange it may not
+escape that scope — see §5.3a, which is what makes the release safe without any
+inference or runtime.
+
+`$new` and `$alloc` (§4.2a) are the **only** ways storage comes into existence. A
+`$decl` never creates a cell.
+
+### 4.2a `$alloc e`
+
+Allocates storage holding the value of `e` from the `allocator` in lexical scope
+(§7.6) and evaluates to a reference `&^T`. As with `$new`, a reference operand is
+dereferenced first.
+
+Allocated storage may outlive any scope, so nothing restricts where its
+references go. What releases it is the allocator, when the author says so:
+`$alloc` is **unsafe by declaration**, the same status §4.16 gives `$extern`. A
+reference used after its allocator released it is the author's error, and the
+type system does not pretend otherwise.
 
 ### 4.3 `$mut e` / `$const e`
 
@@ -313,7 +344,7 @@ Binds a C function. `symbol` is a string literal; `sig` is a type-only position 
 **ABI mapping.** A block is a C struct in `$decl` order (props cost nothing; they are not present at runtime). Groups likewise. `&T` and `&mut T` are thin pointers (`T*`); `&const T` may be fat, so only exact-type references cross — coerce before the call. `Int` → `int64_t`, `Float` → `double`. `Str` is pointer + length; a library `cstr` adapter produces NUL-terminated strings, and bytes received from C become a `Str` only through a validating library function returning `option Str`. `array` does not map directly (its references are fat); a library function exposes its base pointer.
 
 **Rules.**
-1. Extern calls are **unsafe by declaration** — the same status as non-default allocators. Memory returned by C is outside every region; wrapping it as a reference is the author's responsibility. The compiler treats every extern call as opaque.
+1. Extern calls are **unsafe by declaration** — the same status as `$alloc` (§4.2a). Memory returned by C is outside every region; wrapping it as a reference is the author's responsibility. The compiler treats every extern call as opaque.
 2. **C callbacks must be capture-free.** A `$func` maps to a C function pointer only if its captured set is empty (closures capture by copy, so the set is static per literal). Captures are not in the type (§7.3), so this is a property of the *expression* in the argument position: it holds when the compiler can see which `$func` literal the value came from, and a closure arriving through a mutable function slot is rejected because it cannot be seen. Otherwise it is a compile error; pass state through the C-side `void*` argument.
 3. `$extern` is the **only door to the platform**. I/O, threads, atomics, locks, files, sockets, and `malloc`-backed allocators are library code in a per-target root block.
 
@@ -346,11 +377,40 @@ Every expression has a principal type determined by its parts. Since there is no
 &T  <:  &mut T  <:  &const T
 ```
 
-- `$new e` yields `&T`. `$mut`/`$const` produce views.
+- `$new e` yields a frame `&T`; `$alloc e` yields an allocated `&^T`. `$mut`/`$const` produce views, and preserve the kind.
 - `&T` and `&mut T` are **invariant** in `T`. `&const T` is **covariant** — structural width subtyping on storage is available only through read-only views.
 - `$set` requires `&mut T`. Since `&T <: &mut T`, `$set` on a bare `&T` typechecks; the `&T → &mut T` coercion is where the compiler warns: *storage used mutably without `$mut`*. The same warning fires for an unqualified `$new` in parameter position. `&T → &const T` and `&mut → &const` are silent.
 - Consequence: bare `&T` is the most capable type, so a parameter `$func ($decl p $new 0)` (`&Int`) rejects `&mut Int` arguments. Idiomatic code qualifies parameters: `$mut $new 0` or `$const $new 0`.
 - A lint for `$mut $new` storage that is never written through any alias is recommended.
+
+**Kind is a second dimension**, orthogonal to the qualifier: `&^T <: &T`.
+Allocated storage outlives every scope, so it is usable wherever frame storage
+is — never the reverse. A parameter written `$new 0` therefore accepts either,
+and one written `$alloc 0` accepts only allocated.
+
+### 5.3a Frame storage does not escape
+
+A type is **frame-bound** if a frame reference occurs anywhere in it — directly,
+in a field, behind another reference, or in a closure's captures. Frame-bound
+values are confined by one rule:
+
+> A frame-bound type may not appear in a function's result, and a frame-bound
+> value may not be written into storage that is not itself frame-bound.
+
+That is the whole of it, and it is a structural check on types already inferred
+— no lifetime variables, no annotations, nothing to solve. A `$func` literal
+that captures a frame reference is itself frame-bound, so a closure cannot carry
+one out either (§7.3).
+
+The error is reported where the value would escape, naming the `$new` it came
+from. The fix is always the same: make that storage `$alloc` (§4.2a).
+
+**Consequence for recursive data.** §5.5 makes a recursive value's tail storage,
+so a structure that outlives the function building it must be allocated — a
+list returned to a caller is built with `$alloc`, while one built and consumed
+inside a single scope may use `$new` and costs nothing. This is the one place
+the distinction is felt in ordinary code, and it is felt at the container, not
+at every use.
 
 ### 5.4 Transparency
 
@@ -368,10 +428,14 @@ While typing a body that refers to a name whose type is not yet known, that name
 $decl list_of $func ($decl n 0)
   $if ($call eq (n, 0))
     {}
-    { $decl head n  $decl tail $new ($call list_of ($call sub (n, 1))) }
+    { $decl head n  $decl tail $alloc ($call list_of ($call sub (n, 1))) }
 ```
 
-infers `μR. {} | {head: Int, tail: &R}` — a list type — with no declaration. Recursive data is always obtained this way.
+infers `μR. {} | {head: Int, tail: &^R}` — a list type — with no declaration. Recursive data is always obtained this way.
+
+The tail is `$alloc` rather than `$new` because the list outlives the call that
+built it (§5.3a). A list that does not — built and consumed within one scope —
+uses `$new` and costs nothing.
 
 **Recursion must pass through storage.** In `μR. B`, every occurrence of `R` in `B` must sit in a position whose representation is a pointer: under a reference (`&`, `&mut`, `&const`), as an array element, or inside a function type. A block field, group element or union member holds its value inline, so `R` there would make the type's size satisfy `size(R) = … + size(R)` and no layout exists. An unguarded `R` is an error, reported at the recursive construction, and the fix is `$new` — the same rule as everywhere else: storage exists only where it was written (§4.2).
 
@@ -438,11 +502,11 @@ Nothing can point into a frame: there is no way to take a reference to a value f
 
 ### 7.3 Aliasing
 
-Storage is created only by `$new`. References alias; values copy. **Closures capture bindings by copy.** Bindings are immutable, so this is unobservable: a captured binding that holds a reference still aliases the same storage. No closure ever points into a dead frame.
+Storage is created only by `$new` and `$alloc`. References alias; values copy. **Closures capture bindings by copy.** Bindings are immutable, so this is unobservable: a captured binding that holds a reference still aliases the same storage. No closure ever points into a dead frame.
 
 **A closure's captures belong to its body, not to its type.** A function's type is `params -> result` (§3.4) and says nothing about what it captured; two functions of the same type are interchangeable however they were built. Every function value is therefore represented the same way — a code pointer and an environment pointer, two words — so a function-typed slot has a size, and `$set` on storage holding a function accepts any function of that type. The body it runs changes; the type does not.
 
-A capture-free `$func` has an empty environment and is one pointer plus a null. A capturing one needs its copies to live somewhere, so the `$func` literal allocates its environment into the region inference gives it (§7.6) — an allocation at a point the source names, which is why it needs no `$new` of its own. Storing a closure into longer-lived storage widens its environment's region accordingly, and §7.6 requires the compiler to report the allocation if that region is the root or a loop's.
+A capture-free `$func` has an empty environment and is one pointer plus a null. A capturing one needs its copies to live somewhere: the environment is frame storage of the scope the literal stood in, which is why the closure is frame-bound and §5.3a stops it escaping. A closure that must outlive that scope is written `$alloc` like any other storage that does.
 
 ### 7.4 Coercion cost
 
@@ -451,25 +515,42 @@ Prefix subtyping (§5.1) makes structural coercion nearly free: a supertype's fi
 - Value → block prefix supertype: a prefix copy. No field-by-field scatter.
 - `&const S → &const T` with `T` a prefix supertype: **free**, and still a thin pointer.
 - `&mut` never coerces structurally (invariant), so it is always a thin pointer.
+- A reference's **kind** (§3.5) costs nothing at runtime: frame and allocated references are both thin pointers, and the distinction exists only to be checked.
 - **Fat references remain only for trait objects**: a `&const trait` carries the `$impl` witness (§4.12), emitted statically. That table exists because the trait's props are function implementations, not because of layout.
 
 ### 7.5 Runtime type information
 
 Values of union type carry a discriminator so `$match` can test them. Blocks differing only in props are distinguished by that discriminator; no other construct reads it.
 
-### 7.6 Memory: inferred regions, no garbage collector
+### 7.6 Memory: two kinds of storage, no collector and no inference
 
-Only `$new` allocates, and there are no references into value fields, so storage created by `$new` is the only thing to manage.
+Only `$new` and `$alloc` allocate, and there are no references into value
+fields, so storage is the only thing to manage — and which kind of storage a
+reference names is in its type (§3.5).
 
-**Lifetimes are inferred, never declared.** Each `$new` is assigned to a *region*: the innermost scope that provably encloses every use of the storage (Tofte–Talpin region inference). Functions carry regions as implicit parameters, so a function that returns fresh storage allocates into the region its caller's result requires. Reference types carry regions internally; nothing appears in source. A region is released when its scope exits.
+**Frame storage** (`$new`) is released when its scope exits. There is no
+allocator, no header, no bookkeeping and no runtime component; the release is a
+scope ending. It is safe because §5.3a prevents a frame-bound value from
+outliving that scope, which is a structural check on inferred types rather than
+an inference of its own. Nothing is annotated and nothing is solved.
 
-This is memory-safe and has no runtime component. Its single failure mode is a **leak, never a dangling reference**: when inference cannot bound a lifetime (storage reachable from a long-lived cell, an accumulator rebuilt across a long loop), the allocation is assigned to an enclosing region and lives until that region ends. Cycles need no special handling.
+**Allocated storage** (`$alloc`) comes from `allocator`, an ordinary name
+resolved lexically: the root block declares the default for a target, and
+`$decl allocator …` in a block overrides it for everything lexically inside.
+An allocator releases when the author says so, which makes `$alloc` **unsafe by
+declaration** — the same status as `$extern` (§4.16). A reference used after its
+allocator released it is the author's error.
 
-**Making it explicit.** The compiler reports every allocation whose inferred region is the root region or an enclosing loop's region. `allocator` is an ordinary name resolved lexically: the root block declares the default (inferred regions), and `$decl allocator …` in a block overrides inference for everything lexically inside it. A region *is* an allocator; inferred ones release automatically, library ones (arena, bump, manual) release when the user says so and are **unsafe by declaration** — a reference used after its region is released is the author's error, and the type system does not pretend otherwise. A build program may forbid non-default allocators for a target.
+The division is deliberate: the common case is free and safe, and everything
+that outlives a scope is written down. There is no garbage collector, no region
+inference, no implicit region parameters, and no lifetime syntax — the only
+thing the type system carries is which of two kinds a reference has.
 
-References do not record their allocator; mixing across scopes is on the author.
+References do not record *which* allocator; mixing across allocators is on the
+author.
 
-Arrays: `at` returns a fat reference (base + index) rather than an interior pointer.
+Arrays: `at` returns a fat reference (base + index) rather than an interior
+pointer, of the same kind as the array.
 
 ### 7.7 Tail calls
 
@@ -483,7 +564,7 @@ Loops are recursion; **tail-call elimination is mandatory**. Tail positions: a `
 
 Consequences:
 - Values cross threads **by copy**. `&const` gets no exception (it may alias another thread's `&mut`). Sharing is always explicit through synchronization storage.
-- A thread's allocations live in its own root region; no thread holds a reference into another's. Messages are copied into the receiver's region. §7.6 is unchanged.
+- A thread's storage is its own: no thread holds a reference into another's frame, and messages are copied. A shared allocator is the author's business, like any other `$alloc` (§7.6).
 - The build program chooses the runtime: a single-threaded target's root block may run `spawn` inline or omit it, and the checker reports which modules needed it.
 - **Panics abort the whole program** from any thread. There is no catch and no cancellation.
 
@@ -528,7 +609,7 @@ The `$union` is load-bearing. §3.4 makes a parameter's default *fix* its type a
 
 **There is no configuration language.** The toolchain evaluates a designated file (`build`) as an ordinary program and reads the block it produces. Everything else is library code consuming values.
 
-- **The compiler is a library**: the root-block value `compiler` exposes `parse`, `check`, `emit`, `link`, and props describing host and targets. A build file is a block that calls them.
+- **The compiler is a library**: the root-block value `compiler` exposes `parse`, `check`, `verify`, `emit`, `link`, the typed tree it passes between them (§9.1), and props describing host and targets. A build file is a block that calls them.
 - **Staged, not interleaved.** The build program runs *before* compiling the target. There is no compile-time execution inside a program; templates and props are the only compile-time constructs.
 - **Tests are a structural interface**: any block conforming to `{$prop name ""  $prop run $func () true}`. Metadata is props (`$prop tags ("slow", "net")`). The runner is library code.
 - **No in-language reflection.** `$call compiler.parse` returns an AST as a block; a build program that wants discovery walks it and generates a runner source. Reflection lives in the compiler library at build time.
@@ -539,16 +620,108 @@ The `$union` is load-bearing. §3.4 makes a parameter's default *fix* its type a
 $decl net $template (Cfg { $prop tls true  $prop backend "epoll" }) {
   … $match Cfg ($case {$prop backend "epoll"} …, $case {$prop backend "kqueue"} …) …
 }
+```
 
+### 9.1 The pipeline is a value at every step
+
+`parse`, `check` and `emit` are separate calls over values, not one opaque
+build:
+
+```
+parse   : (Str, path)  -> { $decl ast … $decl path … $decl base … $decl diagnostics … }
+check   : parsed       -> { $decl program … $decl diagnostics … }
+verify  : program      -> diagnostics
+emit    : program      -> { $decl text … $decl diagnostics … }   // the target's source or object text
+link    : (emitted, …) -> { $decl path … $decl diagnostics … }
+```
+
+Every step that can fail carries its diagnostics beside its result rather than
+raising: §4.15 makes an expected failure a value, and a step that stopped still
+has to hand the next one something of the right shape. `verify` is the one that
+cannot fail, because it *is* the diagnostics. The path travels with the text
+because a diagnostic names its own file and `$import` resolves relative to the
+entry (§4.14) — the caller is not asked to remember it.
+
+`program` is the **typed tree**: names resolved to frame slots, projections as
+layout positions (§7.2), §5.4's implicit dereferences written out, tail position
+marked (§7.7), and types interned so an index names one layout. It is an
+ordinary block, built by ordinary constructors, and `compiler.program` is an
+example value of it — types are still never written, only exemplified (§5.7).
+
+The project-level form is a convenience over these, not a separate mechanism:
+
+```
+$decl app $call compiler.emit ({
+  $decl entry   "src/main"
+  $decl roots   ("src", "lib")
+  $decl resolve { $prop net "src/net_kqueue" }     // overrides `$import "net"` for this target
+  $decl target  compiler.host
+})
+```
+
+### 9.2 An optimisation is a library
+
+A pass is an ordinary function from `program` to `program`, and a pipeline is
+ordinary composition:
+
+```
 $decl build {
-  $decl app $call compiler.emit ({
-    $decl entry   "src/main"
-    $decl roots   ("src", "lib")
-    $decl resolve { $prop net "src/net_kqueue" }     // overrides `$import "net"` for this target
-    $decl target  compiler.host
-  })
+  $decl src  $call compiler.parse (…)
+  $decl ckd  $call compiler.check (src.ast)
+  $decl opt  $call my.inline ($call my.fold (ckd.program))
+  $decl app  $call compiler.emit (opt)
 }
 ```
+
+There is no registry, no hook and no discovery, for the same reason there is no
+configuration language: pass order is the order the calls are written, and a
+conditional pass is an `$if`. A project that wants none simply does not call
+any, and one that wants its own pins them like any other dependency.
+
+This does not reopen macros or reflection (§9's list above). A pass runs in the
+*build* program, which executes before the target is compiled; nothing here
+executes inside the program being compiled.
+
+**A pass is ordinary code, so it can be wrong.** `verify` type-checks a
+`program` and returns diagnostics, which is how a pipeline finds out. Running it
+is the build program's choice — mandatory after every pass while developing one,
+and usually not in a release build.
+
+**The compiler never assumes a pass ran.** There is no optimisation level and no
+canonical pipeline, so `emit` must stay correct on unoptimised input. That is a
+deliberate constraint on the compiler, not an omission.
+
+### 9.3 What exposing the tree commits to
+
+`program`'s shapes become a compatibility surface. §10.9 already makes a block's
+field order part of its interface — a field may be added compatibly only at the
+end, and reordering breaks every supertype that named the fields. Exposed, that
+binds every pass in every project rather than only the compiler's own modules.
+The exposed tree is therefore deliberately smaller than whatever the compiler
+uses internally, and is expected to change rarely and only by extension.
+
+Two consequences, the first of which is easy to get wrong:
+
+- **A pass's annotations do not survive the compiler.** Adding a field to the
+  end of a node makes a subtype, which the compiler's functions accept — but
+  §7.4 makes that coercion a *prefix copy*, so the extra field is dropped on the
+  way in. Analysis results therefore live in the pass's own structures, carried
+  from pass to pass directly, not smuggled through the tree. (Making the
+  pass-facing functions `$template`s bounded by the node type would preserve
+  them, at the price of every such function becoming generic; that is deferred,
+  see §11.)
+- **A node has an index of its own**, distinct within a program, and that is
+  what a side table keys on. It sits beside the type as the second field of
+  every node, so a pass reads it without knowing the shape. Indices are handed
+  out in construction order, which the paragraph below makes binding: a pass may
+  compare two of them for equality and may use one as a table key, but may not
+  read anything into their order or their density.
+
+**Determinism is part of the interface.** The bootstrap's final gate is that a
+compiler compiling itself twice produces byte-identical output. With passes in
+the pipeline that requirement covers the build program too: a pass that iterates
+a hash or depends on allocation addresses breaks it, and the break shows up as a
+bootstrap failure rather than a wrong answer.
 
 Consequence: the compiler must be callable from the language from day one (self-hosted or bound), and every target needs a root block — which is mostly `$extern` declarations and wrappers.
 
@@ -571,12 +744,16 @@ These follow from stated rules and are accepted by design:
 11. A recursive type whose recursion does not pass through storage is an error rather than an inferred type (§5.5), so `$new` appears in every recursive data constructor — the library's `list` included. This is the price of `$new` being the only allocation in the language.
 12. A function's type does not record its captures (§7.3), so **capture-freeness is a property of an expression, not of a type**. §4.16's C-callback rule is checkable exactly when the compiler can see which `$func` literal a value came from; a closure reaching a callback parameter through a mutable function slot cannot be checked and is rejected.
 13. For the same reason, an `$impl` witness (§4.12) is a static table exactly when its function props are capture-free, which is the ordinary case; a witness whose props capture is an ordinary runtime block.
-14. Region inference never fails, it widens: a long-running program with unbounded live-set churn must opt into an explicit allocator or it leaks. The compiler names the allocations.
+14. Storage that outlives the scope it was made in must be written `$alloc`, so a container returned to a caller names an allocator (§5.3a) while one used within a scope is free. The cost lands at the container, not at every use.
+15. There is no optimisation level and no canonical pass pipeline (§9.2), so `emit` must stay correct on unoptimised input and no pass may be assumed to have run. The cost of "optimisation is a library" is paid by the compiler, not by the user.
+16. Frame storage is safe by construction and allocated storage is **unsafe by declaration**: the language guarantees a frame reference never dangles, and says nothing about an allocated one after its allocator released it. There is no collector and nothing is inferred.
 
 ---
 
 ## 11. Deferred / Open
 
+- Whether the pass-facing compiler functions should be `$template`s bounded by the node type (§9.3), so that a pass's own annotations survive a call into the compiler instead of being prefix-copied away (§7.4). It is the difference between passes carrying analysis beside the tree and inside it.
+- Whether a *library* allocator can be made safe rather than unsafe by declaration — some form of scoped allocator whose references cannot outlive it, which would be §5.3a's rule generalised from the frame to any allocator. Deliberately not attempted: it is the step from two kinds to arbitrarily many, and that is a lifetime system.
 - Growable vector over `array` (library).
 - Variadic templates (abstraction over group arity).
 - Whether `&mut S` may widen to a prefix supertype `&mut T`. Under prefix layout a write through the narrowed view leaves `S`'s tail intact, so width (not depth) coercion looks sound; §5.3 keeps `&mut` invariant for now.
