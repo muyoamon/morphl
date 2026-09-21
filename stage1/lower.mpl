@@ -342,14 +342,20 @@ $decl pattern_ty $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
   $case {$prop tag "int"}   T.t_int,
   $case {$prop tag "str"}   T.t_str,
   $case {$prop tag "float"} T.t_float,
-  $case {$prop tag "bool"}  T.t_bool,
+  // §4.7 makes a literal pattern its base type, but §3.2 makes `true` and
+  // `false` two distinct nullary tag *types* — so a boolean pattern selects
+  // one of them, not both. Typing it as `Bool` made the first arm claim every
+  // member and the second unreachable.
+  $case {$prop tag "bool"}  ($if n.value T.t_true T.t_false),
   $case {$prop tag "unit"}  T.t_unit,
   $case {$prop tag "block"}
     ($call T.t_block (T.fields.nil, $call pat_props (st, $call Pa.nodes.val (n.items), T.props.nil))),
-  // §4.7's catch-all names the scrutinee, so its type is whatever that is.
+  // §4.7's catch-all names the scrutinee, so its type is whatever that is —
+  // read through, because §5.4 makes a reference transparent in a `$match`
+  // scrutinee and the pattern is compared against the *value*.
   $case {$prop tag "name"}
     { $decl f $call lookup (e, $call name_of (n))
-      $decl r $if f.hit ($call T.tval (f.bnd.ty)) T.t_bot }.r,
+      $decl r $if f.hit ($call deref_ty ($call T.tval (f.bnd.ty))) T.t_bot }.r,
   $case n T.t_bot
 )
 
@@ -368,6 +374,19 @@ $decl disc_of $func ($decl ms T.tys.node, $decl pat T.proto_ty, $decl i 0,
 $decl members_of $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "union"} ($call T.tys.val (t.members)),
   $case t ($call T.tys.cons (t, T.tys.nil))
+)
+
+// §4.8a's type: every member joined. Lowering a member is how its type is
+// read; the tree is thrown away, which costs the slots a discarded `$decl`
+// would have taken and nothing else.
+$fwd union_ty
+
+$decl union_ty $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
+                      $decl acc T.proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    { $decl m $call lval ($call lower (st, e, xs.head, false))
+      $decl r $call union_ty (st, e, $call Pa.nodes.val (xs.tail), $call T.join (acc, m.ty)) }.r,
+  $case xs acc
 )
 
 // ------------------------------------------------------------------ closures
@@ -499,15 +518,37 @@ $decl lower_arms $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes
   $case xs ($call arms_res ($call IR.arms.reverse (acc, IR.arms.nil), $call IR.e_unit (0), ty))
 )
 
+// §3.2: "`$if` is `$match` over them". A boolean carries no discriminator of
+// its own — its value *is* the answer — so a `$match` on one lowers to an `$if`
+// rather than to a switch, and the question of which member sits at which
+// index never arises.
+$decl arm_for $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
+                     $decl want T.proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    { $decl pty $call pattern_ty (st, e, $call op (xs.head, 0))
+      $decl r $if ($call T.sub (want, pty)) ($call op (xs.head, 1))
+                  ($call arm_for (st, e, $call Pa.nodes.val (xs.tail), want)) }.r,
+  $case xs ($call Pa.n_err ("no arm covers this boolean", 0, 0))
+)
+
+$decl lower_bool_match $func ($decl st proto_lst, $decl e benv.node, $decl scrut proto_lres,
+                              $decl items Pa.nodes.node, $decl tail P.boolean)
+  { $decl t $call lval ($call lower (st, e, $call arm_for (st, e, items, T.t_true), tail))
+    $decl f $call lval ($call lower (st, e, $call arm_for (st, e, items, T.t_false), tail))
+    $decl ty $call T.join (t.ty, f.ty)
+    $decl r  $call lres ($call IR.e_if ($call intern (st, ty), scrut.ir, t.ir, f.ir), ty) }.r
+
 $decl lower_match $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                          $decl tail P.boolean)
   { $decl sn    $call op (n, 0)
     $decl scrut $call as_value (st, $call lower (st, e, sn, false))
     $decl items $call group_items ($call op (n, 1))
-    $decl a     $call lower_arms (st, e, items, tail, $call members_of (scrut.ty),
-                    $call name_of (sn), IR.ints.nil, IR.arms.nil, T.t_bot)
-    $decl out   $call lres (
-        $call IR.e_switch ($call intern (st, a.ty), scrut.ir, a.arms, a.default), a.ty) }.out
+    $decl out $if ($call T.same (scrut.ty, T.t_bool))
+        ($call lower_bool_match (st, e, scrut, items, tail))
+        { $decl a $call lower_arms (st, e, items, tail, $call members_of (scrut.ty),
+                      $call name_of (sn), IR.ints.nil, IR.arms.nil, T.t_bot)
+          $decl r $call lres (
+              $call IR.e_switch ($call intern (st, a.ty), scrut.ir, a.arms, a.default), a.ty) }.r }.out
 
 $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean)
@@ -541,6 +582,19 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
           $decl ty $call T.join (a.ty, b.ty)
           $decl r  $call lres ($call IR.e_if ($call intern (st, ty), c.ir, a.ir, b.ir), ty) }.r
       ($if ($call eq_str (k, "match")) ($call lower_match (st, e, n, tail))
+      // §4.8a: the expression *evaluates to its first member* and has the
+      // type of all of them joined. The rest are type-only positions (§5.7) —
+      // lowered here only to read their types off, and their trees discarded.
+      //
+      // The value is then coerced to that join, because what the members have
+      // in common is a union and a member of one is not yet one (§7.4).
+      ($if ($call eq_str (k, "union"))
+        { $decl ms  $call group_items ($call op (n, 0))
+          $decl fst $call lval ($call lower (st, e, $call Pa.nodes.nth (ms, 0), false))
+          $decl ty  $call union_ty (st, e, $call Pa.nodes.val (ms), T.t_bot)
+          $decl id  $call intern (st, ty)
+          $decl ir  $if ($call T.same (ty, fst.ty)) fst.ir ($call IR.e_copy (id, fst.ir))
+          $decl r   $call lres (ir, ty) }.r
       // §4.15, the only non-local exit and only a conditional one: if the
       // value matches the pattern it returns from the enclosing `$func`, and
       // otherwise this expression carries on with what is left of its type.
@@ -581,7 +635,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
           $decl ty $call result_of (f.ty)
           $decl r  $call lres ($call IR.e_call ($call intern (st, ty), f.ir, as.irs, tail), ty) }.r
         ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-             " is not lowered yet")), n)), T.t_unit))))))))))  }.out
+             " is not lowered yet")), n)), T.t_unit)))))))))))  }.out
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
                    $decl tail P.boolean) $match n (

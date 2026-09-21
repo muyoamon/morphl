@@ -112,8 +112,11 @@ $decl c_type $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
         // §7.2: a block is a C struct in `$decl` order.
         $case {$prop tag "block"} ($call ty_name (i)),
         // §7.5: a value of union type carries a discriminator, and that is the
-        // only construct that reads it (§4.7).
-        $case {$prop tag "union"} ($call ty_name (i)),
+        // only construct that reads it (§4.7). Except `Bool` — §3.2 makes it
+        // the union `true | false`, but its discriminator *is* its value, which
+        // is what lets `$if` take one as a condition.
+        $case {$prop tag "union"}
+          $if ($call T.same (t, T.t_bool)) "int64_t" ($call ty_name (i)),
         // §7.3: every function value has the same shape, which is what lets a
         // function-typed slot have a size at all (§7.2).
         $case {$prop tag "func"} "mpl_fun",
@@ -180,6 +183,7 @@ $decl emit_structs $func ($decl st proto_est, $decl ts T.tys.node, $decl all T.t
           // §7.5's discriminator plus the members, which is what `$match`
           // tests and nothing else reads.
           $case {$prop tag "union"}
+            $if ($call T.same (t, T.t_bool)) ()
             { $decl h $call say (st, "typedef struct { int64_t tag; union {")
               $decl m $call emit_members (st, all, $call T.tys.val (t.members), 0)
               $decl e $call say (st, $call concat (" } u; } ",
@@ -293,25 +297,22 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                          $decl src "", $decl from 0, $decl want 0)
   { $decl wt $call type_at (ts, want)
     $decl ft $call type_at (ts, from)
-    $decl k  $match wt (
-        $case {$prop tag "union"} ($call member_index ($call T.tys.val (wt.members), ft, 0)),
-        $case wt -1
-      )
-    $decl r $if ($call lt (k, 0))
-        // Not a union, so this is §7.4's other kind of coercion. A change of
-        // reference qualifier is free — `&T`, `&mut T` and `&const T` are all
-        // one thin pointer — which shows up here as the two C types being the
-        // same. A *prefix* upcast of a value is a copy this slice does not
-        // emit, and C's own type check is what catches it.
-        ($if ($call eq_str ($call c_type (st, ts, from), $call c_type (st, ts, want)))
-            ($call assign (st, dest, src))
-            ($call eerr (st, $call concat ("cannot coerce ", $call concat ($call T.show (ft),
-                 $call concat (" to ", $call T.show (wt)))))))
-        { $decl a $call say (st, $call concat ("  ", $call concat (dest,
-              $call concat (".tag = ", $call concat ($call int_to_str (k), ";\n")))))
-          $decl b $call say (st, $call concat ("  ", $call concat (dest,
-              $call concat (".u.m", $call concat ($call int_to_str (k),
-              $call concat (" = ", $call concat (src, ";\n"))))))) }.b }.r
+    // §7.4: one C shape either way and the coercion is nothing — a change of
+    // reference qualifier, or a member of `Bool`, whose discriminator is its
+    // own value (§3.2).
+    $decl free $call eq_str ($call c_type (st, ts, from), $call c_type (st, ts, want))
+    $decl k $if free -1
+        ($match wt (
+            $case {$prop tag "union"} ($call member_index ($call T.tys.val (wt.members), ft, 0)),
+            $case wt -1
+          ))
+    $decl bad $call concat ("cannot coerce ", $call concat ($call T.show (ft),
+                  $call concat (" to ", $call T.show (wt))))
+    $decl r $if free ($call assign (st, dest, src))
+        ($if ($call lt (k, 0)) ($call eerr (st, bad))
+            { $decl a $call assign (st, $call concat (dest, ".tag"), $call int_to_str (k))
+              $decl b $call assign (st, $call concat (dest,
+                          $call concat (".u.m", $call int_to_str (k))), src) }.b) }.r
 
 // Emit `e` into `dest`, injecting into a union first if `e` is a member of one
 // — which is where subsumption shows up, at an `$if` or `$match` arm.
@@ -515,10 +516,19 @@ $decl other_disc $func ($decl ms T.tys.node, $decl taken 0, $decl i 0) $match ms
   $case ms 0
 )
 
-$decl emit_labels $func ($decl st proto_est, $decl xs IR.ints.node) $match xs (
+// The C value a discriminator tests against. For an ordinary union that is the
+// member's index; for `Bool` it is the member's own value (§3.2), since a
+// boolean is a machine word and carries no separate tag.
+$decl disc_label $func ($decl ms T.tys.node, $decl d 0, $decl boolish P.boolean)
+  $if ($call not (boolish)) d
+      ($if ($call T.same ($call T.tys.nth (ms, d), T.t_true)) 1 0)
+
+$decl emit_labels $func ($decl st proto_est, $decl xs IR.ints.node, $decl ms T.tys.node,
+                         $decl boolish P.boolean) $match xs (
   $case {$prop tag "cons"}
-    { $decl d $call say (st, $call concat ("  case ", $call concat ($call int_to_str (xs.head), ": ")))
-      $decl r $call emit_labels (st, xs.tail) }.r,
+    { $decl d $call say (st, $call concat ("  case ",
+          $call concat ($call int_to_str ($call disc_label (ms, xs.head, boolish)), ": ")))
+      $decl r $call emit_labels (st, xs.tail, ms, boolish) }.r,
   $case xs ()
 )
 
@@ -530,10 +540,11 @@ $decl emit_first_arm $func ($decl st proto_est, $decl fi 0, $decl xs IR.arms.nod
 
 $decl emit_cases $func ($decl st proto_est, $decl fi 0, $decl xs IR.arms.node,
                         $decl dest "", $decl want 0, $decl ts T.tys.node,
-                        $decl scrut "") $match xs (
+                        $decl scrut "", $decl ms T.tys.node,
+                        $decl boolish P.boolean) $match xs (
   $case {$prop tag "cons"}
     { $decl ds $call IR.ints.val (xs.head.discs)
-      $decl d0 $call emit_labels (st, ds)
+      $decl d0 $call emit_labels (st, ds, ms, boolish)
       $decl d1 $call say (st, "{\n")
       // §4.7's narrowing: the arm's slot holds the member the discriminator
       // selected, which is what the body reads the fields off.
@@ -542,13 +553,14 @@ $decl emit_cases $func ($decl st proto_est, $decl fi 0, $decl xs IR.arms.node,
       // rather than silence the warning for the file.
       $decl d2 $if ($call eq_int (xs.head.slot, -1)) ()
           { $decl a $call assign (st, $call slot_name (xs.head.slot),
-                $call concat (scrut, $call concat (".u.m",
-                    $call int_to_str ($call IR.ints.nth (ds, 0)))))
+                $if boolish scrut
+                    ($call concat (scrut, $call concat (".u.m",
+                        $call int_to_str ($call IR.ints.nth (ds, 0))))))
             $decl b $call say (st, $call concat ("  (void)",
                 $call concat ($call slot_name (xs.head.slot), ";\n"))) }.b
       $decl d3 $call emit_as (st, fi, xs.head.body, dest, want, ts)
       $decl d4 $call say (st, "  } break;\n")
-      $decl r  $call emit_cases (st, fi, xs.tail, dest, want, ts, scrut) }.r,
+      $decl r  $call emit_cases (st, fi, xs.tail, dest, want, ts, scrut, ms, boolish) }.r,
   $case xs ()
 )
 
@@ -658,8 +670,13 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
       $decl r $match st2 (
           $case {$prop tag "union"}
             { $decl sv $call into_tmp (st, fi, sc, ts)
-              $decl d0 $call say (st, $call concat ("  switch ((int)", $call concat (sv, ".tag) {\n")))
-              $decl d1 $call emit_cases (st, fi, $call IR.arms.val (e.arms), dest, e.ty, ts, sv)
+              // §3.2: a boolean is its own discriminator.
+              $decl bl $call T.same (st2, T.t_bool)
+              $decl ms $call T.tys.val (st2.members)
+              $decl d0 $call say (st, $call concat ("  switch ((int)",
+                           $call concat (sv, $if bl ") {\n" ".tag) {\n")))
+              $decl d1 $call emit_cases (st, fi, $call IR.arms.val (e.arms), dest, e.ty, ts, sv,
+                           ms, bl)
               // §5.6 checked exhaustiveness, so nothing reaches this.
               $decl d2 $call say (st, "  default: mpl_panic(\"no $match arm applied\");\n  }\n")
               $decl o  () }.o,
@@ -705,6 +722,12 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
       // What survives is a single member, so reading it out is the narrowing.
       $decl r  $call assign (st, dest, $call concat (tv,
                    $call concat (".u.m", $call int_to_str ($call other_disc (ms, e.disc, 0))))) }.r,
+  // §7.4's coercion, made explicit by lowering where it could not be left to
+  // the use site — `$union`'s value is a member and its type is the union.
+  $case {$prop tag "copy"}
+    { $decl sv $call IR.eval (e.src)
+      $decl tv $call into_tmp (st, fi, sv, ts)
+      $decl r  $call emit_inject (st, ts, dest, tv, sv.ty, e.ty) }.r,
   $case e ($call eerr (st, $call concat ("cannot emit ", $call IR.show (e))))
 )
 

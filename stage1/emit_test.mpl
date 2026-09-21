@@ -347,4 +347,34 @@ $decl t47 $call check ("each member keeps a wrapper entering at its state",
 $decl t48 $call check ("an indirect tail call is marked, not silently un-eliminated",
   $call has (clo_c.code, "not eliminated (6a)"))
 
+// ------------------------------------------------------------------ unions
+
+$decl uni_c $call compile ($call concat (
+  "$decl c { $prop k \"c\"  $decl r 3 } $decl q { $prop k \"q\"  $decl w 4 } ",
+  $call concat ("$decl s $union (c, q) ",
+  $call concat ("$decl area $func ($decl x $union (c, q)) $match x ( ",
+  $call concat ("$case {$prop k \"c\"} x.r, $case {$prop k \"q\"} x.w) ",
+                "$decl main $func () $call area (s) ")))))
+
+$decl t49 $call check ("a program using $union emits cleanly",
+  $call eq_int (uni_c.nerrs, 0))
+
+// §4.8a: the value is the *first* member, coerced to the join — so the tag is
+// set where the union is built, not where it is matched.
+$decl t50 $call check ("a union value is its first member, injected",
+  $call has (uni_c.code, ".tag = "))
+
+// §3.2 makes `Bool` the union `true | false`, but its discriminator is its own
+// value — so it stays a machine word and a `$match` on one is an `$if`.
+$decl bool_c $call compile ($call concat (
+  "$decl f $mut $new ($union (false, true)) ",
+  "$decl main $func () $match f ($case true 1, $case f 0) "))
+
+$decl t51 $call check ("a Bool union stays a machine word",
+  $if ($call eq_int (bool_c.nerrs, 0))
+      ($call has (bool_c.code, "static int64_t * mpl_g0;")) false)
+
+$decl t52 $call check ("...and a $match on one is an $if, not a switch",
+  $call not ($call has (bool_c.code, "switch")))
+
 $decl done $call nl ("all C backend tests passed")

@@ -20,7 +20,7 @@ $decl show_fns $func ($decl fs IR.fns.node, $decl i 0) $match fs (
     $do ($call nl ($call concat ($call int_to_str (i),
          $call concat (" ", $call concat (fs.head.name,
          $call concat ($call concat ("/", $call int_to_str ($call IR.ints.length (fs.head.params, 0))),
-         $call concat (" slots=", $call concat ($call int_to_str (fs.head.slots),
+         $call concat (" slots=", $call concat ($call int_to_str ($call IR.ints.length ($call IR.ints.val (fs.head.slots), 0)),
          $call concat ("  ", $call IR.show (fs.head.body))))))))))
         ($call show_fns ($call IR.fns.val (fs.tail), $call add (i, 1))),
   $case fs ()
