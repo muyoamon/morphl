@@ -261,13 +261,35 @@ $decl is_structy $func ($decl t T.proto_ty) $match t (
 // Nothing but a `μ` can match here. Two structurally identical types that are
 // not one are impossible — `intern` would have returned the first — so the
 // only pairs this finds are a binder and its unrolling.
+// Walks the table rather than indexing it: `type_at` is `nth` on a linked
+// list, so indexing from inside this loop made it O(n^3) over the table and
+// the whole compiler interns about 1,500 types. The target arrives already
+// unrolled for the same reason — it does not change as the walk proceeds.
+$decl is_rec $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "rec"} true,
+  $case t false
+)
+
+// One side of the pair must be the `μ` — a `μ` is interned *before* the members
+// it embeds, so it is usually the earlier index and its unrolling the later.
+// Only `rec` entries are unrolled, and the target's unrolling is computed once
+// by `alias_of`: unrolling every entry on every scan would be O(n^2) calls to
+// `T.unroll`, and `T.unroll` of a `rec` is a whole `remap` traversal.
+$decl alias_at $func ($decl xs T.tys.node, $decl ut T.proto_ty, $decl tr P.boolean,
+                      $decl j 0, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    { $decl e  $call T.tval (xs.head)
+      $decl er $call is_rec (e)
+      $decl hit $if ($call and ($call is_structy (e), $if er true tr))
+          ($call T.same ($if er ($call T.unroll (e)) e, ut)) false
+      $decl r $if ($call not ($call lt (j, i))) -1
+          ($if hit j ($call alias_at ($call T.tys.val (xs.tail), ut, tr,
+                          $call add (j, 1), i))) }.r,
+  $case xs -1
+)
+
 $decl alias_of $func ($decl all T.tys.node, $decl t T.proto_ty, $decl j 0, $decl i 0)
-  $if ($call not ($call lt (j, i))) -1
-      ($if ($call and ($call is_structy ($call T.tval ($call type_at (all, j))),
-                       $call T.same ($call T.unroll ($call type_at (all, j)),
-                                     $call T.unroll (t))))
-           j
-           ($call alias_of (all, t, $call add (j, 1), i)))
+  $call alias_at (all, $call T.unroll (t), $call is_rec (t), j, i)
 
 // Every struct is declared before any is defined, so a field that is a
 // *pointer* to one needs nothing else — §5.5 makes every recursive edge a
