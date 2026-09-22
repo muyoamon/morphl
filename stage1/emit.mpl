@@ -33,25 +33,25 @@ $decl strs $specialize P.list ""
 // ------------------------------------------------------------------- state
 
 $decl estate $func ()
-  { $decl out  $mut $new ""
-    $decl ntmp $mut $new 0
+  { $decl out  $mut $alloc ""
+    $decl ntmp $mut $alloc 0
     // The result type of the function being emitted. §4.15 returns from it
     // from arbitrary depth, so the type has to be reachable from anywhere in
     // the body rather than threaded through every node.
-    $decl fnres $mut $new 0
+    $decl fnres $mut $alloc 0
     // The group being emitted, if any: §6a merges a mutually tail-recursive
     // set into one function, so a tail call to a member is a state change
     // rather than a call.
-    $decl grp   $mut $new IR.ints.node
+    $decl grp   $mut $alloc IR.ints.node
     // Which globals are thunks. A thunk's index names a *static* holding a
     // value, not a function to call — so naming one is reading `mpl_g<i>`, and
     // calling one is an indirect call through the pair that static holds.
-    $decl thunks $mut $new IR.ints.node
+    $decl thunks $mut $alloc IR.ints.node
     // The struct definitions already written. A type is defined after
     // everything it contains *by value*, which is not index order — a `μ` is
     // interned before the members it embeds, because they name it.
-    $decl emitted $mut $new IR.ints.node
-    $decl errs $mut $new Pa.diags.node }
+    $decl emitted $mut $alloc IR.ints.node
+    $decl errs $mut $alloc Pa.diags.node }
 
 $decl proto_est $call estate ()
 

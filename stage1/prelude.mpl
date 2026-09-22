@@ -49,12 +49,17 @@ $decl list $template T {
   // so it is never evaluated.
   // §5.5: the recursion goes through storage, so a cons cell is a fixed size —
   // an element, a tag and a pointer — and only the chain is unbounded.
-  $prop node $union (nil, { $prop tag "cons"  $decl head T  $decl tail $new node })
+  //
+  // `$alloc`, not `$new`: §5.3a is explicit that "a list returned to a caller
+  // is built with `$alloc`, while one built and consumed inside a single scope
+  // may use `$new`". A list is the type a function hands back, so its tail has
+  // to outlive the frame that consed it.
+  $prop node $union (nil, { $prop tag "cons"  $decl head T  $decl tail $alloc node })
 
   // `$new t` copies one cell, not the list: everything below the tail is
   // already behind the pointer that cell holds (§4.2). One allocation per cons,
   // which is what a linked list costs anywhere.
-  $prop cons $func ($decl h T, $decl t node) { $prop tag "cons"  $decl head h  $decl tail $new t }
+  $prop cons $func ($decl h T, $decl t node) { $prop tag "cons"  $decl head h  $decl tail $alloc t }
 
   // Reading a list out of storage, for the same reason `ival`/`sval` exist:
   // §5.4 makes a reference transparent only where a value is expected.

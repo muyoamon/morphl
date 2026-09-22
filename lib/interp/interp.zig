@@ -567,9 +567,12 @@ pub const Interp = struct {
             // job; a `$decl` outside a block binds nothing.
             .decl => self.eval(&ops[1], scope),
 
-            // §4.2: the only way storage comes into existence. The operand is
-            // dereferenced first, so `$new r` is a copy, not an alias.
-            .new => blk: {
+            // §4.2 and §4.2a: the only ways storage comes into existence. The
+            // operand is dereferenced first, so `$new r` is a copy, not an
+            // alias. The two differ only in the storage *kind* (§3.5), which
+            // is a static distinction — and stage 0 does no static checking
+            // and never frees (BOOTSTRAP §3), so here they are one form.
+            .new, .alloc => blk: {
                 const v = (try self.eval(&ops[0], scope)).deref();
                 if (self.stats) |st| {
                     st.cell_n += 1;
@@ -736,7 +739,7 @@ pub const Interp = struct {
     fn isStorageForm(n: *const Node) bool {
         return switch (n.data) {
             .form => |f| switch (f.keyword) {
-                .new, .mut, .@"const" => true,
+                .new, .alloc, .mut, .@"const" => true,
                 else => false,
             },
             else => false,

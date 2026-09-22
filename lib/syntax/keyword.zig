@@ -17,6 +17,7 @@ pub const Keyword = enum {
     prop,
     fwd,
     new,
+    alloc,
     mut,
     @"const",
     set,
@@ -76,6 +77,7 @@ const signatures = [_]Signature{
     &.{ .name, .expr }, // $prop name e
     &.{.name}, // $fwd name          (§4.11: the group form is a future extension)
     &.{.expr}, // $new e
+    &.{.expr}, // $alloc e      (§4.2a: same shape as `$new`, different kind)
     &.{.expr}, // $mut e
     &.{.expr}, // $const e
     &.{ .expr, .expr }, // $set target e
@@ -102,6 +104,7 @@ const table = std.StaticStringMap(Keyword).initComptime(.{
     .{ "prop", .prop },
     .{ "fwd", .fwd },
     .{ "new", .new },
+    .{ "alloc", .alloc },
     .{ "mut", .mut },
     .{ "const", .@"const" },
     .{ "set", .set },

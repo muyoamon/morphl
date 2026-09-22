@@ -128,28 +128,28 @@ $decl res_list $specialize P.list proto_res
 // -------------------------------------------------------------------- context
 
 $decl ctx $func ()
-  { $decl next   $mut $new 1
+  { $decl next   $mut $alloc 1
     // §4.2 types storage from its operand, so `$new xs.nil` is storage only the
     // empty list fits into. `node` *is* the list type and still evaluates to
     // nil (§4.8a: a union evaluates to its first member), so it widens the
     // storage to what gets written without changing what it starts as.
-    $decl errs   $mut $new Pa.diags.node
+    $decl errs   $mut $alloc Pa.diags.node
     // §4.15: the error set of the function currently being typed.
-    $decl tryset $mut $new T.proto_ty
+    $decl tryset $mut $alloc T.proto_ty
     // Set while the first of the two prop passes runs, so that a diagnostic is
     // reported once — by the pass that has the resolved types.
-    $decl quiet  $mut $new ($union (false, true))
-    $decl tmpls  $mut $new tmpl_list.node
-    $decl memo   $mut $new memo_list.node
-    $decl mods   $mut $new mod_list.node
-    $decl defer  $mut $new def_list.node
+    $decl quiet  $mut $alloc ($union (false, true))
+    $decl tmpls  $mut $alloc tmpl_list.node
+    $decl memo   $mut $alloc memo_list.node
+    $decl mods   $mut $alloc mod_list.node
+    $decl defer  $mut $alloc def_list.node
     // Where `$import` resolves from. §4.14 makes import names logical and hands
     // resolution to the build program; this is the stage-1 stand-in.
-    $decl base   $mut $new ""
+    $decl base   $mut $alloc ""
     // The file currently being typed. A diagnostic belongs to the file whose
     // source raised it, which is not the file the checker was invoked on as
     // soon as anything is imported.
-    $decl file   $mut $new "" }
+    $decl file   $mut $alloc "" }
 
 $decl proto_ctx $call ctx ()
 
@@ -416,11 +416,57 @@ $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n prot
         $case tt ($call err (cx, $call concat ("cannot index into ", $call T.show (tt)), n))
       ) }.out
 
+// §5.3a's closure clause: "A `$func` literal that captures a frame reference is
+// itself frame-bound, so a closure cannot carry one out either (§7.3)."
+//
+// §7.3 keeps captures out of the function *type* — that is what makes every
+// function value two words — so the fact has to be recorded on the type by
+// hand, and `t_func`'s `frame` flag is where. What a literal captures is the
+// free names of its body, less the names bound inside it and less its own
+// parameters; `Pa.bound_names` is deliberately scope-blind, so a name both
+// captured and shadowed deeper in is missed rather than wrongly reported.
+$decl param_names $func ($decl ps Pa.nodes.node, $decl acc Pa.pstrs.node) $match ps (
+  $case {$prop tag "cons"}
+    { $decl nm $if ($call is_form (ps.head, "decl"))
+                   ($call name_of ($call op (ps.head, 0))) ""
+      $decl a2 $if ($call eq_str (nm, "")) acc ($call Pa.pstrs.cons (nm, acc))
+      $decl r  $call param_names ($call Pa.nodes.val (ps.tail), a2) }.r,
+  $case ps acc
+)
+
+$decl caps_frame $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
+                        $decl skip Pa.pstrs.node) $match ns (
+  $case {$prop tag "cons"}
+    { $decl skipped $call Pa.mem_pstr (skip, ns.head)
+      $decl f  $if skipped ($call found (false, T.t_bot)) ($call lookup (e, ns.head))
+      $decl hit $if f.ok ($call T.frame_bound ($call T.tval (f.ty), 0)) false
+      $decl r  $if hit true ($call caps_frame (cx, e, $call Pa.pstrs.val (ns.tail), skip)) }.r,
+  $case ns false
+)
+
+// §5.3a: "A frame-bound type may not appear in a function's result, and a
+// frame-bound value may not be written into storage that is not itself
+// frame-bound." That is the whole rule — a structural check on types already
+// inferred, with nothing to solve.
+//
+// The fix is always the same, so the message says it: make the storage
+// `$alloc` (§4.2a). It cannot yet name the `$new` the reference came from,
+// which §5.3a asks for; that needs provenance the type does not carry.
+$decl escapes $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl what "",
+                     $decl n Pa.proto_node)
+  $if ($call T.frame_bound (t, 0))
+      ($call err (cx, $call concat (what, $call concat (" holds frame storage (",
+           $call concat ($call T.show_frame ($call T.first_frame (t, 0)),
+           "), which cannot outlive the scope its $new made it in. Write $alloc there instead (§4.2a, §5.3a)"))), n))
+      t
+
 // §4.3: `$mut` requires a reference.
 $decl infer_mut $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
   { $decl t $call T.tval ($call infer (cx, e, $call op (n, 0)))
     $decl out $match t (
-        $case {$prop tag "ref"} $call T.t_ref ("mut", t.inner),
+        // §5.3: a view preserves the kind — `$mut` of allocated storage is
+        // still allocated.
+        $case {$prop tag "ref"} $call T.t_ref_k ("mut", t.inner, t.kind),
         $case t ($call err (cx, $call concat ("$mut expects storage, found ",
                      $call concat ($call T.show (t), "; only $new creates storage")), n))
       ) }.out
@@ -431,11 +477,15 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
     $decl val $call deref_ty ($call infer (cx, e, $call op (n, 1)))
     $decl out $match tgt (
         $case {$prop tag "ref"}
-          $if ($call T.sub (val, tgt.inner)) val
+          // §5.3a's second clause: allocated storage outlives every scope, so
+          // a frame reference written into it would outlive its frame.
+          $do ($if ($call T.is_alloc (tgt.kind))
+                   ($call escapes (cx, val, "this value", n)) val)
+          ($if ($call T.sub (val, tgt.inner)) val
               ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
                   ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
                   ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
-                               $call concat (" into storage of ", $call T.show (tgt.inner)))), n))),
+                               $call concat (" into storage of ", $call T.show (tgt.inner)))), n)))),
         $case tgt ($call err (cx, $call concat ("$set needs storage on the left, found ",
                        $call T.show (tgt)), n))
       ) }.out
@@ -480,7 +530,17 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "", $
     // `μR.R` is uninhabited: a function whose only result is its own recursive
     // call never returns, so its result type is ⊥ (§3.6).
     $decl res  $if ($call T.ty_eq (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx, res0, id, n))
-    $decl out  $call T.t_func (r.tys, res) }.out
+    // §5.3a's first clause — see `infer_func`. A top-level `$decl` of a `$func`
+    // is typed here rather than there, because its own name has to be bound
+    // while its body is typed (§5.5).
+    $decl esc  $call escapes (cx, res, "this function's result", n)
+    // §5.3a's closure clause — see `infer_func`. A `$decl` of a `$func` is
+    // typed here, whether at a file's top level or inside a block, because its
+    // own name has to be bound while its body is typed (§5.5).
+    $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+    $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+    $decl capf $call caps_frame (cx, e, free, shad)
+    $decl out  $call T.t_func_fr (r.tys, res, capf) }.out
 
 $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
   { $decl ps   $call group_items ($call op (n, 0))
@@ -495,7 +555,17 @@ $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     // §4.15: "The enclosing function's inferred return type gains
     // `type(e) & pat` as union members." Joining with ⊥ is the identity, so a
     // function with no `$try` is unaffected.
-    $decl out $call T.t_func (r.tys, $call T.join (body, tries)) }.out
+    $decl res  $call T.join (body, tries)
+    // §5.3a's first clause. The frame this `$func` returns to is gone by the
+    // time the caller has the value.
+    $decl esc  $call escapes (cx, res, "this function's result", n)
+    // ...and its closure clause: a literal that captured frame storage is
+    // itself frame-bound, so returning *it* is an escape too — caught by the
+    // same rule, one level out.
+    $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+    $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+    $decl capf $call caps_frame (cx, e, free, shad)
+    $decl out $call T.t_func_fr (r.tys, res, capf) }.out
 
 $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.node,
                         $decl as Pa.nodes.node, $decl n Pa.proto_node, $decl i 1) $match as (
@@ -771,12 +841,12 @@ $decl infer_import $func ($decl cx proto_ctx, $decl n proto_form)
 // ------------------------------------------------------------------- blocks
 
 $decl bst $func ($decl e0 env.node)
-  { $decl env  $mut $new e0
-    $decl flds $mut $new T.fields.node
-    $decl prps $mut $new T.props.node
+  { $decl env  $mut $alloc e0
+    $decl flds $mut $alloc T.fields.node
+    $decl prps $mut $alloc T.props.node
     // §5.5: "`$fwd` slots share one system of equations."
-    $decl fwds $mut $new fwd_list.node
-    $decl res  $mut $new res_list.node }
+    $decl fwds $mut $alloc fwd_list.node
+    $decl res  $mut $alloc res_list.node }
 
 $decl proto_bst $call bst (env.nil)
 
@@ -955,7 +1025,12 @@ $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.pro
         $decl restored $set cx.tryset saved
         $decl res0 $call T.join (body, tries)
         $decl res  $if ($call T.same (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx, res0, id, n))
-        $decl out  $call T.t_func (r.tys, res) }.out
+        // §5.3a's first clause, for a `$fwd`-completing `$decl`.
+        $decl esc  $call escapes (cx, res, "this function's result", n)
+        $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+        $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+        $decl capf $call caps_frame (cx, e, free, shad)
+        $decl out  $call T.t_func_fr (r.tys, res, capf) }.out
 
 
 // Solving the system. Each equation is substituted into the others — never into
@@ -1057,6 +1132,15 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     $decl out
       $if ($call eq_str (k, "decl"))  ($call infer (cx, e, $call op (n, 1)))
       ($if ($call eq_str (k, "new"))   ($call T.t_ref ("", $call deref_ty ($call infer (cx, e, $call op (n, 0)))))
+      // §4.2a: the same shape as `$new`, and the other storage kind (§3.5).
+      // Where it comes from is the `allocator` in lexical scope (§7.6), which
+      // is a runtime matter; the type records only that it outlives scopes.
+      ($if ($call eq_str (k, "alloc"))
+        { $decl v $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+          // §5.3a again: allocated storage is exactly "storage that is not
+          // itself frame-bound", so putting a frame reference in one escapes.
+          $decl esc $call escapes (cx, v, "this value", n)
+          $decl r $call T.t_ref_k ("", v, T.k_alloc) }.r
       ($if ($call eq_str (k, "mut"))   ($call infer_mut (cx, e, n))
       ($if ($call eq_str (k, "set"))   ($call infer_set (cx, e, n))
       ($if ($call eq_str (k, "func"))  ($call infer_func (cx, e, n))
@@ -1071,7 +1155,7 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
       ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
       ($if ($call eq_str (k, "import"))     ($call infer_import (cx, n))
            ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-      )))))))))))))
+      ))))))))))))))
   }.out
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (

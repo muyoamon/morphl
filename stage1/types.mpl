@@ -56,9 +56,9 @@ $decl isub sub
 // that only `false` fits into. `$union (false, true)` widens the type to Bool
 // while keeping `false` as the value — §4.8a: the union *evaluates* to its
 // first member, so member order is what picks the initial value.
-$decl want_trace $mut $new ($union (false, true))
-$decl trace_on   $mut $new ($union (false, true))
-$decl tbudget    $mut $new 0
+$decl want_trace $mut $alloc ($union (false, true))
+$decl trace_on   $mut $alloc ($union (false, true))
+$decl tbudget    $mut $alloc 0
 $decl bval $func ($decl b P.boolean) b
 
 $decl spaces $func ($decl n 0, $decl acc "")
@@ -166,19 +166,24 @@ $decl proto_ty $union (
   // needs the element's — while a `field`'s own `ty` stays inline, since by
   // then the type it names already has a size.
   { $prop tag "block"
-    $decl fields $new ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
+    $decl fields $alloc ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
     // `value` is any compile-time value, not just unit: a prop holding a
     // function renders as `copaque`, and writing `cv_unit` here said no block
     // with such a prop was a type at all.
-    $decl props  $new ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node },
-  { $prop tag "group" $decl items $new ($specialize P.list proto_ty).node },
-  { $prop tag "func"  $decl params $new ($specialize P.list proto_ty).node  $decl result $new proto_ty },
-  { $prop tag "ref"   $decl qual ""  $decl inner $new proto_ty },
-  { $prop tag "array" $decl elem $new proto_ty },
-  { $prop tag "union" $decl members $new ($specialize P.list proto_ty).node },
-  { $prop tag "inter" $decl members $new ($specialize P.list proto_ty).node },
-  { $prop tag "rec"   $decl body $new proto_ty },
-  { $prop tag "over"  $decl cands $new ($specialize P.list proto_ty).node },
+    $decl props $alloc ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node },
+  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node },
+  { $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node  $decl result $alloc proto_ty
+    $decl frame P.boolean },
+  // §3.5: storage has a **kind** as well as a qualifier, and the two are
+  // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
+  // `""` and allocated is `"alloc"`, so a reference built without saying is
+  // frame, which is what `$new` makes.
+  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind "" },
+  { $prop tag "array" $decl elem $alloc proto_ty },
+  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node },
+  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node },
+  { $prop tag "rec"   $decl body $alloc proto_ty },
+  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node },
   { $prop tag "tmpl"  $decl id 0 }
 )
 
@@ -217,19 +222,40 @@ $decl props  $specialize P.list proto_prop
 // Raw constructors. `raw_union`/`raw_inter` are not for general use — build
 // unions with `t_union`, which normalises.
 $decl raw_block $func ($decl fs fields.node, $decl ps props.node)
-  { $prop tag "block" $decl fields $new fs  $decl props $new ps }
+  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps }
 
-$decl raw_union $func ($decl ms tys.node) { $prop tag "union" $decl members $new ms }
-$decl raw_inter $func ($decl ms tys.node) { $prop tag "inter" $decl members $new ms }
+$decl raw_union $func ($decl ms tys.node) { $prop tag "union" $decl members $alloc ms }
+$decl raw_inter $func ($decl ms tys.node) { $prop tag "inter" $decl members $alloc ms }
 
-$decl t_group $func ($decl xs tys.node)  { $prop tag "group" $decl items $new xs }
-$decl t_func  $func ($decl ps tys.node, $decl r proto_ty) { $prop tag "func" $decl params $new ps  $decl result $new r }
+$decl t_group $func ($decl xs tys.node)  { $prop tag "group" $decl items $alloc xs }
+// `frame` is §5.3a's closure clause. §7.3 keeps a closure's captures out of its
+// *type* — that is what makes every function value two words — so a `$func`
+// literal that captured a frame reference has to record that it did somewhere,
+// and this is it. It is not about the parameters or the result: those are
+// frame-bound or not on their own.
+$decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean)
+  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr }
+
+$decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r, false)
 
 // §5.3: `qual` is "" for `&T`, "mut" for `&mut T`, "const" for `&const T`.
-$decl t_ref   $func ($decl q "", $decl t proto_ty) { $prop tag "ref" $decl qual q  $decl inner $new t }
-$decl t_array $func ($decl e proto_ty) { $prop tag "array" $decl elem $new e }
-$decl t_rec   $func ($decl b proto_ty) { $prop tag "rec" $decl body $new b }
-$decl t_over  $func ($decl cs tys.node) { $prop tag "over" $decl cands $new cs }
+// Two constructors rather than one with a default, because a *short* call is
+// not the same thing as a defaulted one: inference accepts it (§3.4 fixes the
+// parameter's type, not its presence) but lowering emits exactly the arguments
+// written and `verify` rejects the mismatch. So the common case keeps its
+// arity and the kinded case gets a name.
+$decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "")
+  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k }
+
+$decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
+
+// §4.2a's kind. Named rather than spelled out at each site, so the one string
+// that means "allocated" lives in one place.
+$decl k_alloc "alloc"
+$decl is_alloc $func ($decl k "") $call eq_str (k, k_alloc)
+$decl t_array $func ($decl e proto_ty) { $prop tag "array" $decl elem $alloc e }
+$decl t_rec   $func ($decl b proto_ty) { $prop tag "rec" $decl body $alloc b }
+$decl t_over  $func ($decl cs tys.node) { $prop tag "over" $decl cands $alloc cs }
 
 // A template (§4.9). Its body is *not* type-checked at declaration, so there is
 // nothing structural to record here: the type is an identity, and whoever built
@@ -306,8 +332,11 @@ $decl show_props $func ($decl xs props.node, $decl acc "") $match xs (
   $case xs acc
 )
 
-$decl show_qual $func ($decl q "")
-  $if ($call eq_str (q, "")) "&" ($if ($call eq_str (q, "mut")) "&mut " "&const ")
+// §3.5: "written `&T` for frame and `&^T` for allocated *in diagnostics only*".
+$decl show_qual $func ($decl q "", $decl k "")
+  { $decl amp $if ($call is_alloc (k)) "&^" "&"
+    $decl r $if ($call eq_str (q, "")) amp
+                ($call concat (amp, $if ($call eq_str (q, "mut")) "mut " "const ")) }.r
 
 $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "int"}    "Int",
@@ -323,7 +352,7 @@ $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "group"}  $call concat ("(", $call concat ($call show_tys (t.items, "", true), ")")),
   $case {$prop tag "func"}   $call concat ("[", $call concat ($call show_tys (t.params, "", true),
                                  $call concat ("]->", $call show (t.result)))),
-  $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual), $call show (t.inner)),
+  $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual, t.kind), $call show (t.inner)),
   $case {$prop tag "array"}  $call concat ("[]", $call show (t.elem)),
   $case {$prop tag "union"}  $call concat ("<", $call concat ($call show_set (t.members), ">")),
   $case {$prop tag "inter"}  $call concat ("^", $call concat ($call show_set (t.members), "^")),
@@ -405,7 +434,8 @@ $decl same $func ($decl a proto_ty, $decl b proto_ty) $match a (
     ),
   $case {$prop tag "ref"} $match b (
       $case {$prop tag "ref"}
-        $if ($call eq_str (a.qual, b.qual)) ($call same (a.inner, b.inner)) false,
+        $if ($call eq_str (a.qual, b.qual))
+            ($if ($call eq_str (a.kind, b.kind)) ($call same (a.inner, b.inner)) false) false,
       $case b false
     ),
   $case {$prop tag "array"} $match b (
@@ -612,8 +642,8 @@ $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "block"} $call raw_block ($call remap_fields (t.fields, o, d, fields.nil), t.props),
   $case {$prop tag "group"} $call t_group ($call remap_tys (t.items, o, d, tys.nil)),
   $case {$prop tag "func"}
-    $call t_func ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d)),
-  $case {$prop tag "ref"}   $call t_ref (t.qual, $call remap (t.inner, o, d)),
+    $call t_func_fr ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d), t.frame),
+  $case {$prop tag "ref"}   $call t_ref_k (t.qual, $call remap (t.inner, o, d), t.kind),
   $case {$prop tag "array"} $call t_array ($call remap (t.elem, o, d)),
   $case {$prop tag "union"} $call t_union ($call remap_tys (t.members, o, d, tys.nil)),
   $case {$prop tag "inter"} $call t_inter ($call remap_tys (t.members, o, d, tys.nil)),
@@ -692,6 +722,83 @@ $decl has_var $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "rec"}   ($call has_var (t.body, 0)),
   $case {$prop tag "over"}  ($call has_var_tys (t.cands, 0)),
   $case t false
+)
+
+// §5.3a: "A type is **frame-bound** if a frame reference occurs anywhere in it
+// — directly, in a field, behind another reference, or in a closure's
+// captures." A structural check on a type already inferred: no lifetime
+// variables, no annotations, nothing to solve.
+//
+// An *allocated* reference is still inspected, because what it holds may be
+// frame storage — `&^(&T)` outlives its scope and still points at something
+// that does not.
+$fwd frame_bound
+
+$decl frame_bound_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call frame_bound (xs.head, 0)) true ($call frame_bound_tys (xs.tail, 0)),
+  $case xs false
+)
+
+$decl frame_bound_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call frame_bound (xs.head.ty, 0)) true ($call frame_bound_fields (xs.tail, 0)),
+  $case xs false
+)
+
+$decl frame_bound $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "ref"}
+    $if ($call is_alloc (t.kind)) ($call frame_bound (t.inner, 0)) true,
+  $case {$prop tag "block"} ($call frame_bound_fields (t.fields, 0)),
+  $case {$prop tag "group"} ($call frame_bound_tys (t.items, 0)),
+  // §7.3 keeps captures out of the type, so the flag is the only record of
+  // them. The parameters and the result are frame-bound or not on their own
+  // account, and are checked where they stand.
+  $case {$prop tag "func"}  t.frame,
+  $case {$prop tag "array"} ($call frame_bound (t.elem, 0)),
+  $case {$prop tag "union"} ($call frame_bound_tys (t.members, 0)),
+  $case {$prop tag "inter"} ($call frame_bound_tys (t.members, 0)),
+  $case {$prop tag "rec"}   ($call frame_bound (t.body, 0)),
+  $case {$prop tag "over"}  ($call frame_bound_tys (t.cands, 0)),
+  $case t false
+)
+
+// The frame reference that makes a type frame-bound, for the diagnostic. A
+// whole inferred type can be thousands of characters (§10.9: field order is
+// the interface, so nothing is elided), and printing one to say "there is a
+// `&` in here" helps nobody. This finds the offending reference so the message
+// can show that instead.
+$fwd first_frame
+
+$decl first_frame_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    { $decl f $call first_frame (xs.head, 0)
+      $decl r $if ($call same (f, t_bot)) ($call first_frame_tys (xs.tail, 0)) f }.r,
+  $case xs t_bot
+)
+
+$decl first_frame_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    { $decl f $call first_frame (xs.head.ty, 0)
+      $decl r $if ($call same (f, t_bot)) ($call first_frame_fields (xs.tail, 0)) f }.r,
+  $case xs t_bot
+)
+
+$decl first_frame $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "ref"}
+    $if ($call is_alloc (t.kind)) ($call first_frame (t.inner, 0)) t,
+  // §7.3 keeps a closure's captures out of its type, so there is no reference
+  // in here to point at — the flag is the whole record of it, and the type
+  // itself is the most specific thing there is to name.
+  $case {$prop tag "func"}  $if t.frame t t_bot,
+  $case {$prop tag "block"} ($call first_frame_fields (t.fields, 0)),
+  $case {$prop tag "group"} ($call first_frame_tys (t.items, 0)),
+  $case {$prop tag "array"} ($call first_frame (t.elem, 0)),
+  $case {$prop tag "union"} ($call first_frame_tys (t.members, 0)),
+  $case {$prop tag "inter"} ($call first_frame_tys (t.members, 0)),
+  $case {$prop tag "rec"}   ($call first_frame (t.body, 0)),
+  $case {$prop tag "over"}  ($call first_frame_tys (t.cands, 0)),
+  $case t t_bot
 )
 
 $decl close_var $func ($decl t proto_ty, $decl i 0)
@@ -842,6 +949,15 @@ $decl desc $func ($decl t proto_ty)
     $decl out $if ($call eq_str (tg, "")) k
                   ($call concat (k, $call concat ("[", $call concat (tg, "]")))) }.out
 
+// `&` plus a one-word description of what it points at — enough to recognise
+// the storage without rendering the whole type.
+$decl show_frame $func ($decl t proto_ty) $match t (
+  $case {$prop tag "ref"}
+    $call concat ($call show_qual (t.qual, t.kind), $call desc (t.inner)),
+  $case {$prop tag "func"} "a reference captured by a closure",
+  $case t ($call desc (t))
+)
+
 $decl tags_differ $func ($decl a proto_ty, $decl b proto_ty)
   { $decl ta $call tag_of (a)
     $decl tb $call tag_of (b)
@@ -931,11 +1047,18 @@ $decl sub_props $func ($decl s props.node, $decl want props.node) $match want (
 // whose type is exactly the member this function handles.
 $decl proto_ref $call t_ref ("", proto_ty)
 
+// §5.3: "Kind is a second dimension, orthogonal to the qualifier: `&^T <: &T`."
+// Allocated storage outlives every scope, so it goes wherever frame storage
+// does and never the reverse.
+$decl sub_kind $func ($decl a "", $decl b "")
+  $if ($call is_alloc (b)) ($call is_alloc (a)) true
+
 $decl sub_ref $func ($decl a proto_ref, $decl b proto_ref, $decl st proto_actx)
-  $if ($call eq_str (b.qual, "const")) ($call sub_seen (a.inner, b.inner, st))
+  $if ($call not ($call sub_kind (a.kind, b.kind))) false
+  ($if ($call eq_str (b.qual, "const")) ($call sub_seen (a.inner, b.inner, st))
   ($if ($call eq_str (b.qual, "mut"))
        ($call and ($call not ($call eq_str (a.qual, "const")), $call ty_eq (a.inner, b.inner)))
-       ($call and ($call eq_str (a.qual, ""), $call ty_eq (a.inner, b.inner))))
+       ($call and ($call eq_str (a.qual, ""), $call ty_eq (a.inner, b.inner)))))
 
 $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match a (
   // §3.6: ⊥ is a subtype of everything.

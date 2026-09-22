@@ -78,30 +78,30 @@ $decl proto_node $union (
   // the *list* is enough for a list of nodes — a cons cell holds its element
   // inline, so its size needs the node's, and putting the list behind a pointer
   // is what breaks that circle. The elements themselves stay values.
-  { $prop tag "group"      $decl line 0  $decl col 0  $decl items $new ($specialize P.list proto_node).node },
-  { $prop tag "block"      $decl line 0  $decl col 0  $decl items $new ($specialize P.list proto_node).node },
-  { $prop tag "proj_name"  $decl line 0  $decl col 0  $decl target $new proto_node  $decl field "" },
-  { $prop tag "proj_index" $decl line 0  $decl col 0  $decl target $new proto_node  $decl index 0 },
-  { $prop tag "form"       $decl line 0  $decl col 0  $decl keyword ""  $decl operands $new ($specialize P.list proto_node).node }
+  { $prop tag "group"      $decl line 0  $decl col 0  $decl items $alloc ($specialize P.list proto_node).node },
+  { $prop tag "block"      $decl line 0  $decl col 0  $decl items $alloc ($specialize P.list proto_node).node },
+  { $prop tag "proj_name"  $decl line 0  $decl col 0  $decl target $alloc proto_node  $decl field "" },
+  { $prop tag "proj_index" $decl line 0  $decl col 0  $decl target $alloc proto_node  $decl index 0 },
+  { $prop tag "form"       $decl line 0  $decl col 0  $decl keyword ""  $decl operands $alloc ($specialize P.list proto_node).node }
 )
 
 $decl nodes $specialize P.list proto_node
 
 // Aggregate shapes, now that there is a list of nodes to hold.
 $decl n_group $func ($decl xs nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "group" $decl line l  $decl col c  $decl items $new xs }
+  { $prop tag "group" $decl line l  $decl col c  $decl items $alloc xs }
 
 $decl n_block $func ($decl xs nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "block" $decl line l  $decl col c  $decl items $new xs }
+  { $prop tag "block" $decl line l  $decl col c  $decl items $alloc xs }
 
 $decl n_projn $func ($decl tgt proto_node, $decl f "", $decl l 0, $decl c 0)
-  { $prop tag "proj_name" $decl line l  $decl col c  $decl target $new tgt  $decl field f }
+  { $prop tag "proj_name" $decl line l  $decl col c  $decl target $alloc tgt  $decl field f }
 
 $decl n_proji $func ($decl tgt proto_node, $decl i 0, $decl l 0, $decl c 0)
-  { $prop tag "proj_index" $decl line l  $decl col c  $decl target $new tgt  $decl index i }
+  { $prop tag "proj_index" $decl line l  $decl col c  $decl target $alloc tgt  $decl index i }
 
 $decl n_form $func ($decl kw "", $decl ops nodes.node, $decl l 0, $decl c 0)
-  { $prop tag "form" $decl line l  $decl col c  $decl keyword kw  $decl operands $new ops }
+  { $prop tag "form" $decl line l  $decl col c  $decl keyword kw  $decl operands $alloc ops }
 
 // ------------------------------------------------------- the §2.2 arity table
 //
@@ -119,7 +119,7 @@ $decl no_kw $call kw_entry ("", -1, "", "", "")
 // `kws.node` rather than `kws.nil`: `$new` takes the type of its operand
 // (§4.2), so initialising from `nil` would give storage that only a `nil`
 // fits into. §4.8a is exactly the way to name the union without branching.
-$decl kw_table $mut $new kws.node
+$decl kw_table $mut $alloc kws.node
 
 $decl add_kw $func ($decl n "", $decl a 0, $decl k1 "", $decl k2 "", $decl k3 "")
   $set kw_table ($call kws.cons ($call kw_entry (n, a, k1, k2, k3), kw_table))
@@ -130,6 +130,7 @@ $call add_kw ("decl",       2, "name",  "expr", "")
 $call add_kw ("prop",       2, "name",  "expr", "")
 $call add_kw ("fwd",        1, "name",  "",     "")
 $call add_kw ("new",        1, "expr",  "",     "")
+$call add_kw ("alloc",      1, "expr",  "",     "")
 $call add_kw ("mut",        1, "expr",  "",     "")
 $call add_kw ("const",      1, "expr",  "",     "")
 $call add_kw ("set",        2, "expr",  "expr", "")
@@ -160,8 +161,8 @@ $decl lookup_kw $func ($decl n "") $call find_kw (kw_table, n)
 // -------------------------------------------------------------- parser state
 
 $decl parser $func ($decl ts L.toks.node)
-  { $decl rest $mut $new ts
-    $decl errs $mut $new diags.node }
+  { $decl rest $mut $alloc ts
+    $decl errs $mut $alloc diags.node }
 
 $decl proto_parser $call parser (L.toks.nil)
 $decl eof_token $call L.token ("eof", "", 0, 0, 0)
@@ -507,4 +508,109 @@ $decl dump_file $func ($decl xs nodes.node, $decl acc "") $match xs (
   $case {$prop tag "cons"}
     $call dump_file (xs.tail, $call concat (acc, $call concat ($call dump (xs.head), "\n"))),
   $case xs acc
+)
+
+// ------------------------------------------------------- names, for §5.3a
+//
+// Two walks over the AST, here because the AST is here: lowering needs the
+// free names of a `$func` literal to build its capture list (§7.3), and
+// inference needs them to decide whether a literal captured frame storage
+// (§5.3a). One definition, two readers.
+
+$decl pstrs $specialize P.list ""
+
+$decl mem_pstr $func ($decl xs pstrs.node, $decl x "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head, x)) true ($call mem_pstr (xs.tail, x)),
+  $case xs false
+)
+
+$decl name_text $func ($decl n proto_node) $match n (
+  $case {$prop tag "name"} n.text,
+  $case n ""
+)
+
+$decl operand $func ($decl n proto_node, $decl i 0) $match n (
+  $case {$prop tag "form"} ($call nodes.nth (n.operands, i)),
+  $case n ($call n_err ("no operand", 0, 0))
+)
+
+$decl is_kw $func ($decl n proto_node, $decl k "") $match n (
+  $case {$prop tag "form"} ($call eq_str (n.keyword, k)),
+  $case n false
+)
+
+$fwd free_names
+
+$decl free_names_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call free_names_list ($call nodes.val (xs.tail), $call free_names (xs.head, acc)),
+  $case xs acc
+)
+
+// Every name *mentioned*. Naive on purpose: lowering wants exactly this, since
+// over-capturing costs a word and no correctness, and inference subtracts the
+// bound names below.
+$decl free_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
+  $case {$prop tag "name"}
+    $if ($call mem_pstr (acc, n.text)) acc ($call pstrs.cons (n.text, acc)),
+  $case {$prop tag "form"}  ($call free_names_list ($call nodes.val (n.operands), acc)),
+  $case {$prop tag "group"} ($call free_names_list ($call nodes.val (n.items), acc)),
+  $case {$prop tag "block"} ($call free_names_list ($call nodes.val (n.items), acc)),
+  $case {$prop tag "proj_name"}  ($call free_names (n.target, acc)),
+  $case {$prop tag "proj_index"} ($call free_names (n.target, acc)),
+  $case n acc
+)
+
+$decl bound_group_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl nm $call name_text (xs.head)
+      $decl a2 $if ($call eq_str (nm, "")) acc
+                   ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
+      $decl r  $call bound_group_list ($call nodes.val (xs.tail), a2) }.r,
+  $case xs acc
+)
+
+// A group of names, for `$template (A, B)` — and nothing for anything else.
+$decl bound_group $func ($decl n proto_node, $decl acc pstrs.node) $match n (
+  $case {$prop tag "group"} ($call bound_group_list ($call nodes.val (n.items), acc)),
+  $case n acc
+)
+
+$fwd bound_names
+
+$decl bound_names_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call bound_names_list ($call nodes.val (xs.tail), $call bound_names (xs.head, acc)),
+  $case xs acc
+)
+
+// Every name *bound* by a binder anywhere inside. Collected without regard to
+// scope nesting, which is the one imprecision: a name both captured and
+// shadowed deeper in is dropped from the capture set. That direction is a
+// missed capture rather than a wrongly rejected program, which is the right
+// way round for a check that would otherwise reject valid code.
+$decl bound_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
+  $case {$prop tag "form"}
+    { $decl k n.keyword
+      // §4.1/§4.10: these name their first operand. §4.7's `$case` binds its
+      // pattern when the pattern is a bare name, and §4.9's `$template` binds
+      // its generics.
+      $decl binds $if ($call eq_str (k, "decl")) true
+                      ($if ($call eq_str (k, "prop")) true
+                           ($if ($call eq_str (k, "fwd")) true
+                                ($if ($call eq_str (k, "case")) true
+                                     ($call eq_str (k, "template")))))
+      $decl here $if binds
+          { $decl nm $call name_text ($call operand (n, 0))
+            $decl gs $if ($call eq_str (nm, ""))
+                // A `$template`'s generics may be a group, and a `$case`
+                // pattern may be anything — a non-name binds nothing.
+                ($call bound_group ($call operand (n, 0), acc)) 
+                ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
+            $decl r gs }.r
+          acc
+      $decl r $call bound_names_list ($call nodes.val (n.operands), here) }.r,
+  $case {$prop tag "group"} ($call bound_names_list ($call nodes.val (n.items), acc)),
+  $case {$prop tag "block"} ($call bound_names_list ($call nodes.val (n.items), acc)),
+  $case n acc
 )

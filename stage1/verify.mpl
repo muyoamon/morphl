@@ -51,13 +51,13 @@ $decl bval $func ($decl b P.boolean) b
 // ------------------------------------------------------------------- state
 
 $decl vstate $func ()
-  { $decl errs    $mut $new Pa.diags.node
+  { $decl errs    $mut $alloc Pa.diags.node
     // Every node's index, in visit order; sorted at the end (§9.3 forbids
     // reading anything into the order they were handed out in, so they are
     // sorted rather than assumed).
-    $decl ids     $mut $new IR.ints.node
+    $decl ids     $mut $alloc IR.ints.node
     // Whether the function being walked tail-calls itself directly.
-    $decl selfhit $mut $new bfalse }
+    $decl selfhit $mut $alloc bfalse }
 
 $decl proto_vst $call vstate ()
 

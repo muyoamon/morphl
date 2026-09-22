@@ -97,6 +97,80 @@ $decl t16 $call check_str ("$mut gives a mutable view",
 // §4.2: "If `e` is itself a reference, it is dereferenced first."
 $decl t17 $call check_str ("$new of a reference copies rather than nests",
   $call field_ty ("$decl n $new 0  $decl x $new n", "x"), "&Int")
+// ----------------------------------------------- $alloc and §5.3a
+//
+// §3.5: storage has a **kind** as well as a qualifier. `$new` makes frame
+// storage, released when the scope exits at no cost; `$alloc` draws from the
+// `allocator` in lexical scope and may outlive anything. The kind is written
+// `&^T` in diagnostics only — there is still no syntax for writing a type.
+
+$decl a1 $call check_str ("$alloc gives allocated storage (§4.2a)",
+  $call field_ty ("$decl x $alloc 0", "x"), "&^Int")
+
+// §5.3: "$mut/$const produce views, and preserve the kind."
+$decl a2 $call check_str ("a view preserves the kind",
+  $call field_ty ("$decl x $mut $alloc 0", "x"), "&^mut Int")
+
+// §4.2a: "As with `$new`, a reference operand is dereferenced first."
+$decl a3 $call check_str ("$alloc of a reference copies rather than nests",
+  $call field_ty ("$decl n $new 0  $decl x $alloc n", "x"), "&^Int")
+
+// §5.3: "`&^T <: &T`. Allocated storage outlives every scope, so it is usable
+// wherever frame storage is — never the reverse."
+$decl a4 $call check ("allocated storage goes where frame storage is expected",
+  $call eq_int ($call n_errs ("$decl f $func ($decl p $new 0) 1  $decl x $call f ($alloc 0)"), 0))
+
+$decl a5 $call check ("...and frame storage does not go where allocated is",
+  $call lt (0, $call n_errs ("$decl f $func ($decl p $alloc 0) 1  $decl x $call f ($new 0)")))
+
+// §5.3a's first clause: "A frame-bound type may not appear in a function's
+// result." The frame it was made in is gone by the time the caller has it.
+$decl a6 $call check ("a function may not return frame storage (§5.3a)",
+  $call lt (0, $call n_errs ("$decl f $func ($decl n 0) $new n")))
+
+$decl a7 $call check ("...nor a block that merely holds some",
+  $call lt (0, $call n_errs ("$decl f $func ($decl n 0) { $decl v $new n }")))
+
+$decl a8 $call check ("...while the same function returning allocated storage is fine",
+  $call eq_int ($call n_errs ("$decl f $func ($decl n 0) $alloc n"), 0))
+
+// §5.3a's second clause: "a frame-bound value may not be written into storage
+// that is not itself frame-bound". Allocated storage outlives every scope.
+$decl a9 $call check ("frame storage may not be put into allocated storage",
+  $call lt (0, $call n_errs ("$decl f $func ($decl n 0) $alloc { $decl v $new n }")))
+
+// And the whole point: frame storage used *within* one scope costs nothing and
+// is accepted.
+$decl a10 $call check ("frame storage used inside one scope is fine",
+  $call eq_int ($call n_errs ("$decl f $func ($decl n 0) { $decl t $new n  $decl r $call add (t, 1) }.r"), 0))
+
+// §5.3a's closure clause: "A `$func` literal that captures a frame reference is
+// itself frame-bound, so a closure cannot carry one out either (§7.3)." §7.3
+// keeps captures out of the function type, so this is the one part of the rule
+// that is not visible in the type being checked — it is recorded when the
+// literal is typed.
+$decl a11 $call check ("a closure capturing frame storage may not be returned (§5.3a)",
+  $call lt (0, $call n_errs ($call concat (
+      "$decl f $func ($decl n 0) { $decl cell $new n ",
+      "$decl g $func () $call add (cell, 1)  $decl r g }.r"))))
+
+$decl a12 $call check ("...but capturing allocated storage is fine",
+  $call eq_int ($call n_errs ($call concat (
+      "$decl f $func ($decl n 0) { $decl cell $alloc n ",
+      "$decl g $func () $call add (cell, 1)  $decl r g }.r")), 0))
+
+$decl a13 $call check ("...and so is calling it without carrying it out",
+  $call eq_int ($call n_errs ($call concat (
+      "$decl f $func ($decl n 0) { $decl cell $new n ",
+      "$decl g $func () $call add (cell, 1)  $decl r $call g () }.r")), 0))
+
+// The case a naive free-names walk gets wrong: a parameter that merely shares
+// a name with frame storage outside is not a capture.
+$decl a14 $call check ("a parameter shadowing outer frame storage is not a capture",
+  $call eq_int ($call n_errs ($call concat (
+      "$decl f $func ($decl n 0) { $decl cell $new n ",
+      "$decl g $func ($decl cell 0) $call add (cell, 1)  $decl r g }.r")), 0))
+
 $decl t18 $call check_str ("$mut needs storage (§4.3)",
   $call errs_of ("$decl x $mut 0"), "$mut expects storage, found Int; only $new creates storage")
 // §4.4: `$set` writes through storage and evaluates to the written value.
@@ -278,22 +352,43 @@ $decl t67 $call check_str ("calling a template directly is reported",
   "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)")
 
 // The prelude's list, specialized — recursive data inside a template body.
-// §5.5 requires the recursion to pass through storage, so the tail is `$new`;
+// §5.5 requires the recursion to pass through storage, so the tail is storage;
 // without it the type has no layout and the specialization is rejected.
+//
+// And it is `$alloc`, not `$new`: §5.3a says so in as many words — "a list
+// returned to a caller is built with `$alloc`, while one built and consumed
+// inside a single scope may use `$new`". `cons` returns the cell, so the cell
+// outlives the frame that made it.
+//
 // Built with `concat` because a morphl string literal never spans a newline,
 // and morphl needs no separators anyway.
 $decl list_src $call concat (
   "$decl list $template T { $prop nil { $prop tag \"nil\" } ",
   $call concat (
-  "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail $new node }) ",
+  "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail $alloc node }) ",
   $call concat (
-  "$prop cons $func ($decl h T, $decl t node) { $prop tag \"cons\"  $decl head h  $decl tail $new t } ",
+  "$prop cons $func ($decl h T, $decl t node) { $prop tag \"cons\"  $decl head h  $decl tail $alloc t } ",
   $call concat (
   "$prop length $func ($decl xs node, $decl acc 0) $match xs ( $case {$prop tag \"cons\"} $call length (xs.tail, $call add (acc, 1)), $case xs acc ) } ",
   "$decl ints $specialize list 0 "))))
 
 $decl t68 $call check ("a template holding recursive data types cleanly",
   $call eq_int ($call n_errs (list_src), 0))
+
+// §5.3a from the other side: the same list with a *frame* tail is rejected,
+// because `cons` hands the cell back to a caller whose frame outlives it. This
+// is the one place the two storage kinds are felt in ordinary code, and it is
+// felt at the container.
+$decl frame_list_src $call concat (
+  "$decl list $template T { $prop nil { $prop tag \"nil\" } ",
+  $call concat (
+  "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail $new node }) ",
+  $call concat (
+  "$prop cons $func ($decl h T, $decl t node) { $prop tag \"cons\"  $decl head h  $decl tail $new t } } ",
+  "$decl ints $specialize list 0 ")))
+
+$decl t68b $call check ("...and a frame tail is rejected: the cell outlives the cons (§5.3a)",
+  $call lt (0, $call n_errs (frame_list_src)))
 
 // ...and the same list with the tail left as a value is rejected: §5.5 needs
 // the recursion to pass through storage or the type has no layout. The error

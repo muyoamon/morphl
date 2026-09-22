@@ -209,38 +209,38 @@ $decl find_mdone $func ($decl xs mdones.node, $decl n "") $match xs (
 // the empty list fits).
 
 $decl lstate $func ()
-  { $decl types  $mut $new T.tys.node
-    $decl ntypes $mut $new 0
-    $decl nslots $mut $new 0
+  { $decl types  $mut $alloc T.tys.node
+    $decl ntypes $mut $alloc 0
+    $decl nslots $mut $alloc 0
     // The type of each slot allocated so far, newest first (§7.2).
-    $decl sltys  $mut $new IR.ints.node
+    $decl sltys  $mut $alloc IR.ints.node
     // Identities for opaque prop values; §4.10 makes two distinct
     // function-valued props distinct types, so they must not share one.
-    $decl nopaque $mut $new 0
+    $decl nopaque $mut $alloc 0
     // §4.10's compile-time half: every block with props that lowering has
     // seen, so a projection onto a prop can be answered from its source.
-    $decl mods   $mut $new mods_list.node
-    $decl nmods  $mut $new 0
+    $decl mods   $mut $alloc mods_list.node
+    $decl nmods  $mut $alloc 0
     // §4.9's templates, and the specialisations already built from them.
-    $decl tmpls  $mut $new tmpls_list.node
-    $decl ntmpls $mut $new 0
-    $decl specs  $mut $new specs_list.node
+    $decl tmpls  $mut $alloc tmpls_list.node
+    $decl ntmpls $mut $alloc 0
+    $decl specs  $mut $alloc specs_list.node
     // §5.5's placeholders. Inference solves knots and hands the answers over,
     // so lowering needs none — except for a specialised template, whose types
     // it derives itself (§4.9), and a prop's value may reach its own type.
-    $decl nvars  $mut $new 0
+    $decl nvars  $mut $alloc 0
     // §4.14: an `$import` resolves relative to the entry file, and a module
     // sees "the root block plus what it imports, nothing else" — so both have
     // to be reachable from wherever an import is lowered.
-    $decl base    $mut $new ""
-    $decl rootenv $mut $new benv.node
+    $decl base    $mut $alloc ""
+    $decl rootenv $mut $alloc benv.node
     // Functions lifted out of `$func` literals, newest first, and the index
     // the first of them will get. The top-level `$decl`s take the indices
     // below that, in source order, so that a global's index is its position.
-    $decl lifted  $mut $new IR.fns.node
-    $decl nlifted $mut $new 0
-    $decl fnbase  $mut $new 0
-    $decl errs   $mut $new Pa.diags.node }
+    $decl lifted  $mut $alloc IR.fns.node
+    $decl nlifted $mut $alloc 0
+    $decl fnbase  $mut $alloc 0
+    $decl errs   $mut $alloc Pa.diags.node }
 
 $decl proto_lst $call lstate ()
 
@@ -524,6 +524,13 @@ $decl result_of $func ($decl t0 T.proto_ty)
         $case {$prop tag "func"} ($call T.tval (t.result)),
         $case t t
       ) }.r
+
+// §3.5's kind, read off a reference type. Empty for anything that is not one,
+// which is the same answer as "frame" and is what a malformed `$mut` would
+// get anyway — the error for that is raised where it belongs.
+$decl ref_kind $func ($decl t0 T.proto_ty)
+  { $decl t $call T.unroll (t0)
+    $decl r $match t ($case {$prop tag "ref"} t.kind, $case t "") }.r
 
 $decl deref_ty $func ($decl t0 T.proto_ty)
   { $decl t $call T.unroll (t0)
@@ -1292,10 +1299,18 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
         { $decl v  $call as_value (st, $call lower (st, e, $call op (n, 0), false))
           $decl rt $call T.t_ref ("", v.ty)
           $decl r  $call lres ($call IR.e_new ($call intern (st, rt), v.ir), rt) }.r
+      // §4.2a. The same node as `$new`: the storage *kind* (§3.5) is already on
+      // the node's type, so the tree needs no second field to carry it, and
+      // the backend reads it off the type when it has two ways to allocate.
+      ($if ($call eq_str (k, "alloc"))
+        { $decl v  $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+          $decl rt $call T.t_ref_k ("", v.ty, T.k_alloc)
+          $decl r  $call lres ($call IR.e_new ($call intern (st, rt), v.ir), rt) }.r
       // §4.3: a view, not a value — no node, only a different type.
       ($if ($call eq_str (k, "mut"))
         { $decl v  $call lval ($call lower (st, e, $call op (n, 0), false))
-          $decl rt $call T.t_ref ("mut", $call deref_ty (v.ty))
+          // §5.3: a view preserves the kind.
+          $decl rt $call T.t_ref_k ("mut", $call deref_ty (v.ty), $call ref_kind (v.ty))
           $decl r  $call lres (v.ir, rt) }.r
       // §4.4: writes *through* storage; the type is the written value's.
       ($if ($call eq_str (k, "set"))
@@ -1379,7 +1394,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
           $decl ty $call result_of (f.ty)
           $decl r  $call lres ($call IR.e_call ($call intern (st, ty), f.ir, as.irs, tail), ty) }.r
         ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-             " is not lowered yet")), n)), T.t_unit))))))))))))))  }.out
+             " is not lowered yet")), n)), T.t_unit)))))))))))))))  }.out
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
                    $decl tail P.boolean) $match n (

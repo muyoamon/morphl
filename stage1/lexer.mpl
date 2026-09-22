@@ -111,12 +111,12 @@ $decl bad $func ($decl m "", $decl l 0, $decl c 0) $call token ("invalid", m, 0,
 
 $decl cursor $func ($decl s "")
   { $decl src  s
-    $decl pos  $mut $new 0
-    $decl line $mut $new 1
-    $decl col  $mut $new 1
+    $decl pos  $mut $alloc 0
+    $decl line $mut $alloc 1
+    $decl col  $mut $alloc 1
     // Trivia scanning cannot return an error without breaking the tail
     // position that `scan` depends on, so it parks one here instead.
-    $decl oops $mut $new "" }
+    $decl oops $mut $alloc "" }
 
 $decl proto_cursor $call cursor ("")
 
