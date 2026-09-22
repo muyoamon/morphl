@@ -132,7 +132,7 @@ $decl fn_name   $func ($decl i 0) $call concat ("mpl_f", $call int_to_str (i))
 // `int_to_str` have to put their result somewhere. That somewhere is `malloc`
 // and never `free`, which is stage 0's model exactly (BOOTSTRAP.md §3) and what
 // §7.6's regions are meant to replace.
-$decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\ntypedef struct { const char *p; int64_t n; } mpl_str;\n\n/* A function value is a code pointer and an environment, two words whatever\n   its signature (7.3): captures belong to the body, not to the type. */\ntypedef struct { void *code; void *env; } mpl_fun;\n\nstatic _Noreturn void mpl_panic(const char *m) { fputs(m, stderr); fputc('\\n', stderr); abort(); }\n\nstatic char *mpl_alloc(int64_t n) {\n  char *p = (char *)malloc((size_t)(n > 0 ? n : 1));\n  if (!p) mpl_panic(\"out of memory\");\n  return p;\n}\n\nstatic mpl_str mpl_concat(mpl_str a, mpl_str b) {\n  char *p = mpl_alloc(a.n + b.n);\n  memcpy(p, a.p, (size_t)a.n);\n  memcpy(p + a.n, b.p, (size_t)b.n);\n  return (mpl_str){ p, a.n + b.n };\n}\n\nstatic int64_t mpl_str_eq(mpl_str a, mpl_str b) {\n  return a.n == b.n && memcmp(a.p, b.p, (size_t)a.n) == 0;\n}\n\nstatic int64_t mpl_len(mpl_str s) { return s.n; }\n\nstatic mpl_str mpl_slice(mpl_str s, int64_t i, int64_t j) {\n  if (i < 0 || j < i || j > s.n) mpl_panic(\"slice: out of range\");\n  return (mpl_str){ s.p + i, j - i };\n}\n\nstatic int64_t mpl_byte(mpl_str s, int64_t i) {\n  if (i < 0 || i >= s.n) mpl_panic(\"byte: index out of range\");\n  return (int64_t)(unsigned char)s.p[i];\n}\n\nstatic mpl_str mpl_int_to_str(int64_t v) {\n  char buf[24];\n  int k = snprintf(buf, sizeof buf, \"%lld\", (long long)v);\n  char *p = mpl_alloc(k);\n  memcpy(p, buf, (size_t)k);\n  return (mpl_str){ p, k };\n}\n\nstatic int64_t mpl_print(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stdout);\n  return 0;\n}\n\n/* 8's arithmetic and comparisons are C operators, so they have no address. A\n   value of function type is a pair (7.3), and a pair needs one - `$decl isub\n   sub` is an intrinsic used as a value, which the compiler's own sources do.\n   These are that address, and nothing else calls them: a *call* to an\n   intrinsic is still emitted infix. */\n#define MPL_BINOP(n, op) \\\n  static int64_t mpl_fn_##n(void *env, int64_t a, int64_t b) { (void)env; return a op b; }\nMPL_BINOP(add, +)\nMPL_BINOP(sub, -)\nMPL_BINOP(mul, *)\nMPL_BINOP(div, /)\nMPL_BINOP(mod, %)\nMPL_BINOP(lt, <)\nMPL_BINOP(eq_int, ==)\n#undef MPL_BINOP\n\n/* 7.8: `panic` aborts. It takes a morphl `Str`, which is bytes and not a C\n   string (3.1), so it is written out by length rather than by NUL. The return\n   type is a lie the call site needs and the body never tells: nothing after a\n   call to this runs. */\nstatic int64_t mpl_panic_str(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stderr);\n  fputc('\\n', stderr);\n  abort();\n}\n"
+$decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\ntypedef struct { const char *p; int64_t n; } mpl_str;\n\n/* A function value is a code pointer and an environment, two words whatever\n   its signature (7.3): captures belong to the body, not to the type. */\ntypedef struct { void *code; void *env; } mpl_fun;\n\nstatic _Noreturn void mpl_panic(const char *m) { fputs(m, stderr); fputc('\\n', stderr); abort(); }\n\nstatic char *mpl_alloc(int64_t n) {\n  char *p = (char *)malloc((size_t)(n > 0 ? n : 1));\n  if (!p) mpl_panic(\"out of memory\");\n  return p;\n}\n\nstatic mpl_str mpl_concat(mpl_str a, mpl_str b) {\n  char *p = mpl_alloc(a.n + b.n);\n  memcpy(p, a.p, (size_t)a.n);\n  memcpy(p + a.n, b.p, (size_t)b.n);\n  return (mpl_str){ p, a.n + b.n };\n}\n\nstatic int64_t mpl_str_eq(mpl_str a, mpl_str b) {\n  return a.n == b.n && memcmp(a.p, b.p, (size_t)a.n) == 0;\n}\n\nstatic int64_t mpl_len(mpl_str s) { return s.n; }\n\nstatic mpl_str mpl_slice(mpl_str s, int64_t i, int64_t j) {\n  if (i < 0 || j < i || j > s.n) mpl_panic(\"slice: out of range\");\n  return (mpl_str){ s.p + i, j - i };\n}\n\nstatic int64_t mpl_byte(mpl_str s, int64_t i) {\n  if (i < 0 || i >= s.n) mpl_panic(\"byte: index out of range\");\n  return (int64_t)(unsigned char)s.p[i];\n}\n\nstatic mpl_str mpl_int_to_str(int64_t v) {\n  char buf[24];\n  int k = snprintf(buf, sizeof buf, \"%lld\", (long long)v);\n  char *p = mpl_alloc(k);\n  memcpy(p, buf, (size_t)k);\n  return (mpl_str){ p, k };\n}\n\nstatic int64_t mpl_print(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stdout);\n  return 0;\n}\n\n/* 8's arithmetic and comparisons are C operators, so they have no address. A\n   value of function type is a pair (7.3), and a pair needs one - `$decl isub\n   sub` is an intrinsic used as a value, which the compiler's own sources do.\n   These are that address, and nothing else calls them: a *call* to an\n   intrinsic is still emitted infix. */\n#define MPL_BINOP(n, op) \\\n  static int64_t mpl_fn_##n(void *env, int64_t a, int64_t b) { (void)env; return a op b; }\nMPL_BINOP(add, +)\nMPL_BINOP(sub, -)\nMPL_BINOP(mul, *)\nMPL_BINOP(div, /)\nMPL_BINOP(mod, %)\nMPL_BINOP(lt, <)\nMPL_BINOP(eq_int, ==)\n#undef MPL_BINOP\n\n/* 7.8: `panic` aborts. It takes a morphl `Str`, which is bytes and not a C\n   string (3.1), so it is written out by length rather than by NUL. The return\n   type is a lie the call site needs and the body never tells: nothing after a\n   call to this runs. */\nstatic int64_t mpl_panic_str(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stderr);\n  fputc('\\n', stderr);\n  abort();\n}\n\n/* 8 makes a failing operation answer an option rather than panic, and 7.5\n   lays that out as a tag and a union. These do the work and report whether it\n   succeeded; the *emitted* code builds the option, because only the call site\n   knows which position `some` and `none` took in its own interned union - 3.6\n   makes a union a set and 7.5 makes the order the discriminator, so the two\n   numbers are not fixed. */\nstatic int mpl_str_to_int(mpl_str s, int64_t *out) {\n  uint64_t v = 0;\n  uint64_t limit;\n  int64_t i = 0;\n  int neg = 0;\n  if (s.n == 0) return 0;\n  if (s.p[0] == '-' || s.p[0] == '+') { neg = (s.p[0] == '-'); i = 1; }\n  if (i >= s.n) return 0;\n  /* Stage 0 is Zig's parseInt, so `_` may separate digits but may not begin or\n     end the number; two implementations of one intrinsic have to agree. */\n  if (s.p[i] == '_' || s.p[s.n - 1] == '_') return 0;\n  /* The negative range is one larger, and -9223372036854775808 does parse. */\n  limit = neg ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;\n  for (; i < s.n; i++) {\n    unsigned char c = (unsigned char)s.p[i];\n    if (c == '_') continue;\n    if (c < '0' || c > '9') return 0;\n    if (v > (limit - (uint64_t)(c - '0')) / 10u) return 0;\n    v = v * 10u + (uint64_t)(c - '0');\n  }\n  if (neg) *out = (v == (uint64_t)INT64_MAX + 1u) ? INT64_MIN : -(int64_t)v;\n  else *out = (int64_t)v;\n  return 1;\n}\n\n/* 3.1 makes a `Str` UTF-8, so this is the encoder, and a code point outside\n   the scalar range has no encoding - which is the `none`. */\nstatic int mpl_from_code(int64_t cp, mpl_str *out) {\n  char *p;\n  int64_t n;\n  if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;\n  n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  p = mpl_alloc(n);\n  if (n == 1) { p[0] = (char)cp; }\n  else if (n == 2) { p[0] = (char)(0xC0 | (cp >> 6)); p[1] = (char)(0x80 | (cp & 0x3F)); }\n  else if (n == 3) { p[0] = (char)(0xE0 | (cp >> 12)); p[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[2] = (char)(0x80 | (cp & 0x3F)); }\n  else { p[0] = (char)(0xF0 | (cp >> 18)); p[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); p[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[3] = (char)(0x80 | (cp & 0x3F)); }\n  out->p = p;\n  out->n = n;\n  return 1;\n}\n\n/* Stage 0 validates UTF-8 before answering `some` (3.1 again), so this does\n   too: a file that is not text is `none`, not a `Str` that lies about itself. */\nstatic int mpl_utf8_ok(const char *p, int64_t n) {\n  int64_t i = 0;\n  while (i < n) {\n    unsigned char c = (unsigned char)p[i];\n    int64_t k, j;\n    int64_t lo;\n    if (c < 0x80) { i++; continue; }\n    else if ((c & 0xE0) == 0xC0) { k = 2; lo = 0x80; }\n    else if ((c & 0xF0) == 0xE0) { k = 3; lo = 0x800; }\n    else if ((c & 0xF8) == 0xF0) { k = 4; lo = 0x10000; }\n    else return 0;\n    if (i + k > n) return 0;\n    {\n      int64_t cp = c & (0xFF >> (k + 1));\n      for (j = 1; j < k; j++) {\n        unsigned char cc = (unsigned char)p[i + j];\n        if ((cc & 0xC0) != 0x80) return 0;\n        cp = (cp << 6) | (cc & 0x3F);\n      }\n      if (cp < lo || cp > 0x10FFFF) return 0;\n      if (cp >= 0xD800 && cp <= 0xDFFF) return 0;\n    }\n    i += k;\n  }\n  return 1;\n}\n\n/* Read by growing, never by `ftell`: a directory opens for reading on Linux\n   and reports a size of LONG_MAX, which sized an allocation that aborted where\n   stage 0 simply answers `none`. `fread` failing is the only signal trusted. */\nstatic int mpl_read_file(mpl_str path, mpl_str *out) {\n  char *name = mpl_alloc(path.n + 1);\n  FILE *f;\n  char *buf;\n  int64_t cap = 4096;\n  int64_t n = 0;\n  memcpy(name, path.p, (size_t)path.n);\n  name[path.n] = 0;\n  f = fopen(name, \"rb\");\n  free(name);\n  if (!f) return 0;\n  buf = mpl_alloc(cap);\n  for (;;) {\n    size_t got;\n    if (n == cap) {\n      char *nb = mpl_alloc(cap * 2);\n      memcpy(nb, buf, (size_t)n);\n      buf = nb;\n      cap *= 2;\n    }\n    got = fread(buf + n, 1, (size_t)(cap - n), f);\n    n += (int64_t)got;\n    if (got == 0) break;\n  }\n  if (ferror(f)) { fclose(f); return 0; }\n  fclose(f);\n  if (!mpl_utf8_ok(buf, n)) return 0;\n  out->p = buf;\n  out->n = n;\n  return 1;\n}\n"
 
 // ------------------------------------------------------------------- types
 //
@@ -248,15 +248,45 @@ $decl is_structy $func ($decl t T.proto_ty) $match t (
   $case t false
 )
 
+// The first index *before* `i` naming the same type, or -1.
+//
+// §5.5 makes `μR. B(R)` and its one-step unrolling the same type, and the
+// checker treats them so — which is why a value of one is assigned to a slot
+// of the other. But they are distinct *terms*, so `T.same` separates them and
+// `intern` gives them two indices, and two C structs for one type is what `cc`
+// refuses. The later index becomes a `typedef` of the earlier, which is the
+// truth and costs nothing: `T.unroll` agreeing means the members and their
+// order are identical, so every discriminator already assigned still holds.
+//
+// Nothing but a `μ` can match here. Two structurally identical types that are
+// not one are impossible — `intern` would have returned the first — so the
+// only pairs this finds are a binder and its unrolling.
+$decl alias_of $func ($decl all T.tys.node, $decl t T.proto_ty, $decl j 0, $decl i 0)
+  $if ($call not ($call lt (j, i))) -1
+      ($if ($call and ($call is_structy ($call T.tval ($call type_at (all, j))),
+                       $call T.same ($call T.unroll ($call type_at (all, j)),
+                                     $call T.unroll (t))))
+           j
+           ($call alias_of (all, t, $call add (j, 1), i)))
+
 // Every struct is declared before any is defined, so a field that is a
 // *pointer* to one needs nothing else — §5.5 makes every recursive edge a
 // pointer, which is what keeps the definitions themselves acyclic.
-$decl emit_fwds $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0) $match ts (
+$decl emit_fwds $func ($decl st proto_est, $decl all T.tys.node, $decl ts T.tys.node,
+                       $decl i 0) $match ts (
   $case {$prop tag "cons"}
-    { $decl d $if ($call is_structy ($call T.tval (ts.head)))
-          ($call say (st, $call concat ("typedef struct ", $call concat ($call ty_name (i),
-               $call concat (" ", $call concat ($call ty_name (i), ";\n")))))) ()
-      $decl r $call emit_fwds (st, $call T.tys.val (ts.tail), $call add (i, 1)) }.r,
+    { $decl t $call T.tval (ts.head)
+      $decl d $if ($call is_structy (t))
+          { $decl k $call alias_of (all, t, 0, i)
+            // An alias always names a *lower* index, so the thing it names was
+            // declared on an earlier turn of this same walk.
+            $decl w $if ($call lt (-1, k))
+                ($call say (st, $call concat ("typedef ", $call concat ($call ty_name (k),
+                     $call concat (" ", $call concat ($call ty_name (i), ";\n"))))))
+                ($call say (st, $call concat ("typedef struct ", $call concat ($call ty_name (i),
+                     $call concat (" ", $call concat ($call ty_name (i), ";\n")))))) }.w
+          ()
+      $decl r $call emit_fwds (st, all, $call T.tys.val (ts.tail), $call add (i, 1)) }.r,
   $case ts ()
 )
 
@@ -331,12 +361,17 @@ $decl emit_struct_at $func ($decl st proto_est, $decl all T.tys.node, $decl i 0)
   $if ($call mem_int ($call eval_ints (st.emitted), i)) ()
       { $decl t $call T.tval ($call type_at (all, i))
         $decl m $call mark_emitted (st, i)
+        // An index the forward pass aliased has no struct of its own — it *is*
+        // the earlier index, which still has to be defined, and may not be
+        // reached any other way.
+        $decl k $if ($call is_structy (t)) ($call alias_of (all, t, 0, i)) -1
         // A type still holding a §5.5 placeholder was derived in a type-only
         // position (§5.7) whose tree was discarded — it is in the table only
         // because interning is unconditional, and nothing at run time has it.
         // Skipped rather than failed on; `c_type` still refuses it if
         // something live turns out to name it.
-        $decl d $if ($call T.has_var (t, 0)) () ($match t (
+        $decl d $if ($call lt (-1, k)) ($call emit_struct_at (st, all, k))
+            ($if ($call T.has_var (t, 0)) () ($match t (
             $case {$prop tag "block"}
               ($call emit_block_struct (st, all, $call T.fields.val (t.fields), i)),
             $case {$prop tag "group"}
@@ -357,7 +392,7 @@ $decl emit_struct_at $func ($decl st proto_est, $decl all T.tys.node, $decl i 0)
                     $case u ()
                   ) }.r,
             $case t ()
-          ))
+          )))
         $decl r () }.r
 
 $decl emit_defs $func ($decl st proto_est, $decl ts T.tys.node, $decl all T.tys.node,
@@ -370,7 +405,7 @@ $decl emit_defs $func ($decl st proto_est, $decl ts T.tys.node, $decl all T.tys.
 
 $decl emit_structs $func ($decl st proto_est, $decl ts T.tys.node, $decl all T.tys.node,
                           $decl i 0)
-  $do ($call emit_fwds (st, ts, 0)) ($call emit_defs (st, ts, all, 0))
+  $do ($call emit_fwds (st, ts, ts, 0)) ($call emit_defs (st, ts, all, 0))
 
 $decl join_args $func ($decl xs strs.node, $decl acc "", $decl first P.boolean) $match xs (
   $case {$prop tag "cons"}
@@ -515,7 +550,10 @@ $decl fn_sig $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
 // `boolish` is §3.2's exception. `Bool` is the union `true | false` but its
 // discriminator *is* its value, so there is no `.tag` to read and no payload
 // to move — its members are nullary tags, whose structs are empty.
-$decl emit_retag_arms $func ($decl st proto_est, $decl dest "", $decl src "",
+$fwd emit_inject
+
+$decl emit_retag_arms $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
+                             $decl src "",
                              $decl fs T.tys.node, $decl ws T.tys.node, $decl i 0,
                              $decl boolish P.boolean, $decl wt T.proto_ty) $match fs (
   $case {$prop tag "cons"}
@@ -535,24 +573,37 @@ $decl emit_retag_arms $func ($decl st proto_est, $decl dest "", $decl src "",
           ($call eerr (st, $call concat ("no member of ", $call concat ($call T.show (wt),
                $call concat (" accepts ", $call T.show (fs.head))))))
           { $decl a $call assign (st, $call concat (dest, ".tag"), $call int_to_str (k))
+            // The payload is not always a plain move: `member_slot` finds a
+            // member by `T.same` and *then* by `T.sub`, so the target member
+            // can be a §5.1 prefix of the source's — which is §7.4's copy, not
+            // an assignment. Going through `emit_inject` costs nothing when
+            // the two are the same type, since that is its free case.
+            $decl fi0 $call IR.find_ty (ts, fs.head)
+            $decl wi0 $call IR.find_ty (ts, $call T.tys.nth (ws, k))
             $decl b $if boolish 0
-                ($call assign (st, $call concat (dest,
-                     $call concat (".u.m", $call int_to_str (k))),
-                     $call concat (src, $call concat (".u.m", $call int_to_str (i)))))
+                ($if ($call and (fi0.hit, wi0.hit))
+                    ($call emit_inject (st, ts, $call concat (dest,
+                         $call concat (".u.m", $call int_to_str (k))),
+                         $call concat (src, $call concat (".u.m", $call int_to_str (i))),
+                         fi0.id, wi0.id))
+                    ($call assign (st, $call concat (dest,
+                         $call concat (".u.m", $call int_to_str (k))),
+                         $call concat (src, $call concat (".u.m", $call int_to_str (i))))))
             $decl c 0 }.c)
       $decl d2 $call say (st, "  break;\n")
-      $decl r  $call emit_retag_arms (st, dest, src, $call T.tys.val (fs.tail), ws,
+      $decl r  $call emit_retag_arms (st, ts, dest, src, $call T.tys.val (fs.tail), ws,
                    $call add (i, 1), boolish, wt) }.r,
   $case fs ()
 )
 
-$decl emit_retag $func ($decl st proto_est, $decl dest "", $decl src "",
+$decl emit_retag $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
+                        $decl src "",
                         $decl ft T.proto_ty, $decl fs T.tys.node, $decl ws T.tys.node,
                         $decl wt T.proto_ty)
   { $decl bl $call T.same (ft, T.t_bool)
     $decl d0 $call say (st, $call concat ("  switch ((int)",
                  $call concat (src, $if bl ") {\n" ".tag) {\n")))
-    $decl d1 $call emit_retag_arms (st, dest, src, fs, ws, 0, bl, wt)
+    $decl d1 $call emit_retag_arms (st, ts, dest, src, fs, ws, 0, bl, wt)
     // The source's tag is always one of its own members, so this is as
     // unreachable as §5.6 makes a `$match`'s default.
     $decl d2 $call say (st, "  default: mpl_panic(\"bad discriminator\");\n  }\n")
@@ -622,11 +673,20 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                   $call T.fields.length (wf, 0), 0))
         ($if ($call not ($call T.tys.is_nil (fs)))
              ($if ($call T.tys.is_nil (ws)) ($call eerr (st, bad))
-                  ($call emit_retag (st, dest, src, ft, fs, ws, wt)))
+                  ($call emit_retag (st, ts, dest, src, ft, fs, ws, wt)))
         ($if ($call lt (k, 0)) ($call eerr (st, bad))
-            { $decl a $call assign (st, $call concat (dest, ".tag"), $call int_to_str (k))
-              $decl b $call assign (st, $call concat (dest,
-                          $call concat (".u.m", $call int_to_str (k))), src) }.b)))) }.r
+            { $decl a  $call assign (st, $call concat (dest, ".tag"), $call int_to_str (k))
+              // The payload is not always a plain move. `member_slot` finds a
+              // member by `T.same` and *then* by `T.sub`, so the member chosen
+              // can be a §5.1 prefix of what is being injected — and §7.4 makes
+              // that a copy. Guarded on the two being different types, which is
+              // also what stops this recurring on itself.
+              $decl wk $call IR.find_ty (ts, $call T.tys.nth (ws, k))
+              $decl b  $if ($call and (wk.hit, $call not ($call eq_int (wk.id, from))))
+                  ($call emit_inject (st, ts, $call concat (dest,
+                       $call concat (".u.m", $call int_to_str (k))), src, from, wk.id))
+                  ($call assign (st, $call concat (dest,
+                       $call concat (".u.m", $call int_to_str (k))), src)) }.b)))) }.r
 
 // Emit `e` into `dest`, injecting into a union first if `e` is a member of one
 // — which is where subsumption shows up, at an `$if` or `$match` arm.
@@ -638,6 +698,31 @@ $decl emit_as $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
                      $call concat (" ", $call concat (tv, ";\n")))))
         $decl d1 $call emit_expr (st, fi, e, tv, ts)
         $decl r  $call emit_inject (st, ts, dest, tv, e.ty, want) }.r
+
+// The interned index of what a `&T` points at, or -1.
+//
+// §4.2 types storage from its operand, but the *node's* type is regularly
+// wider: §4.8a makes a `$union` evaluate to its first member while carrying
+// the whole union's type, and §5.1 makes a block a subtype of a shorter prefix
+// of itself. So storage has to be sized and typed from the node and the
+// operand coerced into it — sizing it from the operand emits a `mpl_tA *` into
+// a `mpl_tB *`, which is what `cc` refused.
+$decl pointee_of $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  { $decl t $call T.unroll ($call type_at (ts, i))
+    $decl r $match t (
+        $case {$prop tag "ref"}
+          { $decl f $call IR.find_ty (ts, $call T.tval (t.inner))
+            $decl x $if f.hit f.id -1 }.x,
+        $case t -1
+      ) }.r
+
+// A declared temporary of a *given* type, where `into_tmp` gives one of the
+// expression's own type.
+$decl decl_tmp $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  { $decl tv $call fresh_tmp (st)
+    $decl d0 $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, i),
+                 $call concat (" ", $call concat (tv, ";\n")))))
+    $decl r  tv }.r
 
 $decl into_tmp $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr, $decl ts T.tys.node)
   { $decl tv $call fresh_tmp (st)
@@ -734,6 +819,67 @@ $decl callee_name $func ($decl c IR.proto_expr) $match c (
   $case c "0"
 )
 
+// §8's failing operations: `str_to_int`, `from_code` and `read_file` answer an
+// *option* — `<{tag "none"}, {tag "some", v T}>` — where every other intrinsic
+// answers a machine word or a `mpl_str`. So they cannot be a `prim_fn` entry:
+// §7.5 lays a union out as a tag and a payload, and §3.6 makes a union a *set*,
+// so which position `some` and `none` hold is a property of the call site's own
+// interned union and not of the intrinsic. The runtime does the work and says
+// whether it succeeded; the option is built here, from the members in front of
+// us.
+$decl opt_fn $func ($decl n "")
+  $if ($call eq_str (n, "str_to_int")) "mpl_str_to_int"
+  ($if ($call eq_str (n, "from_code")) "mpl_from_code"
+  ($if ($call eq_str (n, "read_file")) "mpl_read_file"
+       ""))
+
+// The position of the option's two members. `some` is the one with a field to
+// carry (§4.10 erases the `tag` prop, so it has exactly one slot); `none` is
+// the one with none.
+$decl opt_slot $func ($decl ms T.tys.node, $decl want_field P.boolean, $decl i 0) $match ms (
+  $case {$prop tag "cons"}
+    { $decl has $call not ($call T.fields.is_nil ($call block_fields (ms.head)))
+      $decl r $if ($call eq_int ($if has 1 0, $if want_field 1 0)) i
+                  ($call opt_slot (ms.tail, want_field, $call add (i, 1))) }.r,
+  $case ms -1
+)
+
+// The C type the payload is carried in — read off `some`'s one field rather
+// than assumed from the intrinsic, the way `emit_fields` reads every other
+// field's type.
+$decl opt_payload_c $func ($decl st proto_est, $decl ts T.tys.node, $decl m T.proto_ty)
+  { $decl fs $call block_fields (m)
+    $decl r  $match fs (
+        $case {$prop tag "cons"}
+          { $decl f $call IR.find_ty (ts, fs.head.ty)
+            $decl c $if f.hit ($call c_type (st, ts, f.id)) "int64_t" }.c,
+        $case fs "int64_t"
+      ) }.r
+
+$decl emit_opt_prim $func ($decl st proto_est, $decl ts T.tys.node, $decl cf "",
+                           $decl as strs.node, $decl dest "", $decl ty 0)
+  { $decl wt $call type_at (ts, ty)
+    $decl ms $call union_members (wt)
+    $decl ks $call opt_slot (ms, true, 0)
+    $decl kn $call opt_slot (ms, false, 0)
+    $decl ok $if ($call lt (-1, ks)) ($call lt (-1, kn)) false
+    $decl r $if ($call not (ok))
+        ($call eerr (st, $call concat ("the result of ", $call concat (cf,
+             " is not an option; cannot emit it"))))
+        { $decl tmp $call fresh_tmp (st)
+          $decl pc  $call opt_payload_c (st, ts, $call T.tys.nth (ms, ks))
+          $decl d0  $call say (st, $call concat ("  ", $call concat (pc,
+                        $call concat (" ", $call concat (tmp, ";\n")))))
+          $decl d1  $call say (st, $call concat ("  if (", $call concat (cf,
+                        $call concat ("(", $call concat ($call join_args (as, "", true),
+                        $call concat (", &", $call concat (tmp, ")) {\n")))))))
+          $decl d2  $call assign (st, $call concat (dest, ".tag"), $call int_to_str (ks))
+          $decl d3  $call assign (st, $call concat (dest, $call concat (".u.m",
+                        $call concat ($call int_to_str (ks), ".f0"))), tmp)
+          $decl d4  $call say (st, "  } else {\n")
+          $decl d5  $call assign (st, $call concat (dest, ".tag"), $call int_to_str (kn))
+          $decl d6  $call say (st, "  }\n") }.d6 }.r
+
 // The call shape, since narrowing does not cross a call (§5.7).
 $decl proto_call $call IR.e_call (0, $call IR.e_unit (0), IR.exprs.nil, false)
 
@@ -749,11 +895,14 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
         $case {$prop tag "prim"}
           { $decl op $call prim_op (cal.name)
             $decl cf $call prim_fn (cal.name)
+            $decl of $call opt_fn (cal.name)
             $decl r  $if ($call not ($call eq_str (op, "")))
                 ($call assign (st, dest, $call binop_expr (as, op)))
               ($if ($call not ($call eq_str (cf, "")))
                 ($call assign (st, dest, $call prim_call (cf, as)))
-                ($call eerr (st, $call concat ("cannot emit the intrinsic ", cal.name)))) }.r,
+              ($if ($call not ($call eq_str (of, "")))
+                ($call emit_opt_prim (st, ts, of, as, dest, e.ty))
+                ($call eerr (st, $call concat ("cannot emit the intrinsic ", cal.name))))) }.r,
         $case cal
           // §6a: a direct self tail call is the loop; anything else is a plain
           // call, which is correct but is not §7.7's guarantee.
@@ -1016,24 +1165,38 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
   // §4.2: the only way storage comes into existence. §7.4 makes `&T` a thin
   // pointer, so this is one allocation and one store.
   $case {$prop tag "new"}
-    { $decl v  $call IR.eval (e.init)
-      $decl vt $call c_type (st, ts, v.ty)
-      $decl tv $call into_tmp (st, fi, v, ts)
-      $decl d0 $call assign (st, dest, $call concat ("(", $call concat (vt,
-                   $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (vt, "))")))))
-      $decl r  $call say (st, $call concat ("  *", $call concat (dest,
-                   $call concat (" = ", $call concat (tv, ";\n"))))) }.r,
+    { $decl v   $call IR.eval (e.init)
+      $decl pid $call pointee_of (st, ts, e.ty)
+      // Not a reference type is not supposed to happen; falling back to the
+      // operand keeps the old behaviour rather than inventing a worse one.
+      $decl wnt $if ($call lt (-1, pid)) pid v.ty
+      $decl vt  $call c_type (st, ts, wnt)
+      $decl tv  $call decl_tmp (st, ts, wnt)
+      $decl d1  $call emit_as (st, fi, v, tv, wnt, ts)
+      $decl d0  $call assign (st, dest, $call concat ("(", $call concat (vt,
+                    $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (vt, "))")))))
+      $decl r   $call say (st, $call concat ("  *", $call concat (dest,
+                    $call concat (" = ", $call concat (tv, ";\n"))))) }.r,
   // §5.4's implicit read, which lowering made explicit.
   $case {$prop tag "deref"}
     { $decl sv $call into_tmp (st, fi, $call IR.eval (e.src), ts)
       $decl r  $call assign (st, dest, $call concat ("*", sv)) }.r,
   // §4.4: writes *through* storage, and evaluates to the written value.
   $case {$prop tag "set"}
-    { $decl tg $call into_tmp (st, fi, $call IR.eval (e.target), ts)
-      $decl vl $call into_tmp (st, fi, $call IR.eval (e.value), ts)
-      $decl d0 $call say (st, $call concat ("  *", $call concat (tg,
-                   $call concat (" = ", $call concat (vl, ";\n")))))
-      $decl r  $call assign (st, dest, vl) }.r,
+    { $decl tn  $call IR.eval (e.target)
+      $decl tg  $call into_tmp (st, fi, tn, ts)
+      $decl vn  $call IR.eval (e.value)
+      // What is written is what the storage holds, not what the value node
+      // happens to be — §5.1 and §4.8a again.
+      $decl pid $call pointee_of (st, ts, tn.ty)
+      $decl wnt $if ($call lt (-1, pid)) pid vn.ty
+      $decl vl  $call decl_tmp (st, ts, wnt)
+      $decl d1  $call emit_as (st, fi, vn, vl, wnt, ts)
+      $decl d0  $call say (st, $call concat ("  *", $call concat (tg,
+                    $call concat (" = ", $call concat (vl, ";\n")))))
+      // §4.4: `$set` evaluates to the written value, and what was written has
+      // the *storage's* type — which need not be the node's.
+      $decl r   $call emit_inject (st, ts, dest, vl, wnt, e.ty) }.r,
   // §4.7, as §7.5's discriminator test — the one construct that reads runtime
   // type information. Several `case` labels may share a body, because an arm
   // answers for every member no earlier arm claimed.

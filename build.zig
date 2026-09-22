@@ -140,6 +140,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/coerce.mpl", .want = "321\n" },
         .{ .src = "stage1/fixtures/scope.mpl", .want = "17\n" },
         .{ .src = "stage1/fixtures/alloc.mpl", .want = "41\n" },
+        .{ .src = "stage1/fixtures/option.mpl", .want = "52\n" },
+        .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole

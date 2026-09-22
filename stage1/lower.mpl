@@ -229,6 +229,13 @@ $decl lstate $func ()
     // so lowering needs none — except for a specialised template, whose types
     // it derives itself (§4.9), and a prop's value may reach its own type.
     $decl nvars  $mut $alloc 0
+    // How many times a member has been *read* while its own type was still a
+    // §5.5 placeholder. A body lowered across one of those has nodes carrying
+    // the placeholder, and a node's type is an interned index, so they cannot
+    // be revised — the body has to be lowered again once the knot is closed.
+    // Counting is what tells a member that needs it from one that does not:
+    // naming itself is only the commonest case, not the only one.
+    $decl nplace $mut $alloc 0
     // §4.14: an `$import` resolves relative to the entry file, and a module
     // sees "the root block plus what it imports, nothing else" — so both have
     // to be reachable from wherever an import is lowered.
@@ -1543,8 +1550,22 @@ $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone)
         $case ms 0
       ) }.r
 
+$decl bump_place $func ($decl st proto_lst)
+  { $decl i $call P.ival (st.nplace)
+    $decl n $set st.nplace ($call add (i, 1))
+    $decl r 0 }.r
+
+$decl places $func ($decl st proto_lst) $call P.ival (st.nplace)
+
+// Is this the type a member has before its body has given one up? Both stand
+// for "not known yet": a `$func` member starts at ⊥ and a value member at a
+// §5.5 placeholder.
+$decl unsettled $func ($decl t T.proto_ty)
+  $if ($call T.has_var (t, 0)) true ($call T.same (t, T.t_bot))
+
 $decl prop_global $func ($decl st proto_lst, $decl d proto_mdone)
   { $decl t $call T.tval (d.ty)
+    $decl bp $if ($call unsettled (t)) ($call bump_place (st)) 0
     // While the member's own body is being lowered its type is §5.5's
     // placeholder. That is the right *type* — it is what the knot is tied on —
     // but not a layout, so the node's type index is a harmless stand-in.
@@ -1579,13 +1600,28 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
     //
     // A prop that does not name itself is lowered once. Checking is a scan of
     // the body's free names, which lifting needs anyway.
-    $decl self  $call mem_str ($call free_names (pn, strs.nil), nm)
+    // Naming itself is the commonest reason the first pass is not usable, but
+    // not the only one: a *group* of members that name each other has the same
+    // problem, and the member reached first does not name itself at all. So the
+    // question asked is the real one — did this body read anything whose type
+    // was not settled yet — and `nplace` answers it for siblings and self
+    // alike. `types.mpl`'s `show` and `show_fields` are such a group, and the
+    // node the first pass left behind carried a placeholder into the backend,
+    // where `cc` refused the C it produced.
+    $decl sn    $call take_snap (st)
+    $decl q0    $call places (st)
     $decl lf0   $call lower_prop_body (st, pe, nm, pn, T.t_bot)
+    $decl again $call lt (q0, $call places (st))
+    // Everything the first pass built is discarded, exactly as a self-naming
+    // `$prop` discards it: the siblings it lowered were lowered against this
+    // member's placeholder, so their lifted bodies are wrong in the same way
+    // and have to be built again too.
+    $decl und   $if again ($call put_snap (st, sn)) 0
     $decl fty   $call fn_ty (st, lf0)
     // Completed now that the body has given up its result type. The new entry
     // goes in front of the placeholder, which `find_mdone` therefore stops at.
     $decl p1    $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
-    $decl lf    $if self ($call lower_prop_body (st, pe, nm, pn, fty)) lf0
+    $decl lf    $if again ($call lower_prop_body (st, pe, nm, pn, fty)) lf0
     $decl put   $call put_lifted (st, idx, lf)
     $decl r     $call lres ($call IR.e_global ($call intern (st, fty), idx), fty) }.r
 
@@ -1736,8 +1772,9 @@ $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                // The *type* is the placeholder, because that is what §5.5's
                // knot is tied on; the node's own type index is not, because
                // the node is discarded and a placeholder is not a layout.
-               ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)),
-                   $call T.t_var (d.head.idx))))))),
+               ($do ($call bump_place (st))
+                    ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)),
+                        $call T.t_var (d.head.idx)))))))),
         $case d ($call lower_prop_new (st, m, nm, n))
       ) }.r
 
