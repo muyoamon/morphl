@@ -17,6 +17,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const diag = @import("diag");
+const lexer = @import("lexer");
 const value = @import("value.zig");
 
 const Span = diag.Span;
@@ -30,17 +31,19 @@ const Field = value.Field;
 pub fn rootScope(arena: Allocator, rt: *Runtime) Error!*Scope {
     const scope = try Scope.init(arena, null);
 
+    // Interned, like every other name (§2.1: an intrinsic is an ordinary
+    // shadowable name). Scopes compare names by identity, so an intrinsic
+    // defined with a Zig literal would be invisible to source that names it.
     for (&table) |*b| {
-        _ = try define(scope, b.name, .{ .builtin = b });
+        _ = try define(scope, try rt.pool.intern(b.name), .{ .builtin = b });
     }
 
     // §4.15: "The root block declares `$prop err {$prop tag "err"}` and
     // `$prop none {$prop tag "none"}` so the common forms read `$try x err`
     // and `$try x none`."
-    _ = try define(scope, "err", try tagBlock(arena, "err"));
-    _ = try define(scope, "none", try tagBlock(arena, "none"));
+    _ = try define(scope, try rt.pool.intern("err"), try tagBlock(rt, "err"));
+    _ = try define(scope, try rt.pool.intern("none"), try tagBlock(rt, "none"));
 
-    _ = rt;
     return scope;
 }
 
@@ -49,17 +52,17 @@ fn define(scope: *Scope, name: []const u8, v: Value) Error!void {
     _ = scope.complete(i, v);
 }
 
-fn tagBlock(arena: Allocator, tag: []const u8) Error!Value {
-    return value.propBlock(arena, &.{.{ .name = "tag", .value = .{ .str = tag } }});
+fn tagBlock(rt: *Runtime, tag: []const u8) Error!Value {
+    return value.propBlock(rt.arena, &.{.{ .name = try rt.pool.intern("tag"), .value = try value.strVal(rt.arena, tag) }});
 }
 
 /// `{$prop tag "some" $decl v <x>}` — the shape BOOTSTRAP.md §2 gives
 /// `str_to_int`, so that `$try x none` reads naturally at the call site.
-pub fn some(arena: Allocator, v: Value) Error!Value {
+pub fn some(rt: *Runtime, v: Value) Error!Value {
     return value.makeBlock(
-        arena,
-        &.{.{ .name = "v", .value = v }},
-        &.{.{ .name = "tag", .value = .{ .str = "some" } }},
+        rt.arena,
+        &.{.{ .name = try rt.pool.intern("v"), .value = v }},
+        &.{.{ .name = try rt.pool.intern("tag"), .value = value.litStr("some") }},
     );
 }
 
@@ -74,7 +77,7 @@ fn wantInt(rt: *Runtime, args: []const Value, i: usize, name: []const u8, span: 
 
 fn wantStr(rt: *Runtime, args: []const Value, i: usize, name: []const u8, span: Span) Error![]const u8 {
     return switch (args[i]) {
-        .str => |v| v,
+        .str => |v| v.bytes,
         else => rt.fail(span, "{s} expects Str for operand {d}, found {s}", .{ name, i + 1, args[i].typeName() }),
     };
 }
@@ -155,7 +158,7 @@ fn concatFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const out = try rt.arena.alloc(u8, a.len + b.len);
     @memcpy(out[0..a.len], a);
     @memcpy(out[a.len..], b);
-    return .{ .str = out };
+    return value.strVal(rt.arena, out);
 }
 
 /// §8: `len` counts **bytes**.
@@ -183,7 +186,7 @@ fn sliceFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     if (!isBoundary(s, lo) or !isBoundary(s, hi)) {
         return rt.panic(span, "slice ({d}, {d}) splits a code point", .{ i, j });
     }
-    return .{ .str = s[lo..hi] };
+    return value.strVal(rt.arena, s[lo..hi]);
 }
 
 /// §8: "`byte (s, i)` reads one byte as `Int`."
@@ -211,23 +214,23 @@ fn byteFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
 /// See BOOTSTRAP.md §7.
 fn fromCodeFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const cp = try wantInt(rt, args, 0, "from_code", span);
-    const c: u21 = std.math.cast(u21, cp) orelse return tagBlock(rt.arena, "none");
+    const c: u21 = std.math.cast(u21, cp) orelse return tagBlock(rt, "none");
     var buf: [4]u8 = undefined;
-    const n = std.unicode.utf8Encode(c, &buf) catch return tagBlock(rt.arena, "none");
-    return some(rt.arena, .{ .str = try rt.arena.dupe(u8, buf[0..n]) });
+    const n = std.unicode.utf8Encode(c, &buf) catch return tagBlock(rt, "none");
+    return some(rt, try value.strVal(rt.arena, try rt.arena.dupe(u8, buf[0..n])));
 }
 
 fn intToStrFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const v = try wantInt(rt, args, 0, "int_to_str", span);
-    return .{ .str = try std.fmt.allocPrint(rt.arena, "{d}", .{v}) };
+    return value.strVal(rt.arena, try std.fmt.allocPrint(rt.arena, "{d}", .{v}));
 }
 
 fn strToIntFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const s = try wantStr(rt, args, 0, "str_to_int", span);
     const v = std.fmt.parseInt(i64, s, 10) catch {
-        return tagBlock(rt.arena, "none");
+        return tagBlock(rt, "none");
     };
-    return some(rt.arena, .{ .int = v });
+    return some(rt, .{ .int = v });
 }
 
 /// §8: "`$call array (n, example)` → `&mut [T]`, contiguous, bounds-checked".
@@ -264,8 +267,8 @@ fn alenFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
 
 /// §8: `panic` returns `⊥`; it aborts, and there is no catch and no unwinding.
 fn panicFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
-    const msg = switch (args[0]) {
-        .str => |s| s,
+    const msg: []const u8 = switch (args[0]) {
+        .str => |s| s.bytes,
         else => "(non-Str panic operand)",
     };
     return rt.panic(span, "{s}", .{msg});
@@ -292,10 +295,10 @@ fn readFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
         return rt.fail(span, "read_file is unavailable: no platform was configured", .{});
     const bytes = p.readFile(rt.arena, path) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.Failed => return tagBlock(rt.arena, "none"),
+        error.Failed => return tagBlock(rt, "none"),
     };
-    if (!std.unicode.utf8ValidateSlice(bytes)) return tagBlock(rt.arena, "none");
-    return some(rt.arena, .{ .str = bytes });
+    if (!std.unicode.utf8ValidateSlice(bytes)) return tagBlock(rt, "none");
+    return some(rt, try value.strVal(rt.arena, bytes));
 }
 
 /// `write_file (path, contents)` → `() | err`.
@@ -310,7 +313,7 @@ fn writeFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
         return rt.fail(span, "write_file is unavailable: no platform was configured", .{});
     p.writeFile(path, data) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.Failed => return tagBlock(rt.arena, "err"),
+        error.Failed => return tagBlock(rt, "err"),
     };
     return .unit;
 }
@@ -331,7 +334,7 @@ fn argsFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     };
     const a = try rt.arena.create(value.Array);
     a.* = .{ .elems = try rt.arena.alloc(value.Cell, list.len) };
-    for (a.elems, list) |*cell, s| cell.* = .{ .value = .{ .str = s } };
+    for (a.elems, list) |*cell, s| cell.* = .{ .value = try value.strVal(rt.arena, s) };
     return .{ .array = a };
 }
 
@@ -368,7 +371,8 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
     const arena = arena_state.allocator();
     var diags = diag.Diagnostics.init(std.testing.allocator);
     defer diags.deinit();
-    var rt: Runtime = .{ .arena = arena, .diags = &diags };
+    var pool: lexer.StringPool = .init(arena);
+    var rt: Runtime = .{ .arena = arena, .diags = &diags, .pool = &pool };
 
     const scope = try rootScope(arena, &rt);
     for ([_][]const u8{
@@ -379,13 +383,13 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
         // Shapes (§4.15) and platform.
         "err",        "none",       "print", "read_file", "write_file", "args",
     }) |name| {
-        if (scope.findLocal(name) == null) {
+        if (scope.findLocalText(name) == null) {
             std.debug.print("root block is missing '{s}'\n", .{name});
             return error.MissingIntrinsic;
         }
     }
     // §8 defines these as overload sets; the bootstrap block must not have them.
-    try std.testing.expect(scope.findLocal("eq") == null);
+    try std.testing.expect(scope.findLocalText("eq") == null);
 }
 
 // Stage 0's root block and stage 1's `root_env` must name exactly the same
@@ -409,7 +413,8 @@ test "the two root blocks name the same things" {
     const arena = arena_state.allocator();
     var diags = diag.Diagnostics.init(std.testing.allocator);
     defer diags.deinit();
-    var rt: Runtime = .{ .arena = arena, .diags = &diags };
+    var pool: lexer.StringPool = .init(arena);
+    var rt: Runtime = .{ .arena = arena, .diags = &diags, .pool = &pool };
 
     const scope = try rootScope(arena, &rt);
 
@@ -452,7 +457,7 @@ test "the two root blocks name the same things" {
     }
     var it = named.keyIterator();
     while (it.next()) |name| {
-        if (scope.findLocal(name.*) == null) {
+        if (scope.findLocalText(name.*) == null) {
             std.debug.print("stage 0's root block is missing '{s}'\n", .{name.*});
             missing += 1;
         }
@@ -465,7 +470,8 @@ test "overflow and division by zero panic" {
     defer arena_state.deinit();
     var diags = diag.Diagnostics.init(std.testing.allocator);
     defer diags.deinit();
-    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags };
+    var pool: lexer.StringPool = .init(arena_state.allocator());
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags, .pool = &pool };
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
 
     try std.testing.expectError(error.Panicked, addFn(&rt, &.{
@@ -481,12 +487,13 @@ test "slice works in bytes and refuses to split a code point" {
     defer arena_state.deinit();
     var diags = diag.Diagnostics.init(std.testing.allocator);
     defer diags.deinit();
-    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags };
+    var pool: lexer.StringPool = .init(arena_state.allocator());
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags, .pool = &pool };
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
 
-    const s: Value = .{ .str = "héllo" }; // 'é' is two bytes
+    const s: Value = value.litStr("héllo"); // 'é' is two bytes
     try std.testing.expectEqual(@as(i64, 6), (try lenFn(&rt, &.{s}, span)).int);
-    try std.testing.expectEqualStrings("h", (try sliceFn(&rt, &.{ s, .{ .int = 0 }, .{ .int = 1 } }, span)).str);
+    try std.testing.expectEqualStrings("h", (try sliceFn(&rt, &.{ s, .{ .int = 0 }, .{ .int = 1 } }, span)).str.bytes);
     try std.testing.expectError(error.Panicked, sliceFn(&rt, &.{
         s, .{ .int = 0 }, .{ .int = 2 },
     }, span));
@@ -536,18 +543,19 @@ test "from_code builds one code point and validates it" {
     defer arena_state.deinit();
     var diags = diag.Diagnostics.init(std.testing.allocator);
     defer diags.deinit();
-    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags };
+    var pool: lexer.StringPool = .init(arena_state.allocator());
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags, .pool = &pool };
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
 
     const a = try fromCodeFn(&rt, &.{.{ .int = 65 }}, span);
-    try std.testing.expectEqualStrings("A", a.block.findDecl("v").?.str);
+    try std.testing.expectEqualStrings("A", a.block.findText("v").?.str.bytes);
     const emoji = try fromCodeFn(&rt, &.{.{ .int = 0x1F600 }}, span);
-    try std.testing.expectEqualStrings("\u{1F600}", emoji.block.findDecl("v").?.str);
+    try std.testing.expectEqualStrings("\u{1F600}", emoji.block.findText("v").?.str.bytes);
 
     // A surrogate and an out-of-range value must not produce an invalid Str.
     for ([_]i64{ 0xD800, 0x110000, -1 }) |bad| {
         const r = try fromCodeFn(&rt, &.{.{ .int = bad }}, span);
-        try std.testing.expectEqualStrings("none", r.block.findProp("tag").?.str);
+        try std.testing.expectEqualStrings("none", r.block.findText("tag").?.str.bytes);
     }
 }
 
@@ -562,22 +570,24 @@ test "read_file returns option Str and refuses non-UTF-8 bytes (3.1, 4.16)" {
         .{ .path = "good", .bytes = "hi" },
         .{ .path = "binary", .bytes = "\xff\xfe" },
     } };
+    var pool: lexer.StringPool = .init(arena_state.allocator());
     var rt: Runtime = .{
         .arena = arena_state.allocator(),
         .diags = &diags,
+        .pool = &pool,
         .platform = host.platform(),
     };
 
-    const ok = try readFileFn(&rt, &.{.{ .str = "good" }}, span);
-    try std.testing.expectEqualStrings("some", ok.block.findProp("tag").?.str);
-    try std.testing.expectEqualStrings("hi", ok.block.findDecl("v").?.str);
+    const ok = try readFileFn(&rt, &.{value.litStr("good")}, span);
+    try std.testing.expectEqualStrings("some", ok.block.findText("tag").?.str.bytes);
+    try std.testing.expectEqualStrings("hi", ok.block.findText("v").?.str.bytes);
 
     // Missing file and invalid UTF-8 are both `none`, not errors: a Str is
     // always valid UTF-8, so bytes only become one through a validating read.
-    const missing = try readFileFn(&rt, &.{.{ .str = "nope" }}, span);
-    try std.testing.expectEqualStrings("none", missing.block.findProp("tag").?.str);
-    const binary = try readFileFn(&rt, &.{.{ .str = "binary" }}, span);
-    try std.testing.expectEqualStrings("none", binary.block.findProp("tag").?.str);
+    const missing = try readFileFn(&rt, &.{value.litStr("nope")}, span);
+    try std.testing.expectEqualStrings("none", missing.block.findText("tag").?.str.bytes);
+    const binary = try readFileFn(&rt, &.{value.litStr("binary")}, span);
+    try std.testing.expectEqualStrings("none", binary.block.findText("tag").?.str.bytes);
 }
 
 test "write_file returns unit or err, and args is an array of Str" {
@@ -593,26 +603,28 @@ test "write_file returns unit or err, and args is an array of Str" {
         .argv = &.{ "a", "bb" },
         .written = &sink,
     };
+    var pool: lexer.StringPool = .init(arena_state.allocator());
     var rt: Runtime = .{
         .arena = arena_state.allocator(),
         .diags = &diags,
+        .pool = &pool,
         .platform = host.platform(),
     };
 
-    const wrote = try writeFileFn(&rt, &.{ .{ .str = "out" }, .{ .str = "body" } }, span);
+    const wrote = try writeFileFn(&rt, &.{ value.litStr("out"), value.litStr("body") }, span);
     try std.testing.expect(wrote == .unit);
     try std.testing.expectEqualStrings("out", sink.?.path);
     try std.testing.expectEqualStrings("body", sink.?.bytes);
 
     const failing: FakePlatform = .{ .files = &.{}, .written = &sink, .fail_writes = true };
     rt.platform = failing.platform();
-    const failed = try writeFileFn(&rt, &.{ .{ .str = "out" }, .{ .str = "body" } }, span);
-    try std.testing.expectEqualStrings("err", failed.block.findProp("tag").?.str);
+    const failed = try writeFileFn(&rt, &.{ value.litStr("out"), value.litStr("body") }, span);
+    try std.testing.expectEqualStrings("err", failed.block.findText("tag").?.str.bytes);
 
     rt.platform = host.platform();
     const argv = try argsFn(&rt, &.{}, span);
     try std.testing.expectEqual(@as(usize, 2), argv.array.elems.len);
-    try std.testing.expectEqualStrings("bb", argv.array.elems[1].value.str);
+    try std.testing.expectEqualStrings("bb", argv.array.elems[1].value.str.bytes);
 }
 
 test "platform intrinsics decline when no host is configured" {
@@ -620,10 +632,11 @@ test "platform intrinsics decline when no host is configured" {
     defer arena_state.deinit();
     var diags = diag.Diagnostics.init(std.testing.allocator);
     defer diags.deinit();
-    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags };
+    var pool: lexer.StringPool = .init(arena_state.allocator());
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags, .pool = &pool };
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
 
-    try std.testing.expectError(error.Halt, readFileFn(&rt, &.{.{ .str = "x" }}, span));
+    try std.testing.expectError(error.Halt, readFileFn(&rt, &.{value.litStr("x")}, span));
     try std.testing.expectError(error.Halt, argsFn(&rt, &.{}, span));
 }
 
@@ -632,13 +645,14 @@ test "str_to_int returns the option shape that $try none expects" {
     defer arena_state.deinit();
     var diags = diag.Diagnostics.init(std.testing.allocator);
     defer diags.deinit();
-    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags };
+    var pool: lexer.StringPool = .init(arena_state.allocator());
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags, .pool = &pool };
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
 
-    const ok = try strToIntFn(&rt, &.{.{ .str = "42" }}, span);
-    try std.testing.expectEqualStrings("some", ok.block.findProp("tag").?.str);
-    try std.testing.expectEqual(@as(i64, 42), ok.block.findDecl("v").?.int);
+    const ok = try strToIntFn(&rt, &.{value.litStr("42")}, span);
+    try std.testing.expectEqualStrings("some", ok.block.findText("tag").?.str.bytes);
+    try std.testing.expectEqual(@as(i64, 42), ok.block.findText("v").?.int);
 
-    const bad = try strToIntFn(&rt, &.{.{ .str = "4x" }}, span);
-    try std.testing.expectEqualStrings("none", bad.block.findProp("tag").?.str);
+    const bad = try strToIntFn(&rt, &.{value.litStr("4x")}, span);
+    try std.testing.expectEqualStrings("none", bad.block.findText("tag").?.str.bytes);
 }

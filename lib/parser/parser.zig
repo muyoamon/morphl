@@ -444,7 +444,8 @@ const Harness = struct {
             .file = .{ .exprs = &.{} },
         };
         const arena = h.arena_state.allocator();
-        const tokens = try lexer.tokenize(testing.allocator, arena, src, &h.diags);
+        var pool: lexer.StringPool = .init(arena);
+        const tokens = try lexer.tokenize(testing.allocator, arena, src, &h.diags, &pool);
         defer testing.allocator.free(tokens);
         h.file = try parseFile(arena, tokens, &h.diags);
         return h;

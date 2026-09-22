@@ -119,8 +119,26 @@ $decl show_cv $func ($decl c proto_cv) $match c (
   $case c "?"
 )
 
-$decl cv_eq $func ($decl a proto_cv, $decl b proto_cv)
-  $call eq_str ($call show_cv (a), $call show_cv (b))
+// Compared structurally, not by rendering. This used to be
+// `eq_str (show_cv a, show_cv b)`, which built two strings for every answer —
+// and `same_props` calls it for every prop of every block comparison, so it
+// showed up as 5.6M calls and 11.2M allocations when the whole compiler was
+// lowered. Same antipattern as `same`'s old leaf case.
+$decl cv_eq $func ($decl a proto_cv, $decl b proto_cv) $match a (
+  $case {$prop tag "cint"}
+    ($match b ($case {$prop tag "cint"} ($call eq_int (a.v, b.v)), $case b false)),
+  $case {$prop tag "cstr"}
+    ($match b ($case {$prop tag "cstr"} ($call eq_str (a.v, b.v)), $case b false)),
+  $case {$prop tag "cbool"}
+    ($match b ($case {$prop tag "cbool"} ($if a.v b.v ($call not (b.v))), $case b false)),
+  $case {$prop tag "cunit"}
+    ($match b ($case {$prop tag "cunit"} true, $case b false)),
+  // §4.10: a function-valued prop is an identity, and the identity is what
+  // tells two of them apart.
+  $case {$prop tag "copaque"}
+    ($match b ($case {$prop tag "copaque"} ($call eq_int (a.id, b.id)), $case b false)),
+  $case a false
+)
 
 // -------------------------------------------------------------------- types
 //

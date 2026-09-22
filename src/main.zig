@@ -303,7 +303,11 @@ pub fn main(init: process.Init.Minimal) !void {
     var diags: diag.Diagnostics = .init(gpa);
     defer diags.deinit();
 
-    const tokens = try lexer.tokenize(gpa, arena, source, &diags);
+    // One pool for the whole run: §4.14 makes an imported file's names the
+    // same names, so they have to be interned together.
+    var pool: lexer.StringPool = .init(arena);
+
+    const tokens = try lexer.tokenize(gpa, arena, source, &diags, &pool);
     defer gpa.free(tokens);
 
     if (dump_tokens) {
@@ -336,6 +340,7 @@ pub fn main(init: process.Init.Minimal) !void {
                     .file = parsed,
                     .opts = .{
                         .out = out,
+                        .pool = &pool,
                         .loader = fl.loader(),
                         .platform = host.platform(),
                         // Leaves the guard room to report rather than let the

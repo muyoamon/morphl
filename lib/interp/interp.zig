@@ -66,6 +66,15 @@ const max_specialize_depth = 64;
 /// `shapeMatches` is what keeps the common case cheap regardless.
 const max_shape_depth = 256;
 
+/// A `shape_cache` entry: the shape, whether its props may be reused, and —
+/// when they can — the forced `PropSlot` array the evaluating scope borrows
+/// instead of building one of its own.
+const ShapeEntry = struct {
+    shape: *value.Shape,
+    props_shared: bool,
+    const_props: []Scope.PropSlot = &.{},
+};
+
 pub const Interp = struct {
     arena: Allocator,
     rt: value.Runtime,
@@ -74,6 +83,28 @@ pub const Interp = struct {
 
     /// `$import` is load-once per resolved key (§4.14).
     modules: std.StringHashMapUnmanaged(Module) = .empty,
+
+    /// One `Shape` per block *literal*, shared by every value built from it.
+    ///
+    /// A block value's field names are fixed by its source: §7.2 makes source
+    /// order the layout and §5.1 makes that order part of the type, so two
+    /// values of one literal cannot differ in them. Props are fixed too when
+    /// every initializer is *written* as a literal — §1.1 keeps one to a
+    /// literal, a prop-only block, or a `$func`/`$template`, and a cons cell's
+    /// `{$prop tag "cons"}` is the first case. Measured on `types.mpl`: 1,734,469 of
+    /// the 1,734,504 blocks that have props have all-literal props, and names
+    /// plus props were 82% of all block memory.
+    ///
+    /// Keyed on the item slice's address, which identifies the literal: two
+    /// evaluations of one block node share it, two different nodes never do.
+    /// A literal whose props are *not* shareable — one holding a `$func`,
+    /// which closes over the evaluating scope, or a name, which is that
+    /// scope's value — still shares the names: the entry records which case it
+    /// is and the odd one out gets a fresh `Shape` pointing at the cached name
+    /// array.
+    shape_cache: std.AutoHashMapUnmanaged([*]const Node, ShapeEntry) = .empty,
+    /// One `Str` box per `Str`/`Float` literal node — see `literalStr`.
+    str_box: std.AutoHashMapUnmanaged(*const Node, *value.Str) = .empty,
     call_depth: u32 = 0,
     /// Stack position at `init`, for the headroom check in `callFunc`.
     stack_base: usize = 0,
@@ -128,11 +159,33 @@ pub const Interp = struct {
         cell_n: u64 = 0,
         blk_bytes: u64 = 0,
         blk_n: u64 = 0,
+        /// Where every allocated byte went, by construct — the breakdown the
+        /// per-function profile cannot give, since one function allocates
+        /// several kinds of thing. This is what identified block values as
+        /// 75% of stage 0's memory.
+        bucket: Bucket = .other,
+        buckets: [@typeInfo(Bucket).@"enum".fields.len]u64 = @splat(0),
+
+        pub const Bucket = enum {
+            other,
+            block,
+            shape,
+            props,
+            cell,
+            group,
+            func,
+            template,
+            scope,
+            slots,
+            args,
+            builtin,
+        };
 
         pub const Row = struct { bytes: u64 = 0, calls: u64 = 0, allocs: u64 = 0 };
 
         fn note(self: *Stats, len: usize) void {
             self.total += len;
+            self.buckets[@intFromEnum(self.bucket)] += len;
             const e = self.rows.getOrPut(self.backing, self.current) catch return;
             if (!e.found_existing) e.value_ptr.* = .{};
             e.value_ptr.bytes += len;
@@ -204,6 +257,16 @@ pub const Interp = struct {
                 @as(f64, @floatFromInt(self.cell_bytes)) / (1024.0 * 1024.0), self.cell_n,
                 @as(f64, @floatFromInt(self.blk_bytes)) / (1024.0 * 1024.0), self.blk_n,
             });
+            for (std.enums.values(Bucket)) |b| {
+                const n = self.buckets[@intFromEnum(b)];
+                if (n == 0) continue;
+                try w.print("  {s:<10} {d:>8.1} MB  {d:>5.1}%\n", .{
+                    @tagName(b),
+                    @as(f64, @floatFromInt(n)) / (1024.0 * 1024.0),
+                    100.0 * @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(self.total)),
+                });
+            }
+            try w.print("\n", .{});
             try w.print("{s:>9}  {s:>7}  {s:>12}  {s:>12}  {s:>8}  {s}\n", .{ "bytes", "share", "calls", "allocs", "avg", "function" });
             var shown: usize = 0;
             for (list.items) |row| {
@@ -239,11 +302,24 @@ pub const Interp = struct {
         stack_bytes: usize = default_stack_bytes,
         /// Collect an allocation profile into this.
         stats: ?*Stats = null,
+        /// The identifier pool the source was lexed with (§2.1). Names are
+        /// compared by identity, so the root block has to be interned in the
+        /// *same* pool as the program — a second pool would make every
+        /// intrinsic invisible, since nothing would ever be the same slice.
+        ///
+        /// Absent means "make one": a caller that has not lexed yet can take
+        /// it back off `rt.pool` and lex with that.
+        pool: ?*lexer.StringPool = null,
     };
 
     pub fn init(arena_in: Allocator, diags: *Diagnostics, opts: Options) Error!Interp {
         var probe: u8 = undefined;
         const arena = if (opts.stats) |st| st.allocator() else arena_in;
+        const pool = opts.pool orelse blk: {
+            const p = try arena.create(lexer.StringPool);
+            p.* = .init(arena);
+            break :blk p;
+        };
         var self: Interp = .{
             .arena = arena,
             .stats = opts.stats,
@@ -252,6 +328,7 @@ pub const Interp = struct {
                 .diags = diags,
                 .out = opts.out,
                 .platform = opts.platform,
+                .pool = pool,
             },
             .root = undefined,
             .loader = opts.loader,
@@ -294,6 +371,8 @@ pub const Interp = struct {
         if (self.stats) |st| {
             if (self.scope_pool.items.len == 0) st.scopes_fresh += 1 else st.scopes_pooled += 1;
         }
+        const b = self.bkt(.scope);
+        defer self.unbkt(b);
         if (self.scope_pool.pop()) |s| {
             s.parent = parent;
             s.props = &.{};
@@ -305,6 +384,21 @@ pub const Interp = struct {
         return Scope.initCapacity(self.arena, parent, slots);
     }
 
+    /// Charge the next allocations to `b`, returning the bucket to restore. Nested allocations under one site land in that site's bucket,
+    /// which is what makes the breakdown add up to the total.
+    inline fn bkt(self: *Interp, b: Stats.Bucket) Stats.Bucket {
+        if (self.stats) |st| {
+            const old = st.bucket;
+            st.bucket = b;
+            return old;
+        }
+        return .other;
+    }
+
+    inline fn unbkt(self: *Interp, old: Stats.Bucket) void {
+        if (self.stats) |st| st.bucket = old;
+    }
+
     /// Reserve `n` argument slots. Falls back to the arena if the scratch is
     /// exhausted, so depth is never a correctness limit.
     fn pushArgs(self: *Interp, n: usize) Error![]Value {
@@ -313,6 +407,8 @@ pub const Interp = struct {
             self.arg_top += n;
             return slice;
         }
+        const b = self.bkt(.args);
+        defer self.unbkt(b);
         return self.arena.alloc(Value, n);
     }
 
@@ -397,6 +493,9 @@ pub const Interp = struct {
 
     /// Evaluate a block body in a fresh scope and return the block value.
     fn evalBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope, span: Span) Error!Value {
+        const cached = self.shape_cache.get(exprs.ptr);
+        const preforced: []Scope.PropSlot = if (cached) |c| c.const_props else &.{};
+
         var slots: usize = 0;
         for (exprs) |*e| {
             if (e.isForm(.decl) or e.isForm(.fwd)) slots += 1;
@@ -417,7 +516,11 @@ pub const Interp = struct {
             try self.acquireScope(parent, slots)
         else
             try Scope.initCapacity(self.arena, parent, slots);
-        try self.collectProps(exprs, scope);
+        // A literal whose props are all constants had its slots forced once,
+        // on the first evaluation; borrowing them skips `collectProps` and the
+        // `prop_env` it allocates. Every slot is `.done`, so nothing is
+        // evaluated against that stale environment again.
+        if (preforced.len != 0) scope.props = preforced else try self.collectProps(exprs, scope);
 
         for (exprs) |*e| try self.evalBlockItem(e, scope);
 
@@ -433,25 +536,93 @@ pub const Interp = struct {
             }
         }
 
-        const decls = try self.arena.alloc(Field, scope.decls.items.len);
-        for (scope.decls.items, decls) |slot, *f| {
-            f.* = .{ .name = slot.name, .value = slot.value.? };
-        }
-        const props = try self.arena.alloc(Field, scope.props.len);
-        for (scope.props, props) |p, *f| f.* = .{ .name = p.name, .value = p.value };
+        const shape = try self.sharedShape(exprs, scope, cached);
+        const bb = self.bkt(.block);
+        const values = try self.arena.alloc(Value, scope.decls.items.len);
+        for (scope.decls.items, values) |slot, *v| v.* = slot.value.?;
 
         _ = span;
         if (self.stats) |st| {
             st.blk_n += 1;
-            st.blk_bytes += @sizeOf(value.Block) + decls.len * @sizeOf(Field) + props.len * @sizeOf(Field);
+            st.blk_bytes += @sizeOf(value.Block) + values.len * @sizeOf(Value);
         }
         const b = try self.arena.create(value.Block);
-        b.* = .{ .decls = decls, .props = props };
+        b.* = .{ .shape = shape, .values = values.ptr };
+        self.unbkt(bb);
         if (recyclable) self.releaseScope(scope);
         return .{ .block = b };
     }
 
+    /// The `Shape` for this block value, shared with every other value built
+    /// from the same literal.
+    ///
+    /// The names always come from the cache. The props do too when every prop
+    /// initializer is written as a literal; anything else — a prop-only block,
+    /// a `$func`, a name — is built fresh per evaluation, because a `$func`
+    /// closes over *this* scope and a name is *this* scope's value.
+    fn sharedShape(self: *Interp, exprs: []const Node, scope: *Scope, cached: ?ShapeEntry) Error!*const value.Shape {
+        const b = self.bkt(.shape);
+        defer self.unbkt(b);
+        if (cached) |hit| {
+            if (hit.props_shared) return hit.shape;
+            return self.freshShape(hit.shape.names, scope);
+        }
+
+        const shareable = constProps(exprs);
+
+        const names = try self.arena.alloc([]const u8, scope.decls.items.len);
+        for (scope.decls.items, names) |slot, *n| n.* = slot.name;
+        if (self.stats) |st| st.blk_bytes += names.len * @sizeOf([]const u8) + @sizeOf(value.Shape);
+
+        const shape = try self.arena.create(value.Shape);
+        shape.* = .{ .names = names, .props = try self.propFields(scope) };
+        try self.shape_cache.put(self.arena, exprs.ptr, .{
+            .shape = shape,
+            .props_shared = shareable,
+            // Every initializer is a literal node, so the forced slots are
+            // the same for every evaluation and can be borrowed wholesale.
+            .const_props = if (shareable) scope.props else &.{},
+        });
+        return shape;
+    }
+
+    /// Is every `$prop` initializer in this block a *literal node*?
+    ///
+    /// The question has to be asked of the source, not of the values: §4.10
+    /// lets an initializer name an enclosing scope, so `$prop p x` evaluates
+    /// to an `Int` every time and to a *different* `Int` each time. Sharing on
+    /// "the values came out as literals" would hand the second evaluation the
+    /// first one's props, with no diagnostic. A literal node cannot vary.
+    fn constProps(exprs: []const Node) bool {
+        for (exprs) |*e| {
+            if (!e.isForm(.prop)) continue;
+            if (!isLiteral(&e.data.form.operands[1])) return false;
+        }
+        return true;
+    }
+
+    /// A shape of its own for a literal whose props cannot be shared, reusing
+    /// the cached names.
+    fn freshShape(self: *Interp, names: []const []const u8, scope: *Scope) Error!*const value.Shape {
+        const shape = try self.arena.create(value.Shape);
+        shape.* = .{ .names = names, .props = try self.propFields(scope) };
+        if (self.stats) |st| st.blk_bytes += @sizeOf(value.Shape);
+        return shape;
+    }
+
+    fn propFields(self: *Interp, scope: *Scope) Error![]Field {
+        const b = self.bkt(.props);
+        defer self.unbkt(b);
+        if (scope.props.len == 0) return &.{};
+        const props = try self.arena.alloc(Field, scope.props.len);
+        for (scope.props, props) |p, *f| f.* = .{ .name = p.name, .value = p.value };
+        if (self.stats) |st| st.blk_bytes += props.len * @sizeOf(Field);
+        return props;
+    }
+
     fn collectProps(self: *Interp, exprs: []const Node, scope: *Scope) Error!void {
+        const b = self.bkt(.props);
+        defer self.unbkt(b);
         var n: usize = 0;
         for (exprs) |*e| if (e.isForm(.prop)) {
             n += 1;
@@ -493,6 +664,8 @@ pub const Interp = struct {
                     return;
                 },
                 .decl => {
+                    const b = self.bkt(.slots);
+                    defer self.unbkt(b);
                     try self.declare(&f.operands[0], &f.operands[1], scope, e.span);
                     return;
                 },
@@ -530,21 +703,49 @@ pub const Interp = struct {
 
     // -------------------------------------------------------- expressions
 
+    /// The boxed value of a `Str` or `Float` literal, made once per node.
+    ///
+    /// §3.1's two words no longer fit in a `Value`, so a literal needs a box —
+    /// and a literal in a loop is evaluated over and over, so allocating one
+    /// each time would trade the word this saves for far more. Keyed on the
+    /// node, which is exactly one box per literal in the program.
+    fn literalStr(self: *Interp, node: *const Node) Error!Value {
+        if (self.str_box.get(node)) |hit| {
+            return switch (node.data) {
+                .float => .{ .float = hit },
+                else => .{ .str = hit },
+            };
+        }
+        const bytes = switch (node.data) {
+            .float => |t| t,
+            .str => |t| t,
+            else => unreachable,
+        };
+        const box = try self.arena.create(value.Str);
+        box.* = .{ .bytes = bytes };
+        try self.str_box.put(self.arena, node, box);
+        return switch (node.data) {
+            .float => .{ .float = box },
+            else => .{ .str = box },
+        };
+    }
+
     /// Evaluate in a **non-tail** position: this recurses.
     pub fn eval(self: *Interp, node: *const Node, scope: *Scope) Error!Value {
         switch (node.data) {
             .int => |v| return .{ .int = v },
-            .float => |t| return .{ .float = t },
-            .str => |s| return .{ .str = s },
+            .float, .str => return self.literalStr(node),
             .bool_lit => |b| return .{ .bool = b },
             .unit => return .unit,
             .name => |n| return self.lookup(scope, n, node.span),
             .group => |elems| {
                 // §5.4: group elements are a position where nothing expects a
                 // value, so a reference stays a reference here.
+                const gb = self.bkt(.group);
+                defer self.unbkt(gb);
                 const vals = try self.arena.alloc(Value, elems.len);
                 for (elems, vals) |*el, *slot| slot.* = try self.eval(el, scope);
-                return .{ .group = vals };
+                return value.groupVal(self.arena, vals);
             },
             .block => |exprs| return self.evalBlockExprs(exprs, scope, node.span),
             .proj_name => |p| {
@@ -582,11 +783,13 @@ pub const Interp = struct {
                     // figure, but the right order — stage 0's `Cell` holds a
                     // pointer to a separately allocated block instead.
                     st.cell_bytes += switch (v) {
-                        .block => |b| 8 + b.decls.len * 8,
-                        .group => |g| g.len * 8,
+                        .block => |b| 8 + b.names().len * 8,
+                        .group => |g| g.elems.len * 8,
                         else => 8,
                     };
                 }
+                const cb = self.bkt(.cell);
+                defer self.unbkt(cb);
                 break :blk value.newCell(self.arena, v);
             },
 
@@ -685,10 +888,10 @@ pub const Interp = struct {
 
     fn projectIndex(self: *Interp, target: Value, index: u32, span: Span) Error!Value {
         return switch (target) {
-            .group => |elems| if (index >= 1 and index <= elems.len)
-                elems[index - 1]
+            .group => |g| if (index >= 1 and index <= g.elems.len)
+                g.elems[index - 1]
             else
-                self.rt.fail(span, "group index .{d} is out of range for a group of {d}", .{ index, elems.len }),
+                self.rt.fail(span, "group index .{d} is out of range for a group of {d}", .{ index, g.elems.len }),
             else => self.rt.fail(span, "cannot index .{d} into {s}", .{ index, target.typeName() }),
         };
     }
@@ -696,6 +899,8 @@ pub const Interp = struct {
     // ----------------------------------------------------------- functions
 
     fn makeFunc(self: *Interp, node: *const Node, scope: *Scope) Error!Value {
+        const b = self.bkt(.func);
+        defer self.unbkt(b);
         const ops = node.data.form.operands;
         const params_node = &ops[0];
 
@@ -755,6 +960,8 @@ pub const Interp = struct {
             .group => |elems| {
                 // Evaluate first, then reserve: an argument may itself be a
                 // call, and its own scratch must sit above ours, not overlap it.
+                const ab = self.bkt(.args);
+                defer self.unbkt(ab);
                 var tmp: [8]Value = undefined;
                 const staged: []Value = if (elems.len <= tmp.len)
                     tmp[0..elems.len]
@@ -778,6 +985,8 @@ pub const Interp = struct {
         switch (callee) {
             .func => |f| return self.callFunc(f, args, span),
             .builtin => |b| {
+                const bb = self.bkt(.builtin);
+                defer self.unbkt(bb);
                 if (b.arity) |n| {
                     if (args.len != n) {
                         return self.rt.fail(span, "{s} takes {d} argument{s}, found {d}", .{
@@ -1054,7 +1263,7 @@ pub const Interp = struct {
                     for (exprs) |*e| {
                         const f = e.data.form;
                         const got = blk.findProp(f.operands[0].data.name) orelse return false;
-                        if (!value.equal(literalOf(&f.operands[1]).?, got, max_shape_depth)) return false;
+                        if (!literalEquals(&f.operands[1], got)) return false;
                     }
                     return true;
                 }
@@ -1074,22 +1283,34 @@ pub const Interp = struct {
         }
     }
 
-    /// A pattern prop whose value is written as a literal, so testing it needs
-    /// no evaluation and therefore no scope.
-    fn literalOf(n: *const Node) ?Value {
+    /// Is this pattern prop written as a literal? Testing one then needs no
+    /// evaluation and therefore no scope.
+    fn isLiteral(n: *const Node) bool {
         return switch (n.data) {
-            .int => |v| .{ .int = v },
-            .str => |v| .{ .str = v },
-            .float => |v| .{ .float = v },
-            .bool_lit => |v| .{ .bool = v },
-            .unit => .unit,
-            else => null,
+            .int, .str, .float, .bool_lit, .unit => true,
+            else => false,
+        };
+    }
+
+    /// Does `got` equal the literal written at `n`?
+    ///
+    /// Compared against the *node*, so nothing is built — which matters now
+    /// that §3.1's two words no longer fit in a `Value` and a `Str` would
+    /// otherwise need a box just to be thrown away.
+    fn literalEquals(n: *const Node, got: Value) bool {
+        return switch (n.data) {
+            .int => |v| got == .int and got.int == v,
+            .str => |v| got == .str and std.mem.eql(u8, got.str.bytes, v),
+            .float => |v| got == .float and std.mem.eql(u8, got.float.bytes, v),
+            .bool_lit => |v| got == .bool and got.bool == v,
+            .unit => got == .unit,
+            else => false,
         };
     }
 
     fn allLiteralProps(exprs: []const Node) bool {
         for (exprs) |*e| {
-            if (literalOf(&e.data.form.operands[1]) == null) return false;
+            if (!isLiteral(&e.data.form.operands[1])) return false;
         }
         return true;
     }
@@ -1106,7 +1327,7 @@ pub const Interp = struct {
         // importantly, independent of how deeply the value nests.
         switch (pat) {
             .block => |p| if (val == .block and val.block == p) return true,
-            .group => |p| if (val == .group and val.group.ptr == p.ptr and val.group.len == p.len) return true,
+            .group => |p| if (val == .group and val.group == p) return true,
             .ref => |p| if (val == .ref and val.ref == p) return true,
             .array => |p| if (val == .array and val.array == p) return true,
             else => {},
@@ -1122,23 +1343,24 @@ pub const Interp = struct {
                 const s = val.block;
                 // §5.1: "for every prop of `T`, `S` has the same prop with the
                 // **same value**". This is the tag test.
-                for (p.props) |pf| {
+                for (p.props()) |pf| {
                     const sf = s.findProp(pf.name) orelse break :blk false;
                     if (!value.equal(pf.value, sf, depth - 1)) break :blk false;
                 }
                 // §5.1: the pattern's fields must be an ordered *prefix* of the
                 // value's — same names at the same positions. Layout is the
                 // type, so nothing is matched out of order.
-                if (p.decls.len > s.decls.len) break :blk false;
-                for (p.decls, s.decls[0..p.decls.len]) |pf, sf| {
-                    if (!std.mem.eql(u8, pf.name, sf.name)) break :blk false;
-                    if (!shapeMatches(pf.value, sf.value, depth - 1)) break :blk false;
+                if (p.names().len > s.names().len) break :blk false;
+                const n = p.names().len;
+                for (p.names(), p.fields(), s.names()[0..n], s.fields()[0..n]) |pn, pv, sn, sv| {
+                    if (!value.Scope.nameEql(pn, sn)) break :blk false;
+                    if (!shapeMatches(pv, sv, depth - 1)) break :blk false;
                 }
                 break :blk true;
             },
             .group => |p| blk: {
-                if (val != .group or val.group.len != p.len) break :blk false;
-                for (p, val.group) |pe, se| {
+                if (val != .group or val.group.elems.len != p.elems.len) break :blk false;
+                for (p.elems, val.group.elems) |pe, se| {
                     if (!shapeMatches(pe, se, depth - 1)) break :blk false;
                 }
                 break :blk true;
@@ -1184,6 +1406,8 @@ pub const Interp = struct {
             else => return self.rt.fail(names_node.span, "$template expects a name or a group of names", .{}),
         };
         markCaptured(scope);
+        const tb = self.bkt(.template);
+        defer self.unbkt(tb);
         const t = try self.arena.create(Template);
         t.* = .{ .generics = generics, .body = &ops[1], .scope = scope };
         return .{ .template = t };
@@ -1265,7 +1489,10 @@ pub const Interp = struct {
         self.rt.diags.current_file = resolved.key;
         defer self.rt.diags.current_file = outer_file;
 
-        const tokens = try lexer.tokenize(self.arena, self.arena, resolved.source, self.rt.diags);
+        // The *same* pool as the importing file: §4.14 makes all imports of one
+        // resolved file yield one module, and names only match across files if
+        // they were interned together.
+        const tokens = try lexer.tokenize(self.arena, self.arena, resolved.source, self.rt.diags, self.rt.pool);
         const file = try parser.parseFile(self.arena, tokens, self.rt.diags);
         if (self.rt.diags.any()) return error.Halt;
 
@@ -1295,7 +1522,9 @@ const Harness = struct {
         };
         const arena = h.arena_state.allocator();
         h.interp = try Interp.init(arena, &h.diags, opts);
-        const tokens = try lexer.tokenize(arena, arena, src, &h.diags);
+        // The interpreter's own pool, or the root block's names would be
+        // interned somewhere this source cannot see.
+        const tokens = try lexer.tokenize(arena, arena, src, &h.diags, h.interp.rt.pool);
         const file = try parser.parseFile(arena, tokens, &h.diags);
         if (h.diags.any()) {
             for (h.diags.items.items) |d| std.debug.print("syntax: {d}:{d}: {s}\n", .{ d.span.line, d.span.col, d.msg });
@@ -1315,7 +1544,7 @@ const Harness = struct {
 fn evalField(src: []const u8, field: []const u8) !Value {
     var h = try Harness.run(src, .{});
     defer h.deinit();
-    const v = h.result.block.find(field) orelse return error.NoSuchField;
+    const v = h.result.block.findText(field) orelse return error.NoSuchField;
     // Copy out scalars only; the arena dies with the harness.
     return switch (v.deref()) {
         .int, .bool, .unit => v.deref(),
@@ -1346,7 +1575,7 @@ fn expectFails(src: []const u8, expected_substring: []const u8) !void {
     defer h.deinit();
     const arena = h.arena_state.allocator();
     h.interp = try Interp.init(arena, &h.diags, .{});
-    const tokens = try lexer.tokenize(arena, arena, src, &h.diags);
+    const tokens = try lexer.tokenize(arena, arena, src, &h.diags, h.interp.rt.pool);
     const file = try parser.parseFile(arena, tokens, &h.diags);
     _ = h.interp.runFile(file) catch {};
     for (h.diags.items.items) |d| {
@@ -1472,10 +1701,10 @@ test "props are visible throughout their block regardless of order (4.10)" {
 test "props have no layout but are still projectable (4.10)" {
     var h = try Harness.run("$decl b { $prop p 1  $decl d 2 }", .{});
     defer h.deinit();
-    const b = h.result.block.find("b").?.block;
-    try testing.expectEqual(@as(usize, 1), b.decls.len); // only `d` takes a slot
-    try testing.expectEqual(@as(usize, 1), b.props.len);
-    try testing.expectEqual(@as(i64, 1), b.findProp("p").?.int);
+    const b = h.result.block.findText("b").?.block;
+    try testing.expectEqual(@as(usize, 1), b.names().len); // only `d` takes a slot
+    try testing.expectEqual(@as(usize, 1), b.props().len);
+    try testing.expectEqual(@as(i64, 1), b.findText("p").?.int);
 }
 
 test "a prop initializer may not read an ordered sibling (4.10)" {
@@ -1514,8 +1743,8 @@ test "$fwd keeps the layout position of the $fwd, not the $decl (4.11)" {
     , .{});
     defer h.deinit();
     const blk = h.result.block;
-    try testing.expectEqualStrings("b", blk.decls[0].name);
-    try testing.expectEqualStrings("a", blk.decls[1].name);
+    try testing.expectEqualStrings("b", blk.names()[0]);
+    try testing.expectEqualStrings("a", blk.names()[1]);
 }
 
 test "an uncompleted $fwd is an error (4.11)" {
@@ -1571,8 +1800,8 @@ test "$try returns from the nearest enclosing $func (4.15)" {
     // On the `none` branch the function returns the `none` block itself.
     var h = try Harness.run(src, .{});
     defer h.deinit();
-    const bad = h.result.block.find("bad").?.deref();
-    try testing.expectEqualStrings("none", bad.block.findProp("tag").?.str);
+    const bad = h.result.block.findText("bad").?.deref();
+    try testing.expectEqualStrings("none", bad.block.findText("tag").?.str.bytes);
 }
 
 test "$try skips blocks and projections on its way out (4.15)" {
@@ -1625,6 +1854,30 @@ test "closures capture by copy of an immutable binding, but storage still aliase
         \\$decl ignored $set n 9
         \\$decl r $call get ()
     , "r", 9);
+}
+
+test "a prop initialized from an enclosing scope is not shared between evaluations (4.10)" {
+    // Two values of one block literal share a `Shape`, which carries the
+    // props — but only when every initializer is written as a *literal*.
+    // §4.10 lets one name an enclosing scope, and `tag` here evaluates to an
+    // `Int` both times and to a different `Int` each time, so deciding the
+    // sharing from the values rather than the source would hand the second
+    // block the first block's prop, silently.
+    try expectInt(
+        \\$decl box $func ($decl x 0) { $prop tag x }
+        \\$decl a $call box (1)
+        \\$decl b $call box (2)
+        \\$decl r $call add (a.tag, b.tag)
+    , "r", 3);
+}
+
+test "a prop that is a literal is shared, and still reads as itself (4.10)" {
+    try expectInt(
+        \\$decl box $func ($decl x 0) { $prop tag 7 $decl v x }
+        \\$decl a $call box (1)
+        \\$decl b $call box (2)
+        \\$decl r $call add ($call add (a.tag, b.tag), $call add (a.v, b.v))
+    , "r", 17);
 }
 
 test "$call arity comes from the syntactic group (2.4)" {
@@ -1758,9 +2011,9 @@ test "read_file's option threads through $try, and args through the array intrin
     ;
     var h = try Harness.run(src, .{ .platform = host.platform() });
     defer h.deinit();
-    try testing.expectEqual(@as(i64, 42), h.result.block.find("good").?.deref().int);
-    try testing.expectEqual(@as(i64, 2), h.result.block.find("argc").?.deref().int);
-    try testing.expectEqualStrings("one", h.result.block.find("first").?.deref().str);
+    try testing.expectEqual(@as(i64, 42), h.result.block.findText("good").?.deref().int);
+    try testing.expectEqual(@as(i64, 2), h.result.block.findText("argc").?.deref().int);
+    try testing.expectEqualStrings("one", h.result.block.findText("first").?.deref().str.bytes);
 }
 
 test "a missing file comes back as none, not as a failure" {
@@ -1773,8 +2026,8 @@ test "a missing file comes back as none, not as a failure" {
     , .{ .platform = host.platform() });
     defer h.deinit();
     // `$try` fired, so the function returned the `none` block itself.
-    const r = h.result.block.find("r").?.deref();
-    try testing.expectEqualStrings("none", r.block.findProp("tag").?.str);
+    const r = h.result.block.findText("r").?.deref();
+    try testing.expectEqualStrings("none", r.block.findText("tag").?.str.bytes);
 }
 
 // -------------------------------------------------------------- imports
@@ -1804,7 +2057,7 @@ test "$import evaluates a file as a block (4.14)" {
     } };
     var h = try Harness.run("$decl m $import \"m\" $decl r m.answer", .{ .loader = modules.loader() });
     defer h.deinit();
-    try testing.expectEqual(@as(i64, 42), h.result.block.find("r").?.deref().int);
+    try testing.expectEqual(@as(i64, 42), h.result.block.findText("r").?.deref().int);
 }
 
 test "$import is load-once, so file-level storage is shared (4.14)" {
@@ -1819,7 +2072,7 @@ test "$import is load-once, so file-level storage is shared (4.14)" {
     , .{ .loader = modules.loader() });
     defer h.deinit();
     // Same block, so the write through `a` is visible through `b`.
-    try testing.expectEqual(@as(i64, 5), h.result.block.find("r").?.deref().int);
+    try testing.expectEqual(@as(i64, 5), h.result.block.findText("r").?.deref().int);
 }
 
 test "import cycles are an error (4.14)" {
@@ -1835,7 +2088,7 @@ test "import cycles are an error (4.14)" {
     defer h.deinit();
     const arena = h.arena_state.allocator();
     h.interp = try Interp.init(arena, &h.diags, .{ .loader = modules.loader() });
-    const tokens = try lexer.tokenize(arena, arena, "$decl a $import \"a\"", &h.diags);
+    const tokens = try lexer.tokenize(arena, arena, "$decl a $import \"a\"", &h.diags, h.interp.rt.pool);
     const file = try parser.parseFile(arena, tokens, &h.diags);
     _ = h.interp.runFile(file) catch {};
     var found = false;
@@ -1857,7 +2110,7 @@ test "a module sees the root block, not the importing scope (4.14)" {
     defer h.deinit();
     const arena = h.arena_state.allocator();
     h.interp = try Interp.init(arena, &h.diags, .{ .loader = modules.loader() });
-    const tokens = try lexer.tokenize(arena, arena, "$decl outer_name 1 $decl m $import \"m\"", &h.diags);
+    const tokens = try lexer.tokenize(arena, arena, "$decl outer_name 1 $decl m $import \"m\"", &h.diags, h.interp.rt.pool);
     const file = try parser.parseFile(arena, tokens, &h.diags);
     _ = h.interp.runFile(file) catch {};
     var found = false;

@@ -20,21 +20,59 @@ const Span = diag.Span;
 const Node = ast.Node;
 pub const Platform = @import("platform.zig").Platform;
 
+/// §3.1's `Str`: a pointer and a length, boxed.
+///
+/// A tagged union is as wide as its widest member, so carrying two words
+/// inline made every `Value` 24 bytes — and a census of what blocks actually
+/// store says 91% of values are a word or less (an `Int`, a pointer, a tag).
+/// Boxing the three slice payloads costs an indirection on the other 9% and
+/// saves a word on every value stage 0 allocates, which is 75% of its memory.
+///
+/// A box is *not* identity: two boxes with the same bytes are the same string,
+/// so `equal` compares `bytes` and never the pointer.
+pub const Str = struct { bytes: []const u8 };
+
+/// A group's elements, boxed for the same reason.
+pub const Group = struct { elems: []Value };
+
+/// A `Str` value from bytes the caller already owns — the bytes are not
+/// copied, only the box is allocated.
+pub fn strVal(arena: Allocator, bytes: []const u8) Allocator.Error!Value {
+    const s = try arena.create(Str);
+    s.* = .{ .bytes = bytes };
+    return .{ .str = s };
+}
+
+pub fn groupVal(arena: Allocator, elems: []Value) Allocator.Error!Value {
+    const g = try arena.create(Group);
+    g.* = .{ .elems = elems };
+    return .{ .group = g };
+}
+
+/// A `Str` value for bytes known at compile time — the box is static, so a
+/// Zig caller handing over a literal allocates nothing.
+pub fn litStr(comptime bytes: []const u8) Value {
+    const box = struct {
+        const s: Str = .{ .bytes = bytes };
+    };
+    return .{ .str = &box.s };
+}
+
 pub const Value = union(enum) {
     /// `()` and `{}` (§2.3).
     unit,
     int: i64,
     /// Float *literal text*. BOOTSTRAP.md §1.2 drops float arithmetic from
     /// stage 0 but not float literals, so these flow through untouched.
-    float: []const u8,
+    float: *const Str,
     /// Always valid UTF-8 (§3.1); the lexer establishes that invariant.
-    str: []const u8,
+    str: *const Str,
     /// `true`/`false` are distinct nullary tag types (§3.2).
     bool: bool,
     /// A block: scope, record, module, namespace, trait — all one thing (§3.3).
     block: *Block,
     /// A tuple (§2.3). Always 2+ elements; one-element groups fold away.
-    group: []Value,
+    group: *const Group,
     func: *Func,
     template: *Template,
     /// Storage created by `$new` (§4.2) — the *only* way storage exists.
@@ -89,20 +127,51 @@ pub const Field = struct {
     value: Value,
 };
 
-pub const Block = struct {
-    /// Source order — this *is* the layout (§7.2), and order is part of type
-    /// identity, so it is never sorted or reordered.
-    decls: []Field,
+/// What a block value gets from its *source* rather than from evaluating it.
+///
+/// Every value built from one block literal has the same field names in the
+/// same order — §7.2's layout is the source order and §5.1 makes that order
+/// part of the type, so it cannot vary between instances. Props are the same
+/// whenever their values are literals (§4.10 makes a prop a compile-time
+/// constant). Only the `$decl` values differ per evaluation, so that is all a
+/// `Block` carries of its own; the rest is shared and interned per AST node.
+pub const Shape = struct {
+    /// Source order — this *is* the layout (§7.2), never sorted or reordered.
+    names: []const []const u8,
     /// Order-insensitive: props cost no slot.
     props: []Field,
+};
+
+pub const Block = struct {
+    shape: *const Shape,
+    /// Parallel to `shape.names`, one per `$decl` slot — and *unsized*,
+    /// because the count is the shape's. A block value is the single most
+    /// allocated thing stage 0 makes (75% of its memory lowering `types.mpl`),
+    /// so the length word it would otherwise carry is 8 bytes per block that
+    /// the literal already knows.
+    values: [*]Value,
+
+    pub fn names(self: *const Block) []const []const u8 {
+        return self.shape.names;
+    }
+
+    pub fn fields(self: *const Block) []Value {
+        return self.values[0..self.shape.names.len];
+    }
+
+    pub fn props(self: *const Block) []Field {
+        return self.shape.props;
+    }
 
     pub fn findDecl(self: *const Block, name: []const u8) ?Value {
-        for (self.decls) |f| if (std.mem.eql(u8, f.name, name)) return f.value;
+        for (self.shape.names, self.fields()) |n, v| {
+            if (Scope.nameEql(n, name)) return v;
+        }
         return null;
     }
 
     pub fn findProp(self: *const Block, name: []const u8) ?Value {
-        for (self.props) |f| if (std.mem.eql(u8, f.name, name)) return f.value;
+        for (self.shape.props) |f| if (Scope.nameEql(f.name, name)) return f.value;
         return null;
     }
 
@@ -110,6 +179,20 @@ pub const Block = struct {
     /// uniform: `p.len` and `point.len` both work").
     pub fn find(self: *const Block, name: []const u8) ?Value {
         return self.findDecl(name) orelse self.findProp(name);
+    }
+
+    /// The same lookup, by *text* rather than identity.
+    ///
+    /// For Zig callers holding a string literal — tests and diagnostics —
+    /// since an uninterned literal can never be identity-equal to a name that
+    /// came from source. Evaluation does not use this and must not: comparing
+    /// bytes here is what `perf` found to be 80% of the interpreter.
+    pub fn findText(self: *const Block, name: []const u8) ?Value {
+        for (self.shape.names, self.fields()) |n, v| {
+            if (std.mem.eql(u8, n, name)) return v;
+        }
+        for (self.shape.props) |f| if (std.mem.eql(u8, f.name, name)) return f.value;
+        return null;
     }
 };
 
@@ -246,11 +329,43 @@ pub const Scope = struct {
         return s;
     }
 
+    /// Identifier equality: identity, not bytes.
+    ///
+    /// Every identifier comes from `lexer.StringPool`, so one text has exactly
+    /// one slice and equal names are the *same* slice. `perf` said comparing
+    /// bytes here was 80% of the interpreter — it runs once per binding per
+    /// scope on every name reference, and identifiers are short enough that
+    /// the call into `mem.eql` cost more than the comparison.
+    ///
+    /// A name that never reached the pool cannot match anything, so a missed
+    /// interning shows up as "unknown name" and not as a wrong binding.
+    pub inline fn nameEql(a: []const u8, b: []const u8) bool {
+        return a.ptr == b.ptr and a.len == b.len;
+    }
+
     pub fn findLocal(self: *Scope, name: []const u8) ?Entry {
-        // Later slots shadow earlier ones, so walk backwards. A linear scan
-        // is deliberate: it was measured against a hash index over `decls` and
-        // the difference was lost in the noise, because scopes are small and
-        // resolution is not where the time goes.
+        // Later slots shadow earlier ones, so walk backwards. A linear scan is
+        // deliberate: a hash index over `decls` was measured and lost in the
+        // noise — scopes are small, so the scan is short. What the index did
+        // not address, and `perf` later showed to be 80% of the interpreter,
+        // is the cost of *each* comparison: see `nameEql`.
+        var i = self.decls.items.len;
+        while (i > 0) {
+            i -= 1;
+            const slot = self.decls.items[i];
+            if (nameEql(slot.name, name)) {
+                return if (slot.value) |v| .{ .value = v } else .{ .uninitialized = slot };
+            }
+        }
+        for (self.props) |*p| {
+            if (nameEql(p.name, name)) return .{ .prop = p };
+        }
+        return null;
+    }
+
+    /// `findLocal` by *text*, for Zig callers holding a literal. See
+    /// `Block.findText`: tests and diagnostics only, never evaluation.
+    pub fn findLocalText(self: *Scope, name: []const u8) ?Entry {
         var i = self.decls.items.len;
         while (i > 0) {
             i -= 1;
@@ -283,7 +398,7 @@ pub const Scope = struct {
     /// (§4.11: "Layout position is the `$fwd`, not the `$decl`").
     pub fn pendingSlot(self: *Scope, name: []const u8) ?usize {
         for (self.decls.items, 0..) |slot, i| {
-            if (slot.value == null and std.mem.eql(u8, slot.name, name)) return i;
+            if (slot.value == null and nameEql(slot.name, name)) return i;
         }
         return null;
     }
@@ -295,6 +410,10 @@ pub const Scope = struct {
 pub const Runtime = struct {
     arena: Allocator,
     diags: *diag.Diagnostics,
+    /// The identifier pool (see `lexer.StringPool`). Every name that enters a
+    /// scope or a block goes through it, so `Scope.nameEql` can compare
+    /// identity instead of bytes.
+    pool: *@import("lexer").StringPool,
     out: ?*std.Io.Writer = null,
     /// Supplied by the driver; absent when nothing injected one, in which case
     /// the platform intrinsics decline rather than inventing an answer.
@@ -340,17 +459,22 @@ pub fn newCell(arena: Allocator, v: Value) Allocator.Error!Value {
 
 /// A block of props only — the shape of `err`, `none` and every tag (§4.15).
 pub fn propBlock(arena: Allocator, props: []const Field) Allocator.Error!Value {
-    const b = try arena.create(Block);
-    b.* = .{ .decls = &.{}, .props = try arena.dupe(Field, props) };
-    return .{ .block = b };
+    return makeBlock(arena, &.{}, props);
 }
 
+/// Build a one-off block with its own shape. For Zig callers — the root block
+/// (§2) and tests — where there is no AST node to intern a shape against.
 pub fn makeBlock(arena: Allocator, decls: []const Field, props: []const Field) Allocator.Error!Value {
+    const names = try arena.alloc([]const u8, decls.len);
+    const values = try arena.alloc(Value, decls.len);
+    for (decls, names, values) |f, *n, *v| {
+        n.* = f.name;
+        v.* = f.value;
+    }
+    const shape = try arena.create(Shape);
+    shape.* = .{ .names = names, .props = try arena.dupe(Field, props) };
     const b = try arena.create(Block);
-    b.* = .{
-        .decls = try arena.dupe(Field, decls),
-        .props = try arena.dupe(Field, props),
-    };
+    b.* = .{ .shape = shape, .values = values.ptr };
     return .{ .block = b };
 }
 
@@ -362,26 +486,26 @@ pub fn equal(a: Value, b: Value, depth: u32) bool {
     return switch (a) {
         .unit => b == .unit,
         .int => |x| b == .int and b.int == x,
-        .float => |x| b == .float and std.mem.eql(u8, b.float, x),
-        .str => |x| b == .str and std.mem.eql(u8, b.str, x),
+        .float => |x| b == .float and std.mem.eql(u8, b.float.bytes, x.bytes),
+        .str => |x| b == .str and std.mem.eql(u8, b.str.bytes, x.bytes),
         .bool => |x| b == .bool and b.bool == x,
         .block => |x| blk: {
             if (b != .block) break :blk false;
             const y = b.block;
-            if (x.decls.len != y.decls.len or x.props.len != y.props.len) break :blk false;
-            for (x.decls, y.decls) |fa, fb| {
-                if (!std.mem.eql(u8, fa.name, fb.name)) break :blk false;
-                if (!equal(fa.value, fb.value, depth - 1)) break :blk false;
+            if (x.names().len != y.names().len or x.props().len != y.props().len) break :blk false;
+            for (x.names(), x.fields(), y.names(), y.fields()) |na, va, nb, vb| {
+                if (!Scope.nameEql(na, nb)) break :blk false;
+                if (!equal(va, vb, depth - 1)) break :blk false;
             }
-            for (x.props) |fa| {
+            for (x.props()) |fa| {
                 const other = y.findProp(fa.name) orelse break :blk false;
                 if (!equal(fa.value, other, depth - 1)) break :blk false;
             }
             break :blk true;
         },
         .group => |x| blk: {
-            if (b != .group or b.group.len != x.len) break :blk false;
-            for (x, b.group) |ea, eb| {
+            if (b != .group or b.group.elems.len != x.elems.len) break :blk false;
+            for (x.elems, b.group.elems) |ea, eb| {
                 if (!equal(ea, eb, depth - 1)) break :blk false;
             }
             break :blk true;
@@ -410,9 +534,9 @@ test "prop values participate in equality; references compare by identity" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const a = try propBlock(arena, &.{.{ .name = "tag", .value = .{ .str = "err" } }});
-    const b = try propBlock(arena, &.{.{ .name = "tag", .value = .{ .str = "err" } }});
-    const c = try propBlock(arena, &.{.{ .name = "tag", .value = .{ .str = "none" } }});
+    const a = try propBlock(arena, &.{.{ .name = "tag", .value = litStr("err") }});
+    const b = try propBlock(arena, &.{.{ .name = "tag", .value = litStr("err") }});
+    const c = try propBlock(arena, &.{.{ .name = "tag", .value = litStr("none") }});
     try std.testing.expect(equal(a, b, 16));
     try std.testing.expect(!equal(a, c, 16));
 

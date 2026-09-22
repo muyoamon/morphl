@@ -252,9 +252,10 @@ $decl err $func ($decl st proto_lst, $decl m "", $decl x P.proto_span)
                                                    $call eval_diags (st.errs)))
     $decl out   0 }.out
 
-// Append, so that an index into the table stays the index it was handed out as.
-// The table holds one entry per *distinct* type and a compiler has few of them,
-// so walking it is cheaper than the string key a hash would need.
+// Append, so that an index into the table stays the index it was handed out
+// as. The table holds one entry per *distinct* type, and both of the obvious
+// ways to speed this up have been tried and measured; neither helped. Read the
+// note in CLAUDE.md before trying a third.
 $decl append_ty $func ($decl xs T.tys.node, $decl t T.proto_ty)
   $call T.tys.reverse ($call T.tys.cons (t, $call T.tys.reverse (xs, T.tys.nil)), T.tys.nil)
 
@@ -302,14 +303,17 @@ $decl is_rec $func ($decl t T.proto_ty) $match t (
 
 $decl intern $func ($decl st proto_lst, $decl t T.proto_ty)
   { $decl cur $call T.tys.val ($call eval_tys (st.types))
+    // The count before anything is added: on a miss that *is* the new entry's
+    // index, and `seal_rec` below may add more without changing it.
+    $decl cnt $call P.ival (st.ntypes)
     $decl f   $call IR.find_ty (cur, t)
     $decl out $if f.hit f.id
         { $decl added $set st.types ($call append_ty (cur, t))
-          $decl n     $set st.ntypes ($call add ($call P.ival (st.ntypes), 1))
+          $decl n     $set st.ntypes ($call add (cnt, 1))
           // After the entry exists, never before: the unrolling names this
           // very type, and finding it is what ends the recursion.
           $decl sealed $if ($call is_rec (t)) ($call seal_rec (st, t)) 0
-          $decl r     f.id }.r }.out
+          $decl r     cnt }.r }.out
 
 // Seeding the top-level environment.
 //
@@ -2073,5 +2077,4 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl all  $call mark_self (all0, 0, IR.fns.nil)
     $decl es   $call collect_edges (all, 0, edges.nil)
     $decl gs   $call find_groups (es, 0, $call IR.fns.length (all, 0), IR.groups.nil)
-    $decl out  $call IR.program ($call T.tys.val ($call eval_tys (st.types)),
-                   all, gs, 0) }.out
+    $decl out  $call IR.program ($call T.tys.val ($call eval_tys (st.types)), all, gs, 0) }.out

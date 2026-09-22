@@ -61,6 +61,39 @@ pub const Token = struct {
     span: Span,
 };
 
+/// Identifier interning.
+///
+/// Every identifier the lexer produces is replaced by *the* slice for that
+/// text, so two names are equal exactly when their slices are. `perf` said 80%
+/// of stage 0 was `std.mem.eql` on identifier bytes, called once per binding
+/// per scope on every name reference; a pointer comparison costs nothing and
+/// scopes stop caring how long a name is.
+///
+/// A name that never reaches this pool simply fails to resolve — a pointer can
+/// only be equal to itself, so a missed interning is a loud "unknown name",
+/// never a wrong match. That is why the pool is threaded rather than
+/// best-effort: `tokenize` takes one, and so does the root block.
+pub const StringPool = struct {
+    map: std.StringHashMapUnmanaged(void) = .empty,
+    arena: Allocator,
+
+    pub fn init(arena: Allocator) StringPool {
+        return .{ .arena = arena };
+    }
+
+    /// The canonical slice for `text`, copying it into the pool's arena the
+    /// first time. The copy matters: a name lexed from one file's source must
+    /// outlive that source and be shared with every other file (§4.14).
+    pub fn intern(self: *StringPool, text: []const u8) Allocator.Error![]const u8 {
+        const gop = try self.map.getOrPut(self.arena, text);
+        if (!gop.found_existing) {
+            const owned = try self.arena.dupe(u8, text);
+            gop.key_ptr.* = owned;
+        }
+        return gop.key_ptr.*;
+    }
+};
+
 /// Tokenize `src`.
 ///
 /// `gpa` allocates the returned slice (caller frees). `arena` holds decoded
@@ -71,8 +104,9 @@ pub fn tokenize(
     arena: Allocator,
     src: []const u8,
     diags: *Diagnostics,
+    pool: *StringPool,
 ) Allocator.Error![]Token {
-    var lx: Lexer = .{ .src = src, .arena = arena, .diags = diags };
+    var lx: Lexer = .{ .src = src, .arena = arena, .diags = diags, .pool = pool };
     var tokens: std.ArrayList(Token) = .empty;
     errdefer tokens.deinit(gpa);
     while (true) {
@@ -87,6 +121,7 @@ pub const Lexer = struct {
     src: []const u8,
     arena: Allocator,
     diags: *Diagnostics,
+    pool: *StringPool,
     pos: u32 = 0,
     line: u32 = 1,
     /// Byte offset of the start of the current line, for computing columns.
@@ -183,11 +218,11 @@ pub const Lexer = struct {
 
         if (c == '$') return self.lexKeyword(start, start_line, start_col);
         if (c == '"') return self.lexString(start, start_line, start_col);
-        if (c == '.') return self.lexProjection(start, start_line, start_col);
+        if (c == '.') return try self.lexProjection(start, start_line, start_col);
         if (isDigit(c) or (c == '-' and isDigitOpt(self.peekAt(1)))) {
             return self.lexNumber(start, start_line, start_col);
         }
-        if (isIdentStart(c)) return self.lexName(start, start_line, start_col);
+        if (isIdentStart(c)) return try self.lexName(start, start_line, start_col);
 
         self.advance();
         const span = self.spanFrom(start, start_line, start_col);
@@ -199,13 +234,13 @@ pub const Lexer = struct {
         return .{ .kind = .invalid, .span = span };
     }
 
-    fn lexName(self: *Lexer, start: u32, start_line: u32, start_col: u32) Token {
+    fn lexName(self: *Lexer, start: u32, start_line: u32, start_col: u32) Allocator.Error!Token {
         while (self.pos < self.src.len and isIdentCont(self.src[self.pos])) self.advance();
         const text = self.src[start..self.pos];
         const span = self.spanFrom(start, start_line, start_col);
         if (std.mem.eql(u8, text, "true")) return .{ .kind = .true_lit, .span = span };
         if (std.mem.eql(u8, text, "false")) return .{ .kind = .false_lit, .span = span };
-        return .{ .kind = .{ .name = text }, .span = span };
+        return .{ .kind = .{ .name = try self.pool.intern(text) }, .span = span };
     }
 
     fn lexKeyword(self: *Lexer, start: u32, start_line: u32, start_col: u32) Token {
@@ -245,7 +280,7 @@ pub const Lexer = struct {
         return .{ .kind = .{ .int = v }, .span = span };
     }
 
-    fn lexProjection(self: *Lexer, start: u32, start_line: u32, start_col: u32) Token {
+    fn lexProjection(self: *Lexer, start: u32, start_line: u32, start_col: u32) Allocator.Error!Token {
         self.advance(); // '.'
         const field_start = self.pos;
         if (isDigitOpt(self.peek())) {
@@ -265,7 +300,9 @@ pub const Lexer = struct {
         if (isIdentStartOpt(self.peek())) {
             while (self.pos < self.src.len and isIdentCont(self.src[self.pos])) self.advance();
             const text = self.src[field_start..self.pos];
-            return .{ .kind = .{ .proj_name = text }, .span = self.spanFrom(start, start_line, start_col) };
+            // A field name is compared against block field names, so it is
+            // interned like any other identifier.
+            return .{ .kind = .{ .proj_name = try self.pool.intern(text) }, .span = self.spanFrom(start, start_line, start_col) };
         }
         const span = self.spanFrom(start, start_line, start_col);
         self.diags.add(span, "expected a field name or group index after '.'", .{});
@@ -433,6 +470,7 @@ const Harness = struct {
     arena_state: std.heap.ArenaAllocator,
     diags: Diagnostics,
     tokens: []Token,
+    pool: StringPool = undefined,
 
     fn init(src: []const u8) !Harness {
         var h: Harness = .{
@@ -440,7 +478,9 @@ const Harness = struct {
             .diags = .init(testing.allocator),
             .tokens = &.{},
         };
-        h.tokens = try tokenize(testing.allocator, h.arena_state.allocator(), src, &h.diags);
+        const arena = h.arena_state.allocator();
+        h.pool = .init(arena);
+        h.tokens = try tokenize(testing.allocator, arena, src, &h.diags, &h.pool);
         return h;
     }
 

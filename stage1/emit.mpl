@@ -33,7 +33,12 @@ $decl strs $specialize P.list ""
 // ------------------------------------------------------------------- state
 
 $decl estate $func ()
-  { $decl out  $mut $alloc ""
+  // The output, as the chunks `say` appended, newest first. Not one growing
+  // `Str`: `concat` copies both operands, so appending n chunks totalling L
+  // bytes that way copies O(L n) — 590 MB to produce the 350 KB of C that
+  // `types.mpl` emits, which was 80% of everything an emit run allocated.
+  // `out_of` joins them in one balanced pass instead.
+  { $decl out  $mut $alloc strs.node
     $decl ntmp $mut $alloc 0
     // The result type of the function being emitted. §4.15 returns from it
     // from arbitrary depth, so the type has to be reachable from anywhere in
@@ -59,10 +64,49 @@ $decl eval_diags $func ($decl x Pa.diags.node) x
 
 $decl emit_errs $func ($decl st proto_est) $call eval_diags (st.errs)
 
-$decl out_of $func ($decl st proto_est) $call P.sval (st.out)
+// Fold each adjacent pair of chunks into one, halving the list. The result
+// comes out reversed, which is why `join_step` reverses between passes —
+// pointer work, where getting the order wrong would concatenate backwards.
+//
+// Split in two so that every recursive call is a *tail* call (§7.7): reading
+// `xs.tail` twice would need a `$decl` to bind it, and a block around a
+// recursive call is a real frame (§7.7 again), which at half the chunk count
+// per pass is thousands of them.
+$fwd join_pass
+
+$decl join_two $func ($decl a "", $decl t strs.node, $decl acc strs.node) $match t (
+  $case {$prop tag "cons"}
+    $call join_pass ($call strs.val (t.tail), $call strs.cons ($call concat (a, t.head), acc)),
+  $case t ($call join_pass (t, $call strs.cons (a, acc)))
+)
+
+$decl join_pass $func ($decl xs strs.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} $call join_two (xs.head, $call strs.val (xs.tail), acc),
+  $case xs acc
+)
+
+$fwd join_all
+
+// `a` is the first chunk and `t` the rest. One chunk left and the join is
+// done; otherwise fold the pairs and go round again. Each pass copies the
+// output once and there are log2(n) of them, so joining n chunks totalling L
+// bytes costs O(L log n) against a left fold's O(L n).
+$decl join_step $func ($decl xs strs.node, $decl a "", $decl t strs.node) $match t (
+  $case {$prop tag "cons"}
+    $call join_all ($call strs.reverse ($call join_pass (xs, strs.nil), strs.nil)),
+  $case t a
+)
+
+$decl join_all $func ($decl xs strs.node) $match xs (
+  $case {$prop tag "cons"} $call join_step (xs, xs.head, $call strs.val (xs.tail)),
+  $case xs ""
+)
+
+$decl out_of $func ($decl st proto_est)
+  $call join_all ($call strs.reverse ($call strs.val (st.out), strs.nil))
 
 $decl say $func ($decl st proto_est, $decl s "")
-  { $decl w $set st.out ($call concat ($call P.sval (st.out), s))
+  { $decl w $set st.out ($call strs.cons (s, $call strs.val (st.out)))
     $decl r () }.r
 
 $decl eerr $func ($decl st proto_est, $decl m "")
