@@ -2070,7 +2070,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl rooted $set st.rootenv prims
     // A global's index is its position among the top-level `$decl`s, so the
     // lifted functions take the indices after them.
-    $decl based $set st.fnbase ($call T.fields.length (flds, 0))
+    $decl fnbased $set st.fnbase ($call T.fields.length (flds, 0))
     $decl done $call lower_top (st, env, items, flds, IR.fns.nil)
     $decl all0 $call append_fns ($call IR.fns.val (done.funcs),
                    $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil))

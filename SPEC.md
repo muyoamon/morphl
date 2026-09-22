@@ -149,6 +149,8 @@ Scope: `name` is visible from this point onward in the enclosing block. Addition
 
 In *type-only positions* (§5.7) a name may be referenced while its own declaration is still in progress.
 
+**A name is bound once in a block.** No two items of one block may bind the same name, whether by `$decl`, `$fwd` or `$prop` — with the single exception §4.11 already states, that a `$fwd` and the one `$decl` completing it are one slot. §3.4 makes a parameter list a group of `$decl`s, so the same holds there: two parameters of one name are two frame slots (§7.2) of which only the second is reachable. This is not a restriction on shadowing — a nested block, a parameter, or a later file may freely rebind a name from an *enclosing* scope. It is that two slots of one name are two *fields*, and §7.2 makes the slots the layout while §4.6 finds a field by searching it in order — so the name would mean the last binding read from inside the block and the first read through a projection. One name, two values.
+
 `$decl x 0` is permitted but unnecessary; a value that will vary should be `$new`, a constant should be `$prop`.
 
 ### 4.2 `$new e`

@@ -679,37 +679,6 @@ $decl subst $func ($decl t proto_ty, $decl i 0, $decl r proto_ty)
 $decl subst_bnd $func ($decl t proto_ty, $decl k 0, $decl r proto_ty)
   $call remap (t, $call rop_bnd (r), k)
 
-// `μR. B(R)`, built from a body that still mentions the placeholder `R`.
-// §5.5: "the result is `μR. B(R)`, or simply `B` if `R` does not occur."
-// Deciding which needs this.
-$fwd occurs
-
-$decl occurs_tys $func ($decl xs tys.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call occurs (xs.head, i)) true ($call occurs_tys (xs.tail, i)),
-  $case xs false
-)
-
-$decl occurs_fields $func ($decl xs fields.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call occurs (xs.head.ty, i)) true ($call occurs_fields (xs.tail, i)),
-  $case xs false
-)
-
-$decl occurs $func ($decl t proto_ty, $decl i 0) $match t (
-  $case {$prop tag "var"}   $call eq_int (t.id, i),
-  $case {$prop tag "block"} $call occurs_fields (t.fields, i),
-  $case {$prop tag "group"} $call occurs_tys (t.items, i),
-  $case {$prop tag "func"}
-    $if ($call occurs_tys (t.params, i)) true ($call occurs (t.result, i)),
-  $case {$prop tag "ref"}   $call occurs (t.inner, i),
-  $case {$prop tag "array"} $call occurs (t.elem, i),
-  $case {$prop tag "union"} $call occurs_tys (t.members, i),
-  $case {$prop tag "inter"} $call occurs_tys (t.members, i),
-  // A binder binds no placeholder, so there is nothing to shadow here.
-  $case {$prop tag "rec"}   $call occurs (t.body, i),
-  $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
-  $case t false
-)
-
 // Whether *any* placeholder survives in a type. A `$var` that is still here
 // is by construction unsolved (§5.5), so such a type is not a layout and
 // nothing at run time has it — which is what lets the backend skip it rather

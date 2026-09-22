@@ -400,13 +400,13 @@ $decl rec_src $call concat (
 
 $decl rec_c $call compile (rec_src)
 
-$decl t30 $call check ("a program with a recursive type emits cleanly",
+$decl t53 $call check ("a program with a recursive type emits cleanly",
   $call eq_int (rec_c.nerrs, 0))
 
-$decl t31 $call check ("the recursive field is a pointer, which is why the layout terminates",
+$decl t54 $call check ("the recursive field is a pointer, which is why the layout terminates",
   $call has (rec_c.code, " * f1; };"))
 
-$decl t32 $call check ("the type a recursive binder names is a discriminated union (§7.5)",
+$decl t55 $call check ("the type a recursive binder names is a discriminated union (§7.5)",
   $call has (rec_c.code, "{ int64_t tag; union {"))
 
 // --------------------------------------------- union into union (§7.4)
@@ -421,13 +421,13 @@ $decl u2u_src $call concat (
 
 $decl u2u_c $call compile ($call concat (u2u_src, "$decl main $func () $call widen (small) "))
 
-$decl t33 $call check ("a union coerced into a larger union emits cleanly",
+$decl t56 $call check ("a union coerced into a larger union emits cleanly",
   $call eq_int (u2u_c.nerrs, 0))
 
-$decl t34 $call check ("...as a switch on the source's discriminator",
+$decl t57 $call check ("...as a switch on the source's discriminator",
   $call has (u2u_c.code, "switch ((int)"))
 
-$decl t35 $call check ("...that writes the target's position, not the source's",
+$decl t58 $call check ("...that writes the target's position, not the source's",
   $call has (u2u_c.code, ".tag = 2;"))
 
 $decl done $call nl ("all C backend tests passed")

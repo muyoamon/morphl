@@ -399,7 +399,7 @@ $decl unguarded_src $call concat (
   "$prop node $union (nil, { $prop tag \"cons\"  $decl head T  $decl tail node }) } ",
   "$decl ints $specialize list 0 "))
 
-$decl t68b $call check ("a recursive type that does not pass through storage is rejected",
+$decl t68c $call check ("a recursive type that does not pass through storage is rejected",
   $call lt (0, $call n_errs (unguarded_src)))
 // The raw type, for assertions that should not pin a variable's number.
 $decl ty_of $func ($decl src "", $decl nm "")

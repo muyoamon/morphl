@@ -494,18 +494,80 @@ $decl pres $func ($decl ts T.tys.node, $decl en env.node) { $decl tys ts  $decl 
 $decl proto_pres $call pres (T.tys.nil, env.nil)
 
 // §3.4: "each default fixes the parameter's type."
-$decl infer_params $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
-                          $decl acc T.tys.node, $decl inner env.node) $match ps (
+// §4.1: a name is bound once in a block.
+//
+// Two items binding one name are not shadowing — they are two *fields*, and
+// the block answers for them differently depending on where you stand: §7.2
+// makes the slots the layout, so a name inside the block resolves to the last
+// slot binding it while §4.6's projection finds the first. §4.11 already says
+// "exactly one" `$decl` completes a `$fwd`; this is the same rule everywhere
+// else. Shadowing across *nested* blocks is untouched.
+$decl binder_name $func ($decl n Pa.proto_node)
+  $if ($call is_form (n, "decl")) ($call name_of ($call op (n, 0)))
+  ($if ($call is_form (n, "fwd"))  ($call name_of ($call op (n, 0)))
+  ($if ($call is_form (n, "prop")) ($call name_of ($call op (n, 0)))
+       ""))
+
+$decl binder_kind $func ($decl n Pa.proto_node)
+  $if ($call is_form (n, "decl")) "decl"
+  ($if ($call is_form (n, "fwd"))  "fwd"
+  ($if ($call is_form (n, "prop")) "prop"
+       ""))
+
+// Does anything *before* this item already bind `nm`? The one legal repeat is
+// a `$fwd` completed by a `$decl` (§4.11), so that pair — and only that pair —
+// is skipped. Asking at the later item reports each offender once, where
+// scanning forwards from the earlier one reports `$fwd x  $decl x  $fwd x`
+// twice for the same position.
+$decl has_earlier $func ($decl nm "", $decl k "", $decl seen Pa.nodes.node) $match seen (
+  $case {$prop tag "cons"}
+    $if ($call eq_str ($call binder_name (seen.head), nm))
+        ($if ($call and ($call eq_str ($call binder_kind (seen.head), "fwd"),
+                         $call eq_str (k, "decl")))
+             ($call has_earlier (nm, k, seen.tail))
+             true)
+        ($call has_earlier (nm, k, seen.tail)),
+  $case seen false
+)
+
+$decl check_unique $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
+                          $decl seen Pa.nodes.node, $decl what "") $match items (
+  $case {$prop tag "cons"}
+    { $decl it   items.head
+      $decl nm   $call binder_name (it)
+      $decl said $if ($call eq_str (nm, "")) T.t_bot
+          ($if ($call has_earlier (nm, $call binder_kind (it), seen))
+               ($call err (cx, $call concat ("'", $call concat (nm,
+                   $call concat ("' is already ",
+                   $call concat (what, "; a name is bound once (4.1) - rename one of them")))), it))
+               T.t_bot)
+      $decl out  $call check_unique (cx, items.tail, $call Pa.nodes.cons (it, seen), what) }.out,
+  $case items ()
+)
+
+$decl infer_params_go $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
+                             $decl acc T.tys.node, $decl inner env.node) $match ps (
   $case {$prop tag "cons"}
     { $decl d  ps.head
       $decl ok $call is_form (d, "decl")
       $decl nm $if ok ($call name_of ($call op (d, 0))) ""
       $decl ty $if ok ($call infer (cx, e, $call op (d, 1)))
                       ($call err (cx, "$func parameters must each be a $decl", d))
-      $decl out $call infer_params (cx, e, ps.tail,
+      $decl out $call infer_params_go (cx, e, ps.tail,
                     $call T.tys.cons (ty, acc), $call bind (inner, nm, ty)) }.out,
   $case ps ($call pres ($call T.tys.reverse (acc, T.tys.nil), inner))
 )
+
+// §3.4 makes the parameter list a group of `$decl`s, so §4.1's one binding per
+// name reaches it: two parameters of one name take two frame slots (§7.2) and
+// the second hides the first, so the argument passed for the first can never
+// be read. The check lives here rather than at the call sites because a `$func`
+// is typed in three places (`infer_func`, `infer_rec_func`, `infer_fwd_body`)
+// and putting a rule in only one of them has looked like a no-op twice before.
+$decl infer_params $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
+                          $decl acc T.tys.node, $decl inner env.node)
+  { $decl uniq $call check_unique (cx, ps, Pa.nodes.nil, "a parameter of this $func")
+    $decl out  $call infer_params_go (cx, e, ps, acc, inner) }.out
 
 // §5.5 for a function that names itself.
 //
@@ -1108,7 +1170,8 @@ $decl recheck_defers $func ($decl cx proto_ctx, $decl rs res_list.node)
 // §3.3: a block's type is the ordered list of its `$decl` slots plus its props.
 $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.nodes.node,
                          $decl x P.proto_span)
-  { $decl pe0    $call prebind_props (cx, items, e0)
+  { $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
+    $decl pe0    $call prebind_props (cx, items, e0)
     $decl hushed $set cx.quiet true
     $decl peA    $call prop_pass (cx, pe0, items, pe0)
     $decl heard  $set cx.quiet false

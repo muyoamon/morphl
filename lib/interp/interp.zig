@@ -164,6 +164,13 @@ pub const Interp = struct {
         /// several kinds of thing. This is what identified block values as
         /// 75% of stage 0's memory.
         bucket: Bucket = .other,
+        /// How many block values each literal produced.
+        ///
+        /// The bucket breakdown says *what kind* of thing the memory is; this
+        /// says which source construct made it, by field names. It is what
+        /// answered "why does emitting the compiler need 2 GB" — 60% of every
+        /// block allocated is one literal, `P.list`'s cons cell.
+        shape_n: std.AutoHashMapUnmanaged(*const value.Shape, u64) = .empty,
         buckets: [@typeInfo(Bucket).@"enum".fields.len]u64 = @splat(0),
 
         pub const Bucket = enum {
@@ -267,6 +274,25 @@ pub const Interp = struct {
                 });
             }
             try w.print("\n", .{});
+            {
+                const E2 = struct { shape: *const value.Shape, n: u64 };
+                var sl: std.ArrayListUnmanaged(E2) = .empty;
+                var it2 = self.shape_n.iterator();
+                while (it2.next()) |e| try sl.append(self.backing, .{ .shape = e.key_ptr.*, .n = e.value_ptr.* });
+                std.mem.sort(E2, sl.items, {}, struct {
+                    fn lt(_: void, x: E2, y: E2) bool { return x.n > y.n; }
+                }.lt);
+                try w.print("  most-allocated block literals:\n", .{});
+                for (sl.items[0..@min(12, sl.items.len)]) |e| {
+                    try w.print("    {d:>10}  props={d} {{", .{ e.n, e.shape.props.len });
+                    for (e.shape.names, 0..) |nm, i| {
+                        if (i != 0) try w.print(" ", .{});
+                        try w.print(" {s}", .{nm});
+                    }
+                    try w.print(" }}\n", .{});
+                }
+                try w.print("\n", .{});
+            }
             try w.print("{s:>9}  {s:>7}  {s:>12}  {s:>12}  {s:>8}  {s}\n", .{ "bytes", "share", "calls", "allocs", "avg", "function" });
             var shown: usize = 0;
             for (list.items) |row| {
@@ -492,9 +518,14 @@ pub const Interp = struct {
     // ------------------------------------------------------------ blocks
 
     /// Evaluate a block body in a fresh scope and return the block value.
-    fn evalBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope, span: Span) Error!Value {
-        const cached = self.shape_cache.get(exprs.ptr);
-        const preforced: []Scope.PropSlot = if (cached) |c| c.const_props else &.{};
+    /// A block body run to completion: its scope, with every `$decl` slot
+    /// filled and every prop forced. Whether the scope may go back to the pool
+    /// is the caller's to act on, because only the caller knows whether what
+    /// it takes out of the scope outlives it.
+    const RanBlock = struct { scope: *Scope, recyclable: bool };
+
+    fn runBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope) Error!RanBlock {
+        const preforced: []Scope.PropSlot = if (self.shape_cache.get(exprs.ptr)) |c| c.const_props else &.{};
 
         var slots: usize = 0;
         for (exprs) |*e| {
@@ -535,22 +566,76 @@ pub const Interp = struct {
                 return self.rt.fail(slot.span, "$fwd '{s}' was never completed by a $decl in this block", .{slot.name});
             }
         }
+        return .{ .scope = scope, .recyclable = recyclable };
+    }
 
-        const shape = try self.sharedShape(exprs, scope, cached);
+    /// Evaluate a block body in a fresh scope and return the block value.
+    fn evalBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope, span: Span) Error!Value {
+        _ = span;
+        const ran = try self.runBlockExprs(exprs, parent);
+        const scope = ran.scope;
+
+        const shape = try self.sharedShape(exprs, scope, self.shape_cache.get(exprs.ptr));
         const bb = self.bkt(.block);
         const values = try self.arena.alloc(Value, scope.decls.items.len);
         for (scope.decls.items, values) |slot, *v| v.* = slot.value.?;
 
-        _ = span;
         if (self.stats) |st| {
             st.blk_n += 1;
             st.blk_bytes += @sizeOf(value.Block) + values.len * @sizeOf(Value);
+            // A profile is never worth failing a run for, so a full table
+            // just stops counting.
+            if (st.shape_n.getOrPut(st.backing, shape)) |e| {
+                if (!e.found_existing) e.value_ptr.* = 0;
+                e.value_ptr.* += 1;
+            } else |_| {}
         }
         const b = try self.arena.create(value.Block);
         b.* = .{ .shape = shape, .values = values.ptr };
         self.unbkt(bb);
-        if (recyclable) self.releaseScope(scope);
+        if (ran.recyclable) self.releaseScope(scope);
         return .{ .block = b };
+    }
+
+    /// `{ … $decl out e }.out` — a block literal projected on the spot.
+    ///
+    /// §3.3 makes this the way to return a computed value, since a block never
+    /// yields its last expression, so it is everywhere: 3.8M of the 28.5M
+    /// blocks allocated while emitting the compiler, 13% of them, exist only
+    /// to be projected once and dropped.
+    ///
+    /// Nothing can observe such a block. The literal *is* the projection's
+    /// target, so no other expression holds it; a `$func` written inside
+    /// captures the scope rather than the value (§7.3), and that scope is kept
+    /// exactly as it would be otherwise; and §5.3a already stops a frame
+    /// reference leaving. So the field is read straight out of the scope and
+    /// the block is never built.
+    fn projectBlockLiteral(
+        self: *Interp,
+        exprs: []const Node,
+        parent: *Scope,
+        field: []const u8,
+        span: Span,
+    ) Error!Value {
+        const ran = try self.runBlockExprs(exprs, parent);
+        const scope = ran.scope;
+
+        // §4.10 makes access uniform over `$decl` fields and props, so this
+        // has to answer exactly as `Block.find` would: the slots in *source*
+        // order — not `findLocal`'s backwards scan, which would pick the last
+        // of two slots sharing a name where the block picks the first — and
+        // then the props. Every slot is filled by now, so none is pending.
+        const found = blk: {
+            for (scope.decls.items) |slot| {
+                if (Scope.nameEql(slot.name, field)) break :blk slot.value.?;
+            }
+            for (scope.props) |*p| {
+                if (Scope.nameEql(p.name, field)) break :blk try self.forceProp(p);
+            }
+            return self.rt.fail(span, "block has no field '{s}'", .{field});
+        };
+        if (ran.recyclable) self.releaseScope(scope);
+        return found;
     }
 
     /// The `Shape` for this block value, shared with every other value built
@@ -638,8 +723,21 @@ pub const Interp = struct {
         for (exprs) |*e| {
             if (!e.isForm(.prop)) continue;
             const f = e.data.form;
+            const pname = f.operands[0].data.name;
+            // §4.1's one binding per name, for props too — and props are
+            // *unordered*, so two of a name is not even a first-fit question,
+            // it is simply two answers.
+            for (slots[0..i]) |prior| {
+                if (Scope.nameEql(prior.name, pname)) {
+                    return self.rt.fail(
+                        e.span,
+                        "'{s}' is already a $prop of this block; a name is bound once (4.1) — rename one of them",
+                        .{pname},
+                    );
+                }
+            }
             slots[i] = .{
-                .name = f.operands[0].data.name,
+                .name = pname,
                 .expr = &f.operands[1],
                 .span = e.span,
                 .env = prop_env,
@@ -660,7 +758,9 @@ pub const Interp = struct {
                 .prop => return,
                 // §4.11: reserves an ordered slot *at this position*.
                 .fwd => {
-                    _ = try scope.reserve(f.operands[0].data.name, e.span);
+                    const name = f.operands[0].data.name;
+                    try self.refuseRebinding(scope, name, e.span);
+                    _ = try scope.reserve(name, e.span);
                     return;
                 },
                 .decl => {
@@ -677,6 +777,38 @@ pub const Interp = struct {
         _ = try self.eval(e, scope);
     }
 
+    /// §4.1: a name may be bound once in a block.
+    ///
+    /// Two slots of one name are not shadowing, they are two *fields*, and the
+    /// block reads them differently depending on where you stand: inside, a
+    /// name is the last slot that binds it, but projecting takes the first,
+    /// because §7.2 makes the slots the layout and §4.6 finds a field by
+    /// searching it in order. So `{ $decl a 1  $decl a 2  $decl out a }.out`
+    /// was 2 while `{ $decl a 1  $decl a 2 }.a` was 1 — one name, two values,
+    /// no diagnostic. §4.11 already said "exactly one" for the `$decl` that
+    /// completes a `$fwd`; this is the same rule for the rest.
+    ///
+    /// Shadowing across *nested* blocks is untouched: this looks only at the
+    /// slots of the block being built.
+    fn refuseRebinding(self: *Interp, scope: *Scope, name: []const u8, span: Span) Error!void {
+        for (scope.decls.items) |slot| {
+            if (!Scope.nameEql(slot.name, name)) continue;
+            return self.rt.fail(
+                span,
+                "'{s}' is already declared in this block; a name is bound once (4.1) — rename one of them",
+                .{name},
+            );
+        }
+        for (scope.props) |p| {
+            if (!Scope.nameEql(p.name, name)) continue;
+            return self.rt.fail(
+                span,
+                "'{s}' is already a $prop of this block; a name is bound once (4.1) — rename one of them",
+                .{name},
+            );
+        }
+    }
+
     fn declare(
         self: *Interp,
         name_node: *const Node,
@@ -686,7 +818,10 @@ pub const Interp = struct {
     ) Error!void {
         const name = name_node.data.name;
         // A `$fwd` for this name makes *that* slot the layout position
-        // (§4.11); otherwise append a new one. Either way the slot exists
+        // (§4.11) and this `$decl` completes it; anything else bearing the
+        // name is a rebinding, which §4.1 does not allow.
+        if (scope.pendingSlot(name) == null) try self.refuseRebinding(scope, name, span);
+        // Otherwise append a new one. Either way the slot exists
         // before the initializer runs, which is what gives §4.1
         // self-reference: a `$func` that names itself reads this very slot
         // once the `$decl` completes.
@@ -749,6 +884,11 @@ pub const Interp = struct {
             },
             .block => |exprs| return self.evalBlockExprs(exprs, scope, node.span),
             .proj_name => |p| {
+                // A block literal in projection position is never built — see
+                // `projectBlockLiteral`.
+                if (p.target.data == .block) {
+                    return self.projectBlockLiteral(p.target.data.block, scope, p.field, node.span);
+                }
                 const target = (try self.eval(p.target, scope)).deref();
                 return self.projectName(target, p.field, node.span);
             },
@@ -913,11 +1053,24 @@ pub const Interp = struct {
         };
 
         const params = try self.arena.alloc(value.Param, decls.len);
-        for (decls, params) |*d, *p| {
+        for (decls, params, 0..) |*d, *p, i| {
             if (!d.isForm(.decl)) {
                 return self.rt.fail(d.span, "$func parameters must each be a $decl", .{});
             }
             const dops = d.data.form.operands;
+            // §3.4 makes the parameter list a group of `$decl`s, so §4.1's one
+            // binding per name applies here too: two parameters of one name
+            // take two frame slots (§7.2) and the second hides the first, so
+            // the argument passed for the first can never be read.
+            for (params[0..i]) |prior| {
+                if (Scope.nameEql(prior.name, dops[0].data.name)) {
+                    return self.rt.fail(
+                        d.span,
+                        "'{s}' is already a parameter of this $func; a name is bound once (4.1) — rename one of them",
+                        .{dops[0].data.name},
+                    );
+                }
+            }
             p.* = .{
                 .name = dops[0].data.name,
                 .default = &dops[1],
@@ -1878,6 +2031,57 @@ test "a prop that is a literal is shared, and still reads as itself (4.10)" {
         \\$decl b $call box (2)
         \\$decl r $call add ($call add (a.tag, b.tag), $call add (a.v, b.v))
     , "r", 17);
+}
+
+test "a block literal in projection position is never built (3.3)" {
+    // §3.3 makes `{ … $decl out e }.out` the way to return a computed value,
+    // so `projectBlockLiteral` reads the slot and skips the block. These pin
+    // what it has to answer identically to building one.
+
+    // A prop, not a slot: §4.10 makes access uniform over both.
+    try expectInt("$decl r { $prop tag 7  $decl v 1 }.tag", "r", 7);
+
+    // A closure projected out of a literal still reads that literal's scope —
+    // §7.3 captures the chain, and the scope is what is kept, not the block.
+    try expectInt(
+        \\$decl f { $decl a 5  $decl out $func () a }.out
+        \\$decl r $call f ()
+    , "r", 5);
+
+    // Storage projected out still aliases (§5.4).
+    try expectInt(
+        \\$decl c { $decl cell $mut $alloc 1  $decl out cell }.out
+        \\$decl w $set c 9
+        \\$decl r c
+    , "r", 9);
+
+    // Shadowing across nested blocks is untouched, and the inner name wins.
+    try expectInt("$decl r { $decl a 1  $decl out { $decl a 2  $decl o a }.o }.out", "r", 2);
+}
+
+test "a name is bound once in a block (4.1)" {
+    // Two slots of one name are two *fields*, not shadowing, and the block
+    // used to read them differently depending on where you stood: `a` inside
+    // was the last slot, `.a` from outside was the first. §4.11 already said
+    // "exactly one" for the `$decl` completing a `$fwd`.
+    try expectFails("$decl r { $decl a 1  $decl a 2  $decl out a }.out", "'a' is already declared in this block");
+    try expectFails("$decl a 1 $decl a 2", "'a' is already declared in this block");
+    try expectFails("$decl r { $prop a 1  $decl a 2  $decl out a }.out", "'a' is already a $prop of this block");
+    try expectFails("$decl r { $fwd a  $decl a 1  $fwd a  $decl out a }.out", "'a' is already declared in this block");
+    try expectFails("$decl r { $prop a 1  $prop a 2  $decl out 0 }.out", "'a' is already a $prop of this block");
+    // §3.4 makes a parameter list a group of `$decl`s, so the rule reaches it.
+    try expectFails("$decl f $func ($decl a 0, $decl a 0) a", "'a' is already a parameter of this $func");
+
+    // A `$fwd` and the one `$decl` that completes it are one slot, not two.
+    try expectInt("$decl r { $fwd a  $decl b $func () a  $decl a 7  $decl out $call b () }.out", "r", 7);
+
+    // Shadowing an enclosing binding is a different block, so it stays legal —
+    // including the intrinsic-aliasing idiom `$decl isub sub`.
+    try expectInt("$decl a 1 $decl r { $decl a 2  $decl out a }.out", "r", 2);
+}
+
+test "projecting a name a block literal does not have still fails (4.10)" {
+    try expectFails("$decl r { $decl a 1 }.b", "block has no field 'b'");
 }
 
 test "$call arity comes from the syntactic group (2.4)" {
