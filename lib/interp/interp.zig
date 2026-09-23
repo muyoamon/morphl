@@ -588,12 +588,11 @@ pub const Interp = struct {
 
         const shape = try self.sharedShape(exprs, scope, self.shape_cache.get(exprs.ptr));
         const bb = self.bkt(.block);
-        const values = try self.arena.alloc(Value, scope.decls.items.len);
-        for (scope.decls.items, values) |slot, *v| v.* = slot.value.?;
+        const n = scope.decls.items.len;
 
         if (self.stats) |st| {
             st.blk_n += 1;
-            st.blk_bytes += @sizeOf(value.Block) + values.len * @sizeOf(Value);
+            st.blk_bytes += @sizeOf(value.Block) + n * @sizeOf(Value);
             // A profile is never worth failing a run for, so a full table
             // just stops counting.
             if (st.shape_n.getOrPut(st.backing, shape)) |e| {
@@ -601,8 +600,8 @@ pub const Interp = struct {
                 e.value_ptr.* += 1;
             } else |_| {}
         }
-        const b = try self.arena.create(value.Block);
-        b.* = .{ .shape = shape, .values = values.ptr };
+        const b = try value.allocBlock(self.arena, shape, n);
+        for (scope.decls.items, b.fields()) |slot, *v| v.* = slot.value.?;
         self.unbkt(bb);
         if (ran.recyclable) self.releaseScope(scope);
         return .{ .block = b };

@@ -35,6 +35,20 @@ pub const Str = struct { bytes: []const u8 };
 /// A group's elements, boxed for the same reason.
 pub const Group = struct { elems: []Value };
 
+/// A block of `n` `$decl` slots, header and values in one allocation.
+///
+/// The caller fills `fields()` afterwards — the values cannot be passed in,
+/// because their home does not exist until this returns.
+pub fn allocBlock(arena: Allocator, shape: *const Shape, n: usize) Allocator.Error!*Block {
+    // Words rather than bytes so the alignment rides on the type; measured
+    // the same as `alignedAlloc` at a runtime size, and needs no `Alignment`.
+    const words = (@sizeOf(Block) + n * @sizeOf(Value) + 7) / 8;
+    const raw = try arena.alloc(u64, words);
+    const b: *Block = @ptrCast(raw.ptr);
+    b.* = .{ .shape = shape };
+    return b;
+}
+
 /// A `Str` value from bytes the caller already owns — the bytes are not
 /// copied, only the box is allocated.
 pub fn strVal(arena: Allocator, bytes: []const u8) Allocator.Error!Value {
@@ -144,19 +158,20 @@ pub const Shape = struct {
 
 pub const Block = struct {
     shape: *const Shape,
-    /// Parallel to `shape.names`, one per `$decl` slot — and *unsized*,
-    /// because the count is the shape's. A block value is the single most
-    /// allocated thing stage 0 makes (75% of its memory lowering `types.mpl`),
-    /// so the length word it would otherwise carry is 8 bytes per block that
-    /// the literal already knows.
-    values: [*]Value,
+    // The `$decl` values follow this header *inline* — one allocation, and no
+    // pointer to them. A block value is the single most allocated thing stage 0
+    // makes (three quarters of its memory), so both the length word and the
+    // pointer word are worth not having: the count is the shape's, and the
+    // address is this one plus the header. See `allocBlock`.
 
-    pub fn names(self: *const Block) []const []const u8 {
+    pub inline fn names(self: *const Block) []const []const u8 {
         return self.shape.names;
     }
 
-    pub fn fields(self: *const Block) []Value {
-        return self.values[0..self.shape.names.len];
+    pub inline fn fields(self: *const Block) []Value {
+        const raw: [*]u8 = @ptrCast(@constCast(self));
+        const p: [*]Value = @ptrCast(@alignCast(raw + @sizeOf(Block)));
+        return p[0..self.shape.names.len];
     }
 
     pub fn props(self: *const Block) []Field {
@@ -466,15 +481,11 @@ pub fn propBlock(arena: Allocator, props: []const Field) Allocator.Error!Value {
 /// (§2) and tests — where there is no AST node to intern a shape against.
 pub fn makeBlock(arena: Allocator, decls: []const Field, props: []const Field) Allocator.Error!Value {
     const names = try arena.alloc([]const u8, decls.len);
-    const values = try arena.alloc(Value, decls.len);
-    for (decls, names, values) |f, *n, *v| {
-        n.* = f.name;
-        v.* = f.value;
-    }
+    for (decls, names) |f, *n| n.* = f.name;
     const shape = try arena.create(Shape);
     shape.* = .{ .names = names, .props = try arena.dupe(Field, props) };
-    const b = try arena.create(Block);
-    b.* = .{ .shape = shape, .values = values.ptr };
+    const b = try allocBlock(arena, shape, decls.len);
+    for (decls, b.fields()) |f, *v| v.* = f.value;
     return .{ .block = b };
 }
 
