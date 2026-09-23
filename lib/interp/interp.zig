@@ -32,6 +32,9 @@ const parser = @import("parser");
 const value = @import("value.zig");
 const builtins = @import("builtins.zig");
 
+/// TEMPORARY: re-exported so the driver can turn the `read_file` trace on.
+pub const builtins_trace_reads = &builtins.trace_reads;
+
 const Span = diag.Span;
 const Diagnostics = diag.Diagnostics;
 const Node = ast.Node;
@@ -144,6 +147,12 @@ pub const Interp = struct {
         /// counted. For a function returning a scalar this is exactly the
         /// garbage it produces, since nothing it built can have escaped.
         incl_name: ?[]const u8 = null,
+        /// Rank the report by *calls* rather than bytes. A function that scans
+        /// without allocating — `find_ty_at`, `same` — is invisible in a
+        /// byte-ranked profile however much of the run it is, and stage 0's
+        /// time is very nearly proportional to calls (measured: 0.054 µs a
+        /// lookup, flat across a 1000x range of program sizes).
+        by_calls: bool = false,
         incl_depth: u32 = 0,
         incl_bytes: u64 = 0,
         incl_calls: u64 = 0,
@@ -242,11 +251,19 @@ pub const Interp = struct {
             var list: std.ArrayListUnmanaged(Entry) = .empty;
             var it = self.rows.iterator();
             while (it.next()) |e| try list.append(self.backing, .{ .name = e.key_ptr.*, .row = e.value_ptr.* });
-            std.mem.sort(Entry, list.items, {}, struct {
-                fn lt(_: void, x: Entry, y: Entry) bool {
-                    return x.row.bytes > y.row.bytes;
-                }
-            }.lt);
+            if (self.by_calls) {
+                std.mem.sort(Entry, list.items, {}, struct {
+                    fn lt(_: void, x: Entry, y: Entry) bool {
+                        return x.row.calls > y.row.calls;
+                    }
+                }.lt);
+            } else {
+                std.mem.sort(Entry, list.items, {}, struct {
+                    fn lt(_: void, x: Entry, y: Entry) bool {
+                        return x.row.bytes > y.row.bytes;
+                    }
+                }.lt);
+            }
             try w.print("\n{d:.2} GB allocated in total; bytes are charged to the innermost function running.\n\n", .{
                 @as(f64, @floatFromInt(self.total)) / (1024.0 * 1024.0 * 1024.0),
             });

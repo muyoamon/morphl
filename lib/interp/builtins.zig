@@ -289,8 +289,14 @@ fn printFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
 /// from outside — "bytes received from C become a `Str` only through a
 /// validating library function returning `option Str`" — and a file is exactly
 /// that case, so unreadable and non-UTF-8 both come back as `none`.
+/// TEMPORARY: set from `MORPHL_TRACE_READS`. Stage 1's `$import` loads a
+/// module by calling §8's `read_file`, so one line per call counts how many
+/// times each module is actually loaded — which `put_snap` can undo.
+pub var trace_reads: bool = false;
+
 fn readFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const path = try wantStr(rt, args, 0, "read_file", span);
+    if (trace_reads) std.debug.print("READ {s}\n", .{path});
     const p = rt.platform orelse
         return rt.fail(span, "read_file is unavailable: no platform was configured", .{});
     const bytes = p.readFile(rt.arena, path) catch |e| switch (e) {

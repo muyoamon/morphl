@@ -353,6 +353,13 @@ pub fn main(init: process.Init.Minimal) !void {
                 // says which morphl function spent it.
                 var stats: interp.Interp.Stats = .{ .backing = arena };
                 if (init.environ.getPosix("MORPHL_STATS") != null) ctx.stats = &stats;
+                if (init.environ.getPosix("MORPHL_TRACE_READS") != null) {
+                    interp.builtins_trace_reads.* = true;
+                }
+                if (init.environ.getPosix("MORPHL_CALLS") != null) {
+                    stats.by_calls = true;
+                    ctx.stats = &stats;
+                }
                 if (init.environ.getPosix("MORPHL_INCLUSIVE")) |n| {
                     stats.incl_name = n;
                     ctx.stats = &stats;

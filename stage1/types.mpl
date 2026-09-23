@@ -493,7 +493,21 @@ $decl same $func ($decl a proto_ty, $decl b proto_ty) $match a (
       $case {$prop tag "bnd"}   false,
       $case {$prop tag "over"}  false,
       $case {$prop tag "tmpl"}  false,
-      $case b ($call eq_str ($call show (a), $call show (b)))
+      // Both sides are leaves by now, and a leaf carries nothing — so equal
+      // tags *are* equal types. This used to be `eq_str (show (a), show (b))`,
+      // which renders two constants through a fifteen-arm match to compare two
+      // tags: 21M calls to `show` on one emit, 10% of every call stage 0 made,
+      // allocating nothing and answering a question the tags already settle.
+      $case b $match a (
+      $case {$prop tag "int"} ($match b ($case {$prop tag "int"} true, $case b false)),
+      $case {$prop tag "float"} ($match b ($case {$prop tag "float"} true, $case b false)),
+      $case {$prop tag "str"} ($match b ($case {$prop tag "str"} true, $case b false)),
+      $case {$prop tag "true"} ($match b ($case {$prop tag "true"} true, $case b false)),
+      $case {$prop tag "false"} ($match b ($case {$prop tag "false"} true, $case b false)),
+      $case {$prop tag "unit"} ($match b ($case {$prop tag "unit"} true, $case b false)),
+      $case {$prop tag "bottom"} ($match b ($case {$prop tag "bottom"} true, $case b false)),
+          $case a false
+        )
     )
 )
 
