@@ -660,6 +660,15 @@ $decl prefix_thru $func ($decl t0 T.proto_ty)
         $case t ""
       ) }.r
 
+// Rendering a type is what a diagnostic costs, and §7.1 makes morphl strict —
+// so a message bound with `$decl` is built on *every* call, not only the ones
+// that report. `emit_inject` runs at every coercion, and building this one
+// eagerly put `T.show` at 438,239 calls and 21% of an emit that reports
+// nothing at all. Behind a `$func` it is built only when it is used.
+$decl coerce_err $func ($decl st proto_est, $decl ft T.proto_ty, $decl wt T.proto_ty)
+  $call eerr (st, $call concat ("cannot coerce ", $call concat ($call T.show (ft),
+      $call concat (" to ", $call T.show (wt)))))
+
 $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                          $decl src "", $decl from 0, $decl want 0)
   { $decl wt $call type_at (ts, want)
@@ -677,8 +686,6 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
     // already discriminated, just against a different set of positions.
     $decl fs $if free T.tys.nil ($call union_members (ft))
     $decl k $if free -1 ($call member_slot (ws, ft))
-    $decl bad $call concat ("cannot coerce ", $call concat ($call T.show (ft),
-                  $call concat (" to ", $call T.show (wt))))
     // §7.8 again: coercing *from* ⊥ is coercing something that never arrives.
     // The code is unreachable — `mpl_panic` does not return — so there is
     // nothing to write and nothing to complain about.
@@ -694,9 +701,9 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
              ($call emit_prefix_copy (st, dest, src, $if ($call eq_str (how, "u")) ".u.m0" "",
                   $call T.fields.length (wf, 0), 0))
         ($if ($call not ($call T.tys.is_nil (fs)))
-             ($if ($call T.tys.is_nil (ws)) ($call eerr (st, bad))
+             ($if ($call T.tys.is_nil (ws)) ($call coerce_err (st, ft, wt))
                   ($call emit_retag (st, ts, dest, src, ft, fs, ws, wt)))
-        ($if ($call lt (k, 0)) ($call eerr (st, bad))
+        ($if ($call lt (k, 0)) ($call coerce_err (st, ft, wt))
             { $decl a  $call assign (st, $call concat (dest, ".tag"), $call int_to_str (k))
               // The payload is not always a plain move. `member_slot` finds a
               // member by `T.same` and *then* by `T.sub`, so the member chosen
