@@ -1434,6 +1434,19 @@ $decl emit_group $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.int
     $decl g1  $set st.grp IR.ints.nil
     $decl w0  $call emit_wrappers (st, fs, g, gi, ts, 0) }.w0
 
+// A group §6a declines to contify still has to be *emitted*. `emit_fns` skips
+// every member, expecting `emit_group` to write it, so refusing without this
+// left the members declared, called and never defined — C that cannot link.
+// Emitted plainly, a tail call between members is an ordinary call: correct,
+// but not §7.7's guarantee, which is the same position as the indirect case.
+$decl emit_group_plain $func ($decl st proto_est, $decl fs IR.fns.node,
+                              $decl g IR.ints.node, $decl ts T.tys.node) $match g (
+  $case {$prop tag "cons"}
+    $do ($call emit_fn (st, g.head, $call fn_at (fs, g.head), ts))
+        ($call emit_group_plain (st, fs, $call IR.ints.val (g.tail), ts)),
+  $case g ()
+)
+
 $decl emit_groups $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.groups.node,
                          $decl gi 0, $decl ts T.tys.node) $match gs (
   $case {$prop tag "cons"}
@@ -1441,7 +1454,8 @@ $decl emit_groups $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.g
       $decl f0 $call fn_at (fs, $call IR.ints.nth (g, 0))
       $decl ok $call same_sig (fs, g, $call IR.ints.val (f0.params), f0.result)
       $decl d  $if ok ($call emit_group (st, fs, g, gi, ts))
-                  ($call eerr (st, "a mutually tail-recursive group whose members differ in signature is not contified yet"))
+          ($do ($call eerr (st, "a mutually tail-recursive group whose members differ in signature is not contified yet; its members are emitted as ordinary functions, so a tail call between them is a plain call and §7.7 does not hold for it"))
+               ($call emit_group_plain (st, fs, g, ts)))
       $decl r  $call emit_groups (st, fs, $call IR.groups.val (gs.tail), $call add (gi, 1), ts) }.r,
   $case gs ()
 )
@@ -1476,12 +1490,33 @@ $decl emit_globals $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.t
   $case fs ()
 )
 
-$decl emit_inits $func ($decl st proto_est, $decl fs IR.fns.node, $decl i 0) $match fs (
+// §3.3's top-level expressions, at their position in §4.10's order. `after` is
+// how many globals precede one, so everything with `after` equal to the global
+// about to be assigned runs first. The result is dropped — that is what "and is
+// discarded" means — and `(void)` says so to a C compiler that might warn.
+// The whole list is scanned at every index rather than consumed as it goes: a
+// file and each module it imports both append here, so the entries are not in
+// `after` order and a walk that kept its place would stop at the first one out
+// of turn. There are a handful of effects against a few thousand functions, so
+// the cost is nothing and the independence is worth having.
+$decl emit_effects $func ($decl st proto_est, $decl es IR.effects.node, $decl i 0) $match es (
   $case {$prop tag "cons"}
-    { $decl d $if fs.head.thunk
+    $do ($if ($call eq_int (es.head.after, i))
+             ($call say (st, $call concat ("  (void)",
+                 $call concat ($call fn_name (es.head.fn), "(NULL);\n"))))
+             ())
+        ($call emit_effects (st, $call IR.effects.val (es.tail), i)),
+  $case es ()
+)
+
+$decl emit_inits $func ($decl st proto_est, $decl fs IR.fns.node, $decl es IR.effects.node,
+                        $decl i 0) $match fs (
+  $case {$prop tag "cons"}
+    { $decl e $call emit_effects (st, es, i)
+      $decl d $if fs.head.thunk
           ($call assign (st, $call gbl_name (i), $call concat ($call fn_name (i), "(NULL)"))) ()
-      $decl r $call emit_inits (st, $call IR.fns.val (fs.tail), $call add (i, 1)) }.r,
-  $case fs ()
+      $decl r $call emit_inits (st, $call IR.fns.val (fs.tail), es, $call add (i, 1)) }.r,
+  $case fs ($call emit_effects (st, es, i))
 )
 
 $decl mem_int_e $func ($decl xs IR.ints.node, $decl i 0) $match xs (
@@ -1530,7 +1565,7 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl d1 $call emit_fns (st, fs, ts, 0, gs)
     $decl d3 $call emit_groups (st, fs, gs, 0, ts)
     $decl i0 $call say (st, "\nstatic void mpl_init(void) {\n")
-    $decl i1 $call emit_inits (st, fs, 0)
+    $decl i1 $call emit_inits (st, fs, $call IR.effects.val (p.effs), 0)
     $decl i2 $call say (st, "}\n")
     $decl mi  $call find_main (fs, 0)
     $decl mfn $if ($call lt (mi, 0)) IR.proto_fn ($call IR.fns.nth (fs, mi))

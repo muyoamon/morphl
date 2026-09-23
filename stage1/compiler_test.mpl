@@ -114,7 +114,7 @@ $decl one  $call IR.ints.cons (0, IR.ints.nil)
 $decl one_arg $call IR.exprs.cons ($call IR.e_int (0, 0), IR.exprs.nil)
 
 $decl prog_of $func ($decl f IR.proto_fn)
-  $call IR.program (tys1, $call IR.fns.cons (f, IR.fns.nil), IR.groups.nil, 0)
+  $call IR.program (tys1, $call IR.fns.cons (f, IR.fns.nil), IR.groups.nil, 0, IR.effects.nil)
 
 $decl fn_of $func ($decl b IR.proto_expr, $decl st P.boolean)
   $call IR.fn ("f", one, 0, one, b, st, false, IR.ints.nil)

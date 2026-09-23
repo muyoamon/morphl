@@ -403,6 +403,25 @@ $decl vids $func ($decl st proto_vst, $decl cx proto_vcx)
         ($call err (st, cx, d,
             "two nodes share this index; §9.3 makes a node's index distinct in a program")) }.out
 
+// §3.3's top-level effects. Two things the tree asserts about each: the
+// function it names exists, and that function takes no arguments — `mpl_init`
+// calls it with none, so an arity mismatch here reaches C the way the one
+// `verify` already catches for a direct call would.
+$decl veffects $func ($decl st proto_vst, $decl cx proto_vcx, $decl es IR.effects.node)
+  $match es (
+    $case {$prop tag "cons"}
+      $do ($do ($call need (st, cx, -1, es.head.fn, cx.nfuncs, "effect"))
+               ($if ($call lt (es.head.fn, cx.nfuncs))
+                    ($if ($call IR.ints.is_nil ($call IR.ints.val (
+                             ($call IR.fns.nth (cx.funcs, es.head.fn)).params)))
+                         0
+                         ($call err (st, cx, -1,
+                             "a top-level effect names a function that takes parameters; §3.3 runs it with none")))
+                    0))
+          ($call veffects (st, cx, $call IR.effects.val (es.tail))),
+    $case es 0
+  )
+
 $decl verify $func ($decl p IR.proto_program)
   { $decl st $call vstate ()
     $decl fs $call IR.fns.val (p.funcs)
@@ -414,5 +433,6 @@ $decl verify $func ($decl p IR.proto_program)
                 ($call need (st, cx, -1, p.entry, cx.nfuncs, "entry"))
     $decl b $call vgroups (st, cx, $call IR.groups.val (p.groups))
     $decl c $call vfns (st, cx, fs, 0)
+    $decl e $call veffects (st, cx, $call IR.effects.val (p.effs))
     $decl d $call vids (st, cx)
     $decl out $call Pa.diags.reverse (st.errs, Pa.diags.nil) }.out

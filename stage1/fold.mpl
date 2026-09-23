@@ -150,4 +150,4 @@ $decl fold_fns $func ($decl xs IR.fns.node, $decl acc IR.fns.node) $match xs (
 // §9.2: "a pipeline is ordinary composition". This is the whole interface.
 $decl fold $func ($decl p IR.proto_program)
   $call IR.program (p.types, $call fold_fns ($call IR.fns.val (p.funcs), IR.fns.nil),
-      p.groups, p.entry)
+      p.groups, p.entry, p.effs)

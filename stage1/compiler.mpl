@@ -68,7 +68,7 @@ $decl artifact $func ($decl p "", $decl d Pa.diags.node)
 // A program with nothing in it: what a step that could not do its job returns,
 // so that the *next* step still has a `program` to be handed and the
 // diagnostics carry the reason (§4.15: expected failures are values).
-$decl empty_program $call IR.program (T.tys.nil, IR.fns.nil, IR.groups.nil, 0)
+$decl empty_program $call IR.program (T.tys.nil, IR.fns.nil, IR.groups.nil, 0, IR.effects.nil)
 
 // ------------------------------------------------------------------- parse
 

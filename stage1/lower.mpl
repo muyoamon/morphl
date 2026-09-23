@@ -236,6 +236,10 @@ $decl lstate $func ()
     // Counting is what tells a member that needs it from one that does not:
     // naming itself is only the commonest case, not the only one.
     $decl nplace $mut $alloc 0
+    // §3.3's top-level expressions, in the order they were lowered. A file and
+    // a module both produce them and both reach this one list, which is why it
+    // lives here rather than being threaded through either walk.
+    $decl effs   $mut $alloc IR.effects.node
     // §4.14: an `$import` resolves relative to the entry file, and a module
     // sees "the root block plus what it imports, nothing else" — so both have
     // to be reachable from wherever an import is lowered.
@@ -584,6 +588,20 @@ $decl has_fields $func ($decl t0 T.proto_ty)
   { $decl t $call T.unroll (t0)
     $decl r $match t (
         $case {$prop tag "block"} ($call not ($call T.fields.is_nil ($call T.fields.val (t.fields)))),
+        $case t false
+      ) }.r
+
+// Does a value of this type occupy nothing at run time? Only a block with no
+// `$decl` fields does — §7.2 gives it an empty layout, so the value *is* its
+// own type and rebuilding it is free. Everything else has content: a union
+// carries §7.5's discriminator, and a leaf carries a word. This is the test
+// `prop_const` needs, and asking `has_fields` instead was a miscompile — a
+// union is not a block, so it answered "no fields" and the prop was emitted as
+// a zeroed struct with tag 0 rather than §4.8a's first member injected.
+$decl empty_val $func ($decl t0 T.proto_ty)
+  { $decl t $call T.unroll (t0)
+    $decl r $match t (
+        $case {$prop tag "block"} ($call T.fields.is_nil ($call T.fields.val (t.fields))),
         $case t false
       ) }.r
 
@@ -1213,6 +1231,89 @@ $decl find_completing $func ($decl xs Pa.nodes.node, $decl nm "") $match xs (
 // §4.10 makes that source order for a `$decl`, and §4.11 makes `$fwd` the way
 // to move it earlier: "`$fwd` reserves a layout slot at its own position". So a
 // `$fwd`'d name enters the list where the `$fwd` stands, carrying the value its
+// Every member of a module bound at once, which is what a `$prop` body and a
+// `$func` member's body both resolve against (§4.10). Declared here rather than
+// beside `with_scope` because §3.3's effect items are lowered above and need it.
+$decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $match xs (
+  $case {$prop tag "cons"}
+    $call with_props ($if ($call eq_str (xs.head.kind, "effect")) e
+                         ($call benv.cons ($call bind_ent5 (xs.head.name, "prop", 0, T.t_bot, mid), e)),
+        $call mprops.val (xs.tail), mid),
+  $case xs e
+)
+
+// ------------------------------------------------------- §3.3's top-level effects
+//
+// "A non-`$decl` expression runs for effect and is discarded" — the *value* is
+// discarded, not the expression. §4.10 runs a file's items once in **source
+// order**, so such an item has a position among them, and a backend that drops
+// it produces a program missing whatever it did. `parser.mpl` builds §2.2's
+// arity table with twenty-three of them; without them the compiled parser
+// reports `unknown keyword '$decl'` for every form in its input.
+//
+// `after` is the index in the function table before whose initialisation the
+// effect runs. For a file's own item that is the *field* index — §4.11 is why
+// it cannot be the item's index, since a `$fwd` takes a field at its own
+// position and the `$decl` completing it takes none. For a module's item it is
+// the effect's own lifted index, which sits between the member lowered before
+// it and the one lowered after. Both say the same thing to `emit_inits`.
+$decl lower_effect $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
+                          $decl after 0)
+  { $decl o   $call take_slots (st)
+    $decl idx $call reserve_lifted (st)
+    // In tail position: this is a whole function body, so §7.7 applies to it
+    // exactly as it does to a thunk's. `verify` reports every unmarked tail
+    // call otherwise, which is how the `false` here was found.
+    $decl v   $call lval ($call lower (st, e, n, true))
+    // Not a thunk: a thunk *is* a global and is named by its static. This has
+    // no name and nothing reads it, so it is an ordinary zero-argument
+    // function that is called and whose result is dropped.
+    $decl f   $call IR.fn ("(top-level effect)", IR.ints.nil, $call intern (st, v.ty),
+                  $call take_slots (st), v.ir, false, false, IR.ints.nil)
+    $decl put $call put_lifted (st, idx, f)
+    $decl b   $call restore_slots (st, o)
+    $decl at  $if ($call lt (after, 0)) idx after
+    $decl s   $set st.effs ($call IR.effects.cons ($call IR.effect (at, idx),
+                   $call IR.effects.val (st.effs)))
+    $decl r   0 }.r
+
+// A file's own items, paired with the field they stand before. Counting a name
+// only the first time it is bound is exactly the rule that builds the field
+// list, which is what makes the two agree across §4.11's `$fwd`.
+$decl eff_item $func ($decl a 0, $decl n Pa.proto_node) { $decl after a  $decl node n }
+$decl proto_eff_item $call eff_item (0, Pa.proto_node)
+$decl eff_items $specialize P.list proto_eff_item
+
+$decl binder_of $func ($decl n Pa.proto_node)
+  $if ($call is_form (n, "decl")) ($call name_of ($call op (n, 0)))
+      ($if ($call is_form (n, "fwd")) ($call name_of ($call op (n, 0))) "")
+
+$decl scan_effects $func ($decl xs Pa.nodes.node, $decl k 0, $decl seen strs.node,
+                          $decl acc eff_items.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl nm  $call binder_of (xs.head)
+      $decl new $call and ($call not ($call eq_str (nm, "")),
+                    $call not ($call mem_str (seen, nm)))
+      $decl r   $call scan_effects ($call Pa.nodes.val (xs.tail),
+                    $if new ($call add (k, 1)) k,
+                    $if new ($call strs.cons (nm, seen)) seen,
+                    $if ($call eq_str (nm, ""))
+                        ($call eff_items.cons ($call eff_item (k, xs.head), acc)) acc) }.r,
+  $case xs ($call eff_items.reverse (acc, eff_items.nil))
+)
+
+// Everything standing before field `k`, lowered here so it sees exactly the
+// names bound so far (§4.10). The remainder is handed back so the walk over
+// the fields keeps its place.
+$decl eff_split $func ($decl st proto_lst, $decl e benv.node, $decl xs eff_items.node,
+                       $decl k 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (k, xs.head.after)) xs
+        ($do ($call lower_effect (st, e, xs.head.node, xs.head.after))
+             ($call eff_split (st, e, $call eff_items.val (xs.tail), k))),
+  $case xs xs
+)
+
 // completing `$decl` gives it — and the completing `$decl` is then skipped,
 // having already been counted. That ordering is what `with_scope` reads.
 $decl file_props_at $func ($decl all Pa.nodes.node, $decl xs Pa.nodes.node,
@@ -1222,15 +1323,19 @@ $decl file_props_at $func ($decl all Pa.nodes.node, $decl xs Pa.nodes.node,
             ($call name_of ($call op (xs.head, 0)))
             ($if ($call is_form (xs.head, "decl")) ($call name_of ($call op (xs.head, 0)))
                  ($if ($call is_form (xs.head, "prop")) ($call name_of ($call op (xs.head, 0))) ""))
-      $decl seen $if ($call eq_str (nm, "")) true
+      // §3.3: an item that binds nothing is not skipped — it runs for effect,
+      // and it has to keep its place among the members so §4.10's order holds.
+      $decl bare $call eq_str (nm, "")
+      $decl seen $if bare false
                      ($call not ($call mprops.is_nil ($call find_mprop (acc, nm))))
-      $decl a2 $if seen acc
+      $decl a2 $if bare ($call mprops.cons ($call mprop ("", xs.head, "effect"), acc))
+          ($if seen acc
           ($if ($call is_form (xs.head, "fwd"))
                ($call mprops.cons ($call mprop (nm,
                     $call op ($call find_completing (all, nm), 1), "decl"), acc))
           ($if ($call is_form (xs.head, "prop"))
                ($call mprops.cons ($call mprop (nm, $call op (xs.head, 1), "prop"), acc))
-               ($call mprops.cons ($call mprop (nm, $call op (xs.head, 1), "decl"), acc))))
+               ($call mprops.cons ($call mprop (nm, $call op (xs.head, 1), "decl"), acc)))))
       $decl r $call file_props_at (all, $call Pa.nodes.val (xs.tail), a2) }.r,
   $case xs ($call mprops.reverse (acc, mprops.nil))
 )
@@ -1238,10 +1343,25 @@ $decl file_props_at $func ($decl all Pa.nodes.node, $decl xs Pa.nodes.node,
 $decl file_props $func ($decl xs Pa.nodes.node, $decl acc mprops.node)
   $call file_props_at (xs, xs, acc)
 
+// §4.10's source order, which for a module is what `force_props` *is*: each
+// member's thunk takes the next lifted index, so index order is source order.
+// An effect takes one of those indices too and `mpl_init` runs it there, which
+// is how it lands between the member before it and the member after.
+$decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node)
+  { $decl ms $call find_mod (st.mods, mid)
+    $decl r $match ms (
+        $case {$prop tag "cons"}
+          { $decl pe $call with_props (ms.head.env, $call mprops.val (ms.head.props), ms.head.id)
+            $decl z  $call lower_effect (st, pe, pn, -1) }.z,
+        $case ms 0
+      ) }.r
+
 $decl force_props $func ($decl st proto_lst, $decl mid 0, $decl xs mprops.node,
                          $decl n Pa.proto_node) $match xs (
   $case {$prop tag "cons"}
-    $do ($call lower_prop (st, mid, xs.head.name, n))
+    $do ($if ($call eq_str (xs.head.kind, "effect"))
+             ($call mod_effect (st, mid, xs.head.node))
+             ($do ($call lower_prop (st, mid, xs.head.name, n)) 0))
         ($call force_props (st, mid, xs.tail, n)),
   $case xs 0
 )
@@ -1504,11 +1624,14 @@ $decl fn_ty $func ($decl st proto_lst, $decl f IR.proto_fn)
 $decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $decl nm "",
                         $decl seen P.boolean) $match xs (
   $case {$prop tag "cons"}
+    // §3.3's effect items bind nothing, so they enter no scope — they are in
+    // the member list only to hold their position in §4.10's order.
     { $decl hit $call eq_str (xs.head.name, nm)
       // Up to and *including* the member itself: §5.7 lets a type-only position
       // name a declaration that is in progress, which is how a recursive type
       // is written at all (§5.5). Only what comes after is out of scope.
-      $decl vis $if ($call eq_str (xs.head.kind, "prop")) true ($if seen false true)
+      $decl vis $if ($call eq_str (xs.head.kind, "effect")) false
+                    ($if ($call eq_str (xs.head.kind, "prop")) true ($if seen false true))
       $decl e2  $if vis
           ($call benv.cons ($call bind_ent6 (xs.head.name, "prop", 0, T.t_bot, mid, -1), e)) e
       $decl sn  $if seen true hit
@@ -1516,12 +1639,6 @@ $decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $d
   $case xs e
 )
 
-$decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $match xs (
-  $case {$prop tag "cons"}
-    $call with_props ($call benv.cons ($call bind_ent5 (xs.head.name, "prop", 0, T.t_bot, mid), e),
-        $call mprops.val (xs.tail), mid),
-  $case xs e
-)
 
 // A function-valued prop lifts like any other `$func` (§7.3) — except that a
 // prop has no position at which a capture could be evaluated, because it has
@@ -1754,6 +1871,43 @@ $decl prop_const $func ($decl st proto_lst, $decl d proto_mdone)
     $decl r $call lres4 ($call IR.e_block ($call intern (st, t), IR.bslots.nil), t,
                  d.mod, d.tmpl) }.r
 
+// A `$union`-valued prop projected a second time. §9.3 gives every node its own
+// index, so the tree cannot be shared and something has to be built — but the
+// *type* is settled, and for a `$union` deriving it is the whole expense:
+// `union_ty` lowers every member to read its type off, and a prop that names
+// itself pays §5.5's two passes on top. §4.8a makes the value the **first
+// member alone**, and §5.7 never evaluates the ones after it, so a replay
+// lowers one member against the join the memo already holds.
+//
+// Re-deriving it in full is correct and unaffordable: it took `front.mpl` from
+// 0.60 GB to 2.67 GB of `P.list` cons cells and over the cap, because prelude's
+// `node` is projected at every list operation in the program.
+$decl replay_union $func ($decl st proto_lst, $decl m proto_mod,
+                          $decl pn Pa.proto_node, $decl d proto_mdone)
+  { $decl pe  $call with_props (m.env, $call mprops.val (m.props), m.id)
+    $decl ms  $call group_items ($call op (pn, 0))
+    $decl fst $call lval ($call lower (st, pe, $call Pa.nodes.nth (ms, 0), false))
+    $decl ty  $call T.tval (d.ty)
+    $decl ir  $if ($call T.same (ty, fst.ty)) fst.ir
+                  ($call IR.e_copy ($call intern (st, ty), fst.ir))
+    $decl r   $call lres4 (ir, ty, d.mod, d.tmpl) }.r
+
+// A prop lowered once already and named again. Everything but a `$union` is
+// rebuilt by lowering its source afresh, which is what the first projection
+// did — cheap for a literal, and required for a block with fields, whose
+// `$decl`s take slots in *this* frame and so cannot be copied from another.
+$decl lower_prop_replay $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
+                               $decl n Pa.proto_node, $decl d proto_mdone)
+  { $decl f $call find_mprop (m.props, nm)
+    $decl r $match f (
+        $case {$prop tag "cons"}
+          ($if ($call is_form (f.head.node, "union"))
+               ($call replay_union (st, m, f.head.node, d))
+               ($call lower_prop_ast (st, m, nm, f.head.node, n, f.head.kind))),
+        $case f ($call lres ($call IR.e_unit ($call err (st, $call concat ("no field '",
+            $call concat (nm, "'")), n)), T.t_bot))
+      ) }.r
+
 $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                            $decl n Pa.proto_node)
   { $decl d $call find_mdone (m.done, nm)
@@ -1763,8 +1917,8 @@ $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
           ($if ($call eq_str (d.head.kind, "tmpl"))   ($call prop_const (st, d.head))
           ($if ($call eq_str (d.head.kind, "tied"))   ($call prop_const (st, d.head))
           ($if ($call eq_str (d.head.kind, "value"))
-               ($if ($call has_fields (d.head.ty)) ($call lower_prop_new (st, m, nm, n))
-                    ($call prop_const (st, d.head)))
+               ($if ($call empty_val (d.head.ty)) ($call prop_const (st, d.head))
+                    ($call lower_prop_replay (st, m, nm, n, d.head)))
                // §5.5: the name stands for `R` while its own body is derived,
                // and the binder is discharged when that finishes. The tree is
                // a placeholder too — a prop can only reach itself from a
@@ -2043,9 +2197,14 @@ $decl topfn $func ($decl f IR.proto_fn, $decl m 0, $decl tm 0)
   { $decl fn f  $decl mod m  $decl tmpl tm }
 
 $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nodes.node,
-                       $decl fts T.fields.node, $decl acc IR.fns.node) $match fts (
+                       $decl fts T.fields.node, $decl acc IR.fns.node,
+                       $decl effi eff_items.node, $decl k 0)
+  $match fts (
   $case {$prop tag "cons"}
-    { $decl nm   fts.head.name
+    // §4.10: whatever stands before this field in source order runs before it,
+    // and sees exactly the names bound so far — which is what `e` holds here.
+    { $decl sp   $call eff_split (st, e, effi, k)
+      $decl nm   fts.head.name
       $decl fty  fts.head.ty
       $decl it   $call find_completing (items, nm)
       $decl init $call op (it, 1)
@@ -2070,8 +2229,13 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
                      ($call benv.cons ($call bind_ent6 (nm, "global", idx, fty,
                           fm.mod, fm.tmpl), e))
       $decl r    $call lower_top (st, e2, items, $call T.fields.val (fts.tail),
-                     $call IR.fns.cons (f, acc)) }.r,
-  $case fts ($call fns_acc ($call IR.fns.reverse (acc, IR.fns.nil), 0))
+                     $call IR.fns.cons (f, acc), $call eff_items.val (sp),
+                     $call add (k, 1)) }.r,
+  // Anything after the last `$decl` still runs (§3.3), so the tail consumes
+  // what is left rather than dropping it.
+  $case fts
+    { $decl sp $call eff_split (st, e, effi, k)
+      $decl r  $call fns_acc ($call IR.fns.reverse (acc, IR.fns.nil), 0) }.r
 )
 
 // §6a's cheap case needs to know whether a function tail-calls *itself*, and
@@ -2108,10 +2272,15 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     // A global's index is its position among the top-level `$decl`s, so the
     // lifted functions take the indices after them.
     $decl fnbased $set st.fnbase ($call T.fields.length (flds, 0))
-    $decl done $call lower_top (st, env, items, flds, IR.fns.nil)
+    $decl effi $call scan_effects (items, 0, strs.nil, eff_items.nil)
+    $decl done $call lower_top (st, env, items, flds, IR.fns.nil, effi, 0)
     $decl all0 $call append_fns ($call IR.fns.val (done.funcs),
                    $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil))
     $decl all  $call mark_self (all0, 0, IR.fns.nil)
     $decl es   $call collect_edges (all, 0, edges.nil)
     $decl gs   $call find_groups (es, 0, $call IR.fns.length (all, 0), IR.groups.nil)
-    $decl out  $call IR.program ($call T.tys.val (st.types), all, gs, 0) }.out
+    // Newest first while they are collected, since a file and the modules it
+    // imports both append here.
+    $decl out  $call IR.program ($call T.tys.val (st.types), all, gs, 0,
+                   $call IR.effects.reverse ($call IR.effects.val (st.effs),
+                       IR.effects.nil)) }.out

@@ -282,10 +282,26 @@ $decl group_of $func ($decl xs ints.node) { $decl members xs }
 $decl proto_group $call group_of (ints.nil)
 $decl groups $specialize P.list proto_group
 
-$decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node, $decl e 0)
-  { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e }
+// §3.3: "a non-`$decl` expression runs for effect and is discarded" — the value
+// is discarded, not the expression. §4.10 initialises a file's items **once, in
+// source order**, so such an item has a position among them and the backend has
+// to keep it: `after` is the number of top-level `$decl`s that precede it, and
+// `fn` the zero-argument function its expression was lifted into. `mpl_init`
+// assigns globals in index order and runs an effect once the globals before it
+// are assigned, which is exactly §4.10's order.
+//
+// Not a thunk: a thunk *is* a global and is named by its static. An effect has
+// no name and nothing reads it, so it is an ordinary function that is called
+// and whose result is dropped.
+$decl effect $func ($decl a 0, $decl f 0) { $decl after a  $decl fn f }
+$decl proto_effect $call effect (0, 0)
+$decl effects $specialize P.list proto_effect
 
-$decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0)
+$decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
+                     $decl e 0, $decl efs effects.node)
+  { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs }
+
+$decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0, effects.nil)
 
 // ------------------------------------------------------------------ interning
 //

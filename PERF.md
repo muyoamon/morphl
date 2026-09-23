@@ -77,6 +77,37 @@ lines gives ~75 billion lookups ≈ 67 minutes, which is why the whole compiler
 dies partway rather than merely being slow. Time is *not* superlinear per unit
 of work; the work itself is.
 
+## Cost tracks the interned type count, not the line count
+
+Predicting from lines failed outright. `half.mpl` — §9.1 up to `check`, so parse
++ infer + lower — is 6,216 lines of closure, between `emit` (4,336, completes at
+0.36 GB in 42.6s) and `compiler` (8,341). Interpolating on lines predicted
+**~3 min and ~0.8 GB**; it **OOMed after 28m45s**, behaving like the whole
+compiler rather than a midpoint.
+
+The predictor that works is the number of types `intern` ends up holding:
+
+| module | lines | types | emit time | alloc |
+|---|---|---|---|---|
+| ir | 1,789 | 432 | 41.9s | 0.10 GB |
+| verify | 3,192 | 852 | 26.4s | 0.23 GB |
+| infer | 3,662 | 865 | 59.5s | 0.25 GB |
+| emit | 4,322 | 960 | 42.6s | 0.36 GB |
+| lower | — | 1,195 | — | — |
+| compiler | 8,327 | 1,470 | OOM | >3 GB |
+
+Allocation against type count has an exponent near **1.6** from 432 to 960, and
+near **3.5** from 960 to 1,470 — a knee above roughly 1,000 types. That is what
+separates completing from dying: `half` adds `lower` (1,195 alone) to `infer`
+(865) and lands past it; `front` (parse + infer, no `lower`, no `ir`) stops at
+865 and completes.
+
+It also explains the non-monotonicity the line-count view could not: `ir` is
+1,789 lines and took 41.9s while `verify` is 3,192 lines and took 26.4s — `ir`
+carries the 23-member `proto_expr` union, so its *types* are expensive even
+though its lines are few. **§4.9's monomorphisation is the cost**, and the way
+to make a smaller experiment is to cut type surface, not files.
+
 ## Whole compiler (`emit_c.mpl stage1/compiler.mpl`)
 
 | tree | result |
@@ -229,6 +260,60 @@ compiler — the case that matters — shows nothing, because it is memory-bound
 ~1.17x, which happens to match `types.mpl` but not `emit.mpl`. Under
 `--call-graph=dwarf` perf copies 4 KB of stack per sample; whether that distorts
 these shares was not established.
+
+## The front end compiles and runs (`stage1/front.mpl`)
+
+§9.1's pipeline stopped at `infer` — parse + infer, no `lower`, no `ir` — as a
+program, with its input embedded so the answer depends on nothing outside. It
+emits, compiles under `cc -O0 -Werror`, runs, and **agrees with stage 0**.
+
+| | |
+|---|---|
+| emit | 7m37s, 0.62 GB |
+| output | 28,341 lines of C |
+| `cc -O0 -Werror` | clean |
+| answer | **3**, the same as stage 0 |
+| emit diagnostics | 1 (§6a declining to contify a group whose members differ in signature) |
+
+It took two miscompiles to get there, both of which had been sitting under the
+whole-compiler runs where nothing could see them:
+
+- a `$prop` whose value is a `$union`, replayed on its second and every later
+  projection as a zeroed struct — §7.5's discriminator reading 0, which selects
+  the *wrong member*. The first projection was always right, so no fixture
+  caught it and `verify` cannot: it "does not re-derive each node's type from
+  its children".
+- §3.3's top-level expressions never lowered at all, so `parser.mpl`'s §2.2
+  arity table — twenty-three `$call add_kw (…)` — was empty in the compiled
+  parser, which then knew no keyword.
+
+The second is the one worth remembering as a *measurement* lesson: it was
+invisible to every check stage 0 runs, because stage 0 evaluates those items
+like any others. Only compiling and running the output found it.
+
+## The differential shrinks the loop, and that is the lesson
+
+Two miscompiles were found by compiling `stage1/front.mpl` (parse + infer) to C
+and running it against stage 0. The **first** attempt cost 7–10 minutes an
+emit, which is a terrible debugging loop and tempts you into guessing.
+
+Cutting the driver down to what actually reproduced the bug cost one edit and
+took the loop to **12 seconds**:
+
+| driver | closure | emit | reproduces |
+|---|---|---|---|
+| `front.mpl` | prelude, lexer, parser, types, infer | 7m14s | yes |
+| parse-only | prelude, lexer, parser | **11.7s** | yes |
+| lexer-only | prelude, lexer | 4s | no (agrees) |
+
+The lexer-only run is the half that matters: it *agreed* (33 tokens both ways),
+which is what localised the fault to the parser without reading any code. Then
+`Pa.dump_file` — the S-expression printer stage 0's parser also has — turned
+"the answer is -8" into a tree to diff, and the diff named the bug outright
+(`unknown keyword '$decl'`).
+
+**Bisect the pipeline before bisecting the source.** A 35x faster loop is worth
+more than any amount of staring, and the intermediate driver is five lines.
 
 ## Hypotheses tested and rejected
 
