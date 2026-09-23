@@ -320,7 +320,7 @@ $decl scan_str $func ($decl cu proto_cursor, $decl acc "", $decl seg 0, $decl l 
 
 $decl lex_string $func ($decl cu proto_cursor, $decl l 0, $decl c 0)
   { $decl open $call advance (cu)
-    $decl t    $call scan_str (cu, "", $call ival (cu.pos), l, c) }.t
+    $decl t    $call scan_str (cu, "", cu.pos, l, c) }.t
 
 $decl lex_simple $func ($decl cu proto_cursor, $decl ch 0, $decl l 0, $decl c 0)
   { $decl taken $call advance (cu)

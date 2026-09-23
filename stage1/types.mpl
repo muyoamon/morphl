@@ -825,15 +825,15 @@ $decl unroll_hit $func ($decl ok P.boolean, $decl v proto_ty) { $decl hit ok  $d
 
 $decl unroll_find $func ($decl xs unrolls.node, $decl k proto_ty) $match xs (
   $case {$prop tag "cons"}
-    $if ($call same ($call tval (xs.head.key), k))
+    $if ($call same (xs.head.key, k))
         ($call unroll_hit (($union (true, false)), $call tval (xs.head.val)))
-        ($call unroll_find ($call unrolls.val (xs.tail), k)),
+        ($call unroll_find (xs.tail, k)),
   $case xs ($call unroll_hit (($union (false, true)), t_bot))
 )
 
 $decl unroll $func ($decl t proto_ty) $match t (
   $case {$prop tag "rec"}
-    { $decl f $call unroll_find ($call unrolls.val (unroll_cache), t)
+    { $decl f $call unroll_find (unroll_cache, t)
       $decl r $if f.hit ($call tval (f.val))
           { $decl u $call subst_bnd (t.body, 0, t)
             $decl s $set unroll_cache ($call unrolls.cons ($call unroll_ent (t, u),

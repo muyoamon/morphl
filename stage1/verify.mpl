@@ -125,9 +125,9 @@ $decl mpass $func ($decl ls ilists.node, $decl pend IR.ints.node, $decl has P.bo
                    $decl acc ilists.node)
   $match ls (
     $case {$prop tag "cons"}
-      $if has ($call mpass ($call ilists.val (ls.tail), IR.ints.nil, bfalse,
+      $if has ($call mpass (ls.tail, IR.ints.nil, bfalse,
                    $call ilists.cons ($call merge (pend, ls.head), acc)))
-              ($call mpass ($call ilists.val (ls.tail), ls.head, true, acc)),
+              ($call mpass (ls.tail, ls.head, true, acc)),
     $case ls ($if has ($call ilists.cons (pend, acc)) acc)
   )
 
@@ -168,7 +168,7 @@ $fwd vexpr
 // `ty` then `id` are the first two fields of every node, so one function reads
 // any of them (§5.1, and the upcast is free — §7.4).
 $decl note $func ($decl st proto_vst, $decl cx proto_vcx, $decl n IR.any_node)
-  $do ($set st.ids ($call IR.ints.cons (n.id, $call eval_ids (st.ids))))
+  $do ($set st.ids ($call IR.ints.cons (n.id, st.ids)))
       ($call need (st, cx, n.id, n.ty, cx.ntypes, "type"))
 
 $decl vlist $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.exprs.node) $match xs (
@@ -290,7 +290,7 @@ $decl vexpr $func ($decl st proto_vst, $decl cx proto_vcx, $decl e IR.proto_expr
       $do ($do ($call vexpr (st, cx, e.callee, bfalse))
                ($call vlist (st, cx, $call IR.exprs.val (e.args))))
           ($do ($call vtail (st, cx, e.id, e.tail, tl))
-               ($call vcallee (st, cx, e.id, $call callee_fn ($call IR.eval (e.callee)),
+               ($call vcallee (st, cx, e.id, $call callee_fn (e.callee),
                     $call IR.exprs.length ($call IR.exprs.val (e.args), 0), e.tail))),
 
     // The condition is evaluated where the `$if` stands; the arms are where it
@@ -364,7 +364,7 @@ $decl vfn $func ($decl st proto_vst, $decl cx0 proto_vcx, $decl f IR.proto_fn, $
     $decl c $call need (st, cx, -1, f.result, cx.ntypes, "result type")
     $decl d $call vprefix (st, cx, $call IR.ints.val (f.params), slots)
     $decl e $set st.selfhit bfalse
-    $decl g $call vexpr (st, cx, $call IR.eval (f.body), true)
+    $decl g $call vexpr (st, cx, f.body, true)
     $decl h $call vself (st, cx, f.self_tail)
     $decl out 0 }.out
 
@@ -398,7 +398,7 @@ $decl vgroups $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.groups.
 // callee's subtree, ids and all, and every side table keyed on them then
 // aliases two different nodes.
 $decl vids $func ($decl st proto_vst, $decl cx proto_vcx)
-  { $decl d $call first_dup ($call msort ($call eval_ids (st.ids)), -1, bfalse)
+  { $decl d $call first_dup ($call msort (st.ids), -1, bfalse)
     $decl out $if ($call lt (d, 0)) 0
         ($call err (st, cx, d,
             "two nodes share this index; §9.3 makes a node's index distinct in a program")) }.out
@@ -415,4 +415,4 @@ $decl verify $func ($decl p IR.proto_program)
     $decl b $call vgroups (st, cx, $call IR.groups.val (p.groups))
     $decl c $call vfns (st, cx, fs, 0)
     $decl d $call vids (st, cx)
-    $decl out $call Pa.diags.reverse ($call eval_diags (st.errs), Pa.diags.nil) }.out
+    $decl out $call Pa.diags.reverse (st.errs, Pa.diags.nil) }.out

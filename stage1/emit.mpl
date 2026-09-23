@@ -76,12 +76,12 @@ $fwd join_pass
 
 $decl join_two $func ($decl a "", $decl t strs.node, $decl acc strs.node) $match t (
   $case {$prop tag "cons"}
-    $call join_pass ($call strs.val (t.tail), $call strs.cons ($call concat (a, t.head), acc)),
+    $call join_pass (t.tail, $call strs.cons ($call concat (a, t.head), acc)),
   $case t ($call join_pass (t, $call strs.cons (a, acc)))
 )
 
 $decl join_pass $func ($decl xs strs.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call join_two (xs.head, $call strs.val (xs.tail), acc),
+  $case {$prop tag "cons"} $call join_two (xs.head, xs.tail, acc),
   $case xs acc
 )
 
@@ -98,15 +98,15 @@ $decl join_step $func ($decl xs strs.node, $decl a "", $decl t strs.node) $match
 )
 
 $decl join_all $func ($decl xs strs.node) $match xs (
-  $case {$prop tag "cons"} $call join_step (xs, xs.head, $call strs.val (xs.tail)),
+  $case {$prop tag "cons"} $call join_step (xs, xs.head, xs.tail),
   $case xs ""
 )
 
 $decl out_of $func ($decl st proto_est)
-  $call join_all ($call strs.reverse ($call strs.val (st.out), strs.nil))
+  $call join_all ($call strs.reverse (st.out, strs.nil))
 
 $decl say $func ($decl st proto_est, $decl s "")
-  { $decl w $set st.out ($call strs.cons (s, $call strs.val (st.out)))
+  { $decl w $set st.out ($call strs.cons (s, st.out))
     $decl r () }.r
 
 $decl eerr $func ($decl st proto_est, $decl m "")
@@ -185,7 +185,7 @@ $decl c_type $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
         $case {$prop tag "func"} "mpl_fun",
         // §7.4: `&T` and `&mut T` are thin pointers.
         $case {$prop tag "ref"}
-          { $decl f $call IR.find_ty (ts, $call T.tval (t.inner))
+          { $decl f $call IR.find_ty (ts, t.inner)
             $decl r $if f.hit ($call concat ($call c_type (st, ts, f.id), " *"))
                 { $decl e $call eerr (st, "a reference to a type that was never interned")
                   $decl x "int64_t *" }.x }.r,
@@ -313,7 +313,7 @@ $decl emit_fwds $func ($decl st proto_est, $decl all T.tys.node, $decl ts T.tys.
 )
 
 $decl mark_emitted $func ($decl st proto_est, $decl i 0)
-  { $decl m $set st.emitted ($call IR.ints.cons (i, $call eval_ints (st.emitted)))
+  { $decl m $set st.emitted ($call IR.ints.cons (i, st.emitted))
     $decl r 0 }.r
 
 $fwd emit_struct_at
@@ -380,7 +380,7 @@ $decl emit_union_struct $func ($decl st proto_est, $decl all T.tys.node,
 // something it embeds: every recursive edge is a pointer, so it is not an
 // embedding.
 $decl emit_struct_at $func ($decl st proto_est, $decl all T.tys.node, $decl i 0)
-  $if ($call mem_int ($call eval_ints (st.emitted), i)) ()
+  $if ($call mem_int (st.emitted, i)) ()
       { $decl t $call T.tval ($call type_at (all, i))
         $decl m $call mark_emitted (st, i)
         // An index the forward pass aliased has no struct of its own — it *is*
@@ -553,7 +553,7 @@ $decl fn_sig $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
   { $decl t $call type_at (ts, i)
     $decl r $match t (
         $case {$prop tag "func"}
-          { $decl rf $call IR.find_ty (ts, $call T.tval (t.result))
+          { $decl rf $call IR.find_ty (ts, t.result)
             $decl o  $call concat ("(", $call concat (
                 $if rf.hit ($call c_type (st, ts, rf.id)) "int64_t",
                 $call concat ("(*)(void *",
@@ -740,7 +740,7 @@ $decl pointee_of $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
   { $decl t $call T.unroll ($call type_at (ts, i))
     $decl r $match t (
         $case {$prop tag "ref"}
-          { $decl f $call IR.find_ty (ts, $call T.tval (t.inner))
+          { $decl f $call IR.find_ty (ts, t.inner)
             $decl x $if f.hit f.id -1 }.x,
         $case t -1
       ) }.r
@@ -814,7 +814,7 @@ $decl state_of $func ($decl g IR.ints.node, $decl f 0, $decl i 0) $match g (
 )
 
 $decl is_thunk $func ($decl st proto_est, $decl i 0)
-  $call mem_int ($call eval_ints (st.thunks), i)
+  $call mem_int (st.thunks, i)
 
 $decl thunk_ids $func ($decl fs IR.fns.node, $decl i 0, $decl acc IR.ints.node) $match fs (
   $case {$prop tag "cons"}
@@ -1141,19 +1141,19 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
   $case {$prop tag "if"}
     { $decl c  $call fresh_tmp (st)
       $decl d0 $call say (st, $call concat ("  int64_t ", $call concat (c, ";\n")))
-      $decl d1 $call emit_expr (st, fi, $call IR.eval (e.cond), c, ts)
+      $decl d1 $call emit_expr (st, fi, e.cond, c, ts)
       $decl d2 $call say (st, $call concat ("  if (", $call concat (c, ") {\n")))
-      $decl d3 $call emit_as (st, fi, $call IR.eval (e.then), dest, e.ty, ts)
+      $decl d3 $call emit_as (st, fi, e.then, dest, e.ty, ts)
       $decl d4 $call say (st, "  } else {\n")
-      $decl d5 $call emit_as (st, fi, $call IR.eval (e.els), dest, e.ty, ts)
+      $decl d5 $call emit_as (st, fi, e.els, dest, e.ty, ts)
       $decl r  $call say (st, "  }\n") }.r,
   $case {$prop tag "do"}
-    { $decl tv $call into_tmp (st, fi, $call IR.eval (e.first), ts)
+    { $decl tv $call into_tmp (st, fi, e.first, ts)
       // §4.8b runs the first operand for effect and discards it, so C is right
       // that the temporary is never read — say so rather than silence the
       // warning for the whole file.
       $decl d1 $call say (st, $call concat ("  (void)", $call concat (tv, ";\n")))
-      $decl r  $call emit_expr (st, fi, $call IR.eval (e.then), dest, ts) }.r,
+      $decl r  $call emit_expr (st, fi, e.then, dest, ts) }.r,
   // §4.5: each entry is assigned to its slot in order — a later `$decl` may
   // name an earlier one — and the block's value is the struct of those slots
   // afterwards.
@@ -1208,7 +1208,7 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
                     $call concat (" = ", $call concat (tv, ";\n"))))) }.r,
   // §5.4's implicit read, which lowering made explicit.
   $case {$prop tag "deref"}
-    { $decl sv $call into_tmp (st, fi, $call IR.eval (e.src), ts)
+    { $decl sv $call into_tmp (st, fi, e.src, ts)
       $decl r  $call assign (st, dest, $call concat ("*", sv)) }.r,
   // §4.4: writes *through* storage, and evaluates to the written value.
   $case {$prop tag "set"}

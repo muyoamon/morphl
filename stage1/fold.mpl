@@ -138,7 +138,7 @@ $decl fold_expr $func ($decl e IR.proto_expr) $match e (
 // ------------------------------------------------------------------ the pass
 
 $decl fold_fn $func ($decl f IR.proto_fn)
-  $call IR.fn (f.name, f.params, f.result, f.slots, $call fold_expr ($call IR.eval (f.body)),
+  $call IR.fn (f.name, f.params, f.result, f.slots, $call fold_expr (f.body),
       f.self_tail, f.thunk, f.env)
 
 $decl fold_fns $func ($decl xs IR.fns.node, $decl acc IR.fns.node) $match xs (

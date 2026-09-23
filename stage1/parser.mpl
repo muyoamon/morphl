@@ -543,7 +543,7 @@ $fwd free_names
 
 $decl free_names_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
   $case {$prop tag "cons"}
-    $call free_names_list ($call nodes.val (xs.tail), $call free_names (xs.head, acc)),
+    $call free_names_list (xs.tail, $call free_names (xs.head, acc)),
   $case xs acc
 )
 
@@ -553,9 +553,9 @@ $decl free_names_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match x
 $decl free_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
   $case {$prop tag "name"}
     $if ($call mem_pstr (acc, n.text)) acc ($call pstrs.cons (n.text, acc)),
-  $case {$prop tag "form"}  ($call free_names_list ($call nodes.val (n.operands), acc)),
-  $case {$prop tag "group"} ($call free_names_list ($call nodes.val (n.items), acc)),
-  $case {$prop tag "block"} ($call free_names_list ($call nodes.val (n.items), acc)),
+  $case {$prop tag "form"}  ($call free_names_list (n.operands, acc)),
+  $case {$prop tag "group"} ($call free_names_list (n.items, acc)),
+  $case {$prop tag "block"} ($call free_names_list (n.items, acc)),
   $case {$prop tag "proj_name"}  ($call free_names (n.target, acc)),
   $case {$prop tag "proj_index"} ($call free_names (n.target, acc)),
   $case n acc
@@ -566,13 +566,13 @@ $decl bound_group_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match 
     { $decl nm $call name_text (xs.head)
       $decl a2 $if ($call eq_str (nm, "")) acc
                    ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
-      $decl r  $call bound_group_list ($call nodes.val (xs.tail), a2) }.r,
+      $decl r  $call bound_group_list (xs.tail, a2) }.r,
   $case xs acc
 )
 
 // A group of names, for `$template (A, B)` — and nothing for anything else.
 $decl bound_group $func ($decl n proto_node, $decl acc pstrs.node) $match n (
-  $case {$prop tag "group"} ($call bound_group_list ($call nodes.val (n.items), acc)),
+  $case {$prop tag "group"} ($call bound_group_list (n.items, acc)),
   $case n acc
 )
 
@@ -580,7 +580,7 @@ $fwd bound_names
 
 $decl bound_names_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
   $case {$prop tag "cons"}
-    $call bound_names_list ($call nodes.val (xs.tail), $call bound_names (xs.head, acc)),
+    $call bound_names_list (xs.tail, $call bound_names (xs.head, acc)),
   $case xs acc
 )
 
@@ -609,8 +609,8 @@ $decl bound_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
                 ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
             $decl r gs }.r
           acc
-      $decl r $call bound_names_list ($call nodes.val (n.operands), here) }.r,
-  $case {$prop tag "group"} ($call bound_names_list ($call nodes.val (n.items), acc)),
-  $case {$prop tag "block"} ($call bound_names_list ($call nodes.val (n.items), acc)),
+      $decl r $call bound_names_list (n.operands, here) }.r,
+  $case {$prop tag "group"} ($call bound_names_list (n.items, acc)),
+  $case {$prop tag "block"} ($call bound_names_list (n.items, acc)),
   $case n acc
 )

@@ -171,7 +171,7 @@ $decl bval $func ($decl b P.boolean) b
 
 $decl err $func ($decl cx proto_ctx, $decl m "", $decl x P.proto_span)
   { $decl noted $if ($call bval (cx.quiet)) ()
-        ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, x.line, x.col, $call sval (cx.file)), cx.errs)))
+        ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, x.line, x.col, cx.file), cx.errs)))
     $decl out   T.t_bot }.out
 
 // §5.5: park a check whose types still mention an unresolved placeholder. It is
@@ -439,7 +439,7 @@ $decl caps_frame $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
   $case {$prop tag "cons"}
     { $decl skipped $call Pa.mem_pstr (skip, ns.head)
       $decl f  $if skipped ($call found (false, T.t_bot)) ($call lookup (e, ns.head))
-      $decl hit $if f.ok ($call T.frame_bound ($call T.tval (f.ty), 0)) false
+      $decl hit $if f.ok ($call T.frame_bound (f.ty, 0)) false
       $decl r  $if hit true ($call caps_frame (cx, e, $call Pa.pstrs.val (ns.tail), skip)) }.r,
   $case ns false
 )
@@ -723,7 +723,7 @@ $decl infer_try $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
   { $decl vt $call infer (cx, e, $call op (n, 0))
     $decl pt $call infer (cx, e, $call op (n, 1))
     $decl added $set cx.tryset
-        ($call T.join ($call tval (cx.tryset), $call T.restrict ($call deref_ty (vt), pt)))
+        ($call T.join (cx.tryset, $call T.restrict ($call deref_ty (vt), pt)))
     // §4.15: "otherwise the expression's value is `e`, narrowed to
     // `type(e) & ¬pat`." For a union of tag shapes — which is what every
     // fallible result is — that is exactly dropping the covered members.
@@ -751,7 +751,7 @@ $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
   { $decl gs    $call generic_names ($call op (n, 0), strs.nil)
     $decl id    $call fresh (cx)
     $decl rec   $call tmpl_rec (id, gs, $call op (n, 1), e, $call sval (cx.file))
-    $decl added $set cx.tmpls ($call tmpl_list.cons (rec, $call eval_tmpls (cx.tmpls)))
+    $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
     $decl out   $call T.t_tmpl (id) }.out
 
 $decl find_tmpl $func ($decl xs tmpl_list.node, $decl i 0) $match xs (
@@ -793,7 +793,7 @@ $fwd infer_block
 
 $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                              $decl argn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl r  $call find_tmpl ($call eval_tmpls (cx.tmpls), id)
+  { $decl r  $call find_tmpl (cx.tmpls, id)
     $decl ng $call strs.length (r.generics, 0)
     // §2.3 again: with one generic the whole operand is the argument; with
     // several it has to be a group.
@@ -806,7 +806,7 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
         ($call err (cx, $call concat ("this template has ", $call concat ($call int_to_str (ng),
             $call concat (" generic parameters, found ", $call int_to_str (na)))), n))
         { $decl key $call memo_key (id, ats, "")
-          $decl hit $call memo_find ($call eval_memo (cx.memo), key)
+          $decl hit $call memo_find (cx.memo, key)
           $decl rr $if hit.ok hit.ty
               { $decl benv  $call bind_generics (r.env, r.generics, ats)
                 // The body's spans are the template's file, not this one.
@@ -892,8 +892,8 @@ $decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n 
 // §4.14: "Loads a source file as a block ... the type is that block's type."
 $decl infer_import $func ($decl cx proto_ctx, $decl n proto_form)
   { $decl nm  $call str_of ($call op (n, 0))
-    $decl key $call resolve_path ($call sval (cx.base), nm)
-    $decl hit $call mod_find ($call eval_mods (cx.mods), key)
+    $decl key $call resolve_path (cx.base, nm)
+    $decl hit $call mod_find (cx.mods, key)
     $decl out $if ($call eq_str (hit.state, "done")) hit.ty
              ($if ($call eq_str (hit.state, "loading"))
                   ($call err (cx, $call concat ("import cycle: \"", $call concat (nm,
@@ -971,23 +971,23 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
     // A `$fwd` for this name already bound it to `[params] -> R` (§5.5), so the
     // body is typed against that placeholder and its resolution recorded as one
     // equation of the group's system.
-    $decl fe $call find_fwd ($call eval_fwds (s.fwds), nm)
+    $decl fe $call find_fwd (s.fwds, nm)
     $decl ty $if ($call lt (-1, fe.id))
-        ($call infer_fwd_body (cx, $call eval_env (s.env), init, fe.id))
+        ($call infer_fwd_body (cx, s.env, init, fe.id))
         ($if ($call is_form (init, "func"))
-            ($call infer_rec_func (cx, $call eval_env (s.env), nm, init))
+            ($call infer_rec_func (cx, s.env, nm, init))
             { $decl id  $call fresh (cx)
-              $decl e1  $call bind ($call eval_env (s.env), nm, $call T.t_var (id))
+              $decl e1  $call bind (s.env, nm, $call T.t_var (id))
               $decl raw $call infer (cx, e1, init)
               $decl r   $call close_rec (cx, raw, id, it) }.r)
     $decl eqn $if ($call lt (-1, fe.id))
         ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
                                           $call eval_res (s.res))))
         ()
-    $decl bound $set s.env ($call bind ($call eval_env (s.env), nm, ty))
+    $decl bound $set s.env ($call bind (s.env, nm, ty))
     // A `$fwd` already reserved this slot at its own position (§4.11), so
     // complete that one rather than appending a second.
-    $decl added $set s.flds ($call put_field ($call eval_flds (s.flds), nm, ty)) }
+    $decl added $set s.flds ($call put_field (s.flds, nm, ty)) }
 
 // The type of one prop. §4.10: the initializer sees other props and enclosing
 // scopes, but *not* ordered siblings — hence the prop-only environment.
@@ -1024,7 +1024,7 @@ $decl infer_prop_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env
     $decl f  $call lookup (pe, nm)
     $decl cv $call const_of (cx, $call op (it, 1))
     $decl added $set s.prps ($call T.props.cons ($call T.prop_typed (nm, cv, f.ty), $call eval_prps (s.prps)))
-    $decl bound $set s.env ($call bind ($call eval_env (s.env), nm, f.ty)) }
+    $decl bound $set s.env ($call bind (s.env, nm, f.ty)) }
 
 // §4.11: reserves an ordered slot *at this position*. The type was decided by
 // `prebind_fwds` before the block was walked, so this only claims the slot —
@@ -1032,8 +1032,8 @@ $decl infer_prop_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env
 $decl infer_fwd_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl all Pa.nodes.node, $decl it Pa.proto_node)
   { $decl bound $call prebind_one (cx, s, all, it)
     $decl nm    $call name_of ($call op (it, 0))
-    $decl f     $call lookup ($call eval_env (s.env), nm)
-    $decl added $set s.flds ($call put_field ($call eval_flds (s.flds), nm, f.ty)) }
+    $decl f     $call lookup (s.env, nm)
+    $decl added $set s.flds ($call put_field (s.flds, nm, f.ty)) }
 
 
 $decl find_completing $func ($decl items Pa.nodes.node, $decl nm "") $match items (
@@ -1065,7 +1065,7 @@ $decl prebind_one $func ($decl cx proto_ctx, $decl s proto_bst,
                                               T.tys.nil, pe)).tys,
                          $call T.t_var (id)))
         ($call T.t_var (id))
-    $decl bound $set s.env ($call bind ($call eval_env (s.env), nm, ty))
+    $decl bound $set s.env ($call bind (s.env, nm, ty))
     $decl noted $set s.fwds ($call fwd_list.cons ($call fwd_ent (nm, id), $call eval_fwds (s.fwds)))
     // §4.11: "A `$fwd` not completed by the end of its block is an error."
     $decl checked $if ($call is_form (comp, "decl")) T.t_unit
@@ -1135,7 +1135,7 @@ $decl infer_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node
   ($if ($call is_form (it, "fwd")) ($call infer_fwd_item (cx, s, all, it))
   ($if ($call is_form (it, "decl")) ($call infer_decl_item (cx, s, it))
        // §3.3: other expressions run for effect and are discarded.
-       ($do ($call infer (cx, $call eval_env (s.env), it)) ())))
+       ($do ($call infer (cx, s.env, it)) ())))
 
 $decl infer_items $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node,
                          $decl all Pa.nodes.node, $decl items Pa.nodes.node) $match items (
@@ -1183,10 +1183,10 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
     // placeholders.
     $decl eqns   $call eval_res (s.res)
     $decl solved $call solve (cx, eqns, $call res_list.length (eqns, 0), x)
-    $decl flds   $call apply_res_fields ($call T.fields.reverse ($call eval_flds (s.flds), T.fields.nil),
+    $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil),
                                          solved, T.fields.nil)
     $decl late   $call recheck_defers (cx, solved)
-    $decl out    $call T.t_block (flds, $call eval_prps (s.prps)) }.out
+    $decl out    $call T.t_block (flds, s.prps) }.out
 
 // ------------------------------------------------------------------ dispatch
 
@@ -1261,7 +1261,7 @@ $decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base
     $decl rooted $set cx.base base
     $decl named  $set cx.file path
     $decl t      $call infer_block (cx, e0, items, P.proto_span)
-    $decl out $call result (t, $call Pa.diags.reverse ($call eval_diags (cx.errs), Pa.diags.nil)) }.out
+    $decl out $call result (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil)) }.out
 
 // `base` is the directory `$import` resolves from; it defaults to the working
 // directory so that existing single-file callers are unaffected (§3.4).

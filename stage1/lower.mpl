@@ -159,7 +159,7 @@ $decl same_keys $func ($decl a IR.ints.node, $decl b IR.ints.node) $match a (
 $decl find_tmpl $func ($decl xs tmpls_list.node, $decl i 0) $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_int (xs.head.id, i)) ($call tmpls_list.cons (xs.head, tmpls_list.nil))
-        ($call find_tmpl ($call tmpls_list.val (xs.tail), i)),
+        ($call find_tmpl (xs.tail, i)),
   $case xs tmpls_list.nil
 )
 
@@ -168,7 +168,7 @@ $decl find_spec $func ($decl xs specs_list.node, $decl i 0, $decl ks IR.ints.nod
     $if ($call and ($call eq_int (xs.head.tmpl, i),
                     $call same_keys ($call IR.ints.val (xs.head.keys), ks)))
         ($call specs_list.cons (xs.head, specs_list.nil))
-        ($call find_spec ($call specs_list.val (xs.tail), i, ks)),
+        ($call find_spec (xs.tail, i, ks)),
   $case xs specs_list.nil
 )
 
@@ -176,28 +176,28 @@ $decl find_mod_path $func ($decl xs mods_list.node, $decl p "") $match xs (
   $case {$prop tag "cons"}
     $if ($call and ($call not ($call eq_str (p, "")), $call eq_str (xs.head.path, p)))
         ($call mods_list.cons (xs.head, mods_list.nil))
-        ($call find_mod_path ($call mods_list.val (xs.tail), p)),
+        ($call find_mod_path (xs.tail, p)),
   $case xs mods_list.nil
 )
 
 $decl find_mod $func ($decl xs mods_list.node, $decl i 0) $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_int (xs.head.id, i)) ($call mods_list.cons (xs.head, mods_list.nil))
-        ($call find_mod ($call mods_list.val (xs.tail), i)),
+        ($call find_mod (xs.tail, i)),
   $case xs mods_list.nil
 )
 
 $decl find_mprop $func ($decl xs mprops.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.name, n)) ($call mprops.cons (xs.head, mprops.nil))
-        ($call find_mprop ($call mprops.val (xs.tail), n)),
+        ($call find_mprop (xs.tail, n)),
   $case xs mprops.nil
 )
 
 $decl find_mdone $func ($decl xs mdones.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.name, n)) ($call mdones.cons (xs.head, mdones.nil))
-        ($call find_mdone ($call mdones.val (xs.tail), n)),
+        ($call find_mdone (xs.tail, n)),
   $case xs mdones.nil
 )
 
@@ -309,7 +309,7 @@ $decl is_rec $func ($decl t T.proto_ty) $match t (
 )
 
 $decl intern $func ($decl st proto_lst, $decl t T.proto_ty)
-  { $decl cur $call T.tys.val ($call eval_tys (st.types))
+  { $decl cur $call T.tys.val (st.types)
     // The count before anything is added: on a miss that *is* the new entry's
     // index, and `seal_rec` below may add more without changing it.
     $decl cnt $call P.ival (st.ntypes)
@@ -377,7 +377,7 @@ $decl add_lifted $func ($decl st proto_lst, $decl f IR.proto_fn)
   { $decl i $call P.ival (st.nlifted)
     $decl n $set st.nlifted ($call add (i, 1))
     $decl l $set st.lifted ($call IR.fns.cons (f, $call IR.fns.val (st.lifted)))
-    $decl r $call add ($call P.ival (st.fnbase), i) }.r
+    $decl r $call add (st.fnbase, i) }.r
 
 $decl fresh_opaque $func ($decl st proto_lst)
   { $decl i $call P.ival (st.nopaque)
@@ -392,13 +392,13 @@ $decl eval_mods $func ($decl x mods_list.node) x
 $decl put_mod $func ($decl xs mods_list.node, $decl m proto_mod, $decl acc mods_list.node)
   $match xs (
     $case {$prop tag "cons"}
-      $call put_mod ($call mods_list.val (xs.tail), m,
+      $call put_mod (xs.tail, m,
           $call mods_list.cons ($if ($call eq_int (xs.head.id, m.id)) m xs.head, acc)),
     $case xs ($call mods_list.reverse (acc, mods_list.nil))
   )
 
 $decl save_mod $func ($decl st proto_lst, $decl m proto_mod)
-  { $decl s $set st.mods ($call put_mod ($call eval_mods (st.mods), m, mods_list.nil))
+  { $decl s $set st.mods ($call put_mod (st.mods, m, mods_list.nil))
     $decl r 0 }.r
 
 $decl fresh_var $func ($decl st proto_lst)
@@ -446,7 +446,7 @@ $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.prot
     $decl r i }.r
 
 $decl add_spec $func ($decl st proto_lst, $decl sp proto_spec)
-  { $decl s $set st.specs ($call specs_list.cons (sp, $call eval_specs (st.specs)))
+  { $decl s $set st.specs ($call specs_list.cons (sp, st.specs))
     $decl r 0 }.r
 
 $decl eval_benv $func ($decl x benv.node) x
@@ -463,7 +463,7 @@ $decl fresh_mod $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.n
   $call fresh_mod_at (st, ps, en, "", "")
 
 $decl mod_props $func ($decl st proto_lst, $decl mid 0)
-  { $decl ms $call find_mod ($call eval_mods (st.mods), mid)
+  { $decl ms $call find_mod (st.mods, mid)
     $decl r $match ms (
         $case {$prop tag "cons"} ($call mprops.val (ms.head.props)),
         $case ms mprops.nil
@@ -476,7 +476,7 @@ $decl reserve_lifted $func ($decl st proto_lst)
   { $decl i $call P.ival (st.nlifted)
     $decl n $set st.nlifted ($call add (i, 1))
     $decl l $set st.lifted ($call IR.fns.cons (IR.proto_fn, $call IR.fns.val (st.lifted)))
-    $decl r $call add ($call P.ival (st.fnbase), i) }.r
+    $decl r $call add (st.fnbase, i) }.r
 
 $decl replace_at $func ($decl xs IR.fns.node, $decl i 0, $decl f IR.proto_fn,
                         $decl acc IR.fns.node) $match xs (
@@ -489,7 +489,7 @@ $decl replace_at $func ($decl xs IR.fns.node, $decl i 0, $decl f IR.proto_fn,
 // `st.lifted` is newest-first, so it is turned around to be indexed and back
 // again. Both the list and the reservation are compile-time bookkeeping.
 $decl put_lifted $func ($decl st proto_lst, $decl idx 0, $decl f IR.proto_fn)
-  { $decl k   $call isub (idx, $call P.ival (st.fnbase))
+  { $decl k   $call isub (idx, st.fnbase)
     $decl old $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil)
     $decl new $call replace_at (old, k, f, IR.fns.nil)
     $decl s   $set st.lifted ($call IR.fns.reverse (new, IR.fns.nil))
@@ -731,11 +731,11 @@ $decl prop_from_ty $func ($decl st proto_lst, $decl ps T.props.node, $decl nm ""
 // which inference gives in full, §3.3 — still lists them as fields; taking the
 // field would emit a read of a layout the module does not have.
 $decl mod_has $func ($decl st proto_lst, $decl mid 0, $decl nm "")
-  { $decl ms $call find_mod ($call eval_mods (st.mods), mid)
+  { $decl ms $call find_mod (st.mods, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
-          ($if ($call mprops.is_nil ($call find_mprop ($call mprops.val (ms.head.props), nm)))
-               ($call not ($call mdones.is_nil ($call find_mdone ($call mdones.val (ms.head.done), nm))))
+          ($if ($call mprops.is_nil ($call find_mprop (ms.head.props, nm)))
+               ($call not ($call mdones.is_nil ($call find_mdone (ms.head.done, nm))))
                true),
         $case ms false
       ) }.r
@@ -873,7 +873,7 @@ $decl pattern_ty $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
   // scrutinee and the pattern is compared against the *value*.
   $case {$prop tag "name"}
     { $decl f $call lookup (e, $call name_of (n))
-      $decl r $if f.hit ($call deref_ty ($call T.tval (f.bnd.ty))) T.t_bot }.r,
+      $decl r $if f.hit ($call deref_ty (f.bnd.ty)) T.t_bot }.r,
   $case n T.t_bot
 )
 
@@ -903,7 +903,7 @@ $decl disc_of $func ($decl ms T.tys.node, $decl pat T.proto_ty, $decl i 0,
 // table, not the copy it happens to be holding, or the two disagree about
 // which member is which.
 $decl ty_at $func ($decl st proto_lst, $decl i 0)
-  $call T.tys.nth ($call T.tys.val ($call eval_tys (st.types)), i)
+  $call T.tys.nth ($call T.tys.val (st.types), i)
 
 $decl canon_ty $func ($decl st proto_lst, $decl t T.proto_ty)
   $call ty_at (st, $call intern (st, t))
@@ -967,7 +967,7 @@ $decl caps $func ($decl ns strs.node, $decl e benv.node, $decl acc benv.node) $m
           ($if ($call eq_str (f.bnd.kind, "local")) true
                ($call eq_str (f.bnd.kind, "capture")))
           false
-      $decl r $call caps ($call strs.val (ns.tail), e,
+      $decl r $call caps (ns.tail, e,
                   $if keep ($call benv.cons (f.bnd, acc)) acc) }.r,
   $case ns acc
 )
@@ -976,7 +976,7 @@ $decl caps $func ($decl ns strs.node, $decl e benv.node, $decl acc benv.node) $m
 // happens where the literal stood.
 $decl cap_exprs $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.exprs.node) $match cs (
   $case {$prop tag "cons"}
-    { $decl id $call intern (st, $call T.tval (cs.head.ty))
+    { $decl id $call intern (st, cs.head.ty)
       $decl ir $if ($call eq_str (cs.head.kind, "local"))
                    ($call IR.e_local (id, cs.head.slot))
                    ($call IR.e_capture (id, cs.head.slot))
@@ -987,7 +987,7 @@ $decl cap_exprs $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.expr
 $decl cap_tys $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.ints.node) $match cs (
   $case {$prop tag "cons"}
     $call cap_tys (st, cs.tail,
-        $call IR.ints.cons ($call intern (st, $call T.tval (cs.head.ty)), acc)),
+        $call IR.ints.cons ($call intern (st, cs.head.ty), acc)),
   $case cs ($call IR.ints.reverse (acc, IR.ints.nil))
 )
 
@@ -1109,7 +1109,7 @@ $decl gen_props $func ($decl gs strs.node, $decl xs Pa.nodes.node, $decl acc mpr
   $match gs (
     $case {$prop tag "cons"} $match xs (
       $case {$prop tag "cons"}
-        $call gen_props ($call strs.val (gs.tail), $call Pa.nodes.val (xs.tail),
+        $call gen_props (gs.tail, $call Pa.nodes.val (xs.tail),
             $call mprops.cons ($call mprop (gs.head, xs.head, "prop"), acc)),
       $case xs ($call mprops.reverse (acc, mprops.nil))),
     $case gs ($call mprops.reverse (acc, mprops.nil))
@@ -1138,8 +1138,8 @@ $decl arg_keys $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.n
 $decl spec_build $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                         $decl args Pa.nodes.node, $decl keys IR.ints.node,
                         $decl n Pa.proto_node)
-  { $decl gm $call fresh_mod (st, $call gen_props ($call strs.val (r.generics), args, mprops.nil), e)
-    $decl be $call with_gens ($call benv.val (r.env), $call strs.val (r.generics), gm)
+  { $decl gm $call fresh_mod (st, $call gen_props (r.generics, args, mprops.nil), e)
+    $decl be $call with_gens (r.env, $call strs.val (r.generics), gm)
     $decl v  $call lval ($call lower (st, be, r.body, false))
     $decl ok $if ($call lt (v.mod, 0))
         ($call err (st, "$specialize: this template's body is not a block with props, which is the only shape lowered so far", n))
@@ -1160,7 +1160,7 @@ $decl spec_reuse $func ($decl st proto_lst, $decl sp proto_spec)
 
 $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl argn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl ng   $call strs.length ($call strs.val (r.generics), 0)
+  { $decl ng   $call strs.length (r.generics, 0)
     $decl args $if ($call eq_int (ng, 1)) ($call Pa.nodes.cons (argn, Pa.nodes.nil))
                    ($call group_items (argn))
     $decl na   $call Pa.nodes.length (args, 0)
@@ -1169,7 +1169,7 @@ $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
              $call concat ($call int_to_str (ng), $call concat (" generic parameters, found ",
              $call int_to_str (na)))), n)), T.t_bot))
         { $decl keys $call arg_keys (st, e, args, IR.ints.nil)
-          $decl hit  $call find_spec ($call eval_specs (st.specs), r.id, keys)
+          $decl hit  $call find_spec (st.specs, r.id, keys)
           $decl rr $match hit (
               $case {$prop tag "cons"} ($call spec_reuse (st, hit.head)),
               $case hit ($call spec_build (st, e, r, args, keys, n))
@@ -1242,7 +1242,7 @@ $decl force_props $func ($decl st proto_lst, $decl mid 0, $decl xs mprops.node,
                          $decl n Pa.proto_node) $match xs (
   $case {$prop tag "cons"}
     $do ($call lower_prop (st, mid, xs.head.name, n))
-        ($call force_props (st, mid, $call mprops.val (xs.tail), n)),
+        ($call force_props (st, mid, xs.tail, n)),
   $case xs 0
 )
 
@@ -1261,14 +1261,14 @@ $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n 
           // else" — so a module is lowered in the root environment, never in
           // the importer's.
           $decl mid $call fresh_mod_at (st, $call file_props ($call Pa.nodes.val (p.exprs), mprops.nil),
-                        $call benv.val ($call eval_benv (st.rootenv)), $call P.dirname (key), key)
+                        $call benv.val (st.rootenv), $call P.dirname (key), key)
           $decl f   $call force_props (st, mid, $call mod_props (st, mid), n)
           $decl r   $call mod_value (st, mid) }.r }.out
 
 $decl lower_import $func ($decl st proto_lst, $decl n proto_form)
   { $decl nm  $call str_of ($call op (n, 0))
-    $decl key $call resolve_path ($call P.sval (st.base), nm)
-    $decl hit $call find_mod_path ($call eval_mods (st.mods), key)
+    $decl key $call resolve_path (st.base, nm)
+    $decl hit $call find_mod_path (st.mods, key)
     $decl out $match hit (
         // §4.14: "Loaded once. All imports of the same resolved file yield the
         // same module." A cycle finds the entry too, because it is registered
@@ -1280,7 +1280,7 @@ $decl lower_import $func ($decl st proto_lst, $decl n proto_form)
 $decl lower_specialize $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form)
   { $decl f  $call lval ($call lower (st, e, $call op (n, 0), false))
     $decl ts $if ($call lt (f.tmpl, 0)) tmpls_list.nil
-                 ($call find_tmpl ($call eval_tmpls (st.tmpls), f.tmpl))
+                 ($call find_tmpl (st.tmpls, f.tmpl))
     $decl out $match ts (
         $case {$prop tag "cons"} ($call spec_with (st, e, ts.head, $call op (n, 1), n)),
         $case ts ($call lres ($call IR.e_unit ($call err (st,
@@ -1479,7 +1479,7 @@ $decl param_tys $func ($decl st proto_lst, $decl ts T.tys.node, $decl xs IR.ints
 )
 
 $decl fn_ty $func ($decl st proto_lst, $decl f IR.proto_fn)
-  { $decl ts $call T.tys.val ($call eval_tys (st.types))
+  { $decl ts $call T.tys.val (st.types)
     $decl r  $call T.t_func ($call param_tys (st, ts, $call IR.ints.val (f.params), T.tys.nil),
                  $call T.tys.nth (ts, f.result)) }.r
 
@@ -1512,7 +1512,7 @@ $decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $d
       $decl e2  $if vis
           ($call benv.cons ($call bind_ent6 (xs.head.name, "prop", 0, T.t_bot, mid, -1), e)) e
       $decl sn  $if seen true hit
-      $decl r   $call with_scope (e2, $call mprops.val (xs.tail), mid, nm, sn) }.r,
+      $decl r   $call with_scope (e2, xs.tail, mid, nm, sn) }.r,
   $case xs e
 )
 
@@ -1541,11 +1541,11 @@ $decl no_caps $func ($decl st proto_lst, $decl pe benv.node, $decl n Pa.proto_no
 // body can lower its siblings, so the entry read at the start is stale by the
 // time the body is done.
 $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone)
-  { $decl ms $call find_mod ($call eval_mods (st.mods), mid)
+  { $decl ms $call find_mod (st.mods, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
-          ($call save_mod (st, $call mod_ent (mid, $call mprops.val (ms.head.props),
-              $call mdones.cons (d, $call mdones.val (ms.head.done)),
+          ($call save_mod (st, $call mod_ent (mid, ms.head.props,
+              $call mdones.cons (d, ms.head.done),
               $call benv.val (ms.head.env), ms.head.base, ms.head.path))),
         $case ms 0
       ) }.r
@@ -1585,7 +1585,7 @@ $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm ""
 
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe    $call with_props ($call benv.val (m.env), $call mprops.val (m.props), m.id)
+  { $decl pe    $call with_props (m.env, $call mprops.val (m.props), m.id)
     $decl chk   $call no_caps (st, pe, pn)
     // The index is reserved before the body exists, because the body may name
     // this prop — §4.9 memoises before typing for exactly the same reason.
@@ -1638,7 +1638,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 // `B(R)`, and the result is `μR. B(R)` — or simply `B`, when `R` did not occur.
 $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe $call with_props ($call benv.val (m.env), $call mprops.val (m.props), m.id)
+  { $decl pe $call with_props (m.env, $call mprops.val (m.props), m.id)
     $decl self $call mem_str ($call free_names (pn, strs.nil), nm)
     $decl pv $call fresh_var (st)
     $decl p0 $call note_prop (st, m.id, $call mdone (nm, "pend", pv, T.t_bot, -1, -1))
@@ -1668,7 +1668,7 @@ $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
 // `$specialize` of the second would emit its own copy of everything.
 $decl lower_prop_tmpl $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe  $call with_props ($call benv.val (m.env), $call mprops.val (m.props), m.id)
+  { $decl pe  $call with_props (m.env, $call mprops.val (m.props), m.id)
     $decl gs  $call generic_names ($call op (pn, 0), strs.nil)
     $decl tid $call fresh_tmpl (st, gs, $call op (pn, 1), pe)
     $decl p1  $call note_prop (st, m.id, $call mdone (nm, "tmpl", 0, T.t_unit, -1, tid))
@@ -1692,7 +1692,7 @@ $decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.prot
 
 $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe   $call with_scope ($call benv.val (m.env), $call mprops.val (m.props), m.id, nm,
+  { $decl pe   $call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
                    ($union (false, true)))
     $decl chk  $call no_caps (st, pe, pn)
     $decl idx  $call reserve_lifted (st)
@@ -1739,7 +1739,7 @@ $decl lower_prop_ast $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 
 $decl lower_prop_new $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                             $decl n Pa.proto_node)
-  { $decl f $call find_mprop ($call mprops.val (m.props), nm)
+  { $decl f $call find_mprop (m.props, nm)
     $decl r $match f (
         $case {$prop tag "cons"} ($call lower_prop_ast (st, m, nm, f.head.node, n, f.head.kind)),
         $case f ($call lres ($call IR.e_unit ($call err (st, $call concat ("no field '",
@@ -1756,7 +1756,7 @@ $decl prop_const $func ($decl st proto_lst, $decl d proto_mdone)
 
 $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                            $decl n Pa.proto_node)
-  { $decl d $call find_mdone ($call mdones.val (m.done), nm)
+  { $decl d $call find_mdone (m.done, nm)
     $decl r $match d (
         $case {$prop tag "cons"}
           ($if ($call eq_str (d.head.kind, "global")) ($call prop_global (st, d.head))
@@ -1779,7 +1779,7 @@ $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
       ) }.r
 
 $decl lower_prop $func ($decl st proto_lst, $decl mid 0, $decl nm "", $decl n Pa.proto_node)
-  { $decl ms $call find_mod ($call eval_mods (st.mods), mid)
+  { $decl ms $call find_mod (st.mods, mid)
     $decl r $match ms (
         $case {$prop tag "cons"} ($call lower_prop_in (st, ms.head, nm, n)),
         $case ms ($call lres ($call IR.e_unit ($call err (st,
@@ -1878,7 +1878,7 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
         $call IR.e_block (id, $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)), id)
     $decl ps $call block_props (xs, mprops.nil)
     $decl md $if ($call mprops.is_nil (ps)) -1
-                 ($call fresh_mod (st, ps, $call benv.val (a.env)))
+                 ($call fresh_mod (st, ps, a.env))
     $decl r  $call lres3 (ir, ty, md) }.r
 
 // ----------------------------------------------------------------- the file
@@ -1919,12 +1919,12 @@ $decl self_tails $func ($decl e IR.proto_expr, $decl i 0) $match e (
   // Only tail position matters, so the arms of an `$if` and the second operand
   // of a `$do` — never the condition or the first operand (§7.7).
   $case {$prop tag "if"}
-    $if ($call self_tails ($call IR.eval (e.then), i)) true
-        ($call self_tails ($call IR.eval (e.els), i)),
-  $case {$prop tag "do"} ($call self_tails ($call IR.eval (e.then), i)),
+    $if ($call self_tails (e.then, i)) true
+        ($call self_tails (e.els, i)),
+  $case {$prop tag "do"} ($call self_tails (e.then, i)),
   $case {$prop tag "switch"}
     $if ($call self_tails_arms ($call IR.arms.val (e.arms), i)) true
-        ($call self_tails ($call IR.eval (e.default), i)),
+        ($call self_tails (e.default, i)),
   $case e false
 )
 
@@ -1958,10 +1958,10 @@ $decl tail_targets $func ($decl e IR.proto_expr, $decl acc IR.ints.node) $match 
           $case c acc
         ) }.r,
   $case {$prop tag "if"}
-    $call tail_targets ($call IR.eval (e.els), $call tail_targets ($call IR.eval (e.then), acc)),
-  $case {$prop tag "do"} ($call tail_targets ($call IR.eval (e.then), acc)),
+    $call tail_targets (e.els, $call tail_targets (e.then, acc)),
+  $case {$prop tag "do"} ($call tail_targets (e.then, acc)),
   $case {$prop tag "switch"}
-    $call tail_targets ($call IR.eval (e.default),
+    $call tail_targets (e.default,
         $call tail_targets_arms ($call IR.arms.val (e.arms), acc)),
   $case e acc
 )
@@ -2088,7 +2088,7 @@ $decl mark_self $func ($decl xs IR.fns.node, $decl i 0, $decl acc IR.fns.node) $
     $call mark_self ($call IR.fns.val (xs.tail), $call add (i, 1),
         $call IR.fns.cons ($call IR.fn (xs.head.name, xs.head.params, xs.head.result,
             xs.head.slots, $call IR.eval (xs.head.body),
-            $call self_tails ($call IR.eval (xs.head.body), i), xs.head.thunk, xs.head.env),
+            $call self_tails (xs.head.body, i), xs.head.thunk, xs.head.env),
             acc)),
   $case xs ($call IR.fns.reverse (acc, IR.fns.nil))
 )
@@ -2114,4 +2114,4 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl all  $call mark_self (all0, 0, IR.fns.nil)
     $decl es   $call collect_edges (all, 0, edges.nil)
     $decl gs   $call find_groups (es, 0, $call IR.fns.length (all, 0), IR.groups.nil)
-    $decl out  $call IR.program ($call T.tys.val ($call eval_tys (st.types)), all, gs, 0) }.out
+    $decl out  $call IR.program ($call T.tys.val (st.types), all, gs, 0) }.out

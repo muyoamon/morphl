@@ -337,7 +337,7 @@ $decl show_discs $func ($decl xs ints.node, $decl acc "", $decl first P.boolean)
 $decl show_arms $func ($decl xs arms.node, $decl acc "") $match xs (
   $case {$prop tag "cons"}
     $call show_arms (xs.tail, $call concat (acc,
-        $call concat (" [", $call concat ($call show_discs ($call ints.val (xs.head.discs), "", true),
+        $call concat (" [", $call concat ($call show_discs (xs.head.discs, "", true),
         $call concat (" ", $call concat ($call show (xs.head.body), "]")))))),
   $case xs acc
 )
