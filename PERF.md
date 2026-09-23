@@ -109,6 +109,33 @@ the bucket dimension — the same bytes counted two ways):
 Blocks and their tail cells are **~89% of everything proportional to the work**,
 and 72% of blocks are `P.list` cons cells at 64 bytes an element.
 
+## Three quarters of all calls are §8 intrinsics
+
+`emit_c.mpl` over `emit.mpl`, **504,229,882 calls total** (`MORPHL_CALLS=1`,
+which counts builtins as well as morphl functions):
+
+| | calls | share |
+|---|---|---|
+| `eq_int` | 287,202,221 | **57.0%** |
+| `eq_str` | 47,550,886 | 9.4% |
+| `add` | 30,909,348 | 6.1% |
+| `sub`, `lt`, `len`, `byte` | 13,764,131 | 2.7% |
+| **all §8 intrinsics** | **379,423,000** | **75.2%** |
+| `same` + `same_fields` | 83,093,461 | 16.5% |
+| everything else | ~40M | 8% |
+
+§2.1 makes an intrinsic an ordinary shadowable name, so `$call eq_int (a, b)` is
+a full call: resolve `eq_int` up the scope chain to the root block, evaluate two
+arguments onto the arg stack, dispatch through `callValue`, pull both operands
+out with `wantInt`, then do one machine comparison. **The operation is free; the
+context around it is not**, and most of that context is a name lookup for a name
+that cannot change.
+
+This is why `Interp.lookup` is 44.7% of wall time — 287M of those resolutions
+are `eq_int`. It also means resolution caching is not a 44.7% opportunity spread
+thinly over the program: three quarters of it sits on a handful of root-block
+names whose binding is fixed for the whole run.
+
 ## Call profile, whole compiler
 
 | function | calls |
@@ -133,6 +160,7 @@ and 72% of blocks are `P.list` cons cells at 64 bytes an element.
 | leaf `same` by tag instead of `show` | ~21% | yes |
 | `find_ty` structural digest | **no measurable win**; adds 81M `ty_hash` calls | **reverted** |
 | drop 121 redundant `val`/`ival`/`eval_*` calls | emit `emit.mpl` 48.1s → 41.4s (**~14%**) | yes |
+| intrinsic fast path (cache a call site's resolved builtin) | correct and removes 379M of 504M resolutions (`lookup` 40.9% → 27.6%); **wall-clock benefit not pinned down** — see below | yes |
 
 ## §5.4's identity calls — how many are actually needed
 
@@ -160,6 +188,47 @@ value from another otherwise types as `<&T, T>` and every caller fails.
 
 Still open as a language question: whether that residue deserves a form (`$val e`)
 rather than a library call, so the cost is legible instead of hidden.
+
+## The intrinsic fast path
+
+§2.1 makes an intrinsic an ordinary shadowable name, so every `$call eq_int
+(a, b)` resolved `eq_int` up the scope chain to the **root scope** — the last
+link, holding ~80 intrinsics as slots, scanned linearly. With 379M of 504M calls
+being intrinsics, that was the dominant cost of the whole interpreter.
+
+`prim_cache` remembers what a call site's callee resolved to. Sound because
+§4.10 makes visibility *positional*: a node sits at one position, so the
+bindings in scope where it evaluates are the same on every evaluation — a
+`$func` body resolves against its finished block, an initializer against what
+precedes it. `MORPHL_VERIFY_PRIM=1` re-resolves on every hit and fails on a
+mismatch; clean over `prelude`, `lexer`, `parser`, `types`.
+
+What it is worth in wall time is **unresolved**, and three separate attempts to
+pin it disagreed:
+
+| workload | without | with | ratio |
+|---|---|---|---|
+| `types.mpl` (42.5M calls, 0.05 GB) | 18.0–20.0s | 14.9–16.3s | **1.24x** (tight, repeatable) |
+| `emit.mpl` (504M calls, 0.36 GB) | 47.9–54.2s | 1.3–16.7s | 3x–37x (wildly variable) |
+| whole compiler (3 GB) | 24–28 min | 27m24s | **~1.0x** |
+
+Every one of those runs was output-validated; the `emit.mpl` runs were checked to
+`md5` and are byte-identical to the uncached output, exit 0, empty stderr — the
+fast ones really do the work. Things ruled out: build differences (the last A/B
+used **one binary** and a runtime flag), drift (interleaved), a large fixed cost
+(`emit_c` on a one-line file is 0.01s and 3,126 calls).
+
+What does not add up: `types.mpl` runs 42.5M calls in 18s (2.4M/s) while
+`emit.mpl` runs 504M in 50s (10M/s) — the same interpreter four times slower per
+call on the smaller workload. Until that is understood, no speedup figure from
+`emit.mpl` should be quoted. **Treat the fast path as worth ~1.2x**, on the
+evidence of the one workload whose timings are stable, and note that the whole
+compiler — the case that matters — shows nothing, because it is memory-bound.
+
+`perf` also failed here: a matched pair gave `lookup` 40.9% → 27.6%, implying
+~1.17x, which happens to match `types.mpl` but not `emit.mpl`. Under
+`--call-graph=dwarf` perf copies 4 KB of stack per sample; whether that distorts
+these shares was not established.
 
 ## Hypotheses tested and rejected
 

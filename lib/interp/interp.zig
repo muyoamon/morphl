@@ -35,6 +35,10 @@ const builtins = @import("builtins.zig");
 /// TEMPORARY: re-exported so the driver can turn the `read_file` trace on.
 pub const builtins_trace_reads = &builtins.trace_reads;
 
+/// Re-exported for the driver, like `builtins_trace_reads`.
+pub const verify_prim_flag = &verify_prim;
+pub const no_prim_cache_flag = &no_prim_cache;
+
 const Span = diag.Span;
 const Diagnostics = diag.Diagnostics;
 const Node = ast.Node;
@@ -68,6 +72,14 @@ const max_specialize_depth = 64;
 /// reaches well past 32 — so this is generous; the identity short-circuit in
 /// `shapeMatches` is what keeps the common case cheap regardless.
 const max_shape_depth = 256;
+
+/// TEMPORARY-ish: set from `MORPHL_VERIFY_PRIM`, to check the claim in
+/// `cachedPrim` on a whole test run rather than reason about it.
+pub var verify_prim: bool = false;
+
+/// TEMPORARY: `MORPHL_NO_PRIM_CACHE=1` turns the fast path off, so the A/B can
+/// be done inside one binary with nothing else differing.
+pub var no_prim_cache: bool = false;
 
 /// A `shape_cache` entry: the shape, whether its props may be reused, and —
 /// when they can — the forced `PropSlot` array the evaluating scope borrows
@@ -106,6 +118,8 @@ pub const Interp = struct {
     /// is and the odd one out gets a fresh `Shape` pointing at the cached name
     /// array.
     shape_cache: std.AutoHashMapUnmanaged([*]const Node, ShapeEntry) = .empty,
+    /// One resolved intrinsic per call site — see `cachedPrim`.
+    prim_cache: std.AutoHashMapUnmanaged(*const Node, *const value.Builtin) = .empty,
     /// One `Str` box per `Str`/`Float` literal node — see `literalStr`.
     str_box: std.AutoHashMapUnmanaged(*const Node, *value.Str) = .empty,
     call_depth: u32 = 0,
@@ -309,6 +323,11 @@ pub const Interp = struct {
                     try w.print(" }}\n", .{});
                 }
                 try w.print("\n", .{});
+            }
+            {
+                var tc: u64 = 0;
+                for (list.items) |row| tc += row.row.calls;
+                try w.print("  total calls: {d}\n", .{tc});
             }
             try w.print("{s:>9}  {s:>7}  {s:>12}  {s:>12}  {s:>8}  {s}\n", .{ "bytes", "share", "calls", "allocs", "avg", "function" });
             var shown: usize = 0;
@@ -972,7 +991,16 @@ pub const Interp = struct {
             .set => self.evalSet(node, scope),
             .func => self.makeFunc(node, scope),
             .call => blk: {
+                // The common case by a wide margin: a call site whose callee is
+                // an intrinsic, resolved once and remembered (`cachedPrim`).
+                if (try self.cachedPrim(&ops[0], scope)) |b| {
+                    const pbase = self.arg_top;
+                    defer self.arg_top = pbase;
+                    const pargs = try self.evalArgs(&ops[1], scope);
+                    break :blk self.callBuiltin(b, pargs, node.span);
+                }
                 const callee = (try self.eval(&ops[0], scope)).deref();
+                self.notePrim(&ops[0], callee);
                 const base = self.arg_top;
                 defer self.arg_top = base;
                 const args = try self.evalArgs(&ops[1], scope);
@@ -1161,23 +1189,62 @@ pub const Interp = struct {
         }
     }
 
+    fn callBuiltin(self: *Interp, b: *const value.Builtin, args: []Value, span: Span) Error!Value {
+        // §2.1 makes an intrinsic an ordinary name, so `$call add (a, b)` is a
+        // *call* — counted here so the by-calls profile shows how much of the
+        // program is arithmetic and comparison. It is three quarters of it.
+        if (self.stats) |st| st.enter(b.name);
+        const bb = self.bkt(.builtin);
+        defer self.unbkt(bb);
+        if (b.arity) |n| {
+            if (args.len != n) {
+                return self.rt.fail(span, "{s} takes {d} argument{s}, found {d}", .{
+                    b.name, n, if (n == 1) "" else "s", args.len,
+                });
+            }
+        }
+        // Intrinsics take values, so storage is transparent here (§5.4).
+        for (args) |*a| a.* = a.deref();
+        return b.func(&self.rt, args, span);
+    }
+
+    /// Note the intrinsic a call site resolved to, and read it back.
+    ///
+    /// §2.1 makes an intrinsic an ordinary *shadowable* name, so `$call eq_int
+    /// (a, b)` pays a full resolution up the scope chain to the root block —
+    /// and three quarters of every call this interpreter makes is one of those,
+    /// `eq_int` alone being 57%. The resolution is the work; the comparison
+    /// after it is one instruction.
+    ///
+    /// What a *given call site* sees is fixed. §4.10 makes visibility
+    /// positional and a node sits at one position, so the bindings in scope
+    /// where it is evaluated are the same on every evaluation: a `$func` body
+    /// resolves against its finished block, an initializer against what
+    /// precedes it, and neither changes between runs of that node. So the first
+    /// resolution stands for all of them. `MORPHL_VERIFY_PRIM=1` re-resolves on
+    /// every hit and fails on a mismatch, which is how that is checked rather
+    /// than asserted.
+    fn cachedPrim(self: *Interp, callee: *const Node, scope: *Scope) Error!?*const value.Builtin {
+        if (no_prim_cache or callee.data != .name) return null;
+        const b = self.prim_cache.get(callee) orelse return null;
+        if (verify_prim) {
+            const now = (try self.eval(callee, scope)).deref();
+            if (now != .builtin or now.builtin != b) {
+                return self.rt.fail(callee.span, "prim cache disagrees for '{s}'", .{callee.data.name});
+            }
+        }
+        return b;
+    }
+
+    fn notePrim(self: *Interp, callee: *const Node, v: Value) void {
+        if (callee.data != .name or v != .builtin) return;
+        self.prim_cache.put(self.arena, callee, v.builtin) catch {};
+    }
+
     fn callValue(self: *Interp, callee: Value, args: []Value, span: Span) Error!Value {
         switch (callee) {
             .func => |f| return self.callFunc(f, args, span),
-            .builtin => |b| {
-                const bb = self.bkt(.builtin);
-                defer self.unbkt(bb);
-                if (b.arity) |n| {
-                    if (args.len != n) {
-                        return self.rt.fail(span, "{s} takes {d} argument{s}, found {d}", .{
-                            b.name, n, if (n == 1) "" else "s", args.len,
-                        });
-                    }
-                }
-                // Intrinsics take values, so storage is transparent here (§5.4).
-                for (args) |*a| a.* = a.deref();
-                return b.func(&self.rt, args, span);
-            },
+            .builtin => |b| return self.callBuiltin(b, args, span),
             .template => return self.rt.fail(span, "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1 drops $call-time inference of T)", .{}),
             else => return self.rt.fail(span, "{s} is not callable", .{callee.typeName()}),
         }
@@ -1304,7 +1371,14 @@ pub const Interp = struct {
                 .@"if" => return .{ .tail = .{ .node = try self.selectIf(node, scope), .scope = scope, .file = cur_file, .may_capture = true } },
                 .match => return .{ .tail = .{ .node = try self.selectArm(node, scope), .scope = scope, .file = cur_file, .may_capture = true } },
                 .call => {
+                    if (try self.cachedPrim(&ops[0], scope)) |b| {
+                        const pbase = self.arg_top;
+                        defer self.arg_top = pbase;
+                        const pargs = try self.evalArgs(&ops[1], scope);
+                        return .{ .value = try self.callBuiltin(b, pargs, node.span) };
+                    }
                     const callee = (try self.eval(&ops[0], scope)).deref();
+                    self.notePrim(&ops[0], callee);
                     const base = self.arg_top;
                     // `bindParams` copies the arguments out, and an intrinsic
                     // has returned by the time this unwinds, so the scratch is

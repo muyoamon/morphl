@@ -356,6 +356,12 @@ pub fn main(init: process.Init.Minimal) !void {
                 if (init.environ.getPosix("MORPHL_TRACE_READS") != null) {
                     interp.builtins_trace_reads.* = true;
                 }
+                if (init.environ.getPosix("MORPHL_NO_PRIM_CACHE") != null) {
+                    interp.no_prim_cache_flag.* = true;
+                }
+                if (init.environ.getPosix("MORPHL_VERIFY_PRIM") != null) {
+                    interp.verify_prim_flag.* = true;
+                }
                 if (init.environ.getPosix("MORPHL_CALLS") != null) {
                     stats.by_calls = true;
                     ctx.stats = &stats;
