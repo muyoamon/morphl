@@ -791,8 +791,40 @@ $decl first_frame $func ($decl t proto_ty, $decl i 0) $match t (
 $decl close_var $func ($decl t proto_ty, $decl i 0)
   $call t_rec ($call remap (t, $call rop_abs (i), 0))
 
+// §5.5 makes `μR. B(R)` and its one-step unrolling the same type, and every
+// structural question about a type has to ask `unroll` first — so it is asked
+// constantly. Answering means rebuilding the body with the binder substituted,
+// and a big recursive type is a great deal of list: emitting `types.mpl`,
+// 5,769 unrollings rebuilt **149 MB**, which was 68% of everything that run
+// allocated and 46% of it in `cons` alone.
+//
+// A `rec` node is immutable, so its unrolling never changes. Keyed by `same`,
+// which is what type identity means here anyway (§5.5 makes alpha-equivalence
+// structural), so handing back the entry built for a structurally equal `rec`
+// is handing back the same type.
+$decl unroll_ent $func ($decl k proto_ty, $decl v proto_ty) { $decl key k  $decl val v }
+$decl proto_unroll_ent $call unroll_ent (t_bot, t_bot)
+$decl unrolls $specialize P.list proto_unroll_ent
+$decl unroll_cache $mut $alloc unrolls.node
+
+$decl unroll_hit $func ($decl ok P.boolean, $decl v proto_ty) { $decl hit ok  $decl val v }
+
+$decl unroll_find $func ($decl xs unrolls.node, $decl k proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call same ($call tval (xs.head.key), k))
+        ($call unroll_hit (($union (true, false)), $call tval (xs.head.val)))
+        ($call unroll_find ($call unrolls.val (xs.tail), k)),
+  $case xs ($call unroll_hit (($union (false, true)), t_bot))
+)
+
 $decl unroll $func ($decl t proto_ty) $match t (
-  $case {$prop tag "rec"} $call subst_bnd (t.body, 0, t),
+  $case {$prop tag "rec"}
+    { $decl f $call unroll_find ($call unrolls.val (unroll_cache), t)
+      $decl r $if f.hit ($call tval (f.val))
+          { $decl u $call subst_bnd (t.body, 0, t)
+            $decl s $set unroll_cache ($call unrolls.cons ($call unroll_ent (t, u),
+                        $call unrolls.val (unroll_cache)))
+            $decl z u }.z }.r,
   $case t t
 )
 

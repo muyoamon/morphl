@@ -508,6 +508,17 @@ pub const Interp = struct {
             .pending => {
                 p.state = .in_progress;
                 const v = try self.eval(p.expr, p.env);
+                // A `$prop` binds through the prop slots rather than through
+                // `declare`, so a prop-valued function was staying anonymous
+                // and the profile charged every list operation in the program
+                // to one "(anonymous $func)" row. §4.10 gives a prop a name
+                // like any other member; the profile should use it.
+                if (self.stats != null) switch (v) {
+                    .func => |f| if (f.name == null) {
+                        f.name = p.name;
+                    },
+                    else => {},
+                };
                 p.value = v;
                 p.state = .done;
                 return v;
