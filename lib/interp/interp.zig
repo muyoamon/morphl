@@ -178,10 +178,17 @@ pub const Interp = struct {
         /// like any other — this is the high-water mark, not a total.
         max_depth: u32 = 0,
         max_stack: usize = 0,
-        /// The stage-1 file the running function was *written* in, which is
-        /// what identifies the phase: code in `infer.mpl` is inference, code in
-        /// `lower.mpl` is lowering, and so on. The innermost function alone is
-        /// often `cons` and says nothing.
+        /// The stage-1 file that identifies the phase: code in `infer.mpl` is
+        /// inference, code in `lower.mpl` is lowering, and so on. The innermost
+        /// function alone is often `cons` and says nothing.
+        ///
+        /// It is `Func.file`, which `makeFunc` takes from `current_file` at the
+        /// moment the closure is built — so for an ordinary function it is
+        /// where it was written, but for a `$prop` of a specialised template it
+        /// is the **specialisation site**, because §4.9 re-evaluates the body
+        /// there. That is why `P.list`'s `cons` reports as `lower.mpl:cons`
+        /// rather than `prelude.mpl:cons`, and it is the more useful of the two
+        /// — it names whose data structure is being built.
         file: []const u8 = "",
         /// Live call depth, mirrored from `Interp.call_depth` so the allocator
         /// can read it — `note` runs inside the allocator and cannot see the

@@ -47,8 +47,12 @@ Three things make it worth the two lines it cost:
 - **The file, not just the function, names the phase.** The innermost frame is
   very often `cons` and says nothing; `lower.mpl:blk_acc` versus
   `types.mpl:with_goal` versus `emit.mpl:emit_args` says which half of §9.1 the
-  run is in. It is the file the function was *written* in, taken from the same
-  field diagnostics use.
+  run is in. It is `Func.file`, which `makeFunc` takes from `current_file` when
+  the closure is built — so for an ordinary function it is where it was written,
+  and for a `$prop` of a **specialised template** it is the specialisation site,
+  since §4.9 re-evaluates the body there. Hence `lower.mpl:cons` rather than
+  `prelude.mpl:cons`, which is the more useful reading: it names whose data
+  structure is being built.
 - **`stopped:` is recorded at the failing allocation, not at the report.** By
   the time the profile prints, the stack has unwound and `current` is back at
   the top level. The snapshot is taken in the allocator, on the first refusal —
@@ -69,6 +73,67 @@ file and ate the first **29 of 44** heartbeats, leaving a timeline that began at
 now uses `writerStreaming` for stderr, which shares the file offset so the two
 interleave in the order written. Anything else that writes to a fd this program
 also writes to must do the same.
+
+## Why the type table grows: §5.5 placeholders are interned and never removed
+
+Dumping the interned table and grouping the renderings says it outright. A
+`v<N>` is a §5.5 placeholder; `fresh_var` mints a new id per derivation and
+`T.same` compares ids, so `&^v26` and `&^v41` are different types that can never
+share an entry:
+
+| table | types | contain `v<N>` | share | duplicates modulo the id | share |
+|---|---|---|---|---|---|
+| `ir` | 439 | 128 | 29.2% | 76 | 17.3% |
+| **`front`** | 1,382 | **722** | **52.2%** | **652** | **47.2%** |
+| `lower` | 1,253 | 330 | 26.3% | 213 | 17.0% |
+
+Over half of the front end's table holds a placeholder, and **47% of the whole
+table is exact duplicates of each other differing only in an id** — thirty-five
+separate entries for `&^v?`, seventeen copies of one cons cell, seventeen of one
+list type.
+
+Nothing removes them. `intern` is unconditional, and `take_snap`/`put_snap` roll
+back the lifted functions, modules, specialisations and templates around a
+discarded first pass but **not the table** — so every discarded derivation
+leaves its placeholder types interned permanently. The count therefore tracks
+the *number of derivations*, not the program.
+
+That is also why closures are superadditive. By set arithmetic on the dumps:
+
+```
+front 1382 + lower 1253, shared 461  ->  UNION = 2174
+half actually interned 6062          ->  3888 types exist in NEITHER alone (64%)
+```
+
+### The obvious fix does not work, and the reason is worth keeping
+
+Canonicalising every placeholder-bearing type to one entry in `intern` (with
+`canon_ty` answering for itself, since such a type has no representative). The
+`ty_placeholder` stand-in was itself a `var`, so `has_var` stayed true of it and
+`emit_structs`/`c_type` kept their existing skip-and-refuse behaviour.
+
+The table shrank exactly as predicted — **`ir` 439 -> 341 (-22%), `lower`
+1,253 -> 1,019 (-19%)** — and `lower.mpl` gained **three check errors**:
+
+```
+no field 'inner' common to every member of this union (§5.1)   x2
+no field 'kind'  common to every member of this union (§5.1)   x1
+```
+
+Those come from `lower_proj`'s union case, which means a `$match` **narrowing
+failed**: the scrutinee stayed a union where it should have narrowed to a `ref`.
+So something reads a placeholder type *back from its index* and depends on its
+structure — `fn_ty` reconstructing a function type from its param and result
+indices is the most likely path, though which site was not established.
+
+**The interned entry for a placeholder type is load-bearing even though the type
+never reaches a layout.** Reverted.
+
+The design that should work is a **side table**: keep placeholder types interned
+exactly as today, so `ty_at`, `fn_ty` and `canon_ty` read back precisely what
+they do now, but hold them apart from the main table that `find_ty` scans and
+`emit_structs` walks. That halves the scan — which is where the 31% of calls
+goes — without changing a single answer.
 
 ## The whole compiler completes again — and the type count has quadrupled
 
@@ -257,7 +322,7 @@ Four things this says that a final profile could not:
   profile then says it is the third-largest row. Counting the `benv` cons cells
   with it, the environment is ~11% of the run.
 
-## Four ways these measurements have lied
+## Five ways these measurements have lied
 
 1. **A `zig build --prefix out<N>` snapshot captures stage 0 only.** Stage-1
    sources are read at *run time*, so two such binaries run whatever is in
@@ -273,6 +338,12 @@ Four things this says that a final profile could not:
 4. **Emitting a file that imports the file you edited recompiles your edit.**
    Output differing after a stage-1 change is expected, not a semantic
    regression: the extra frame slots are your new `$match` arms.
+5. **A stage-1 change is compiled by stage 1, so measure it on a workload that
+   contains the file you edited.** `front` does not compile `lower.mpl` and
+   reported −8.8% of calls; `lower` and `half` do, and reported +9.5% and +35%.
+   Measure both ways, always. (In that case the cause turned out *not* to be the
+   added code — see "The side table" — but the asymmetry is real and would hide
+   any regression that was.)
 
 ## Stage 0 throughput — measured, and flat
 
@@ -612,6 +683,63 @@ bigger effect than the front end's 17%, because the T² term grows with the
 closure and so hurts most where the closure is biggest. It is still not enough,
 and what is left is what this file already named: `cons` at 82.1% and 44.2M
 `{head tail}` cells. Linked lists, not the type table.
+
+## The side table: rejected, and the reason generalises
+
+The idea was sound and the measurement on the wrong workload said so. §9.3's
+table answers two questions — "what is type `i`", which must be dense and
+positional, and "have I seen this type", which needs no position because an
+entry can carry its own index. Splitting them lets a scan skip the §5.5
+placeholders, which are 52.2% of the front end's entries and can never match a
+real type. Placeholders kept their own entries and indices, so unlike the
+canonicalising attempt above nothing read back differently: `ir` stayed at 439
+types with zero errors and all 42 fixture `cc` steps stayed cached.
+
+| workload | contains `lower.mpl`? | calls | time |
+|---|---|---|---|
+| `front` | no | **−8.8%** | **−8%** (441s → 406s) |
+| `lower` | yes | **+9.5%** | **+13%** (433s → 489s) |
+| `half` | yes, + superadditively | **+35%** | **+40%** (at equal allocation) |
+
+The first version stored `{index, type}` pairs, which cost one
+`$specialize P.list proto_tyent` and **+28 types in `lower.mpl`** (1,253 →
+1,281). The obvious diagnosis was that §4.9 monomorphises the optimisation's own
+source into the closure being measured, so it pays for itself twice.
+
+**That diagnosis was wrong, and the second version proved it.** Storing the same
+thing as two *parallel* lists of `T.tys` and `IR.ints` — both already in the
+file's surface — took the added types from 28 to **4**, and changed the
+regression by nothing:
+
+| variant | `lower` types | `lower` calls | `lower` time | `front` calls | `front` time |
+|---|---|---|---|---|---|
+| baseline | 1,253 | 1,056,123,458 | 433s | 1,056,067,752 | 441s |
+| `{idx,ty}` pairs | 1,281 (+28) | +9.5% | **+13%** | −8.8% | −8% |
+| parallel lists | 1,257 (**+4**) | +10.6% | **+12.7%** | −6.1% | −6% |
+
+So the added code was never the cause. The real one is that **the partition's
+benefit scales with the placeholder fraction, and break-even is near half**:
+
+| closure | placeholders | result |
+|---|---|---|
+| `front` | 722 / 1,382 = **52.2%** | **−6 to −9%** |
+| `lower` | 330 / 1,253 = **26.3%** | **+10 to +13%** |
+
+Partitioning removes half of `front`'s scan and only a quarter of `lower`'s,
+while *any* partitioned structure costs more per entry than a plain walk — the
+parallel version has to `$match` two lists in lockstep, roughly doubling the
+per-entry work. Below ~50% placeholders that loses.
+
+And the reason it loses so easily is the thing to remember: `T.same` **already**
+rejects a placeholder in one tag check, so the entries being skipped were the
+*cheap* half of the table all along. That was visible in the very first
+estimate — predicted 15–20% of calls on `front`, measured 8.8% — and should have
+been read then as "the mechanism is smaller than it looks" rather than as a
+magnitude error.
+
+Both versions reverted. The three fixes that worked (`append_ty`, `with_props`,
+`put_mod`) all **removed work from an existing path** rather than adding a
+structure to avoid work, which on this evidence is the shape that pays.
 
 ## Hypotheses tested and rejected
 
