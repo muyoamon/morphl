@@ -123,10 +123,31 @@ $decl mdones $specialize P.list proto_mdone
 // place. §4.14 makes the path the identity: "all imports of the same resolved
 // file yield the same module".
 $decl mod_ent $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
-                     $decl en benv.node, $decl bs "", $decl pt "")
-  { $decl id i  $decl props ps  $decl done ds  $decl env en  $decl base bs  $decl path pt }
-$decl proto_mod $call mod_ent (0, mprops.nil, mdones.nil, benv.nil, "", "")
+                     $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node)
+  { $decl id i  $decl props ps  $decl done ds  $decl env en  $decl base bs  $decl path pt
+    // `with_props (en, ps, i)`, built once at registration. See `with_props`.
+    $decl penv pe }
+$decl proto_mod $call mod_ent (0, mprops.nil, mdones.nil, benv.nil, "", "", benv.nil)
 $decl mods_list $specialize P.list proto_mod
+
+// Every member of a module bound at once, which is what a `$prop` body and a
+// `$func` member's body both resolve against (§4.10).
+//
+// Declared up here because it is computed **once per module**, in
+// `fresh_mod_at`, and kept on the entry as `penv`. Its five callers all passed
+// the same three things — `(m.env, m.props, m.id)` — so the answer never
+// differed between them, and `note_prop` only ever rewrites the `done` list, so
+// it never goes stale. Rebuilding it per prop lowered, and again on every
+// `replay_union` (which is every `xs.node` in the program), measured **41.08 MB
+// across 5,140 calls** on the front end: 8.2% of the run, and all but one call
+// per module of it redundant.
+$decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $match xs (
+  $case {$prop tag "cons"}
+    $call with_props ($if ($call eq_str (xs.head.kind, "effect")) e
+                         ($call benv.cons ($call bind_ent5 (xs.head.name, "prop", 0, T.t_bot, mid), e)),
+        $call mprops.val (xs.tail), mid),
+  $case xs e
+)
 
 // §4.9's other half. A template is compile-time and has no runtime value at
 // all, so what lowering keeps is the same three things a module keeps: the
@@ -209,7 +230,8 @@ $decl find_mdone $func ($decl xs mdones.node, $decl n "") $match xs (
 // the empty list fits).
 
 $decl lstate $func ()
-  { $decl types  $mut $alloc T.tys.node
+  { // §9.3's table, pending half: **newest first**, so an append is one cell.
+    $decl tpend  $mut $alloc T.tys.node
     $decl ntypes $mut $alloc 0
     $decl nslots $mut $alloc 0
     // The type of each slot allocated so far, newest first (§7.2).
@@ -219,6 +241,10 @@ $decl lstate $func ()
     $decl nopaque $mut $alloc 0
     // §4.10's compile-time half: every block with props that lowering has
     // seen, so a projection onto a prop can be answered from its source.
+    // §9.3's table, settled half: **oldest first**, so a position *is* an
+    // index and a scan meets the oldest entries first. See `add_ty`.
+    $decl tsettled $mut $alloc T.tys.node
+    $decl nsettled $mut $alloc 0
     $decl mods   $mut $alloc mods_list.node
     $decl nmods  $mut $alloc 0
     // §4.9's templates, and the specialisations already built from them.
@@ -267,8 +293,70 @@ $decl err $func ($decl st proto_lst, $decl m "", $decl x P.proto_span)
 // as. The table holds one entry per *distinct* type, and both of the obvious
 // ways to speed this up have been tried and measured; neither helped. Read the
 // note in CLAUDE.md before trying a third.
-$decl append_ty $func ($decl xs T.tys.node, $decl t T.proto_ty)
-  $call T.tys.reverse ($call T.tys.cons (t, $call T.tys.reverse (xs, T.tys.nil)), T.tys.nil)
+// §9.3's table is append-only and indexed, and appending used to be
+// `reverse (cons (t, reverse (xs)))` — two full rebuilds per *new* type, so
+// `sum 2k` over a program with T types is T² cons cells. At the front end's
+// 1,382 types that measured 1.9M `cons` calls, about a fifth of everything the
+// run allocated; the table is the one structure that grows with the *whole*
+// program rather than with the file being lowered, which is why it showed up
+// as superlinear the moment another module joined the closure.
+//
+// The obvious repair — hold it newest first, so an append is one cell, and
+// read index `i` of `n` entries at position `n-1-i` — takes the memory back
+// and costs 30% in *time*, which is worth writing down because the reason is
+// not obvious. `find_ty` scans, and the types asked for constantly are `Int`,
+// `Str`, unit and the booleans, which are interned *first* and so have the
+// smallest indices. Newest-first moves exactly those from the head of the scan
+// to its tail: on the front end, 145,860 of 147,242 lookups are hits, and they
+// went from position ~10 to position ~1,372. That is 200M extra comparisons,
+// against the 248M extra calls actually measured.
+//
+// So the table is a **banker's queue**. `tsettled` is oldest-first and holds
+// indices 0..nsettled-1; `tpend` is newest-first and holds the rest, which
+// makes an append one cell. When the pending half outgrows the settled one the
+// two are merged, which doubles `nsettled` and so costs O(T) over the whole
+// run rather than O(T²). `find_ty` scans settled first, so the hot types are
+// back at the head where they were.
+$decl join_tys $func ($decl settled T.tys.node, $decl pend T.tys.node)
+  $call T.tys.reverse ($call T.tys.reverse (settled, T.tys.nil),
+      $call T.tys.reverse (pend, T.tys.nil))
+
+$decl npend $func ($decl st proto_lst)
+  $call isub ($call P.ival (st.ntypes), $call P.ival (st.nsettled))
+
+// The whole table in index order. Everything downstream — `emit`, `verify`, a
+// §9.2 pass — indexes it, and an index is a position.
+$decl all_types $func ($decl st proto_lst)
+  $call join_tys ($call T.tys.val (st.tsettled), $call T.tys.val (st.tpend))
+
+// Merging when the pending half outgrows the settled one is what makes the
+// append amortised: `nsettled` doubles each time, so the merges cost 1 + 3 + 7
+// + … + T ≈ 2T cells in total.
+$decl merge_tys $func ($decl st proto_lst)
+  $if ($call lt ($call P.ival (st.nsettled), $call npend (st)))
+      { $decl j $set st.tsettled ($call all_types (st))
+        $decl c $set st.tpend T.tys.nil
+        $decl n $set st.nsettled ($call P.ival (st.ntypes))
+        $decl r 0 }.r
+      0
+
+$decl add_ty $func ($decl st proto_lst, $decl t T.proto_ty)
+  { $decl p $set st.tpend ($call T.tys.cons (t, $call T.tys.val (st.tpend)))
+    $decl n $set st.ntypes ($call add ($call P.ival (st.ntypes), 1))
+    $decl m $call merge_tys (st)
+    $decl r 0 }.r
+
+// Settled first — oldest-first, so `Int` and friends are met immediately. A
+// hit in the pending half is counted from its other end, as before.
+$decl ty_find $func ($decl st proto_lst, $decl t T.proto_ty)
+  { $decl s $call IR.find_ty ($call T.tys.val (st.tsettled), t)
+    $decl out $if s.hit s
+        { $decl ns $call P.ival (st.nsettled)
+          $decl p  $call IR.find_ty ($call T.tys.val (st.tpend), t)
+          $decl r  $if p.hit
+              ($call IR.found (true, $call add (ns,
+                   $call isub ($call isub ($call npend (st), 1), p.id))))
+              ($call IR.found (false, 0)) }.r }.out
 
 // Interning is exact because de Bruijn binders make alpha-equivalent types
 // identical (§5.5), so `T.same` is the right key and one index names one C
@@ -313,14 +401,12 @@ $decl is_rec $func ($decl t T.proto_ty) $match t (
 )
 
 $decl intern $func ($decl st proto_lst, $decl t T.proto_ty)
-  { $decl cur $call T.tys.val (st.types)
-    // The count before anything is added: on a miss that *is* the new entry's
+  { // The count before anything is added: on a miss that *is* the new entry's
     // index, and `seal_rec` below may add more without changing it.
     $decl cnt $call P.ival (st.ntypes)
-    $decl f   $call IR.find_ty (cur, t)
+    $decl f   $call ty_find (st, t)
     $decl out $if f.hit f.id
-        { $decl added $set st.types ($call append_ty (cur, t))
-          $decl n     $set st.ntypes ($call add (cnt, 1))
+        { $decl added $call add_ty (st, t)
           // After the entry exists, never before: the unrolling names this
           // very type, and finding it is what ends the recursion.
           $decl sealed $if ($call is_rec (t)) ($call seal_rec (st, t)) 0
@@ -390,14 +476,32 @@ $decl fresh_opaque $func ($decl st proto_lst)
 
 $decl eval_mods $func ($decl x mods_list.node) x
 
-// Replace a module's entry, keyed by id. The table is small — one per block
-// with props — so a rebuild costs less than the indirection a mutable cell in
-// each entry would need.
+// Replace a module's entry, keyed by id.
+//
+// The comment here used to say "the table is small — one per block with props —
+// so a rebuild costs less than the indirection a mutable cell would need". It
+// is not small: **865 modules** on the front end alone, every `$specialize` and
+// every prop-bearing literal among them. Rebuilding all of them to change one
+// entry's `done` field measured **81.94 MB across 7,175 calls, 17.8% of the
+// run** and 22.5% of everything `cons` allocated.
+//
+// So the walk stops at the entry it came for and **shares the tail**, which is
+// untouched by construction: cost is 2p for position p instead of 2M. It can
+// never be worse than the old version, since p <= M, and it is usually far
+// better — `fresh_mod_at` prepends, and `note_prop` fires on the module being
+// lowered right now, which is at or near the head.
+//
+// Still copy-on-write, and that is deliberate. The tempting fix is a `$mut`
+// cell for `done` so nothing is rebuilt at all — but `take_snap`/`put_snap`
+// roll the module table back for a recursive member's first pass (§5.5), and
+// restoring a list of entries that hold *pointers* would restore the pointers
+// and keep the mutations. Copying the prefix has no such hazard.
 $decl put_mod $func ($decl xs mods_list.node, $decl m proto_mod, $decl acc mods_list.node)
   $match xs (
     $case {$prop tag "cons"}
-      $call put_mod (xs.tail, m,
-          $call mods_list.cons ($if ($call eq_int (xs.head.id, m.id)) m xs.head, acc)),
+      $if ($call eq_int (xs.head.id, m.id))
+          ($call mods_list.reverse (acc, $call mods_list.cons (m, xs.tail)))
+          ($call put_mod (xs.tail, m, $call mods_list.cons (xs.head, acc))),
     $case xs ($call mods_list.reverse (acc, mods_list.nil))
   )
 
@@ -459,7 +563,10 @@ $decl fresh_mod_at $func ($decl st proto_lst, $decl ps mprops.node, $decl en ben
                           $decl bs "", $decl pt "")
   { $decl i $call P.ival (st.nmods)
     $decl n $set st.nmods ($call add (i, 1))
-    $decl m $set st.mods ($call mods_list.cons ($call mod_ent (i, ps, mdones.nil, en, bs, pt),
+    // The prop environment is a function of the module alone, so it is built
+    // here and never again.
+    $decl pe $call with_props (en, ps, i)
+    $decl m $set st.mods ($call mods_list.cons ($call mod_ent (i, ps, mdones.nil, en, bs, pt, pe),
                               $call eval_mods (st.mods)))
     $decl r i }.r
 
@@ -920,8 +1027,14 @@ $decl disc_of $func ($decl ms T.tys.node, $decl pat T.proto_ty, $decl i 0,
 // the table entry. So anything that computes a discriminator has to ask the
 // table, not the copy it happens to be holding, or the two disagree about
 // which member is which.
+// Entry `i` of the banker's queue: a position in the settled half, or counted
+// from the other end of the pending one.
 $decl ty_at $func ($decl st proto_lst, $decl i 0)
-  $call T.tys.nth ($call T.tys.val (st.types), i)
+  { $decl ns $call P.ival (st.nsettled)
+    $decl r $if ($call lt (i, ns))
+        ($call T.tys.nth ($call T.tys.val (st.tsettled), i))
+        ($call T.tys.nth ($call T.tys.val (st.tpend),
+             $call isub ($call isub ($call npend (st), 1), $call isub (i, ns)))) }.r
 
 $decl canon_ty $func ($decl st proto_lst, $decl t T.proto_ty)
   $call ty_at (st, $call intern (st, t))
@@ -1231,17 +1344,6 @@ $decl find_completing $func ($decl xs Pa.nodes.node, $decl nm "") $match xs (
 // §4.10 makes that source order for a `$decl`, and §4.11 makes `$fwd` the way
 // to move it earlier: "`$fwd` reserves a layout slot at its own position". So a
 // `$fwd`'d name enters the list where the `$fwd` stands, carrying the value its
-// Every member of a module bound at once, which is what a `$prop` body and a
-// `$func` member's body both resolve against (§4.10). Declared here rather than
-// beside `with_scope` because §3.3's effect items are lowered above and need it.
-$decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $match xs (
-  $case {$prop tag "cons"}
-    $call with_props ($if ($call eq_str (xs.head.kind, "effect")) e
-                         ($call benv.cons ($call bind_ent5 (xs.head.name, "prop", 0, T.t_bot, mid), e)),
-        $call mprops.val (xs.tail), mid),
-  $case xs e
-)
-
 // ------------------------------------------------------- §3.3's top-level effects
 //
 // "A non-`$decl` expression runs for effect and is discarded" — the *value* is
@@ -1351,7 +1453,7 @@ $decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node)
   { $decl ms $call find_mod (st.mods, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
-          { $decl pe $call with_props (ms.head.env, $call mprops.val (ms.head.props), ms.head.id)
+          { $decl pe $call benv.val (ms.head.penv)
             $decl z  $call lower_effect (st, pe, pn, -1) }.z,
         $case ms 0
       ) }.r
@@ -1594,14 +1696,14 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
 $decl param_tys $func ($decl st proto_lst, $decl ts T.tys.node, $decl xs IR.ints.node,
                        $decl acc T.tys.node) $match xs (
   $case {$prop tag "cons"}
-    $call param_tys (st, ts, xs.tail, $call T.tys.cons ($call T.tys.nth (ts, xs.head), acc)),
+    $call param_tys (st, ts, xs.tail, $call T.tys.cons ($call ty_at (st, xs.head), acc)),
   $case xs ($call T.tys.reverse (acc, T.tys.nil))
 )
 
 $decl fn_ty $func ($decl st proto_lst, $decl f IR.proto_fn)
-  { $decl ts $call T.tys.val (st.types)
+  { $decl ts T.tys.nil
     $decl r  $call T.t_func ($call param_tys (st, ts, $call IR.ints.val (f.params), T.tys.nil),
-                 $call T.tys.nth (ts, f.result)) }.r
+                 $call ty_at (st, f.result)) }.r
 
 
 // ------------------------------------------------------- props, as values
@@ -1663,7 +1765,8 @@ $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone)
         $case {$prop tag "cons"}
           ($call save_mod (st, $call mod_ent (mid, ms.head.props,
               $call mdones.cons (d, ms.head.done),
-              $call benv.val (ms.head.env), ms.head.base, ms.head.path))),
+              $call benv.val (ms.head.env), ms.head.base, ms.head.path,
+              $call benv.val (ms.head.penv)))),
         $case ms 0
       ) }.r
 
@@ -1702,7 +1805,7 @@ $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm ""
 
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe    $call with_props (m.env, $call mprops.val (m.props), m.id)
+  { $decl pe    $call benv.val (m.penv)
     $decl chk   $call no_caps (st, pe, pn)
     // The index is reserved before the body exists, because the body may name
     // this prop — §4.9 memoises before typing for exactly the same reason.
@@ -1755,7 +1858,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 // `B(R)`, and the result is `μR. B(R)` — or simply `B`, when `R` did not occur.
 $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe $call with_props (m.env, $call mprops.val (m.props), m.id)
+  { $decl pe $call benv.val (m.penv)
     $decl self $call mem_str ($call free_names (pn, strs.nil), nm)
     $decl pv $call fresh_var (st)
     $decl p0 $call note_prop (st, m.id, $call mdone (nm, "pend", pv, T.t_bot, -1, -1))
@@ -1785,7 +1888,7 @@ $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
 // `$specialize` of the second would emit its own copy of everything.
 $decl lower_prop_tmpl $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe  $call with_props (m.env, $call mprops.val (m.props), m.id)
+  { $decl pe  $call benv.val (m.penv)
     $decl gs  $call generic_names ($call op (pn, 0), strs.nil)
     $decl tid $call fresh_tmpl (st, gs, $call op (pn, 1), pe)
     $decl p1  $call note_prop (st, m.id, $call mdone (nm, "tmpl", 0, T.t_unit, -1, tid))
@@ -1884,7 +1987,7 @@ $decl prop_const $func ($decl st proto_lst, $decl d proto_mdone)
 // `node` is projected at every list operation in the program.
 $decl replay_union $func ($decl st proto_lst, $decl m proto_mod,
                           $decl pn Pa.proto_node, $decl d proto_mdone)
-  { $decl pe  $call with_props (m.env, $call mprops.val (m.props), m.id)
+  { $decl pe  $call benv.val (m.penv)
     $decl ms  $call group_items ($call op (pn, 0))
     $decl fst $call lval ($call lower (st, pe, $call Pa.nodes.nth (ms, 0), false))
     $decl ty  $call T.tval (d.ty)
@@ -2281,6 +2384,6 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl gs   $call find_groups (es, 0, $call IR.fns.length (all, 0), IR.groups.nil)
     // Newest first while they are collected, since a file and the modules it
     // imports both append here.
-    $decl out  $call IR.program ($call T.tys.val (st.types), all, gs, 0,
+    $decl out  $call IR.program ($call all_types (st), all, gs, 0,
                    $call IR.effects.reverse ($call IR.effects.val (st.effs),
                        IR.effects.nil)) }.out

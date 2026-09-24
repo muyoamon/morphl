@@ -21,8 +21,241 @@ reproduce them.
 | `MORPHL_CALLS=1` | rank the per-function table by **calls** instead of bytes |
 | `MORPHL_INCLUSIVE=<fn>` | bytes allocated between one function's entry and return, outermost activations only |
 | `MORPHL_TRACE_READS=1` | one line per `read_file`, which counts module loads |
+| `MORPHL_PROGRESS=<MB>` | **heartbeat**: one stderr line every `<MB>` allocated, and a `stopped:` line saying where a capped run died |
 
 `perf record -g --call-graph=dwarf -F 199` on a ReleaseFast build for time.
+
+## Watching a run instead of autopsying it
+
+A final profile says where the bytes went. It cannot say where the run *was*,
+which is the only question a capped run leaves — and for a long time the answer
+to "how far did it get before it OOMed" was "nobody knows". `MORPHL_PROGRESS`
+is that answer. It prints one line per `<MB>` allocated:
+
+```
+[progress]      64 MB  t=     7.1s (+  3.2s)  calls=     22054626  depth=  14  in ir.mpl:cons
+[progress]      80 MB  t=    12.2s (+  5.1s)  calls=     35042159  depth=  83  in lower.mpl:blk_acc
+[progress]     128 MB  t=    24.8s (+  6.4s)  calls=     70682031  depth=  46  in ir.mpl:cons
+stopped: out of memory after 25.1s, 0.13 GB and 71529062 calls, 64 frames deep, in `free_names` (lower.mpl)
+```
+
+Three things make it worth the two lines it cost:
+
+- **The `+` column is the time answer.** A stretch that takes 6.4s to allocate
+  16 MB is doing a great deal of computation per byte; one that takes 1.6s is
+  not. Slow phases are a gap in the column rather than something to infer.
+- **The file, not just the function, names the phase.** The innermost frame is
+  very often `cons` and says nothing; `lower.mpl:blk_acc` versus
+  `types.mpl:with_goal` versus `emit.mpl:emit_args` says which half of §9.1 the
+  run is in. It is the file the function was *written* in, taken from the same
+  field diagnostics use.
+- **`stopped:` is recorded at the failing allocation, not at the report.** By
+  the time the profile prints, the stack has unwound and `current` is back at
+  the top level. The snapshot is taken in the allocator, on the first refusal —
+  everything after it is unwinding.
+
+It costs one compare per allocation when off, and nothing measurable when on
+(the `half` run below took 3548s against 3595s without it). To force a quick
+test of the OOM path, *lower* the cap rather than finding a bigger input:
+`(ulimit -v 200000; MORPHL_PROGRESS=16 … lower_dump.mpl stage1/front.mpl)` dies
+in 25 seconds.
+
+**One trap, found the hard way: `Io.File.stderr().writer()` is positional.** It
+`pwrite`s from an offset of zero, while the heartbeat appends to fd 2 with a raw
+`write` — it has to, since it runs inside the allocator callback where the `Io`
+instance is out of reach. So the final profile wrote back over the start of the
+file and ate the first **29 of 44** heartbeats, leaving a timeline that began at
+1920 MB and looked like the feature had only started working late. `main.zig`
+now uses `writerStreaming` for stderr, which shares the file offset so the two
+interleave in the order written. Anything else that writes to a fd this program
+also writes to must do the same.
+
+## The whole compiler completes again — and the type count has quadrupled
+
+`lower_dump.mpl` over `emit_c.mpl`, the transitive closure of everything:
+
+| | at `7fd95b7` | today |
+|---|---|---|
+| result | completes | **completes** |
+| allocated | 1.40 GB | **2.51 GB** |
+| interned types | 1,470 | **6,348** |
+| time | 19m25s | ~82m |
+| | `check errors: 0`, `verify errors: 0` | `check errors: 0`, `verify errors: 0`, 1,122 functions |
+
+It has been OOMing on every tree since `7fd95b7`. It completes again — but the
+reason it was dying is now visible, and it is not the thing this file has been
+chasing. **The type count went 1,470 → 6,348, a factor of 4.3.**
+
+The per-module counts did *not* move. Re-measured on today's tree against the
+figures recorded above:
+
+| module | recorded | today |
+|---|---|---|
+| `ir` | 432 | 439 |
+| `infer` | 865 | 865 |
+
+So the type *language* is unchanged and no module grew. What grew is the
+**combination** — and §4.9 is why that is possible: specialisation is memoised
+per interned argument type, so anything that splits type identity splits every
+specialisation built on it, and that only shows in a closure large enough to
+instantiate the same list at both variants.
+
+The prime suspect is §4.2a's `kind` on `t_ref`, which landed after `7fd95b7`:
+`same` compares it (§5.3 makes `&T` and `&^T` different types, correctly), so a
+list of `&T` and a list of `&^T` are two specialisations where they used to be
+one. That is a hypothesis, not a measurement — the test is to count how many of
+the 6,348 differ only in a ref's kind.
+
+**This is now the biggest lever by a wide margin.** Allocation against type count
+has an exponent of 1.6–3.5 in the table above; 6,348 → 1,470 would be worth more
+than every fix in this file put together. It also explains why memory grew only
+1.8x while types grew 4.3x: the T² term is gone, so the table no longer costs
+quadratically to build. Without that fix, 6,348 types would have been **40M
+`cons` calls in `append_ty` alone**.
+
+One reading note on the timeline: the last two heartbeats (+353s at depth 373,
+then +613s at depth 2 in `ir.mpl:show`) are the post-lowering passes and then
+`lower_dump` rendering its output — not the compiler.
+
+## `half` completes: parse + infer + lower under the cap
+
+§9.1 up to `check`, as a program — the driver that had never finished.
+
+| tree | result |
+|---|---|
+| before this work | **OOM at 29m20s** |
+| + `append_ty` as a banker's queue | OOM at 59m (~60% further into the program) |
+| + `with_props` cached on the module (`penv`) | **completes: 75m40s, 2.68 GB** |
+| + `put_mod` sharing the untouched tail | **completes: 75m21s, 2.22 GB** |
+
+Three fixes, all the same shape — a table rebuilt in full to change one entry —
+and all measured before and after:
+
+| | `front` | `half` |
+|---|---|---|
+| before | 0.60 GB / 402s | OOM |
+| `append_ty` banker's queue | 0.50 GB / 438s | OOM (60% further) |
+| `with_props` → `penv` | 0.46 GB / 437s | 2.68 GB / 75m40s |
+| `put_mod` shares the tail | **0.41 GB / 441s** | **2.22 GB / 75m21s** |
+| total | **-32% for +9.7% wall** | **OOM → 2.22 GB of 3** |
+
+`put_mod` itself went 81.94 MB → **29.54 MB** across the same 7,175 calls. Not
+the whole 81.94, which says the average position is about a third into the table
+rather than near the head — `note_prop` is not always touching the most recently
+registered module. The fix cannot be worse than the old one either way, since
+`p <= M`.
+
+The type count is **identical at 6,062** before and after, which is the check
+that matters: these change how often a list is rebuilt, never what it holds.
+
+```
+check errors: 0   verify errors: 0   types: 6062   901 functions lowered
+```
+
+**The type count is the whole explanation, and it is 6,062.** The front end alone
+interns 1,382 and `lower.mpl`'s own closure 1,244 — the union is **2.3x their
+sum**, because §4.9 monomorphises per argument type and the combined closure has
+far more distinct list element types than either half. That is why `half`
+behaved like the whole compiler rather than a midpoint, and why predicting from
+lines was off by twenty-five fold.
+
+It also settles why `append_ty` mattered so much more here than on the front
+end. At T = 6,062 its old `sum 2k` rebuild is **36.7M `cons` calls by itself** —
+more than the *entire* front-end run's 8.98M — where at T = 1,382 it was 1.9M.
+A term that is quadratic in the type table is invisible on small inputs and
+decisive on large ones, which is exactly the shape that makes it easy to test on
+the wrong workload and dismiss.
+
+The last heartbeat before the end is worth noting: the final 128 MB took
+**540.6s against a steady ~250s**, at a call depth of **707**. That is the
+post-lowering passes (`mark_self`, `collect_edges`, `find_groups`) at n = 901,
+and the depth says something there recurses deeply. Not chased yet.
+
+## What is actually left in lowering, ranked by the right instrument
+
+`front`, with `MORPHL_CALLS=1` — the ranking that catches a scan which does not
+allocate, and therefore the one the byte profile cannot give. 1,057,535,768 calls:
+
+| function | calls | share |
+|---|---|---|
+| `eq_int` | 420,783,338 | **39.8%** |
+| `same` | 178,279,446 | **16.9%** |
+| `eq_str` | 157,696,965 | 14.9% |
+| `same_fields` | 102,205,576 | 9.7% |
+| `add` | 93,547,122 | 8.8% |
+| `cv_eq` | 26,567,251 | 2.5% |
+| `mem_ty` | 20,232,320 | 1.9% |
+| `cons` | 6,809,557 | **0.6%** |
+| `reaches` | 1,359,584 | **0.13%** |
+
+`cons` is 77% of the *bytes* and 0.6% of the *calls*. Type comparison — `same`,
+`same_fields`, `cv_eq`, `mem_ty`, `same_tys` — is **329M calls, 31%**, and it is
+what drives most of the `eq_int`/`eq_str` above it. That is `find_ty`'s linear
+scan: 169,607 interns against a table averaging ~691 entries.
+
+Lowering's quadratic terms, all of which key off a table that grows with the
+**whole program** rather than with the file being lowered:
+
+| term | cost | status |
+|---|---|---|
+| `append_ty` — table rebuilt per new type | O(T²) allocations | **fixed** |
+| `find_ty` — table scanned per intern | O(I·T) comparisons | live, **~31% of calls** |
+| `put_mod` — module list rebuilt per prop state change | O(M · saves) | live, **17.8% of memory** |
+| `put_lifted` — lifted list rebuilt **3x** per lifted function | 1.5·n² allocations | live, est. 7% of cons |
+| `find_groups` — n² reachability pairs, and `and` is strict so both run | O(n²·E) | live but **negligible** |
+| `lookup` — benv scan | flat at ~16.8 (measured) | linear |
+
+**`find_groups` is the cautionary one.** Reading the source, it is n² pairs and
+§7.1's strict `and` doubles the queries — and the measured call count,
+1,359,584, matches that structure almost exactly (2 x 572² x 2). The structure
+was right and said nothing useful: each query returns immediately because the
+edge list is short, so the whole thing is 0.13% of the run. Predicting the count
+from the shape is easy; predicting the cost is not.
+
+**`put_mod` is the real one.** 81.94 MB across 7,175 calls — 17.8% of the run
+and 22.5% of all cons bytes. Its comment says "the table is small — one per
+block with props"; it is **865 modules** for the front end alone, rebuilt in
+full every time `note_prop` changes one entry's `done` field. Same shape as the
+two already fixed.
+
+## Where `half` actually spends its hour
+
+The surviving tail of that run, at 64 MB a line — the first timeline this
+project has had of a capped run:
+
+| MB | t | +s | in |
+|---|---|---|---|
+| 1920 | 2100.6s | +100.5 | `lower.mpl:cons` |
+| 2048 | 2308.3s | +106.2 | `lower.mpl:cons` |
+| 2112 | 2417.6s | +109.3 | `ir.mpl:cons` |
+| 2368 | 2832.4s | +100.4 | `lower.mpl:bind_ent5` |
+| 2560 | 3129.4s | +99.6 | `lower.mpl:cons` |
+| 2752 | 3440.3s | +103.5 | `lower.mpl:lres` |
+| 2816 | 3545.8s | +105.4 | `lower.mpl:bind_ent5` |
+
+```
+stopped: out of memory after 3548.1s, 2.75 GB and 8130645297 calls,
+         129 frames deep, in `cons` (ir.mpl)
+```
+
+Four things this says that a final profile could not:
+
+- **The back half of the run is flat, not decelerating.** Every step from 1920
+  to 2816 MB costs 98–109 seconds, i.e. 0.63 MB/s, with no trend. The whole run
+  *does* decelerate — the first 1920 MB averaged 0.91 MB/s — but by this point
+  the quadratic terms have stopped growing relative to the work.
+- **All fifteen samples are in `lower.mpl` or `ir.mpl`.** Parse and infer are
+  long finished; the hour is lowering, and nothing else.
+- **3.27 billion calls for 896 MB — 3.65M stage-1 calls per megabyte.** That is
+  the number to beat, and it is a *rate*, which the totals could never give.
+- **`bind_ent5` is the innermost frame in 3 of 15 samples** — which is a *hint*
+  and not a measurement, and the distinction matters. Fifteen samples is far too
+  few to read 3/15 as "20%"; the byte profile from the same run says `bind_ent5`
+  is **172.37 MB, 6.1%**, and that is the number to use. What the heartbeat is
+  good for here is direction, not magnitude: it put a four-line `benv`
+  constructor in the frame often enough to be worth looking at, and the byte
+  profile then says it is the third-largest row. Counting the `benv` cons cells
+  with it, the environment is ~11% of the run.
 
 ## Four ways these measurements have lied
 
@@ -315,6 +548,71 @@ which is what localised the fault to the parser without reading any code. Then
 **Bisect the pipeline before bisecting the source.** A 35x faster loop is worth
 more than any amount of staring, and the intermediate driver is five lines.
 
+## The type table was quadratic (`append_ty`)
+
+§9.3's table is append-only and indexed, and appending to an index-ordered
+immutable list was `reverse (cons (t, reverse (xs)))` — two full rebuilds per
+**new** type. Over a program with T types that is `sum 2k` = **T² cons cells**,
+and the table is the one structure that grows with the *whole* program rather
+than with the file being lowered, which is why it read as superlinear the
+moment another module joined the closure.
+
+The prediction and the measurement agree to 0.15%, which is the useful part:
+
+| front end (T = 1,382) | before | after |
+|---|---|---|
+| allocated | 0.60 GB | **0.50 GB** |
+| `cons` calls | 8,981,698 | **7,077,228** |
+| reduction | — | **1,909,924** |
+| predicted (`sum 2k`, k < 1382) | — | 1,907,000 |
+
+**The obvious repair costs 30% in time, and the reason is worth keeping.**
+Holding the table newest-first makes the append one cell and reads index `i` of
+`n` at position `n-1-i`. But `find_ty` *scans*, and the types asked for
+constantly — `Int`, `Str`, unit, the booleans — are interned **first** and so
+have the smallest indices. Newest-first moves exactly those from the head of
+the scan to its tail: 145,860 of the front end's 147,242 lookups are hits, and
+they went from position ~10 to ~1,372. That is 200M extra comparisons against
+the 248M extra calls measured. The first diagnosis blamed `ty_at`; both moved,
+but the scan is the big one.
+
+So the table is a **banker's queue**: `tsettled` oldest-first holding indices
+`0..nsettled-1`, `tpend` newest-first for O(1) append, merged when pending
+outgrows settled. `nsettled` doubles at each merge, so the merges total
+`1 + 3 + 7 + … ≈ 2T` cells over the run instead of T², and `find_ty` scans
+settled first, putting the hot types back at the head.
+
+| front end | baseline | newest-first | banker's queue |
+|---|---|---|---|
+| allocated | 0.60 GB | 0.50 GB | **0.50 GB** |
+| time | 402s | 521s | **438s** |
+| total calls | 1.028G | 1.276G | **1.059G** |
+| types | 1,382 | 1,382 | 1,382 |
+
+87% of the time regression comes back and all of the memory win stays. The
+emitted C for all 21 fixtures is byte-identical throughout, both straight and
+through `fold` — which is the check that matters, since the indices the table
+hands out must not change.
+
+**`half` still does not fit, and that is the finding.** Both the old and the new
+run consume the full 3 GB, so the honest comparison is how far each got. The
+lexer is the control — a fixed cost for the closure, and it is the same in both:
+
+| at the wall | original | banker's queue |
+|---|---|---|
+| `advance` (lexer) | 650,151 | 657,927 (+1.2%) |
+| `find_ty` | 522,075 | 828,621 (**+59%**) |
+| `bind_ent5` | 1,068,101 | 1,737,887 (**+63%**) |
+| `lres4` | 421,666 | 635,268 (**+51%**) |
+| time to wall | 1760s | 3595s |
+| `cons` share | 87.5% | 82.1% |
+
+So the same 3 GB now buys **about 60% more of the program lowered** — a much
+bigger effect than the front end's 17%, because the T² term grows with the
+closure and so hurts most where the closure is biggest. It is still not enough,
+and what is left is what this file already named: `cons` at 82.1% and 44.2M
+`{head tail}` cells. Linked lists, not the type table.
+
 ## Hypotheses tested and rejected
 
 Recorded so they are not retried blind.
@@ -322,7 +620,11 @@ Recorded so they are not retried blind.
 - `IR.find_ty`'s linear scan (hash made it *worse* at 94 types; at ~900 a stored
   digest measured no better — in stage 1 a list walk costs one call per cell
   regardless, so only *skipping* the walk can pay)
-- `append_ty`'s O(n) rebuild (141s vs 135s)
+- `append_ty`'s O(n) rebuild — **this rejection was wrong**, and it is the best
+  example in this file of the wrong instrument. It was tested on the *clock*
+  (141s vs 135s) and dismissed, but the cost was never time: it was T² cons
+  cells, a fifth of everything a run allocated, and the binding constraint is
+  the cap. See "The type table was quadratic" below.
 - `T.unroll` as a hot spot *before* it was memoised (507 real unrolls of 4,480)
 - `check_unique` (stubbed at full scale: still OOM)
 - the μ-alias scan (identical block count with and without)

@@ -178,6 +178,42 @@ pub const Interp = struct {
         /// like any other — this is the high-water mark, not a total.
         max_depth: u32 = 0,
         max_stack: usize = 0,
+        /// The stage-1 file the running function was *written* in, which is
+        /// what identifies the phase: code in `infer.mpl` is inference, code in
+        /// `lower.mpl` is lowering, and so on. The innermost function alone is
+        /// often `cons` and says nothing.
+        file: []const u8 = "",
+        /// Live call depth, mirrored from `Interp.call_depth` so the allocator
+        /// can read it — `note` runs inside the allocator and cannot see the
+        /// interpreter.
+        depth: u32 = 0,
+        /// Every call, not per row: the report sums the rows, but a heartbeat
+        /// needs the running total without walking the table.
+        calls: u64 = 0,
+        /// **Progress heartbeat.** A final profile says where the bytes went;
+        /// it cannot say where the run *was* when it stopped, which is the
+        /// only question a capped run leaves. Every `progress_step` bytes one
+        /// line goes to stderr naming the innermost function, the elapsed time
+        /// and the time since the last line — so a slow phase shows up as a
+        /// gap rather than having to be inferred.
+        progress_step: u64 = 0,
+        progress_next: u64 = 0,
+        progress_last: f64 = 0,
+        /// Monotonic nanoseconds at the first heartbeat's zero. This Zig has no
+        /// `std.time.Timer`, and the repo times nothing else, so the clock is
+        /// read straight from the kernel.
+        t0_ns: u64 = 0,
+        /// Where the run died. `note` is only reached on a *successful*
+        /// allocation, so the failing one is recorded separately — by the time
+        /// the report runs the stack has unwound and `current` is back at the
+        /// top level, which is exactly the information that used to be lost.
+        failed: bool = false,
+        fail_fn: []const u8 = "",
+        fail_file: []const u8 = "",
+        fail_total: u64 = 0,
+        fail_depth: u32 = 0,
+        fail_calls: u64 = 0,
+        fail_secs: f64 = 0,
         cell_bytes: u64 = 0,
         cell_n: u64 = 0,
         blk_bytes: u64 = 0,
@@ -213,8 +249,52 @@ pub const Interp = struct {
 
         pub const Row = struct { bytes: u64 = 0, calls: u64 = 0, allocs: u64 = 0 };
 
+        /// The last path segment — the whole path is noise in a heartbeat.
+        fn base(path: []const u8) []const u8 {
+            if (path.len == 0) return "?";
+            var i = path.len;
+            while (i > 0) : (i -= 1) {
+                if (path[i - 1] == '/') return path[i..];
+            }
+            return path;
+        }
+
+        pub fn monoNs() u64 {
+            var ts: std.os.linux.timespec = undefined;
+            if (std.os.linux.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
+            return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+        }
+
+        fn secs(self: *Stats) f64 {
+            if (self.t0_ns == 0) return 0;
+            const now = monoNs();
+            if (now <= self.t0_ns) return 0;
+            return @as(f64, @floatFromInt(now - self.t0_ns)) / 1_000_000_000.0;
+        }
+
+        fn heartbeat(self: *Stats) void {
+            const now = self.secs();
+            const mb = @as(f64, @floatFromInt(self.total)) / (1024.0 * 1024.0);
+            const since = now - self.progress_last;
+            var buf: [512]u8 = undefined;
+            const line = std.fmt.bufPrint(
+                &buf,
+                "[progress] {d:>7.0} MB  t={d:>8.1}s (+{d:>5.1}s)  calls={d:>13}  depth={d:>4}  in {s}:{s}\n",
+                .{ mb, now, since, self.calls, self.depth, base(self.file), self.current },
+            ) catch return;
+            self.progress_last = now;
+            // Straight to fd 2: this runs inside the allocator callback, which
+            // cannot reach the `Io` instance the rest of the program writes
+            // through, and a heartbeat must not allocate.
+            _ = std.os.linux.write(2, line.ptr, line.len);
+        }
+
         fn note(self: *Stats, len: usize) void {
             self.total += len;
+            if (self.progress_step != 0 and self.total >= self.progress_next) {
+                self.progress_next = self.total + self.progress_step;
+                self.heartbeat();
+            }
             self.buckets[@intFromEnum(self.bucket)] += len;
             const e = self.rows.getOrPut(self.backing, self.current) catch return;
             if (!e.found_existing) e.value_ptr.* = .{};
@@ -223,6 +303,7 @@ pub const Interp = struct {
         }
 
         fn enter(self: *Stats, name: []const u8) void {
+            self.calls += 1;
             const e = self.rows.getOrPut(self.backing, name) catch return;
             if (!e.found_existing) e.value_ptr.* = .{};
             e.value_ptr.calls += 1;
@@ -231,7 +312,19 @@ pub const Interp = struct {
         fn alloc(ctx: *anyopaque, len: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
             const self: *Stats = @ptrCast(@alignCast(ctx));
             const p = self.backing.rawAlloc(len, a, ra);
-            if (p != null) self.note(len);
+            if (p != null) {
+                self.note(len);
+            } else if (!self.failed) {
+                // The first refusal is the interesting one: everything after it
+                // is unwinding.
+                self.failed = true;
+                self.fail_fn = self.current;
+                self.fail_file = self.file;
+                self.fail_total = self.total;
+                self.fail_depth = self.depth;
+                self.fail_calls = self.calls;
+                self.fail_secs = self.secs();
+            }
             return p;
         }
         fn resize(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) bool {
@@ -291,6 +384,15 @@ pub const Interp = struct {
             try w.print("deepest nesting: {d} calls, {d:.1} MB of stack at the high-water mark\n", .{
                 self.max_depth, @as(f64, @floatFromInt(self.max_stack)) / (1024.0 * 1024.0),
             });
+            if (self.failed) {
+                // The one thing a capped run has to say, and the thing it used
+                // not to: not how much it allocated, but how far it got.
+                try w.print("stopped: out of memory after {d:.1}s, {d:.2} GB and {d} calls, {d} frames deep, in `{s}` ({s})\n", .{
+                    self.fail_secs,
+                    @as(f64, @floatFromInt(self.fail_total)) / (1024.0 * 1024.0 * 1024.0),
+                    self.fail_calls, self.fail_depth, self.fail_fn, base(self.fail_file),
+                });
+            }
             try w.print("$new storage: {d:.1} MB in {d} cells; block values: {d:.1} MB in {d} blocks\n\n", .{
                 @as(f64, @floatFromInt(self.cell_bytes)) / (1024.0 * 1024.0), self.cell_n,
                 @as(f64, @floatFromInt(self.blk_bytes)) / (1024.0 * 1024.0), self.blk_n,
@@ -1275,14 +1377,18 @@ pub const Interp = struct {
         if (self.stats) |st| {
             if (self.call_depth > st.max_depth) st.max_depth = self.call_depth;
             if (used > st.max_stack) st.max_stack = used;
+            st.depth = self.call_depth;
         }
 
         var saved_fn: []const u8 = undefined;
+        var saved_file: []const u8 = undefined;
         var incl_at: u64 = 0;
         var incl_outer = false;
         if (self.stats) |st| {
             saved_fn = st.current;
+            saved_file = st.file;
             st.current = f0.name orelse "(anonymous $func)";
+            st.file = f0.file orelse "";
             st.enter(st.current);
             if (st.incl_name) |want| if (std.mem.eql(u8, want, st.current)) {
                 if (st.incl_depth == 0) {
@@ -1301,6 +1407,10 @@ pub const Interp = struct {
                 st.incl_depth -= 1;
             };
             st.current = saved_fn;
+            st.file = saved_file;
+            // `self.call_depth` is decremented by a defer registered earlier,
+            // so it still holds this frame's value here.
+            st.depth = self.call_depth - 1;
         };
 
         // Diagnostics raised inside this call belong to the file the function

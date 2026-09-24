@@ -252,7 +252,14 @@ pub fn main(init: process.Init.Minimal) !void {
     const out = &stdout_writer.interface;
 
     var stderr_buf: [4 * 1024]u8 = undefined;
-    var stderr_writer = Io.File.stderr().writer(io, &stderr_buf);
+    // **Streaming, not positional.** `writer` defaults to positional writes
+    // from an offset of zero, and `MORPHL_PROGRESS` appends to fd 2 with a raw
+    // `write` from inside the allocator — where the `Io` instance is out of
+    // reach. With a positional writer the final report `pwrite`s back over the
+    // start of the file and eats the first heartbeats, which is exactly what
+    // happened: 29 of 44 lines vanished under the profile. Streaming shares the
+    // file offset, so the two interleave in the order they were written.
+    var stderr_writer = Io.File.stderr().writerStreaming(io, &stderr_buf);
     const err = &stderr_writer.interface;
 
     const args = try init.args.toSlice(arena);
@@ -361,6 +368,15 @@ pub fn main(init: process.Init.Minimal) !void {
                 }
                 if (init.environ.getPosix("MORPHL_VERIFY_PRIM") != null) {
                     interp.verify_prim_flag.* = true;
+                }
+                // Megabytes between heartbeats. A final profile cannot say
+                // where a capped run *was*; this can.
+                if (init.environ.getPosix("MORPHL_PROGRESS")) |mb| {
+                    const step = std.fmt.parseInt(u64, mb, 10) catch 64;
+                    stats.progress_step = (if (step == 0) 64 else step) * 1024 * 1024;
+                    stats.progress_next = stats.progress_step;
+                    stats.t0_ns = @TypeOf(stats).monoNs();
+                    ctx.stats = &stats;
                 }
                 if (init.environ.getPosix("MORPHL_CALLS") != null) {
                     stats.by_calls = true;
