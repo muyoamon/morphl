@@ -135,6 +135,53 @@ they do now, but hold them apart from the main table that `find_ty` scans and
 `emit_structs` walks. That halves the scan — which is where the 31% of calls
 goes — without changing a single answer.
 
+## Stage 2 runs, and the interpreter was worth 23x
+
+`stage1/self.mpl` is §9's pipeline — `parse` -> `check` -> `verify` — as a program
+with **no `args`**: the input path is a string literal, so nothing in it needs
+`args`/`at`/`alen`, none of which has a C backend. §8's `read_file` *is* emitted,
+so the file is read at run time like any other.
+
+| | |
+|---|---|
+| emit | **88m42s, 2.65 GB** (cap 3.00) |
+| output | **63,832 lines of C** |
+| emit diagnostics | **3** — the three §6a groups whose members differ in signature. "No `main`" is gone: this driver has one |
+| `cc -O0 -Werror` | **0 errors** |
+| binary | **2,069,544 bytes** |
+| answer on `stage1/lexer.mpl` | **91** functions lowered, 0 check errors, 0 verify errors |
+| stage 0's answer | **91** |
+
+So a natively compiled morphl compiler read 369 lines of real morphl off disk,
+resolved its `$import`, inferred it, lowered it and verified the result — agreeing
+with the interpreter exactly.
+
+**And then the number this file exists for:**
+
+| | time |
+|---|---|
+| stage 0, interpreted (3 samples) | 0.615 / 0.614 / 0.608s |
+| stage 2, compiled (20 runs) | 0.535s total — **26.8ms each** |
+| stage 0's fixed startup alone | 0.011s |
+
+**~23x.** The estimate here was 5x: `lookup` + `eval` + `bindParams` +
+`callValue` + `evalArgs` measured ~80% of interpreted time, and removing 80%
+caps you at 5x. It came out at 23x because eliminating the interpreter does not
+only delete that 80% — it makes the rest faster too. Compiled code indexes a
+frame slot where stage 0 walks a scope chain comparing names (§7.2), holds a
+record as a C struct by value where stage 0 allocates a `Block` and boxes its
+values, calls directly instead of through `callValue`, and gets `cc`'s register
+allocation on top. **80% of the profile was the interpretive machinery; it was
+not 80% of the cost.**
+
+One more note on the startup figure: 11ms, not the seconds one might assume from
+"stage 0 parses all 8,327 lines of stage 1 at `$import` time". Parsing is cheap
+— it is 15 MB of allocation at Zig speed. Interpreting is what costs.
+
+What this is *not*: stage 2 stops at `verify`, so it cannot yet emit C and there
+is no stage 3. And the driver's path is a literal, so a real command-line
+compiler still wants `args`/`at`/`alen` in the backend.
+
 ## Stage 2's gate: the compiler compiles itself
 
 `emit_c.mpl` over `compiler.mpl` — every module, transitively — then `cc` on the
