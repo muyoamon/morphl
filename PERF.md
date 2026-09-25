@@ -135,6 +135,49 @@ they do now, but hold them apart from the main table that `find_ty` scans and
 `emit_structs` walks. That halves the scan — which is where the 31% of calls
 goes — without changing a single answer.
 
+## Stage 2's gate: the compiler compiles itself
+
+`emit_c.mpl` over `compiler.mpl` — every module, transitively — then `cc` on the
+result:
+
+| | |
+|---|---|
+| emit | **90m40s, 2.62 GB** (cap is 3.00) |
+| output | **63,599 lines of C** (55,590 at `7fd95b7`; the compiler has grown 14%) |
+| emit diagnostics | **4**, all documented: "no top-level `$decl` named `main`" (not an error for a library) and three §6a groups whose members differ in signature |
+| `cc -O0 -c` | **0 errors, 0 warnings** |
+| object | `compiler.o`, **2,173,408 bytes**, **1,131 functions**, 642 structs, 16 undefined symbols — all libc |
+
+Three bugs stood between the previous state and this, and all three were found by
+*running* it rather than by reading:
+
+- **`alias_at` and `emit_fwds` were not tail-recursive.** Both walk the whole type
+  table with the recursive call inside a `$decl` block, and §7.7 makes that a real
+  frame. They nest — `emit_fwds` holds a frame per entry *and* calls `alias_of`,
+  which holds another — so 6,348 types became **8,763 nested calls and 48 MB of a
+  64 MB stack**, and the run died with `call depth limit exceeded`, not OOM, at
+  2.48 GB. CLAUDE.md warns about this shape twice; neither site had ever been deep
+  enough to trip it until the type count quadrupled. Fixed by lifting each body
+  into a helper (`alias_hit`, `emit_fwd1`).
+- **`lower_top` re-bound a module with inference's type.** §4.14 makes a module a
+  namespace with no layout, so lowering gives it the empty block, while inference's
+  type still lists every member as a field — right for checking, not a layout.
+  §9's own re-exports (`$decl ir IR`, `$decl types T`) therefore emitted a thunk
+  declared to return the member block and returning the empty one. Those were the
+  **only two `cc` errors in 63,609 lines**. It now binds `ty_at (st, f.result)`.
+
+**The stack limit is a first-class constraint now, alongside the memory cap.** At
+6,348 types, any O(n) non-tail walk over the type table costs ~35 MB of the 64 MB
+interpreter stack, so the margin is thin by construction. A capped run reports
+`OutOfMemory`; a deep one reports `call depth limit exceeded` and names the file
+and line — read which one you got before reaching for memory.
+
+What is still missing for a *runnable* stage 2 is not optimisation: every driver
+opens with `$call args ()` / `$call at (argv, 0)` and none of `args`/`at`/`alen`
+has a C backend. `front.mpl` shows the way round it — it embeds its input as a
+string literal, and `read_file` *is* emitted — so a driver with a literal path
+needs no new intrinsic at all.
+
 ## The whole compiler completes again — and the type count has quadrupled
 
 `lower_dump.mpl` over `emit_c.mpl`, the transitive closure of everything:

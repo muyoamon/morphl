@@ -275,16 +275,25 @@ $decl is_rec $func ($decl t T.proto_ty) $match t (
 // Only `rec` entries are unrolled, and the target's unrolling is computed once
 // by `alias_of`: unrolling every entry on every scan would be O(n^2) calls to
 // `T.unroll`, and `T.unroll` of a `rec` is a whole `remap` traversal.
+// Split out of `alias_at` so that its recursion stays in **tail position**.
+// §7.7 makes a call inside a block a real frame, and this walks the whole type
+// table: at the whole compiler's 6,348 types the block form cost a frame per
+// entry and died with `call depth limit exceeded at 8763 nested calls`, 48 MB
+// into the interpreter's 64 MB stack. Nothing about the work changed — only
+// where the bindings live.
+$decl alias_hit $func ($decl h T.proto_ty, $decl ut T.proto_ty, $decl tr P.boolean)
+  { $decl e  $call T.tval (h)
+    $decl er $call is_rec (e)
+    $decl r  $if ($call and ($call is_structy (e), $if er true tr))
+        ($call T.same ($if er ($call T.unroll (e)) e, ut)) false }.r
+
 $decl alias_at $func ($decl xs T.tys.node, $decl ut T.proto_ty, $decl tr P.boolean,
                       $decl j 0, $decl i 0) $match xs (
   $case {$prop tag "cons"}
-    { $decl e  $call T.tval (xs.head)
-      $decl er $call is_rec (e)
-      $decl hit $if ($call and ($call is_structy (e), $if er true tr))
-          ($call T.same ($if er ($call T.unroll (e)) e, ut)) false
-      $decl r $if ($call not ($call lt (j, i))) -1
-          ($if hit j ($call alias_at ($call T.tys.val (xs.tail), ut, tr,
-                          $call add (j, 1), i))) }.r,
+    $if ($call not ($call lt (j, i))) -1
+        ($if ($call alias_hit (xs.head, ut, tr)) j
+             ($call alias_at ($call T.tys.val (xs.tail), ut, tr,
+                  $call add (j, 1), i))),
   $case xs -1
 )
 
@@ -294,21 +303,30 @@ $decl alias_of $func ($decl all T.tys.node, $decl t T.proto_ty, $decl j 0, $decl
 // Every struct is declared before any is defined, so a field that is a
 // *pointer* to one needs nothing else — §5.5 makes every recursive edge a
 // pointer, which is what keeps the definitions themselves acyclic.
+// One entry's forward declaration. Split out for the same reason as
+// `alias_hit`: the walk below covers the whole type table, and §7.7 makes a
+// call inside a block a real frame. The two used to nest — `emit_fwds` held a
+// frame per entry *and* called `alias_of`, which held another per entry — which
+// is how 6,348 types became 8,763 nested calls and 48 MB of a 64 MB stack.
+$decl emit_fwd1 $func ($decl st proto_est, $decl all T.tys.node, $decl t0 T.proto_ty,
+                       $decl i 0)
+  { $decl t $call T.tval (t0)
+    $decl r $if ($call is_structy (t))
+        { $decl k $call alias_of (all, t, 0, i)
+          // An alias always names a *lower* index, so the thing it names was
+          // declared on an earlier turn of this same walk.
+          $decl w $if ($call lt (-1, k))
+              ($call say (st, $call concat ("typedef ", $call concat ($call ty_name (k),
+                   $call concat (" ", $call concat ($call ty_name (i), ";\n"))))))
+              ($call say (st, $call concat ("typedef struct ", $call concat ($call ty_name (i),
+                   $call concat (" ", $call concat ($call ty_name (i), ";\n")))))) }.w
+        () }.r
+
 $decl emit_fwds $func ($decl st proto_est, $decl all T.tys.node, $decl ts T.tys.node,
                        $decl i 0) $match ts (
   $case {$prop tag "cons"}
-    { $decl t $call T.tval (ts.head)
-      $decl d $if ($call is_structy (t))
-          { $decl k $call alias_of (all, t, 0, i)
-            // An alias always names a *lower* index, so the thing it names was
-            // declared on an earlier turn of this same walk.
-            $decl w $if ($call lt (-1, k))
-                ($call say (st, $call concat ("typedef ", $call concat ($call ty_name (k),
-                     $call concat (" ", $call concat ($call ty_name (i), ";\n"))))))
-                ($call say (st, $call concat ("typedef struct ", $call concat ($call ty_name (i),
-                     $call concat (" ", $call concat ($call ty_name (i), ";\n")))))) }.w
-          ()
-      $decl r $call emit_fwds (st, all, $call T.tys.val (ts.tail), $call add (i, 1)) }.r,
+    $do ($call emit_fwd1 (st, all, ts.head, i))
+        ($call emit_fwds (st, all, $call T.tys.val (ts.tail), $call add (i, 1))),
   $case ts ()
 )
 

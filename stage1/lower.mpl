@@ -2328,9 +2328,20 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
       // been lowered yet. The binding is re-bound in front of the original, so
       // every *later* item sees it (§4.10, source order), and an earlier
       // forward reference still sees the plain global.
+      //
+      // It is re-bound with the type lowering *gave* it, not the one inference
+      // solved. §4.14 makes a module a namespace with **no layout**, so its
+      // value is the empty block — while inference's type for it still lists
+      // every member as a field, which is right for checking and is not a
+      // layout. Binding the latter made §9's own re-exports (`$decl ir IR`,
+      // `$decl types T`) emit a thunk declared to return the member block and
+      // returning the empty one: `incompatible types when assigning to type
+      // 'mpl_t6319' from type 'mpl_t18'`, the only two `cc` errors in 63,609
+      // lines of the compiler's own C. Members still resolve, because
+      // `lower_proj` asks the module before the type and `mod` is carried here.
       $decl e2   $if ($call and ($call lt (fm.mod, 0), $call lt (fm.tmpl, 0))) e
-                     ($call benv.cons ($call bind_ent6 (nm, "global", idx, fty,
-                          fm.mod, fm.tmpl), e))
+                     ($call benv.cons ($call bind_ent6 (nm, "global", idx,
+                          $call ty_at (st, f.result), fm.mod, fm.tmpl), e))
       $decl r    $call lower_top (st, e2, items, $call T.fields.val (fts.tail),
                      $call IR.fns.cons (f, acc), $call eff_items.val (sp),
                      $call add (k, 1)) }.r,
