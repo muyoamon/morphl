@@ -135,6 +135,185 @@ they do now, but hold them apart from the main table that `find_ty` scans and
 `emit_structs` walks. That halves the scan — which is where the 31% of calls
 goes — without changing a single answer.
 
+## Stage 3 reached: the compiler is a fixed point
+
+BOOTSTRAP's last gate is *"Stage 2 and stage 3 output identical byte-for-byte."*
+
+| step | | |
+|---|---|---|
+| stage 0 emits `selfc.mpl` | 5390s, **1.15 GB** | 63,906 lines |
+| `cc -O2` | | 708,016-byte binary = **stage 2** |
+| **stage 2** emits `selfc.mpl` | **164s** | 63,906 lines |
+| `cc -O2` | | 708,016-byte binary = **stage 3** |
+| **stage 3** emits `selfc.mpl` | **178s** | 63,906 lines |
+
+```
+ba8e65e7b6ae1e0a2e350ecd3c30c0ef  selfc.c      (stage 0, interpreted)
+ba8e65e7b6ae1e0a2e350ecd3c30c0ef  s2_self.c    (stage 2)
+ba8e65e7b6ae1e0a2e350ecd3c30c0ef  s3_self.c    (stage 3)
+```
+
+All three agree, not just the two the gate asks for — so stage 2 also reproduces
+the interpreter exactly on a 63,906-line output. The two binaries are identical
+once compiled from the same *filename* (md5 `5794b478…` both ways); the earlier
+difference was gcc embedding the source path. And stage 3 independently
+reproduces the `lexer.mpl` reference from earlier, md5 `1ccce388…`, 3,365 lines.
+
+**The correction worth recording: stage 3 is `cc(stage2(selfc.mpl))`, not
+`cc(stage2(compiler.mpl))`.** The first attempt linked the library and got
+`undefined reference to 'main'` — which is exactly what the "no top-level `$decl`
+named `main`" diagnostic has been saying on every whole-compiler emit, correctly
+dismissed as "not an error for a library" while simultaneously being handed to
+the linker. `compiler.mpl` is §9's pipeline *as values*; the thing that is a
+program is the driver, and the driver is what stage 2 *is*.
+
+Cost of the trip, for scale: stage 0 needs **5390s** for this emit and stage 2
+needs **164s** — **33x**. The 90-minute measurement cycle that shaped this entire
+file is now three minutes.
+
+## Where the compiled compiler's memory actually goes
+
+The emitted runtime calls `mpl_alloc(sizeof(mpl_tN))` at every `$new`/`$alloc`,
+so **the allocation size names the type**. Instrumenting `mpl_alloc` with a
+size histogram and dumping it from `mpl_panic` — five minutes of work on the
+generated C — said it outright. 20.78M allocations, 3.62 GB before the bound:
+
+| size | calls | MB | share | what it is |
+|---|---|---|---|---|
+| **136** | **14,565,500** | 1,889.1 | **51.0%** | `IR.fns.node` — element `IR.fn`, 8 fields, three list nodes inline |
+| **>=512** | **3,344,453** | 1,636.4 | **44.2%** | `mods_list.node` — element `mod_ent`, 7 fields, three list nodes inline |
+| 64 | 983,375 | 60.0 | 1.6% | |
+| 120 | 229,995 | 26.3 | 0.7% | |
+
+Two types out of 644 are **95% of everything**, and each has exactly two
+allocation sites, both reached through prelude's `cons`. Field-for-field the C
+structs match `IR.fn` and `mod_ent`, which is how they were identified.
+
+Note the shape of the difference from stage 0: compiled makes **fewer**
+allocations (20.8M against 46.7M) and each is far **fatter**. Inlining trades
+count for width.
+
+### The two fixes
+
+- **`put_lifted` was 1.5L² cells.** It turned `st.lifted` around, replaced one
+  entry, and turned it back — three full rebuilds of the function table per
+  lifted function, the same defect as `append_ty` and `put_mod` and the one
+  left unfixed. `st.lifted` is newest first and `reserve_lifted` hands out the
+  index immediately before, so the entry is at **position 0**: copy the prefix,
+  share the tail, and the common case costs nothing.
+- **`mod_ent`'s four list fields are boxed.** §7.2 inlines a block's fields and
+  §7.5 sizes a union to its widest member, so a field holding a list embeds the
+  whole node, and a node is `element + 16`. Inline, `done`/`env`/`penv` are 120
+  bytes each and the entry is 496; behind `$alloc` they are 8 and it is 72 —
+  **5.8x smaller**. Stage 0 never showed this because it boxes anyway: a `Value`
+  is 16 bytes and anything wider goes behind a pointer, so its cons cell is 64
+  bytes whatever it holds.
+
+Both are behaviour-neutral, checked three ways: 150/150 and 100/100, all 42
+fixture `cc` steps cached, and the emitted C for `ir.mpl` **byte-identical**
+(11,445 lines) before and after. And both help stage 0 as well —
+`lower_dump.mpl` over `lower.mpl`:
+
+| | before | after |
+|---|---|---|
+| allocated | 0.23 GB | **0.19 GB** |
+| time | 433s | **372s** |
+| calls | 1,056,123,458 | **883,647,116** |
+
+**The generalisable part: a stage-1 memory question is answered on the compiled
+side, not the interpreted one.** Stage 0's own profile cannot separate list
+specialisations — they all share prelude's single `cons` literal, so its
+histogram lumps 41M cons cells into one `{head tail}` row. The compiled C
+separates them by *size*, because inlining makes each specialisation a distinct
+struct. The instrument that found this does not exist on the stage-0 side and
+could not.
+
+## Stage 3 is blocked, and the blocker is §7.5's layout meeting BOOTSTRAP §3
+
+The reusable stage-2 compiler exists: `stage1/selfc.mpl` reads its target from
+the file `./target`, so one binary emits C for any input without `args` (which
+has no backend). Stage 0 emitted it in 85m30s / 2.65 GB as 63,843 lines, and
+`cc -O2` produced a **708 KB** binary — against 2.07 MB at `-O0`. Verified under
+stage 0 first: byte-identical to the reference for `lexer.mpl`.
+
+Then it cannot emit `compiler.mpl`:
+
+| bound | result |
+|---|---|
+| 4 GB | `mpl_panic("out of memory")` after 116s |
+| 7 GB | `mpl_panic("out of memory")` after 239s |
+
+**Stage 0 does the same job in 2.65 GB; compiled needs more than 7 GB.** The
+cause is representational and measured, not a leak. §7.5 lays a union out as
+`struct { int64_t tag; union { …all members… } }` **sized to its largest member**,
+and §7.2 puts a block's fields inline — so a `P.list` cons cell holds its element
+*by value*. Measured across the 32 list-node types in the compiled compiler:
+
+| compiled list node | bytes | element |
+|---|---|---|
+| widest | **512** | 496 |
+| next | 224 | 208 |
+| next | 200 | 184 |
+| median tagged union | 48 | — |
+| **stage 0, any element** | **64** | boxed to 16 |
+
+The relation is exactly `node = element + 16` — tag plus tail pointer. So the
+widest list costs **8x** stage 0 per element, and cons cells are ~88% of all
+allocation.
+
+**Stage 0's boxing is what keeps its memory down.** A `Value` is 16 bytes and
+anything wider goes behind a pointer, so a cons cell is 64 bytes whatever it
+holds. The compiled form inlines instead — which is what makes field access free
+and is the right call for speed — and with `malloc`-and-never-free (BOOTSTRAP §3)
+that width is never reclaimed.
+
+So **§7.6's regions are now on the critical path for stage 3**, having been
+deferred on the grounds that stage 0 does not free either. That reasoning held
+while the interpreter was the only consumer; it does not survive the compiled
+side being 2.6x hungrier.
+
+Two cheaper moves before regions, both source-level:
+
+- **Box the wide elements.** CLAUDE.md already says "box the *list*, not its
+  elements" for the recursion rule; the memory argument now points the other way
+  for *wide* elements specifically. A cons holding `&^T` instead of `T` is 24
+  bytes instead of 512 for the worst case here.
+- **Narrow the wide unions.** The 496-byte element is one of the big ones —
+  `ir.mpl`'s `proto_expr` has 23 members, and a union is as wide as its widest.
+
+Neither is needed for stage 2, which is met. Both are needed for stage 3.
+
+## Stage 2's gate is met: byte-for-byte
+
+`stage1/self_emit.mpl` is §9's pipeline through `emit`, and `main` returns the
+emitted C and nothing else — so stdout *is* the artifact and can be diffed.
+
+| | |
+|---|---|
+| emit the driver | **87m42s, 2.65 GB**, 63,744 lines of C |
+| `cc -O0 -Werror` | 0 errors, **2,065,320-byte binary** |
+| stage 2 emits `stage1/lexer.mpl` | **3,365 lines / 71,854 bytes, in ~1s** |
+| against stage 0's output | **byte-for-byte identical** |
+| stage 2's own C, fed to `cc` | 0 errors |
+
+Three independent paths agree on one MD5 — `1ccce388fb21a06154ffd9836003627c`:
+stage 0 through `emit_c.mpl`, stage 0 through this driver, and the compiled
+stage-2 binary. A fresh re-run of the binary reproduces it again.
+
+That is BOOTSTRAP's stage-2 gate in full: *"Typechecks its own source; binary
+reproduces stage 1's behavior."* Two executions of identical stage-1 source — one
+interpreted by Zig, one compiled to native code through 63,744 lines of generated
+C — agreeing on all 71,854 bytes of a non-trivial output.
+
+On this workload stage 2 is **~20x**: 32.8ms against 652ms.
+
+**What stage 3 needs, and why it is suddenly cheap.** The gate is "stage 2 and
+stage 3 output identical byte-for-byte", which means stage 2 has to emit C for
+`compiler.mpl` rather than for `lexer.mpl` — a one-line change to the driver's
+literal path, or `args` in the backend. And at 20x, the emit that takes stage 0
+**88 minutes takes stage 2 about four**. Every measurement in this file has been
+gated on 7-to-90-minute runs; that constraint is about to disappear.
+
 ## Stage 2 runs, and the interpreter was worth 23x
 
 `stage1/self.mpl` is §9's pipeline — `parse` -> `check` -> `verify` — as a program

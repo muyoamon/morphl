@@ -17,10 +17,20 @@ Requirement 2 is the one that bites. It is why `$union` stays in (recursive AST 
 |---|---|---|---|
 | 0 | Lexer, parser, dynamic evaluator, bootstrap root block | Zig 0.16 | Runs every example in `SPEC.md` §12 that fits the subset |
 | 1 | The real compiler: lexer, parser, inference, C backend | morphl (this subset) | Runs under stage 0 |
-| 2 | Stage 1 compiled by stage 1 under stage 0, via C | morphl | Typechecks its own source; binary reproduces stage 1's behavior |
-| 3 | Stage 2 compiling its own source again | morphl | **Stage 2 and stage 3 output identical byte-for-byte** |
+| 2 | Stage 1 compiled by stage 1 under stage 0, via C | morphl | **Met.** Typechecks its own source; binary reproduces stage 1's behavior |
+| 3 | Stage 2 compiling its own source again | morphl | **Met.** Stage 2 and stage 3 output identical byte-for-byte |
 
 After stage 3 the Zig code stops growing. It is kept, not deleted: it is the reproducible bootstrap path, and §9 requires the finished compiler to evaluate build programs anyway.
+
+### Where the bootstrap landed
+
+`stage1/selfc.mpl` is §9's pipeline as a program — parse, check, verify, emit — reading its target path from the file `./target`, because `args` has no C backend yet (§7). Stage 0 emits it as **63,906 lines of C in 5,390s using 1.15 GB**; `cc -O2` gives a 708,016-byte binary, and that is **stage 2**. Stage 2 emits the same source in **164s**, `cc` gives **stage 3**, and stage 3 emits it again in 178s.
+
+All three emissions are byte-identical — md5 `ba8e65e7b6ae1e0a2e350ecd3c30c0ef` — which is one more than the gate asks for: stage 2 reproduces the *interpreter* exactly, not merely stage 3. The two binaries are identical too, once compiled from the same filename. Stage 2 independently reproduces the reference C for `stage1/lexer.mpl`.
+
+Stage 2 is **33x** stage 0 on that workload, against a prediction of 5x. Requirement 2 above is what earns the difference: because the source really is statically typed, `lower.mpl` resolves every name to a frame slot (§7.2) so compiled code indexes where the interpreter walks a scope chain comparing names, and §8's intrinsics emit infix where the interpreter makes a call apiece — three quarters of all calls it makes.
+
+Two defects had to go first, both the same shape and neither visible to stage 0's own profiler: `put_lifted` rebuilt the function table three times per lifted function, and `mod_ent` held four list fields inline at 496 bytes an entry. Together they took stage 0's whole-compiler emit from 2.65 GB to 1.15 GB and unblocked stage 2, which had been failing above 7 GB. `PERF.md` has the numbers and the instrument that found them.
 
 ---
 
@@ -172,6 +182,10 @@ Not chosen, and why: clang's `musttail` would handle every case including indire
 
 What this means before the backend exists: the two morphl functions the toolchain leans on hardest — `scan` in the lexer and `block_items` in the parser — are direct self tail calls, so they land in the cheap case. Nothing written so far needs the trampoline.
 
+**Where this landed.** The self case works end to end. The mutual case is contified as described, but **only for a group whose members share a signature** — one parameter list and one `ret` have to serve them all — and a group that does not is reported rather than mis-emitted. Three such groups remain in the compiler's own source, so §7.7 does **not** hold for them: they are emitted as ordinary functions, which is correct but is not the guarantee. The indirect case is **not** implemented. The trampoline needs every function to return "a value or a pending call", which is a whole-program calling convention this backend does not have, so an indirect tail call is emitted as a plain call carrying a marker that says so.
+
+**And §7.7 cuts both ways in the compiler's own source.** A block around a recursive call makes it a real frame, so an O(n) walk over a table that grows with the whole program costs n frames. Two such walks over the interned type table (`alias_at`, `emit_fwds`) were written that way and nested, and at 6,348 types that was **8,763 nested calls and 48 MB of a 64 MB stack** — failing with `call depth limit exceeded`, *not* `OutOfMemory`, while still well under the memory cap. Read which of the two errors you got before concluding anything about memory.
+
 ## 7. Open bootstrap questions
 
 - **Subtyping needed a goal-level assumption set, and binder identity was what blocked it. Resolved.** `sub` used to assume pairs of *recursion variables* — two integers, allocation-free — which closes the loop only when both sides are folded the same way. It could not close a goal that recurs through a recursive type unfolded *structurally* (`X <: μ…` reducing to itself), which inference produces whenever it rebuilds a value of a recursive type. That was the whole of the 9 errors left in `types.mpl`.
@@ -229,6 +243,8 @@ What this means before the backend exists: the two morphl functions the toolchai
 
 - **§8 cannot build a character, only read one.** `byte` reads a byte out of a `Str`, and §3.1 says a character *is* a one-code-point substring — which only helps when the character already exists somewhere. Decoding the `\u{…}` escape that §2.1 requires means producing a code point that appears nowhere in the source, so a lexer written in morphl cannot do it with §8's intrinsics. Stage 0 adds `from_code (cp)` → `none | some Str`, validating so that §3.1's always-valid-UTF-8 invariant holds. §8 needs either that intrinsic or an explicit statement that `\u{…}` decoding stays a compiler builtin.
 - **Reading a value out of storage has no syntax.** `$decl y n` aliases (§5.4, and §12 says so outright), so snapshotting the contents of a cell into an immutable binding means passing it through something that expects a value. The prelude defines `ival`/`sval` identity functions for this, and stage 1's lexer needs them on almost every line that touches the cursor. §11 might want a `$copy`-style form, or §8 a blessed library identity.
+- **§7.6's regions are needed by the compiled side sooner than by stage 0, which §3's reasoning did not anticipate.** §3 blesses never freeing because stage 0 never frees either — true while the interpreter was the only consumer. Compiled, §7.2 inlines a block's fields and §7.5 sizes a union to its widest member, so a `P.list` node holds its element *by value* and costs `element + 16` bytes, against stage 0's flat 64 whatever it holds: **stage 0's boxing is what keeps its memory down.** Measured on the compiled compiler, the widest list node is 512 bytes and two types out of 644 accounted for 95% of all allocation. Narrowing those two by hand is what got stage 2 under its bound; the general answer is reclamation, and it is now a stage-2 concern rather than a post-bootstrap one.
+- **`args`, `at`, `alen`, `array` and `write_file` have no C backend.** Every driver opens `$call args ()` / `$call at (argv, 0)`, so no driver as written can be emitted at all. `selfc.mpl` works around it by reading its target path out of a file, which is a workaround and not a compiler interface. This is the last thing standing between stage 2 and a usable `mplc <file>`.
 
 - Whether stage 1 emits one C file or one per morphl file (affects `$import` load-once semantics at the C level, not in the language).
 - Whether to keep monomorphic root-block names permanently or shim them (§2, *Migration*).

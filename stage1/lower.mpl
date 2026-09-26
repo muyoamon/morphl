@@ -124,9 +124,10 @@ $decl mdones $specialize P.list proto_mdone
 // file yield the same module".
 $decl mod_ent $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                      $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node)
-  { $decl id i  $decl props ps  $decl done ds  $decl env en  $decl base bs  $decl path pt
+  { $decl id i  $decl props $alloc ps  $decl done $alloc ds  $decl env $alloc en
+    $decl base bs  $decl path pt
     // `with_props (en, ps, i)`, built once at registration. See `with_props`.
-    $decl penv pe }
+    $decl penv $alloc pe }
 $decl proto_mod $call mod_ent (0, mprops.nil, mdones.nil, benv.nil, "", "", benv.nil)
 $decl mods_list $specialize P.list proto_mod
 
@@ -589,21 +590,38 @@ $decl reserve_lifted $func ($decl st proto_lst)
     $decl l $set st.lifted ($call IR.fns.cons (IR.proto_fn, $call IR.fns.val (st.lifted)))
     $decl r $call add (st.fnbase, i) }.r
 
+// Replace one entry, copying only as far as it and **sharing the tail** — the
+// same shape as `put_mod`. `st.lifted` is newest first, so the entry just
+// reserved is at position 0 and the common case costs nothing.
 $decl replace_at $func ($decl xs IR.fns.node, $decl i 0, $decl f IR.proto_fn,
                         $decl acc IR.fns.node) $match xs (
   $case {$prop tag "cons"}
-    $call replace_at ($call IR.fns.val (xs.tail), $call isub (i, 1), f,
-        $call IR.fns.cons ($if ($call eq_int (i, 0)) f xs.head, acc)),
+    $if ($call eq_int (i, 0))
+        ($call IR.fns.reverse (acc, $call IR.fns.cons (f, xs.tail)))
+        ($call replace_at ($call IR.fns.val (xs.tail), $call isub (i, 1), f,
+             $call IR.fns.cons (xs.head, acc))),
   $case xs ($call IR.fns.reverse (acc, IR.fns.nil))
 )
 
 // `st.lifted` is newest-first, so it is turned around to be indexed and back
 // again. Both the list and the reservation are compile-time bookkeeping.
+// This used to turn the list around, replace, and turn it back — **three full
+// rebuilds of the function table per lifted function**, so `sum 3k` = 1.5L²
+// cells. Compiled, an `IR.fns.node` is 136 bytes (its element `IR.fn` has eight
+// fields, three of them list nodes held inline), and it measured **14.6M
+// allocations, 1,889 MB, 51% of everything the compiled compiler allocates** —
+// the largest single term by a wide margin.
+//
+// `st.lifted` is newest first, so index `k` sits at position `nlifted-1-k` from
+// the head, and `reserve_lifted` hands out `k = nlifted-1` immediately before
+// this is called: **position 0**. So the common case copies nothing and shares
+// the whole tail, and the worst case is no worse than one traversal where it
+// used to be three.
 $decl put_lifted $func ($decl st proto_lst, $decl idx 0, $decl f IR.proto_fn)
   { $decl k   $call isub (idx, st.fnbase)
-    $decl old $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil)
-    $decl new $call replace_at (old, k, f, IR.fns.nil)
-    $decl s   $set st.lifted ($call IR.fns.reverse (new, IR.fns.nil))
+    $decl pos $call isub ($call isub ($call P.ival (st.nlifted), 1), k)
+    $decl s   $set st.lifted
+                  ($call replace_at ($call IR.fns.val (st.lifted), pos, f, IR.fns.nil))
     $decl r   0 }.r
 
 // ------------------------------------------------------------------ results
