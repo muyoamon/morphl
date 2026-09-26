@@ -158,7 +158,7 @@ What it is worth on real inputs:
 | input | `mplc` | stage 0 | output |
 |---|---|---|---|
 | `stage1/lexer.mpl` | **<1s** | — | 3,370 lines, md5 `4eb88bb4…` — **identical** |
-| `stage1/types.mpl` | **1s** | **15s** | 9,372 lines — **identical** |
+| `stage1/types.mpl` | **1s** | **15s** | 9,387 lines — **identical** |
 | `stage1/selfc.mpl` | 162s | ~5400s | 64,551 lines, and the C builds a working compiler |
 
 The last row is the strongest check in the set. `mplc` emitting the compiler's
