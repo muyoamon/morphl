@@ -1047,6 +1047,60 @@ Both versions reverted. The three fixes that worked (`append_ty`, `with_props`,
 `put_mod`) all **removed work from an existing path** rather than adding a
 structure to avoid work, which on this evidence is the shape that pays.
 
+## §6a's last refusal, and why it was never a performance question
+
+The three "a mutually tail-recursive group whose members differ in signature is
+not contified yet" diagnostics were the only place a *documented* spec guarantee
+did not hold in the emitted compiler: §7.7 makes TCE mandatory, and those groups
+were emitted as ordinary functions, so a deep enough input would overflow the C
+stack rather than loop. They are now contified through a general path — per-member
+parameter variables and an out-parameter — and `mplc.mpl` emits **zero**
+diagnostics where it emitted four, `compiler.mpl` the one that is not an error.
+
+The groups were `sub_seen`/`sub_step`/`sub_ref` (`types.mpl`'s subtyping loop, a
+parameter type differing) and `join_pass`/`join_two` plus `join_all`/`join_step`
+(`emit.mpl`'s O(L log n) joiner, two and three parameters against one and three).
+The joiner is split into four functions precisely so that "passing the tail as a
+parameter keeps every call in tail position" — and that extra parameter is what
+made the signatures differ, which is what disqualified the group. **The change
+made to keep the recursion in tail position is what stopped the backend
+eliminating it.**
+
+The stack limit is not the instrument for checking this, and that is worth
+recording: `mplc` and its predecessor both segfault on `types.mpl` at
+`ulimit -s 512`, because the compiler's stack is dominated by legitimately
+non-tail recursion over the AST and the IR, and three contified groups do not
+move it. What shows the difference is a fixture built for it —
+`mutual_sig.mpl`, 2,000,000 alternations at `-O0`: the old backend emits no group
+function and the program overflows, the new one answers 9.
+
+The regeneration also cost one extra round trip to a mistake worth naming.
+`$mut $alloc P.boolean` is storage that starts **`true`**: §4.8a makes a `$union`
+evaluate to its first member and `P.boolean` is `$union (true, false)`. The flag
+that selects between the two contification paths started set, so every ordinary
+function took the general path's variable naming. Nothing in the checker or in
+`verify` can see it — the types are identical — and it surfaced as `q-2_0` in the
+C, three minutes of compiling later. For a flag that must start false, write the
+union in the order you want: `$mut $alloc $union (false, true)`.
+
+Two measurement notes came out of the work.
+
+**Finding them needed a compiled compiler, and a driver that could speak.** The
+diagnostics only appear on a whole-compiler emit, which costs stage 0 about ninety
+minutes; `mplc` does it in three, but `mplc` prints *only* C, because §8 gives
+`print` (stdout) and `panic` (stderr, then abort) and nothing between — a warning
+would corrupt the artifact. `stage1/emit_diag.mpl` is the same pipeline with the
+diagnostics on stdout and the C discarded, and it turns a ninety-minute question
+into a one-second one. Worth building early for anything that reads a diagnostic
+at scale.
+
+**The refusal's message named nothing, which is the lesson.** It said that *a*
+group differed in signature and not *which*, so the only way to find out was to
+re-derive the tail-call SCCs by hand. Adding the member names and their signatures
+to the message was the first change made and the one that made the rest cheap.
+A diagnostic that reports a category rather than an instance costs whoever reads
+it the entire investigation.
+
 ## Hypotheses tested and rejected
 
 Recorded so they are not retried blind.

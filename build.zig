@@ -131,6 +131,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/closures.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/try.mpl", .want = "5\n" },
         .{ .src = "stage1/fixtures/mutual.mpl", .want = "1\n" },
+        .{ .src = "stage1/fixtures/mutual_sig.mpl", .want = "9\n" },
         .{ .src = "stage1/fixtures/unions.mpl", .want = "91\n" },
         .{ .src = "stage1/fixtures/props.mpl", .want = "169\n" },
         .{ .src = "stage1/fixtures/template.mpl", .want = "43\n" },
@@ -224,6 +225,10 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/arrays.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
+        // §6a's general case, where the two implementations have the most room
+        // to disagree: the group function's parameter list is every member's
+        // concatenated, so an ordering difference would show here and nowhere else.
+        "stage1/fixtures/mutual_sig.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);

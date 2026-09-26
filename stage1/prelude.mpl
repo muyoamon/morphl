@@ -34,6 +34,10 @@ $decl or  $func ($decl a boolean, $decl b boolean) $if a true b
 // way to snapshot the contents of a cell into an immutable binding.
 $decl ival $func ($decl x 0) x
 $decl sval $func ($decl s "") s
+// The same for a `Bool`. §3.2 makes `true` and `false` distinct types, so the
+// parameter has to be defaulted to `boolean` and not to either tag, or it
+// accepts only that one.
+$decl bval $func ($decl b boolean) b
 
 // A singly linked list.
 //

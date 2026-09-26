@@ -6,19 +6,29 @@
 // work until §7.7: a tail call has to become `continue`, which is a statement
 // and cannot sit inside a `?:`.
 //
-// **§6a's cheap case is the one implemented here.** A direct self tail call
+// **§6a's self and mutual cases are both emitted.** A direct self tail call
 // becomes `while (1)` with `continue`, and the parameters are updated *in
 // parallel* — every new argument into a temporary first, then assigned — or
-// `$call f (b, a)` would clobber `b` before reading it. The mutual and indirect
-// cases (contification, trampoline) are not emitted yet; a tail call to another
-// function is emitted as an ordinary call, which is correct but does not keep
-// §7.7's guarantee.
+// `$call f (b, a)` would clobber `b` before reading it. A mutually
+// tail-recursive group is contified: one function, a state variable, one
+// dispatch loop, and a wrapper per member keeping its name. There are two
+// contification paths, and `same_sig` is all that chooses between them — the
+// fast one shares a parameter list and a `ret` across the members, the general
+// one gives each member parameter variables of its own and returns through an
+// out-parameter, because a C function has one return type and the members can
+// have several. The **indirect** case is the one still missing: a tail call
+// through a function *value* is emitted as a plain call carrying a marker, since
+// the trampoline it calls for needs a whole-program calling convention this
+// backend does not have.
 //
-// **Coverage: the Int subset.** `Int`, the booleans and unit, which all become
-// `int64_t`; literals, slots, calls, `$if`, `$do`, and §8's arithmetic and
-// comparisons. Blocks, `Str`, storage and closures are refused by name rather
-// than mis-emitted — `emit_errs` is not empty when that happens, and the C is
-// not worth compiling.
+// **Coverage is everything the bootstrap subset uses.** `Int`, the booleans and
+// unit as `int64_t`; §3.1's `Str`; blocks as structs in §7.2 layout order;
+// unions as §7.5's tag and payload; §4.2's storage as a thin pointer; §7.3's
+// two-word closures; §4.15's `$try`; §4.9's specialisations, already
+// monomorphic by the time lowering is done; §4.14's imports; §8's intrinsics,
+// arrays included. What is refused by name rather than mis-emitted is `Float`
+// (BOOTSTRAP §1.2 drops float arithmetic) and `write_file`; `emit_errs` is not
+// empty when that happens, and the C is not worth compiling.
 
 $decl P  $import "prelude"
 $decl T  $import "types"
@@ -48,6 +58,22 @@ $decl estate $func ()
     // set into one function, so a tail call to a member is a state change
     // rather than a call.
     $decl grp   $mut $alloc IR.ints.node
+    // §6a's general case: a group whose members do *not* share a signature
+    // becomes one function with an out-parameter, because there is no single C
+    // return type to give it and no single parameter list to receive them. Two
+    // things then differ from the shared-signature path, and both have to be
+    // reachable from anywhere in a body: `retc` is the C type `retp` points at
+    // (empty when the function simply returns), and `gen` says that a tail call
+    // to a member assigns that member's own parameter variables rather than the
+    // shared slots.
+    $decl retc  $mut $alloc ""
+    // `$union (false, true)`, not `P.boolean`: §4.8a makes a `$union` evaluate to
+    // its *first* member, and `P.boolean` is `$union (true, false)` — so storage
+    // typed with it starts out **true**. This one has to start false, and getting
+    // it wrong made every ordinary function take the general path's naming, which
+    // `cc` caught as `q-2_0` (the fast path's "this very function" marker run
+    // through a name only a general group has).
+    $decl gen   $mut $alloc $union (false, true)
     // Which globals are thunks. A thunk's index names a *static* holding a
     // value, not a function to call — so naming one is reading `mpl_g<i>`, and
     // calling one is an indirect call through the pair that static holds.
@@ -122,6 +148,19 @@ $decl fresh_tmp $func ($decl st proto_est)
     $decl r $call concat ("t", $call int_to_str (i)) }.r
 
 $decl slot_name $func ($decl i 0) $call concat ("s", $call int_to_str (i))
+// A member of a general §6a group has parameter variables of its own, named by
+// the state it answers for — declared up here because the tail-call emitter
+// names it long before the group emitter does, and §4.10 is source order.
+$decl qpre $func ($decl si 0) $call concat ("q", $call concat ($call int_to_str (si), "_"))
+// A member of a general §6a group has no C return type of its own — the group
+// function is `void` and writes through `retp` — so every `return ret` in the
+// backend goes through here. There are three: the end of an ordinary function,
+// the end of a member's `case`, and §4.15's `$try`, which returns from
+// arbitrary depth.
+$decl emit_return $func ($decl st proto_est)
+  { $decl c $call P.sval (st.retc)
+    $decl r $if ($call eq_str (c, "")) ($call say (st, "  return ret;\n"))
+        ($call say (st, $call concat ("  *(", $call concat (c, " *)retp = ret;\n  return;\n")))) }.r
 $decl gbl_name  $func ($decl i 0) $call concat ("mpl_g", $call int_to_str (i))
 $decl fn_name   $func ($decl i 0) $call concat ("mpl_f", $call int_to_str (i))
 
@@ -831,11 +870,16 @@ $decl binop_expr $func ($decl xs strs.node, $decl op "")
 
 // A self tail call (§6a): every argument is already in a temporary, so the
 // slots can be overwritten in one go and the loop re-entered.
-$decl assign_slots $func ($decl st proto_est, $decl xs strs.node, $decl i 0) $match xs (
+// §6a's parameter update. `pre` is what a parameter is called where the tail
+// call stands: the shared slots on the fast path, and the target member's own
+// parameter variables in a general group, where no two members share a name.
+$decl assign_slots $func ($decl st proto_est, $decl xs strs.node, $decl i 0,
+                          $decl pre "s") $match xs (
   $case {$prop tag "cons"}
-    { $decl d $call say (st, $call concat ("  ", $call concat ($call slot_name (i),
-          $call concat (" = ", $call concat (xs.head, ";\n")))))
-      $decl r $call assign_slots (st, xs.tail, $call add (i, 1)) }.r,
+    { $decl d $call say (st, $call concat ("  ", $call concat (pre,
+          $call concat ($call int_to_str (i),
+          $call concat (" = ", $call concat (xs.head, ";\n"))))))
+      $decl r $call assign_slots (st, xs.tail, $call add (i, 1), pre) }.r,
   $case xs ()
 )
 
@@ -1072,7 +1116,8 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
                 // §6a: the parameters are updated *in parallel* — every new
                 // argument is already in a temporary — then the loop re-enters,
                 // at another member's state if this is a mutual call.
-                { $decl a $call assign_slots (st, as, 0)
+                { $decl a $call assign_slots (st, as, 0,
+                      $if ($call P.bval (st.gen)) ($call qpre (ts2)) "s")
                   $decl b $if ($call eq_int (ts2, -2)) ()
                       ($call assign (st, "state", $call int_to_str (ts2)))
                   $decl c $call say (st, "  continue;\n") }.c }.o
@@ -1419,7 +1464,7 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
       $decl d1 $call emit_inject (st, ts, "ret",
                    $call concat (tv, $call concat (".u.m", $call int_to_str (e.disc))),
                    $if mf.hit mf.id 0, $call P.ival (st.fnres))
-      $decl d2 $call say (st, "  return ret;\n  }\n")
+      $decl d2 $do ($call emit_return (st)) ($call say (st, "  }\n"))
       // What survives is a single member, so reading it out is the narrowing.
       $decl r  $call assign (st, dest, $call concat (tv,
                    $call concat (".u.m", $call int_to_str ($call other_disc (ms, e.disc, 0))))) }.r,
@@ -1469,7 +1514,7 @@ $decl emit_fn $func ($decl st proto_est, $decl i 0, $decl f IR.proto_fn, $decl t
                   $call concat ($call c_type (st, ts, f.result), " ret;\n")))
     $decl l0  $if f.self_tail ($call say (st, "  while (1) {\n")) ()
     $decl b0  $call emit_as (st, i, f.body, "ret", f.result, ts)
-    $decl r1  $call say (st, "  return ret;\n")
+    $decl r1  $call emit_return (st)
     $decl l1  $if f.self_tail ($call say (st, "  }\n")) ()
     $decl r2  $call say (st, "}\n") }.r2
 
@@ -1521,7 +1566,7 @@ $decl emit_member $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.in
       // not collide over a slot number.
       $decl d1 $call emit_slots (st, $call IR.ints.val (f.slots), ts, 0, np)
       $decl d2 $call emit_as (st, g.head, f.body, "ret", f.result, ts)
-      $decl d3 $call say (st, "  return ret;\n  }\n")
+      $decl d3 $do ($call emit_return (st)) ($call say (st, "  }\n"))
       $decl r  $call emit_member (st, fs, g.tail, ts, $call add (i, 1)) }.r,
   $case g ()
 )
@@ -1544,6 +1589,138 @@ $decl emit_wrappers $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.
 )
 
 
+// §6a's *general* case: a group whose members do not share a signature.
+//
+// The restriction above exists because the fast path gives the group function
+// one parameter list and one `ret`, which only serves members that agree. The
+// way out is to stop sharing either. Each member gets parameter variables of its
+// own — `q<state>_<k>`, so no two members can collide — and the result leaves
+// through an out-parameter, because a C function has exactly one return type and
+// the members have several. Everything else is the fast path exactly: one
+// dispatch loop, a `case` per member holding its body, a wrapper per member
+// keeping its name and entering at its own state.
+//
+// The group function's parameters are therefore *every* member's parameters
+// concatenated. A wrapper passes its own arguments in its own positions and a
+// zero compound literal everywhere else — the other members' parameters are dead
+// on entry at that state, and C needs something there.
+//
+// A tail call to member j fills `q<j>_*` and `continue`s, and the parallel-update
+// problem the fast path has does not arise: a member reads its parameters out of
+// `q` into its slots when its `case` is entered, so writing `q` cannot clobber
+// what the arguments are being computed from.
+$decl emit_qparams $func ($decl st proto_est, $decl xs IR.ints.node, $decl ts T.tys.node,
+                          $decl si 0, $decl k 0) $match xs (
+  $case {$prop tag "cons"}
+    { $decl d $call say (st, $call concat (", ",
+          $call concat ($call c_type (st, ts, xs.head),
+          $call concat (" ", $call concat ($call qpre (si), $call int_to_str (k))))))
+      $decl r $call emit_qparams (st, xs.tail, ts, si, $call add (k, 1)) }.r,
+  $case xs ()
+)
+
+$decl emit_gparams $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
+                          $decl ts T.tys.node, $decl si 0) $match g (
+  $case {$prop tag "cons"}
+    { $decl f $call fn_at (fs, g.head)
+      $decl d $call emit_qparams (st, $call IR.ints.val (f.params), ts, si, 0)
+      $decl r $call emit_gparams (st, fs, g.tail, ts, $call add (si, 1)) }.r,
+  $case g ()
+)
+
+// §7.2 puts the parameters in the first slots, so a member's `case` declares
+// every slot it has and opens by copying the parameters in from its own `q`.
+$decl copy_qparams $func ($decl st proto_est, $decl xs IR.ints.node, $decl si 0, $decl k 0)
+  $match xs (
+    $case {$prop tag "cons"}
+      $do ($call say (st, $call concat ("  ", $call concat ($call slot_name (k),
+               $call concat (" = ", $call concat ($call qpre (si),
+               $call concat ($call int_to_str (k), ";\n")))))))
+          ($call copy_qparams (st, xs.tail, si, $call add (k, 1))),
+    $case xs ()
+  )
+
+$decl emit_member_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
+                             $decl ts T.tys.node, $decl si 0) $match g (
+  $case {$prop tag "cons"}
+    { $decl f  $call fn_at (fs, g.head)
+      $decl rc $call c_type (st, ts, f.result)
+      $decl d0 $call say (st, $call concat ("  case ", $call concat ($call int_to_str (si),
+                   $call concat (": {  /* ", $call concat (f.name, " */\n")))))
+      $decl d1 $call emit_slots (st, $call IR.ints.val (f.slots), ts, 0, 0)
+      $decl d2 $call copy_qparams (st, $call IR.ints.val (f.params), si, 0)
+      $decl d3 $call say (st, $call concat ("  ", $call concat (rc, " ret;\n")))
+      $decl fr $set st.fnres f.result
+      $decl rr $set st.retc rc
+      $decl d4 $call emit_as (st, g.head, f.body, "ret", f.result, ts)
+      $decl d5 $do ($call emit_return (st)) ($call say (st, "  }\n"))
+      $decl r  $call emit_member_gen (st, fs, g.tail, ts, $call add (si, 1)) }.r,
+  $case g ()
+)
+
+$decl emit_zeros $func ($decl st proto_est, $decl xs IR.ints.node, $decl ts T.tys.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $do ($call say (st, $call concat (", (",
+               $call concat ($call c_type (st, ts, xs.head), "){0}"))))
+          ($call emit_zeros (st, xs.tail, ts)),
+    $case xs ()
+  )
+
+$decl emit_owns $func ($decl st proto_est, $decl xs IR.ints.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call say (st, $call concat (", ", $call slot_name (k))))
+        ($call emit_owns (st, xs.tail, $call add (k, 1))),
+  $case xs ()
+)
+
+$decl emit_fillers $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
+                          $decl ts T.tys.node, $decl si 0, $decl want 0) $match g (
+  $case {$prop tag "cons"}
+    { $decl f $call fn_at (fs, g.head)
+      $decl d $if ($call eq_int (si, want))
+          ($call emit_owns (st, $call IR.ints.val (f.params), 0))
+          ($call emit_zeros (st, $call IR.ints.val (f.params), ts))
+      $decl r $call emit_fillers (st, fs, g.tail, ts, $call add (si, 1), want) }.r,
+  $case g ()
+)
+
+$decl emit_wrappers_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
+                               $decl gi 0, $decl ts T.tys.node, $decl all IR.ints.node,
+                               $decl si 0) $match g (
+  $case {$prop tag "cons"}
+    { $decl f  $call fn_at (fs, g.head)
+      $decl rc $call c_type (st, ts, f.result)
+      $decl h0 $call say (st, $call concat ("\nstatic ",
+                   $call concat (rc, $call concat (" ",
+                   $call concat ($call fn_name (g.head), "(void *env")))))
+      $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
+      $decl h2 $call say (st, $call concat (") {  /* ", $call concat (f.name,
+                   $call concat (" */\n  ", $call concat (rc, " r;\n  ")))))
+      $decl h3 $call say (st, $call concat ($call grp_name (gi),
+                   $call concat ("(env, ", $call concat ($call int_to_str (si), ", &r"))))
+      $decl h4 $call emit_fillers (st, fs, all, ts, 0, si)
+      $decl h5 $call say (st, ");\n  return r;\n}\n")
+      $decl r  $call emit_wrappers_gen (st, fs, g.tail, gi, ts, all, $call add (si, 1)) }.r,
+  $case g ()
+)
+
+$decl emit_group_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
+                            $decl gi 0, $decl ts T.tys.node)
+  { $decl h0  $call say (st, $call concat ("\nstatic void ",
+                  $call concat ($call grp_name (gi), "(void *env, int64_t state, void *retp")))
+    $decl h1  $call emit_gparams (st, fs, g, ts, 0)
+    $decl h2  $call say (st, ") {\n  (void)env;\n")
+    $decl g0  $set st.grp g
+    $decl gn  $set st.gen true
+    $decl l0  $call say (st, "  while (1) {\n  switch ((int)state) {\n")
+    $decl m0  $call emit_member_gen (st, fs, g, ts, 0)
+    $decl l1  $call say (st, "  default: mpl_panic(\"bad state\");\n  }\n  }\n}\n")
+    $decl g1  $set st.grp IR.ints.nil
+    $decl gn2 $set st.gen false
+    $decl rr  $set st.retc ""
+    $decl w0  $call emit_wrappers_gen (st, fs, g, gi, ts, g, 0) }.w0
+
 $decl emit_group $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
                         $decl gi 0, $decl ts T.tys.node)
   { $decl f0  $call fn_at (fs, $call IR.ints.nth (g, 0))
@@ -1563,28 +1740,18 @@ $decl emit_group $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.int
     $decl g1  $set st.grp IR.ints.nil
     $decl w0  $call emit_wrappers (st, fs, g, gi, ts, 0) }.w0
 
-// A group §6a declines to contify still has to be *emitted*. `emit_fns` skips
-// every member, expecting `emit_group` to write it, so refusing without this
-// left the members declared, called and never defined — C that cannot link.
-// Emitted plainly, a tail call between members is an ordinary call: correct,
-// but not §7.7's guarantee, which is the same position as the indirect case.
-$decl emit_group_plain $func ($decl st proto_est, $decl fs IR.fns.node,
-                              $decl g IR.ints.node, $decl ts T.tys.node) $match g (
-  $case {$prop tag "cons"}
-    $do ($call emit_fn (st, g.head, $call fn_at (fs, g.head), ts))
-        ($call emit_group_plain (st, fs, $call IR.ints.val (g.tail), ts)),
-  $case g ()
-)
-
 $decl emit_groups $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.groups.node,
                          $decl gi 0, $decl ts T.tys.node) $match gs (
   $case {$prop tag "cons"}
     { $decl g  $call IR.ints.val (gs.head.members)
       $decl f0 $call fn_at (fs, $call IR.ints.nth (g, 0))
       $decl ok $call same_sig (fs, g, $call IR.ints.val (f0.params), f0.result)
+      // Both paths contify, so §7.7 holds either way; the fast one is kept
+      // because it is what the emitted compiler's own hot mutual recursions go
+      // through, and a shared signature lets it pass parameters as parameters
+      // and return a value as a value.
       $decl d  $if ok ($call emit_group (st, fs, g, gi, ts))
-          ($do ($call eerr (st, "a mutually tail-recursive group whose members differ in signature is not contified yet; its members are emitted as ordinary functions, so a tail call between them is a plain call and §7.7 does not hold for it"))
-               ($call emit_group_plain (st, fs, g, ts)))
+                      ($call emit_group_gen (st, fs, g, gi, ts))
       $decl r  $call emit_groups (st, fs, $call IR.groups.val (gs.tail), $call add (gi, 1), ts) }.r,
   $case gs ()
 )
