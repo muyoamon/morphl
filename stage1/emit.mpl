@@ -1330,17 +1330,31 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     { $decl tn  $call IR.eval (e.target)
       $decl tg  $call into_tmp (st, fi, tn, ts)
       $decl vn  $call IR.eval (e.value)
-      // What is written is what the storage holds, not what the value node
-      // happens to be — §5.1 and §4.8a again.
+      // What is *stored* is what the storage holds, not what the value node
+      // happens to be — §5.1 and §4.8a again. But the node's own type is the
+      // **written value's**: §4.4 makes `$set` evaluate to the value written,
+      // and both `infer_set` and lowering answer `v.ty`.
+      //
+      // So the value is built at the node's type and coerced **up** into the
+      // storage's, not the other way round. Building it at the storage's type
+      // first and coercing from there into the node's went the wrong direction:
+      // a member written into union-typed storage needed union -> member, which
+      // is a narrowing and not a §7.4 coercion at all, so `emit_inject` emitted
+      // *nothing* and the destination slot was left uninitialised. There were
+      // five in the compiler's own C — every one a `$decl … $set …` whose
+      // enclosing `{ … $decl out e }.out` then read every slot to build its
+      // struct, which is reading an uninitialised automatic. `cc -Wall` on the
+      // emitted C is what found it; nothing in the morphl suites could.
       $decl pid $call pointee_of (st, ts, tn.ty)
       $decl wnt $if ($call lt (-1, pid)) pid vn.ty
-      $decl vl  $call decl_tmp (st, ts, wnt)
-      $decl d1  $call emit_as (st, fi, vn, vl, wnt, ts)
+      $decl vl  $call decl_tmp (st, ts, e.ty)
+      $decl d1  $call emit_as (st, fi, vn, vl, e.ty, ts)
+      $decl up  $call decl_tmp (st, ts, wnt)
+      $decl d2  $call emit_inject (st, ts, up, vl, e.ty, wnt)
       $decl d0  $call say (st, $call concat ("  *", $call concat (tg,
-                    $call concat (" = ", $call concat (vl, ";\n")))))
-      // §4.4: `$set` evaluates to the written value, and what was written has
-      // the *storage's* type — which need not be the node's.
-      $decl r   $call emit_inject (st, ts, dest, vl, wnt, e.ty) }.r,
+                    $call concat (" = ", $call concat (up, ";\n")))))
+      // §4.4: the result is the value that was written, at its own type.
+      $decl r   $call assign (st, dest, vl) }.r,
   // §4.7, as §7.5's discriminator test — the one construct that reads runtime
   // type information. Several `case` labels may share a body, because an arm
   // answers for every member no earlier arm claimed.

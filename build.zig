@@ -173,4 +173,76 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&run_bin.step);
         }
     }
+    // ---------------------------------------------------------------- stage 2
+    //
+    // `bootstrap/mplc.c` is stage 1 emitted by stage 1 — BOOTSTRAP's stage 2 —
+    // and it is committed on purpose. Regenerating it from stage 0 costs ~90
+    // minutes; `cc` costs seconds. That is the usual bootstrap trade, and the
+    // alternative is worse: the fast compiler would exist only on whichever
+    // machine last built it, which is exactly where it was before this step.
+    const stage2_step = b.step("stage2", "Build mplc from the committed bootstrap C");
+    // `-Wno-unused-but-set-variable` for §7.8's `⊥`: a `panic`'s result gets a
+    // temporary that is assigned and never read, because nothing after a `panic`
+    // runs. Correct C for the construct, so it is silenced rather than worked
+    // around — same judgement as `-Wno-unused-function` for the fixtures.
+    const mplc_cc = b.addSystemCommand(&.{
+        "cc", "-O2", "-Wall", "-Wno-unused-function", "-Wno-unused-but-set-variable", "-o",
+    });
+    const mplc_bin = mplc_cc.addOutputFileArg("mplc");
+    mplc_cc.addFileArg(b.path("bootstrap/mplc.c"));
+    stage2_step.dependOn(&b.addInstallBinFile(mplc_bin, "mplc").step);
+
+    const s2_step = b.step("test-stage2", "mplc against stage 0, and the committed C against itself");
+
+    // **The guard against `bootstrap/mplc.c` rotting.** The committed C has to be
+    // what the compiler it builds emits for its own source. Change `stage1/` and
+    // forget to regenerate, and this is what says so — otherwise the committed C
+    // silently drifts behind the tree it claims to be.
+    {
+        const emit = std.Build.Step.Run.create(b, "mplc emits its own source");
+        emit.addFileArg(mplc_bin);
+        emit.addArg("stage1/mplc.mpl");
+        emit.setCwd(b.path("."));
+        // stage-1 sources are read at *run* time, so a cached run would compile
+        // the previous compiler — the same reason the suites above say this.
+        emit.has_side_effects = true;
+        const fresh = emit.captureStdOut(.{ .basename = "mplc.c" });
+        const same = b.addSystemCommand(&.{"cmp"});
+        same.addFileArg(fresh);
+        same.addFileArg(b.path("bootstrap/mplc.c"));
+        s2_step.dependOn(&same.step);
+        test_step.dependOn(&same.step);
+    }
+
+    // The strongest check in the project, and now cheap enough to be routine:
+    // two independent executions of the same stage-1 source — one interpreted by
+    // stage 0, one compiled to native code — must agree on every byte of a real
+    // output. These fixtures are chosen because they emit *no* diagnostics, so
+    // both sides write pure C and are directly comparable; `emit_c.mpl` prints
+    // diagnostics to stdout ahead of the C, and `mplc` prints only the C.
+    for ([_][]const u8{
+        "stage1/fixtures/arrays.mpl",
+        "stage1/fixtures/list.mpl",
+        "stage1/fixtures/match.mpl",
+    }) |src| {
+        const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
+        by_mplc.addFileArg(mplc_bin);
+        by_mplc.addArg(src);
+        by_mplc.setCwd(b.path("."));
+        by_mplc.has_side_effects = true;
+        const a = by_mplc.captureStdOut(.{ .basename = "by_mplc.c" });
+
+        const by_s0 = b.addRunArtifact(exe);
+        by_s0.addArgs(&.{ "--run", "stage1/emit_c.mpl", src });
+        by_s0.setCwd(b.path("."));
+        by_s0.has_side_effects = true;
+        const bfile = by_s0.captureStdOut(.{ .basename = "by_stage0.c" });
+
+        const agree = b.addSystemCommand(&.{"cmp"});
+        agree.addFileArg(a);
+        agree.addFileArg(bfile);
+        s2_step.dependOn(&agree.step);
+        test_step.dependOn(&agree.step);
+    }
+
 }
