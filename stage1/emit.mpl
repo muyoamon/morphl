@@ -132,7 +132,7 @@ $decl fn_name   $func ($decl i 0) $call concat ("mpl_f", $call int_to_str (i))
 // `int_to_str` have to put their result somewhere. That somewhere is `malloc`
 // and never `free`, which is stage 0's model exactly (BOOTSTRAP.md §3) and what
 // §7.6's regions are meant to replace.
-$decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\ntypedef struct { const char *p; int64_t n; } mpl_str;\n\n/* A function value is a code pointer and an environment, two words whatever\n   its signature (7.3): captures belong to the body, not to the type. */\ntypedef struct { void *code; void *env; } mpl_fun;\n\nstatic _Noreturn void mpl_panic(const char *m) { fputs(m, stderr); fputc('\\n', stderr); abort(); }\n\nstatic char *mpl_alloc(int64_t n) {\n  char *p = (char *)malloc((size_t)(n > 0 ? n : 1));\n  if (!p) mpl_panic(\"out of memory\");\n  return p;\n}\n\nstatic mpl_str mpl_concat(mpl_str a, mpl_str b) {\n  char *p = mpl_alloc(a.n + b.n);\n  memcpy(p, a.p, (size_t)a.n);\n  memcpy(p + a.n, b.p, (size_t)b.n);\n  return (mpl_str){ p, a.n + b.n };\n}\n\nstatic int64_t mpl_str_eq(mpl_str a, mpl_str b) {\n  return a.n == b.n && memcmp(a.p, b.p, (size_t)a.n) == 0;\n}\n\nstatic int64_t mpl_len(mpl_str s) { return s.n; }\n\nstatic mpl_str mpl_slice(mpl_str s, int64_t i, int64_t j) {\n  if (i < 0 || j < i || j > s.n) mpl_panic(\"slice: out of range\");\n  return (mpl_str){ s.p + i, j - i };\n}\n\nstatic int64_t mpl_byte(mpl_str s, int64_t i) {\n  if (i < 0 || i >= s.n) mpl_panic(\"byte: index out of range\");\n  return (int64_t)(unsigned char)s.p[i];\n}\n\nstatic mpl_str mpl_int_to_str(int64_t v) {\n  char buf[24];\n  int k = snprintf(buf, sizeof buf, \"%lld\", (long long)v);\n  char *p = mpl_alloc(k);\n  memcpy(p, buf, (size_t)k);\n  return (mpl_str){ p, k };\n}\n\nstatic int64_t mpl_print(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stdout);\n  return 0;\n}\n\n/* 8's arithmetic and comparisons are C operators, so they have no address. A\n   value of function type is a pair (7.3), and a pair needs one - `$decl isub\n   sub` is an intrinsic used as a value, which the compiler's own sources do.\n   These are that address, and nothing else calls them: a *call* to an\n   intrinsic is still emitted infix. */\n#define MPL_BINOP(n, op) \\\n  static int64_t mpl_fn_##n(void *env, int64_t a, int64_t b) { (void)env; return a op b; }\nMPL_BINOP(add, +)\nMPL_BINOP(sub, -)\nMPL_BINOP(mul, *)\nMPL_BINOP(div, /)\nMPL_BINOP(mod, %)\nMPL_BINOP(lt, <)\nMPL_BINOP(eq_int, ==)\n#undef MPL_BINOP\n\n/* 7.8: `panic` aborts. It takes a morphl `Str`, which is bytes and not a C\n   string (3.1), so it is written out by length rather than by NUL. The return\n   type is a lie the call site needs and the body never tells: nothing after a\n   call to this runs. */\nstatic int64_t mpl_panic_str(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stderr);\n  fputc('\\n', stderr);\n  abort();\n}\n\n/* 8 makes a failing operation answer an option rather than panic, and 7.5\n   lays that out as a tag and a union. These do the work and report whether it\n   succeeded; the *emitted* code builds the option, because only the call site\n   knows which position `some` and `none` took in its own interned union - 3.6\n   makes a union a set and 7.5 makes the order the discriminator, so the two\n   numbers are not fixed. */\nstatic int mpl_str_to_int(mpl_str s, int64_t *out) {\n  uint64_t v = 0;\n  uint64_t limit;\n  int64_t i = 0;\n  int neg = 0;\n  if (s.n == 0) return 0;\n  if (s.p[0] == '-' || s.p[0] == '+') { neg = (s.p[0] == '-'); i = 1; }\n  if (i >= s.n) return 0;\n  /* Stage 0 is Zig's parseInt, so `_` may separate digits but may not begin or\n     end the number; two implementations of one intrinsic have to agree. */\n  if (s.p[i] == '_' || s.p[s.n - 1] == '_') return 0;\n  /* The negative range is one larger, and -9223372036854775808 does parse. */\n  limit = neg ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;\n  for (; i < s.n; i++) {\n    unsigned char c = (unsigned char)s.p[i];\n    if (c == '_') continue;\n    if (c < '0' || c > '9') return 0;\n    if (v > (limit - (uint64_t)(c - '0')) / 10u) return 0;\n    v = v * 10u + (uint64_t)(c - '0');\n  }\n  if (neg) *out = (v == (uint64_t)INT64_MAX + 1u) ? INT64_MIN : -(int64_t)v;\n  else *out = (int64_t)v;\n  return 1;\n}\n\n/* 3.1 makes a `Str` UTF-8, so this is the encoder, and a code point outside\n   the scalar range has no encoding - which is the `none`. */\nstatic int mpl_from_code(int64_t cp, mpl_str *out) {\n  char *p;\n  int64_t n;\n  if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;\n  n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  p = mpl_alloc(n);\n  if (n == 1) { p[0] = (char)cp; }\n  else if (n == 2) { p[0] = (char)(0xC0 | (cp >> 6)); p[1] = (char)(0x80 | (cp & 0x3F)); }\n  else if (n == 3) { p[0] = (char)(0xE0 | (cp >> 12)); p[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[2] = (char)(0x80 | (cp & 0x3F)); }\n  else { p[0] = (char)(0xF0 | (cp >> 18)); p[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); p[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[3] = (char)(0x80 | (cp & 0x3F)); }\n  out->p = p;\n  out->n = n;\n  return 1;\n}\n\n/* Stage 0 validates UTF-8 before answering `some` (3.1 again), so this does\n   too: a file that is not text is `none`, not a `Str` that lies about itself. */\nstatic int mpl_utf8_ok(const char *p, int64_t n) {\n  int64_t i = 0;\n  while (i < n) {\n    unsigned char c = (unsigned char)p[i];\n    int64_t k, j;\n    int64_t lo;\n    if (c < 0x80) { i++; continue; }\n    else if ((c & 0xE0) == 0xC0) { k = 2; lo = 0x80; }\n    else if ((c & 0xF0) == 0xE0) { k = 3; lo = 0x800; }\n    else if ((c & 0xF8) == 0xF0) { k = 4; lo = 0x10000; }\n    else return 0;\n    if (i + k > n) return 0;\n    {\n      int64_t cp = c & (0xFF >> (k + 1));\n      for (j = 1; j < k; j++) {\n        unsigned char cc = (unsigned char)p[i + j];\n        if ((cc & 0xC0) != 0x80) return 0;\n        cp = (cp << 6) | (cc & 0x3F);\n      }\n      if (cp < lo || cp > 0x10FFFF) return 0;\n      if (cp >= 0xD800 && cp <= 0xDFFF) return 0;\n    }\n    i += k;\n  }\n  return 1;\n}\n\n/* Read by growing, never by `ftell`: a directory opens for reading on Linux\n   and reports a size of LONG_MAX, which sized an allocation that aborted where\n   stage 0 simply answers `none`. `fread` failing is the only signal trusted. */\nstatic int mpl_read_file(mpl_str path, mpl_str *out) {\n  char *name = mpl_alloc(path.n + 1);\n  FILE *f;\n  char *buf;\n  int64_t cap = 4096;\n  int64_t n = 0;\n  memcpy(name, path.p, (size_t)path.n);\n  name[path.n] = 0;\n  f = fopen(name, \"rb\");\n  free(name);\n  if (!f) return 0;\n  buf = mpl_alloc(cap);\n  for (;;) {\n    size_t got;\n    if (n == cap) {\n      char *nb = mpl_alloc(cap * 2);\n      memcpy(nb, buf, (size_t)n);\n      buf = nb;\n      cap *= 2;\n    }\n    got = fread(buf + n, 1, (size_t)(cap - n), f);\n    n += (int64_t)got;\n    if (got == 0) break;\n  }\n  if (ferror(f)) { fclose(f); return 0; }\n  fclose(f);\n  if (!mpl_utf8_ok(buf, n)) return 0;\n  out->p = buf;\n  out->n = n;\n  return 1;\n}\n"
+$decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\ntypedef struct { const char *p; int64_t n; } mpl_str;\n\n/* A function value is a code pointer and an environment, two words whatever\n   its signature (7.3): captures belong to the body, not to the type. */\ntypedef struct { void *code; void *env; } mpl_fun;\n\nstatic _Noreturn void mpl_panic(const char *m) { fputs(m, stderr); fputc('\\n', stderr); abort(); }\n\nstatic char *mpl_alloc(int64_t n) {\n  char *p = (char *)malloc((size_t)(n > 0 ? n : 1));\n  if (!p) mpl_panic(\"out of memory\");\n  return p;\n}\n\n/* 8's `args`, as the host gave them. Set before `mpl_init` runs, because a\n   top-level `$decl` initializer may read them (4.10). */\nstatic int mpl_argc = 0;\nstatic char **mpl_argv = 0;\n\nstatic mpl_str mpl_concat(mpl_str a, mpl_str b) {\n  char *p = mpl_alloc(a.n + b.n);\n  memcpy(p, a.p, (size_t)a.n);\n  memcpy(p + a.n, b.p, (size_t)b.n);\n  return (mpl_str){ p, a.n + b.n };\n}\n\nstatic int64_t mpl_str_eq(mpl_str a, mpl_str b) {\n  return a.n == b.n && memcmp(a.p, b.p, (size_t)a.n) == 0;\n}\n\nstatic int64_t mpl_len(mpl_str s) { return s.n; }\n\nstatic mpl_str mpl_slice(mpl_str s, int64_t i, int64_t j) {\n  if (i < 0 || j < i || j > s.n) mpl_panic(\"slice: out of range\");\n  return (mpl_str){ s.p + i, j - i };\n}\n\nstatic int64_t mpl_byte(mpl_str s, int64_t i) {\n  if (i < 0 || i >= s.n) mpl_panic(\"byte: index out of range\");\n  return (int64_t)(unsigned char)s.p[i];\n}\n\nstatic mpl_str mpl_int_to_str(int64_t v) {\n  char buf[24];\n  int k = snprintf(buf, sizeof buf, \"%lld\", (long long)v);\n  char *p = mpl_alloc(k);\n  memcpy(p, buf, (size_t)k);\n  return (mpl_str){ p, k };\n}\n\nstatic int64_t mpl_print(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stdout);\n  return 0;\n}\n\n/* 8's arithmetic and comparisons are C operators, so they have no address. A\n   value of function type is a pair (7.3), and a pair needs one - `$decl isub\n   sub` is an intrinsic used as a value, which the compiler's own sources do.\n   These are that address, and nothing else calls them: a *call* to an\n   intrinsic is still emitted infix. */\n#define MPL_BINOP(n, op) \\\n  static int64_t mpl_fn_##n(void *env, int64_t a, int64_t b) { (void)env; return a op b; }\nMPL_BINOP(add, +)\nMPL_BINOP(sub, -)\nMPL_BINOP(mul, *)\nMPL_BINOP(div, /)\nMPL_BINOP(mod, %)\nMPL_BINOP(lt, <)\nMPL_BINOP(eq_int, ==)\n#undef MPL_BINOP\n\n/* 7.8: `panic` aborts. It takes a morphl `Str`, which is bytes and not a C\n   string (3.1), so it is written out by length rather than by NUL. The return\n   type is a lie the call site needs and the body never tells: nothing after a\n   call to this runs. */\nstatic int64_t mpl_panic_str(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stderr);\n  fputc('\\n', stderr);\n  abort();\n}\n\n/* 8 makes a failing operation answer an option rather than panic, and 7.5\n   lays that out as a tag and a union. These do the work and report whether it\n   succeeded; the *emitted* code builds the option, because only the call site\n   knows which position `some` and `none` took in its own interned union - 3.6\n   makes a union a set and 7.5 makes the order the discriminator, so the two\n   numbers are not fixed. */\nstatic int mpl_str_to_int(mpl_str s, int64_t *out) {\n  uint64_t v = 0;\n  uint64_t limit;\n  int64_t i = 0;\n  int neg = 0;\n  if (s.n == 0) return 0;\n  if (s.p[0] == '-' || s.p[0] == '+') { neg = (s.p[0] == '-'); i = 1; }\n  if (i >= s.n) return 0;\n  /* Stage 0 is Zig's parseInt, so `_` may separate digits but may not begin or\n     end the number; two implementations of one intrinsic have to agree. */\n  if (s.p[i] == '_' || s.p[s.n - 1] == '_') return 0;\n  /* The negative range is one larger, and -9223372036854775808 does parse. */\n  limit = neg ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;\n  for (; i < s.n; i++) {\n    unsigned char c = (unsigned char)s.p[i];\n    if (c == '_') continue;\n    if (c < '0' || c > '9') return 0;\n    if (v > (limit - (uint64_t)(c - '0')) / 10u) return 0;\n    v = v * 10u + (uint64_t)(c - '0');\n  }\n  if (neg) *out = (v == (uint64_t)INT64_MAX + 1u) ? INT64_MIN : -(int64_t)v;\n  else *out = (int64_t)v;\n  return 1;\n}\n\n/* 3.1 makes a `Str` UTF-8, so this is the encoder, and a code point outside\n   the scalar range has no encoding - which is the `none`. */\nstatic int mpl_from_code(int64_t cp, mpl_str *out) {\n  char *p;\n  int64_t n;\n  if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;\n  n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  p = mpl_alloc(n);\n  if (n == 1) { p[0] = (char)cp; }\n  else if (n == 2) { p[0] = (char)(0xC0 | (cp >> 6)); p[1] = (char)(0x80 | (cp & 0x3F)); }\n  else if (n == 3) { p[0] = (char)(0xE0 | (cp >> 12)); p[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[2] = (char)(0x80 | (cp & 0x3F)); }\n  else { p[0] = (char)(0xF0 | (cp >> 18)); p[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); p[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[3] = (char)(0x80 | (cp & 0x3F)); }\n  out->p = p;\n  out->n = n;\n  return 1;\n}\n\n/* Stage 0 validates UTF-8 before answering `some` (3.1 again), so this does\n   too: a file that is not text is `none`, not a `Str` that lies about itself. */\nstatic int mpl_utf8_ok(const char *p, int64_t n) {\n  int64_t i = 0;\n  while (i < n) {\n    unsigned char c = (unsigned char)p[i];\n    int64_t k, j;\n    int64_t lo;\n    if (c < 0x80) { i++; continue; }\n    else if ((c & 0xE0) == 0xC0) { k = 2; lo = 0x80; }\n    else if ((c & 0xF0) == 0xE0) { k = 3; lo = 0x800; }\n    else if ((c & 0xF8) == 0xF0) { k = 4; lo = 0x10000; }\n    else return 0;\n    if (i + k > n) return 0;\n    {\n      int64_t cp = c & (0xFF >> (k + 1));\n      for (j = 1; j < k; j++) {\n        unsigned char cc = (unsigned char)p[i + j];\n        if ((cc & 0xC0) != 0x80) return 0;\n        cp = (cp << 6) | (cc & 0x3F);\n      }\n      if (cp < lo || cp > 0x10FFFF) return 0;\n      if (cp >= 0xD800 && cp <= 0xDFFF) return 0;\n    }\n    i += k;\n  }\n  return 1;\n}\n\n/* Read by growing, never by `ftell`: a directory opens for reading on Linux\n   and reports a size of LONG_MAX, which sized an allocation that aborted where\n   stage 0 simply answers `none`. `fread` failing is the only signal trusted. */\nstatic int mpl_read_file(mpl_str path, mpl_str *out) {\n  char *name = mpl_alloc(path.n + 1);\n  FILE *f;\n  char *buf;\n  int64_t cap = 4096;\n  int64_t n = 0;\n  memcpy(name, path.p, (size_t)path.n);\n  name[path.n] = 0;\n  f = fopen(name, \"rb\");\n  free(name);\n  if (!f) return 0;\n  buf = mpl_alloc(cap);\n  for (;;) {\n    size_t got;\n    if (n == cap) {\n      char *nb = mpl_alloc(cap * 2);\n      memcpy(nb, buf, (size_t)n);\n      buf = nb;\n      cap *= 2;\n    }\n    got = fread(buf + n, 1, (size_t)(cap - n), f);\n    n += (int64_t)got;\n    if (got == 0) break;\n  }\n  if (ferror(f)) { fclose(f); return 0; }\n  fclose(f);\n  if (!mpl_utf8_ok(buf, n)) return 0;\n  out->p = buf;\n  out->n = n;\n  return 1;\n}\n"
 
 // ------------------------------------------------------------------- types
 //
@@ -183,6 +183,7 @@ $decl c_type $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
         // §7.3: every function value has the same shape, which is what lets a
         // function-typed slot have a size at all (§7.2).
         $case {$prop tag "func"} "mpl_fun",
+        $case {$prop tag "array"} ($call ty_name (i)),
         // §7.4: `&T` and `&mut T` are thin pointers.
         $case {$prop tag "ref"}
           { $decl f $call IR.find_ty (ts, t.inner)
@@ -240,6 +241,9 @@ $decl mem_int $func ($decl xs IR.ints.node, $decl i 0) $match xs (
 // Which types get a C struct of their own.
 $decl is_structy $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "block"} true,
+  // §8's array is a pointer and a length, like §3.1's `Str` — one struct per
+  // element type, because `at` has to index it and C needs the element's size.
+  $case {$prop tag "array"} true,
   // §3.2 makes `Bool` the union `true | false`, but its discriminator *is* its
   // value, so it stays an `int64_t` and gets no struct.
   $case {$prop tag "union"} ($call not ($call T.same (t, T.t_bool))),
@@ -393,6 +397,16 @@ $decl emit_union_struct $func ($decl st proto_est, $decl all T.tys.node,
     $decl m $call emit_members (st, all, ms, 0)
     $decl e $call say (st, " } u; };\n") }.e
 
+// §8's array: a pointer to the elements and a count. The element is *behind*
+// the pointer, so — unlike a block's fields — this embeds nothing and needs
+// only the element's forward declaration, which `emit_fwds` has already made.
+$decl emit_array_struct $func ($decl st proto_est, $decl all T.tys.node,
+                               $decl el T.proto_ty, $decl i 0)
+  { $decl f $call IR.find_ty (all, el)
+    $decl et $if f.hit ($call c_type (st, all, f.id)) "int64_t"
+    $decl h  $call say (st, $call concat ("struct ", $call concat ($call ty_name (i),
+                 $call concat (" { ", $call concat (et, " *p; int64_t n; };\n"))))) }.h
+
 // Marked *before* the dependencies are walked, which is what stops a cycle —
 // and §5.5's guardedness is why marking early cannot emit a type before
 // something it embeds: every recursive edge is a pointer, so it is not an
@@ -416,6 +430,8 @@ $decl emit_struct_at $func ($decl st proto_est, $decl all T.tys.node, $decl i 0)
               ($call emit_block_struct (st, all, $call T.fields.val (t.fields), i)),
             $case {$prop tag "group"}
               ($call emit_group_struct (st, all, $call T.tys.val (t.items), i)),
+            $case {$prop tag "array"}
+              ($call emit_array_struct (st, all, $call T.tval (t.elem), i)),
             $case {$prop tag "union"}
               $if ($call T.same (t, T.t_bool)) ()
                   ($call emit_union_struct (st, all, $call T.tys.val (t.members), i)),
@@ -927,6 +943,85 @@ $decl emit_opt_prim $func ($decl st proto_est, $decl ts T.tys.node, $decl cf "",
           $decl d5  $call assign (st, $call concat (dest, ".tag"), $call int_to_str (kn))
           $decl d6  $call say (st, "  }\n") }.d6 }.r
 
+// §8's array intrinsics. None can be a `prim_fn`: `at` answers a *reference*
+// into the elements (stage 0 returns `.ref = &a.elems[i]`, and §5.4 reads it
+// through where a value is wanted), `alen` is a field, and `array` needs the
+// element's size. So they are emitted inline, the way the option-returning ones
+// are and for the same kind of reason.
+//
+// The bounds check is not decoration: stage 0 *panics* on an out-of-range index
+// and two implementations of one intrinsic have to agree (§8). The text differs
+// — stage 0 formats the index and the length into the message and `mpl_panic`
+// takes a C string — but the behaviour does not.
+$decl arr_prim $func ($decl n "")
+  $if ($call eq_str (n, "at")) true
+  ($if ($call eq_str (n, "alen")) true
+  ($if ($call eq_str (n, "array")) true
+  ($if ($call eq_str (n, "args")) true false)))
+
+$decl emit_arr_prim $func ($decl st proto_est, $decl ts T.tys.node, $decl nm "",
+                           $decl as strs.node, $decl dest "", $decl ty 0)
+  // §8's `args`, built from the host's `argv` **without** the program name, so
+  // that `$call at (argv, 0)` is the first real argument — which is what stage 0
+  // answers, since its platform hands over the arguments and not the
+  // interpreter's own name.
+  $if ($call eq_str (nm, "args"))
+      { $decl k  $call fresh_tmp (st)
+        $decl d0 $call assign (st, $call concat (dest, ".n"),
+                     "(int64_t)(mpl_argc > 1 ? mpl_argc - 1 : 0)")
+        $decl d1 $call say (st, $call concat ("  ", $call concat (dest,
+                     $call concat (".p = (mpl_str *)mpl_alloc(", $call concat (dest,
+                     ".n * (int64_t)sizeof(mpl_str));\n")))))
+        $decl d2 $call say (st, $call concat ("  { int64_t ", $call concat (k,
+                     $call concat ("; for (", $call concat (k,
+                     $call concat (" = 0; ", $call concat (k,
+                     $call concat (" < ", $call concat (dest,
+                     $call concat (".n; ", $call concat (k,
+                     $call concat ("++) { ", $call concat (dest,
+                     $call concat (".p[", $call concat (k,
+                     $call concat ("].p = mpl_argv[", $call concat (k,
+                     $call concat (" + 1]; ", $call concat (dest,
+                     $call concat (".p[", $call concat (k,
+                     $call concat ("].n = (int64_t)strlen(mpl_argv[", $call concat (k,
+                     " + 1]); } }\n")))))))))))))))))))))))
+        $decl r  () }.r
+  ($if ($call eq_str (nm, "alen"))
+      ($call assign (st, dest, $call concat ($call strs.nth (as, 0), ".n")))
+  ($if ($call eq_str (nm, "at"))
+      { $decl a $call strs.nth (as, 0)
+        $decl i $call strs.nth (as, 1)
+        $decl g $call say (st, $call concat ("  if (", $call concat (i,
+                    $call concat (" < 0 || ", $call concat (i,
+                    $call concat (" >= ", $call concat (a,
+                    ".n) mpl_panic(\"at: index out of range\");\n")))))))
+        $decl r $call assign (st, dest, $call concat ("&", $call concat (a,
+                    $call concat (".p[", $call concat (i, "]"))))) }.r
+      // §8: `array (n, init)` is `n` copies of `init`, and a negative length
+      // panics — again matching stage 0.
+      { $decl at0 $call type_at (ts, ty)
+        $decl el  $match at0 ($case {$prop tag "array"} ($call T.tval (at0.elem)), $case at0 T.t_bot)
+        $decl f   $call IR.find_ty (ts, el)
+        $decl et  $if f.hit ($call c_type (st, ts, f.id)) "int64_t"
+        $decl n   $call strs.nth (as, 0)
+        $decl v   $call strs.nth (as, 1)
+        $decl k   $call fresh_tmp (st)
+        $decl g   $call say (st, $call concat ("  if (", $call concat (n,
+                      " < 0) mpl_panic(\"array: negative length\");\n")))
+        $decl d0  $call say (st, $call concat ("  ", $call concat (dest,
+                      $call concat (".p = (", $call concat (et,
+                      $call concat (" *)mpl_alloc(", $call concat (n,
+                      $call concat (" * (int64_t)sizeof(", $call concat (et, "));\n")))))))))
+        $decl d1  $call assign (st, $call concat (dest, ".n"), n)
+        $decl d2  $call say (st, $call concat ("  { int64_t ", $call concat (k,
+                      $call concat ("; for (", $call concat (k,
+                      $call concat (" = 0; ", $call concat (k,
+                      $call concat (" < ", $call concat (n,
+                      $call concat ("; ", $call concat (k,
+                      $call concat ("++) ", $call concat (dest,
+                      $call concat (".p[", $call concat (k,
+                      $call concat ("] = ", $call concat (v, "; }\n")))))))))))))))))
+        $decl r   () }.r))
+
 // The call shape, since narrowing does not cross a call (§5.7).
 $decl proto_call $call IR.e_call (0, $call IR.e_unit (0), IR.exprs.nil, false)
 
@@ -949,7 +1044,9 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
                 ($call assign (st, dest, $call prim_call (cf, as)))
               ($if ($call not ($call eq_str (of, "")))
                 ($call emit_opt_prim (st, ts, of, as, dest, e.ty))
-                ($call eerr (st, $call concat ("cannot emit the intrinsic ", cal.name))))) }.r,
+              ($if ($call arr_prim (cal.name))
+                ($call emit_arr_prim (st, ts, cal.name, as, dest, e.ty))
+                ($call eerr (st, $call concat ("cannot emit the intrinsic ", cal.name)))))) }.r,
         $case cal
           // §6a: a direct self tail call is the loop; anything else is a plain
           // call, which is correct but is not §7.7's guarantee.
@@ -1596,6 +1693,6 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
              $call concat ($call fn_name (mi), "(NULL));\n")))
     $decl d2 $if ($call lt (mi, 0))
         ($call eerr (st, "no top-level $decl named 'main'"))
-        ($call say (st, $call concat ("\nint main(void) {\n  mpl_init();\n",
+        ($call say (st, $call concat ("\nint main(int argc, char **argv) {\n  mpl_argc = argc;\n  mpl_argv = argv;\n  mpl_init();\n",
              $call concat (body, "  return 0;\n}\n"))))
     $decl r  $call out_of (st) }.r

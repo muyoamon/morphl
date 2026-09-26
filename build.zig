@@ -144,6 +144,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n" },
         .{ .src = "stage1/fixtures/prop_union.mpl", .want = "9\n" },
         .{ .src = "stage1/fixtures/effect.mpl", .want = "46\n" },
+        .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole

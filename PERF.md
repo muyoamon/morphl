@@ -135,6 +135,43 @@ they do now, but hold them apart from the main table that `find_ty` scans and
 `emit_structs` walks. That halves the scan — which is where the 31% of calls
 goes — without changing a single answer.
 
+## `mplc` — and what stage 2 is worth in practice
+
+§8's `at`, `alen`, `array` and `args` had no C backend, so no driver could be
+emitted at all. With them in, `stage1/mplc.mpl` is a real command-line compiler.
+
+**It was built without stage 0 in the loop**, which is the point. The existing
+stage 2 was compiled from the *old* backend and cannot emit `args` — but it
+compiles the *current* source, so it can build an array-capable successor,
+provided what it emits does not itself use `args`. `selfc.mpl` reads `./target`,
+so it does not:
+
+| | | |
+|---|---|---|
+| `stage2c` emits `selfc.mpl` | 163s | -> `stage2b`, 712,200 bytes, has the array backend |
+| `stage2b` emits `mplc.mpl` | 163s | -> **`mplc`**, 712,160 bytes |
+
+Six minutes. The same two steps through stage 0 would have been three hours.
+
+What it is worth on real inputs:
+
+| input | `mplc` | stage 0 | output |
+|---|---|---|---|
+| `stage1/lexer.mpl` | **<1s** | — | 3,370 lines, md5 `4eb88bb4…` — **identical** |
+| `stage1/types.mpl` | **1s** | **15s** | 9,372 lines — **identical** |
+| `stage1/selfc.mpl` | 162s | ~5400s | 64,551 lines, and the C builds a working compiler |
+
+The last row is the strongest check in the set. `mplc` emitting the compiler's
+own driver differs from what the *old* backend emitted for the same source by
+**12 diff lines in 64,551** — and all twelve are the intended change, the five
+runtime lines for `mpl_argc`/`mpl_argv` and the three for the new `main`.
+Nothing else moved.
+
+**The 15x on `types.mpl` against 33x on `selfc.mpl` is worth noting.** The small
+input pays stage 0's fixed ~11ms startup and `mplc`'s own process start against a
+much smaller body of work, so the ratio compresses. Large workloads show the real
+figure; small ones understate it.
+
 ## Stage 3 reached: the compiler is a fixed point
 
 BOOTSTRAP's last gate is *"Stage 2 and stage 3 output identical byte-for-byte."*

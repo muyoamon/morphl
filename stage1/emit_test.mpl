@@ -96,9 +96,14 @@ $decl t6 $call check ("every function takes an environment",
   $if ($call has (loop_c.code, "mpl_f1(void *env)"))
       ($call has (loop_c.code, "(NULL")) false)
 
-// §9 leaves the entry point to the build program; this is the stand-in.
+// §9 leaves the entry point to the build program; this is the stand-in. It takes
+// the host's arguments because §8's `args` is emitted, and `mpl_argc`/`mpl_argv`
+// are set *before* `mpl_init` so a top-level `$decl` initializer may read them.
 $decl t7 $call check ("a top-level `main` gets a C main",
-  $call has (loop_c.code, "int main(void)"))
+  $call has (loop_c.code, "int main(int argc, char **argv)"))
+
+$decl t7b $call check ("and the host's arguments reach the runtime before mpl_init",
+  $call has (loop_c.code, "mpl_argc = argc"))
 
 // Refused rather than mis-emitted. `$try` is emitted now, so what is left
 // without a C form is `Float` — BOOTSTRAP §1.2 leaves float arithmetic out and
@@ -223,7 +228,7 @@ $decl t25 $call check ("a global has a static, assigned once by mpl_init",
 
 $decl t26 $call check ("...and mpl_init runs before the entry point",
   { $decl i $call idx (sto_c.code, "mpl_init();")
-    $decl m $call idx (sto_c.code, "int main(void)")
+    $decl m $call idx (sto_c.code, "int main(int argc, char **argv)")
     $decl out $if ($call lt (0, m)) ($call lt (m, i)) false }.out)
 
 // §4.8b discards the first operand, so C is right that its temporary is never
