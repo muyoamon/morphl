@@ -778,12 +778,55 @@ $fwd lower_func
 $fwd fn_ty
 
 // Arguments are a value position (§5.4), so each is read through.
+// The callee's parameter types, walked alongside the arguments. Both accessors
+// tolerate running out, because §3.4 fixes a parameter's *type* and not its
+// presence — a short call is accepted by inference — and because a callee whose
+// type is not a `$func` gives no list at all.
+$decl params_of $func ($decl t0 T.proto_ty)
+  { $decl t $call T.unroll (t0)
+    $decl r $match t (
+        $case {$prop tag "func"} ($call T.tys.val (t.params)),
+        $case t T.tys.nil
+      ) }.r
+
+$decl ps_head $func ($decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"} ($call T.tval (xs.head)),
+  $case xs T.t_bot
+)
+
+$decl ps_tail $func ($decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"} ($call T.tys.val (xs.tail)),
+  $case xs T.tys.nil
+)
+
+// §5.4 makes a reference behave as its pointee "wherever a value is expected",
+// and a parameter typed `&T` does **not** expect one — the section says so in as
+// many words: "A value is never implicitly converted to storage. Passing `0` to a
+// `&Int` parameter is an error; write `$new 0`." So transparency is a permission
+// at a value position, not an obligation at every argument.
+$decl wants_ref $func ($decl t0 T.proto_ty)
+  { $decl t $call T.unroll (t0)
+    $decl r $match t ($case {$prop tag "ref"} true, $case t false) }.r
+
+// Arguments are a value position (§5.4) — *unless* the parameter is storage,
+// which is what makes a `&T` parameter reachable at all and is exactly what
+// §4.16's ABI mapping needs for `&T` to arrive as a `T*`. Lowering used to
+// dereference every argument, so a reference could never reach a reference
+// parameter: inference accepted the call and emit then reported "cannot coerce
+// Int to &Int". The two passes have to agree, and §5.4 says which way.
 $decl lower_args $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
-                        $decl acc IR.exprs.node, $decl tys T.tys.node) $match xs (
+                        $decl acc IR.exprs.node, $decl tys T.tys.node,
+                        $decl ps T.tys.node) $match xs (
   $case {$prop tag "cons"}
-    { $decl r $call as_value (st, $call lower (st, e, xs.head, false))
+    { $decl raw $call lower (st, e, xs.head, false)
+      // `lval` is the identity at `lres`: while this knot is being solved
+      // `lower`'s own result is a placeholder, so the `$if`'s two arms have
+      // nothing to join on until it is passed through one.
+      $decl r   $if ($call wants_ref ($call ps_head (ps))) ($call lval (raw))
+                    ($call as_value (st, raw))
       $decl out $call lower_args (st, e, xs.tail,
-          $call IR.exprs.cons (r.ir, acc), $call T.tys.cons (r.ty, tys)) }.out,
+          $call IR.exprs.cons (r.ir, acc), $call T.tys.cons (r.ty, tys),
+          $call ps_tail (ps)) }.out,
   $case xs ($call args_res ($call IR.exprs.reverse (acc, IR.exprs.nil),
                             $call T.tys.reverse (tys, T.tys.nil)))
 )
@@ -1639,14 +1682,24 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                         -1, tid) }.r
       ($if ($call eq_str (k, "specialize")) ($call lower_specialize (st, e, n))
       ($if ($call eq_str (k, "import")) ($call lower_import (st, n))
+      // §4.16. The signature is a **type-only position** (§5.7): it is never
+      // evaluated, so it is lowered for its type and the tree thrown away — and
+      // `type_only` is what keeps its slots out of this frame, exactly as for
+      // `$union`'s later members. The symbol comes off the AST; §4.16's ABI
+      // mapping needs nothing but the type, which is why the node carries only
+      // those two things.
+      ($if ($call eq_str (k, "extern"))
+        { $decl sg $call type_only (st, e, $call op (n, 1))
+          $decl sy $call str_of ($call op (n, 0))
+          $decl r  $call lres ($call IR.e_extern ($call intern (st, sg.ty), sy), sg.ty) }.r
       ($if ($call eq_str (k, "call"))
         { $decl f  $call as_value (st, $call lower (st, e, $call op (n, 0), false))
           $decl as $call lower_args (st, e, $call group_items ($call op (n, 1)),
-                                     IR.exprs.nil, T.tys.nil)
+                                     IR.exprs.nil, T.tys.nil, $call params_of (f.ty))
           $decl ty $call result_of (f.ty)
           $decl r  $call lres ($call IR.e_call ($call intern (st, ty), f.ir, as.irs, tail), ty) }.r
         ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-             " is not lowered yet")), n)), T.t_unit)))))))))))))))  }.out
+             " is not lowered yet")), n)), T.t_unit))))))))))))))))  }.out
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
                    $decl tail P.boolean) $match n (

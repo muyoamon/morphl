@@ -43,8 +43,9 @@ $decl strs $specialize P.list ""
 // A global and what it really names. §4.10 puts it here because `estate` below
 // holds a list of these, and the functions that build and read them are down
 // with `is_thunk`, where the reason they exist is written out.
-$decl fnal $func ($decl f 0, $decl t 0, $decl pn "") { $decl from f  $decl to t  $decl prim pn }
-$decl proto_fnal $call fnal (0, 0, "")
+$decl fnal $func ($decl f 0, $decl t 0, $decl pn "", $decl xn "")
+  { $decl from f  $decl to t  $decl prim pn  $decl xsym xn }
+$decl proto_fnal $call fnal (0, 0, "", "")
 $decl fnals $specialize P.list proto_fnal
 
 // ------------------------------------------------------------------- state
@@ -986,18 +987,24 @@ $decl thunk_ids $func ($decl fs IR.fns.node, $decl i 0, $decl acc IR.ints.node) 
 // That was the fifteenth of the fifteen, and the one an alias-of-a-function test
 // alone does not catch.
 $decl alias_of_body $func ($decl i 0, $decl e IR.proto_expr) $match e (
-  $case {$prop tag "global"} ($call fnal (i, e.fn, "")),
-  $case {$prop tag "prim"} ($call fnal (i, -1, e.name)),
-  $case e ($call fnal (i, -1, ""))
+  $case {$prop tag "global"} ($call fnal (i, e.fn, "", "")),
+  $case {$prop tag "prim"} ($call fnal (i, -1, e.name, "")),
+  // §4.16: the idiomatic binding is `$decl puts $extern "puts" sig` at top level,
+  // which is a thunk whose whole body is one extern node — so calling it by name
+  // resolves to a direct C call, exactly as an aliased intrinsic does.
+  $case {$prop tag "extern"} ($call fnal (i, -1, "", e.sym)),
+  $case e ($call fnal (i, -1, "", ""))
 )
 
 $decl is_alias $func ($decl a proto_fnal)
-  $if ($call lt (-1, a.to)) true ($call not ($call eq_str (a.prim, "")))
+  $if ($call lt (-1, a.to)) true
+      ($if ($call not ($call eq_str (a.prim, ""))) true
+           ($call not ($call eq_str (a.xsym, ""))))
 
 $decl collect_aliases $func ($decl fs IR.fns.node, $decl i 0, $decl acc fnals.node) $match fs (
   $case {$prop tag "cons"}
     { $decl a $if fs.head.thunk ($call alias_of_body (i, $call IR.eval (fs.head.body)))
-                                ($call fnal (i, -1, ""))
+                                ($call fnal (i, -1, "", ""))
       $decl r $call collect_aliases ($call IR.fns.val (fs.tail), $call add (i, 1),
                   $if ($call is_alias (a)) ($call fnals.cons (a, acc)) acc) }.r,
   $case fs acc
@@ -1006,7 +1013,7 @@ $decl collect_aliases $func ($decl fs IR.fns.node, $decl i 0, $decl acc fnals.no
 $decl fnal_at $func ($decl as fnals.node, $decl i 0) $match as (
   $case {$prop tag "cons"}
     $if ($call eq_int (as.head.from, i)) as.head ($call fnal_at (as.tail, i)),
-  $case as ($call fnal (i, -1, ""))
+  $case as ($call fnal (i, -1, "", ""))
 )
 
 // An alias may name an alias, so follow the chain as far as it goes and answer
@@ -1037,6 +1044,13 @@ $decl alias_prim $func ($decl st proto_est, $decl i 0)
       { $decl as $call fnals.val (st.aliases)
         $decl a  $call fnal_at (as, $call end_of_alias (st, i))
         $decl r  $call P.sval (a.prim) }.r
+
+// And the C symbol, if it aliases a §4.16 extern.
+$decl alias_xsym $func ($decl st proto_est, $decl i 0)
+  $if ($call not ($call is_thunk (st, i))) ""
+      { $decl as $call fnals.val (st.aliases)
+        $decl a  $call fnal_at (as, $call end_of_alias (st, i))
+        $decl r  $call P.sval (a.xsym) }.r
 
 // An alias resolves to its target here too, so a tail call through one gets the
 // same treatment its target would: the group's state if the target is a member,
@@ -1080,6 +1094,152 @@ $decl is_global $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
 $decl callee_name $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
   $case {$prop tag "global"} ($call fn_name ($call res_fn (st, c.fn))),
   $case c "0"
+)
+
+// --------------------------------------------------------------- §4.16 externs
+//
+// `$extern "symbol" sig` binds a C function, and §4.16's ABI mapping is a
+// function of the signature alone — a block is a struct in `$decl` order, `&T` is
+// a thin pointer, `Int` is `int64_t`, `Str` is pointer + length — which `c_type`
+// already implements for every other purpose. So the backend needs two things
+// from a program: the declarations to emit, and a wrapper for each symbol that is
+// used as a *value* rather than called.
+//
+// The wrapper is the same device §8's operators need. A C function has no
+// `void *env` first parameter, and §7.3 makes a function value a pair, so a
+// symbol used as a value has to point at something with morphl's calling
+// convention. `mpl_fn_sub` is the precedent; these are generated per symbol
+// because their signatures come from the program.
+//
+// Both need the whole set before any body is emitted, which is why this walks the
+// tree. It is the one full traversal in the backend: everything else emit needs
+// it reads off `IR.fn` or the type table.
+$decl xt $func ($decl y "", $decl t 0) { $decl sym y  $decl ty t }
+$decl proto_xt $call xt ("", 0)
+$decl xts $specialize P.list proto_xt
+
+$decl has_xt $func ($decl xs xts.node, $decl y "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.sym, y)) true ($call has_xt (xs.tail, y)),
+  $case xs false
+)
+
+$fwd xt_of
+
+$decl xt_of_list $func ($decl xs IR.exprs.node, $decl acc xts.node) $match xs (
+  $case {$prop tag "cons"}
+    $call xt_of_list ($call IR.exprs.val (xs.tail), $call xt_of (xs.head, acc)),
+  $case xs acc
+)
+
+$decl xt_of_slots $func ($decl xs IR.bslots.node, $decl acc xts.node) $match xs (
+  $case {$prop tag "cons"}
+    $call xt_of_slots ($call IR.bslots.val (xs.tail), $call xt_of (xs.head.init, acc)),
+  $case xs acc
+)
+
+$decl xt_of_arms $func ($decl xs IR.arms.node, $decl acc xts.node) $match xs (
+  $case {$prop tag "cons"}
+    $call xt_of_arms ($call IR.arms.val (xs.tail), $call xt_of (xs.head.body, acc)),
+  $case xs acc
+)
+
+// Every position, not only tail ones: an extern may stand anywhere a value may.
+$decl xt_of $func ($decl e IR.proto_expr, $decl acc xts.node) $match e (
+  $case {$prop tag "extern"}
+    $if ($call has_xt (acc, e.sym)) acc ($call xts.cons ($call xt (e.sym, e.ty), acc)),
+  $case {$prop tag "field"}   ($call xt_of ($call IR.eval (e.target), acc)),
+  $case {$prop tag "new"}     ($call xt_of ($call IR.eval (e.init), acc)),
+  $case {$prop tag "deref"}   ($call xt_of ($call IR.eval (e.src), acc)),
+  $case {$prop tag "copy"}    ($call xt_of ($call IR.eval (e.src), acc)),
+  $case {$prop tag "try"}     ($call xt_of ($call IR.eval (e.value), acc)),
+  $case {$prop tag "set"}
+    $call xt_of ($call IR.eval (e.value), $call xt_of ($call IR.eval (e.target), acc)),
+  $case {$prop tag "do"}
+    $call xt_of ($call IR.eval (e.then), $call xt_of ($call IR.eval (e.first), acc)),
+  $case {$prop tag "if"}
+    $call xt_of ($call IR.eval (e.els),
+        $call xt_of ($call IR.eval (e.then), $call xt_of ($call IR.eval (e.cond), acc))),
+  $case {$prop tag "call"}
+    $call xt_of_list ($call IR.exprs.val (e.args), $call xt_of ($call IR.eval (e.callee), acc)),
+  $case {$prop tag "group"}   ($call xt_of_list ($call IR.exprs.val (e.items), acc)),
+  $case {$prop tag "closure"} ($call xt_of_list ($call IR.exprs.val (e.captures), acc)),
+  $case {$prop tag "block"}   ($call xt_of_slots ($call IR.bslots.val (e.slots), acc)),
+  $case {$prop tag "switch"}
+    $call xt_of ($call IR.eval (e.default),
+        $call xt_of_arms ($call IR.arms.val (e.arms), $call xt_of ($call IR.eval (e.scrut), acc))),
+  $case e acc
+)
+
+$decl xts_of_fns $func ($decl fs IR.fns.node, $decl acc xts.node) $match fs (
+  $case {$prop tag "cons"}
+    $call xts_of_fns ($call IR.fns.val (fs.tail), $call xt_of (fs.head.body, acc)),
+  $case fs acc
+)
+
+$decl xt_sym $func ($decl st proto_est, $decl y "")
+  $call concat ("mpl_x_", y)
+
+// `extern R sym(T0, T1);` — the declaration §4.16's ABI mapping asks for. The
+// parameter *names* are omitted: a prototype needs only types, and a name here
+// could collide with a macro the headers define.
+$decl xt_params $func ($decl st proto_est, $decl ts T.tys.node, $decl xs T.tys.node,
+                       $decl acc "", $decl first P.boolean) $match xs (
+  $case {$prop tag "cons"}
+    { $decl f $call IR.find_ty (ts, xs.head)
+      $decl r $call xt_params (st, ts, xs.tail,
+                  $call concat (acc, $call concat ($if first "" ", ",
+                      $if f.hit ($call c_type (st, ts, f.id)) "int64_t")), false) }.r,
+  $case xs acc
+)
+
+// The wrapper's parameters, which do need names because the body passes them on.
+$decl xt_wparams $func ($decl st proto_est, $decl ts T.tys.node, $decl xs T.tys.node,
+                        $decl k 0, $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    { $decl f $call IR.find_ty (ts, xs.head)
+      $decl r $call xt_wparams (st, ts, xs.tail, $call add (k, 1),
+                  $call concat (acc, $call concat (", ",
+                      $call concat ($if f.hit ($call c_type (st, ts, f.id)) "int64_t",
+                      $call concat (" x", $call int_to_str (k)))))) }.r,
+  $case xs acc
+)
+
+$decl xt_wargs $func ($decl n 0, $decl k 0, $decl acc "", $decl first P.boolean)
+  $if ($call not ($call lt (k, n))) acc
+      ($call xt_wargs (n, $call add (k, 1),
+          $call concat (acc, $call concat ($if first "" ", ",
+              $call concat ("x", $call int_to_str (k)))), false))
+
+$decl emit_xt $func ($decl st proto_est, $decl ts T.tys.node, $decl x proto_xt)
+  { $decl t $call type_at (ts, x.ty)
+    $decl r $match t (
+        $case {$prop tag "func"}
+          { $decl ps $call T.tys.val (t.params)
+            $decl np $call T.tys.length (ps, 0)
+            $decl rf $call IR.find_ty (ts, t.result)
+            $decl rc $if rf.hit ($call c_type (st, ts, rf.id)) "int64_t"
+            $decl d0 $call say (st, $call concat ("extern ", $call concat (rc,
+                         $call concat (" ", $call concat (x.sym,
+                         $call concat ("(", $call concat ($if ($call eq_int (np, 0)) "void"
+                                 ($call xt_params (st, ts, ps, "", true)), ");\n")))))))
+            // §7.3's pair needs morphl's convention, which a C function does not
+            // have — so a symbol used as a *value* points at this instead.
+            $decl d1 $call say (st, $call concat ("static ", $call concat (rc,
+                         $call concat (" ", $call concat ($call xt_sym (st, x.sym),
+                         $call concat ("(void *env", $call concat ($call xt_wparams (st, ts, ps, 0, ""),
+                                       ") { (void)env; return ")))))))
+            $decl d2 $call say (st, $call concat (x.sym,
+                         $call concat ("(", $call concat ($call xt_wargs (np, 0, "", true),
+                                       "); }\n")))) }.d2,
+        $case t ($call eerr (st, $call concat ("the signature of $extern \"",
+                     $call concat (x.sym, "\" is not a function type"))))
+      ) }.r
+
+$decl emit_xts $func ($decl st proto_est, $decl ts T.tys.node, $decl xs xts.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call emit_xt (st, ts, xs.head)) ($call emit_xts (st, ts, xs.tail)),
+  $case xs ()
 )
 
 // ------------------------------------------- §6a's indirect case: reporting
@@ -1439,7 +1599,23 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
         $case {$prop tag "global"} ($call alias_prim (st, cal.fn)),
         $case cal ""
       )
-    $decl out $if ($call not ($call eq_str (pnm, "")))
+    // §4.16: the C symbol this call names, directly or through the thunk a
+    // top-level `$decl` of an `$extern` lowers to. The call is emitted as an
+    // ordinary C call — **no `void *env`**, because the callee is a C function
+    // and not a morphl one, which is the whole of what the ABI mapping asks for
+    // on this side.
+    $decl xnm $match cal (
+        $case {$prop tag "extern"} cal.sym,
+        $case {$prop tag "global"} ($call alias_xsym (st, cal.fn)),
+        $case cal ""
+      )
+    $decl out $if ($call not ($call eq_str (xnm, "")))
+        // A tail call to a C function cannot be a loop and needs no trampoline:
+        // §7.7 is a rule about morphl functions, and C's stack is C's business —
+        // an extern is opaque (§4.16 rule 1), so it does not tail-call back in.
+        ($call assign (st, dest, $call concat (xnm,
+            $call concat ("(", $call concat ($call join_args (as, "", true), ")")))))
+      ($if ($call not ($call eq_str (pnm, "")))
         // §8's operators inline; nothing else in the root block has a C form
         // this slice can emit.
         { $decl op $call prim_op (pnm)
@@ -1500,7 +1676,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
                   $decl b $if ($call eq_int (ts2, -2)) ()
                       ($call assign (st, "state", $call int_to_str (ts2)))
                   $decl c $call say (st, "  continue;\n") }.c }.o
-      ) }.out
+      )) }.out
 
 // §7.2: "Groups are laid out elementwise." Each item is evaluated into a
 // temporary of its own first, because an item may need statements and a C
@@ -1676,6 +1852,14 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
                      ($call assign (st, $call concat (dest, ".env"), "NULL"))),
           $case t ($call eerr (st, $call concat ("cannot emit the intrinsic ", e.name)))
         ) }.r,
+  // §4.16: an extern named as a *value* rather than called. §7.3 makes a function
+  // value a pair and a C function has no `void *env`, so the pair points at the
+  // generated wrapper — the same device §8's operators need, and for the same
+  // reason. The environment is `NULL`: a C function has nothing to capture.
+  $case {$prop tag "extern"}
+    $do ($call assign (st, $call concat (dest, ".code"),
+             $call concat ("(void *)", $call xt_sym (st, e.sym))))
+        ($call assign (st, $call concat (dest, ".env"), "NULL")),
   $case {$prop tag "call"} ($call emit_call (st, fi, e, dest, ts)),
   $case {$prop tag "if"}
     { $decl c  $call fresh_tmp (st)
@@ -2256,6 +2440,10 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl h  $call say (st, $call concat (runtime_c, "\n"))
     $decl sd $call emit_structs (st, ts, ts, 0)
     $decl gap $call say (st, "\n")
+    // §4.16's declarations and wrappers, before anything that may call one. They
+    // go after the structs, because a signature may name one, and before the
+    // prototypes, which is merely tidy.
+    $decl xs $call emit_xts (st, ts, $call xts_of_fns (fs, xts.nil))
     $decl d0 $call emit_protos (st, fs, ts, 0)
     $decl tr $call emit_tramp (st, ts)
     $decl en $call emit_envs (st, fs, ts, 0)

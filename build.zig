@@ -122,7 +122,10 @@ pub fn build(b: *std.Build) void {
     // overflow rather than be optimised into a loop behind our backs — the loop
     // has to be ours (§6a).
     const emit_step = b.step("test-emit", "Compile each fixture to C, build it, run it");
-    for ([_]struct { src: []const u8, want: []const u8 }{
+    // `host` is an extra C file linked in beside the emitted one: §4.16's fixture
+    // needs C functions to bind, and providing them here is the point — a symbol
+    // from libc proves nothing about a signature the target supplies itself.
+    for ([_]struct { src: []const u8, want: []const u8, host: ?[]const u8 = null }{
         .{ .src = "stage1/fixtures/fact.mpl", .want = "3628800\n" },
         .{ .src = "stage1/fixtures/blocks.mpl", .want = "16\n" },
         .{ .src = "stage1/fixtures/strings.mpl", .want = "hello, world! 9 a\n" },
@@ -148,6 +151,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/init_order.mpl", .want = "106\n" },
         .{ .src = "stage1/fixtures/alias.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/tramp.mpl", .want = "21\n" },
+        .{ .src = "stage1/fixtures/extern.mpl", .want = "77\n",
+           .host = "stage1/fixtures/extern_host.c" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
@@ -169,6 +174,7 @@ pub fn build(b: *std.Build) void {
             const cc = b.addSystemCommand(&.{ "cc", "-O0", "-Wall", "-Wno-unused-function", "-Werror", "-o" });
             const bin = cc.addOutputFileArg("fixture");
             cc.addFileArg(c_file);
+            if (fixture.host) |h| cc.addFileArg(b.path(h));
 
             const run_bin = std.Build.Step.Run.create(b, "run the emitted binary");
             run_bin.addFileArg(bin);
@@ -239,6 +245,9 @@ pub fn build(b: *std.Build) void {
         // index, so the two implementations must agree on the whole type table
         // for the emitted trampoline to match.
         "stage1/fixtures/tramp.mpl",
+        // §4.16: the declarations and wrappers are derived from the signature's
+        // interned type, so this compares the ABI mapping on both sides.
+        "stage1/fixtures/extern.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);

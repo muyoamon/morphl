@@ -130,7 +130,8 @@ $decl fold_expr $func ($decl e IR.proto_expr) $match e (
     ($call IR.eval ($call IR.e_do (e.ty, $call fold_expr (e.first), $call fold_expr (e.then)))),
   $case {$prop tag "try"}
     ($call IR.eval ($call IR.e_try (e.ty, $call fold_expr (e.value), e.disc))),
-  // Every leaf: a literal, a slot, a global, a prim. Nothing to rebuild, so
+  // Every leaf: a literal, a slot, a global, a prim, §4.16's extern. Nothing to
+  // rebuild, so
   // the node keeps the index it had.
   $case e ($call IR.eval (e))
 )

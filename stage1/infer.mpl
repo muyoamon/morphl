@@ -1188,6 +1188,30 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
     $decl late   $call recheck_defers (cx, solved)
     $decl out    $call T.t_block (flds, s.prps) }.out
 
+// §4.16: `$extern "symbol" sig` binds a C function and "evaluates to a callable
+// value". `sig` is a type-only position (§5.7) whose type — an example `$func` —
+// *is* the C signature, so the form's type is simply that, and §4.16's ABI
+// mapping is a function of the type alone. The symbol is a string literal, which
+// the parser has already required, and nothing here looks at it: the backend
+// reads it off the AST.
+//
+// Rule 1 makes an extern call **unsafe by declaration** and says "the compiler
+// treats every extern call as opaque", so there is nothing further to check on
+// this side — the signature is taken on trust, exactly as a `$decl`'s parameter
+// default is.
+$decl infer_extern $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
+  { $decl t $call T.tval ($call infer (cx, e, $call op (n, 1)))
+    // §4.7's catch-all idiom needs a *name* to narrow, so the unrolling is bound
+    // first — and it has to be unrolled at all because §5.5's `μ` would read as
+    // opaque otherwise.
+    $decl u $call T.unroll (t)
+    $decl r $match u (
+        $case {$prop tag "func"} t,
+        $case u ($call err (cx, $call concat (
+            "$extern's signature must be an example $func (§4.16), found ",
+            $call T.show (t)), n))
+      ) }.r
+
 // ------------------------------------------------------------------ dispatch
 
 $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
@@ -1217,8 +1241,9 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
       ($if ($call eq_str (k, "template"))   ($call infer_template (cx, e, n))
       ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
       ($if ($call eq_str (k, "import"))     ($call infer_import (cx, n))
+      ($if ($call eq_str (k, "extern"))     ($call infer_extern (cx, e, n))
            ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-      ))))))))))))))
+      )))))))))))))))
   }.out
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (

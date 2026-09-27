@@ -268,6 +268,10 @@ $decl vexpr $func ($decl st proto_vst, $decl cx proto_vcx, $decl e IR.proto_expr
                    $decl tl P.boolean)
   $do ($call note (st, cx, e)) ($match e (
     $case {$prop tag "local"}   ($call need (st, cx, e.id, e.slot, cx.nslots, "slot")),
+    // §4.16: the signature is the whole of what the tree asserts about an
+    // extern, and rule 1 makes the call opaque, so the type index resolving is
+    // all there is to check. The symbol is a string the backend passes through.
+    $case {$prop tag "extern"}  ($call need (st, cx, e.id, e.ty, cx.ntypes, "extern signature")),
     $case {$prop tag "capture"} ($call need (st, cx, e.id, e.slot, cx.nenv, "capture")),
     // A `global` in value position is the function *pair* for a `$func` and the
     // *static* for a thunk, so only a thunk below the boundary is a read of

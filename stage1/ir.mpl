@@ -116,6 +116,13 @@ $decl proto_expr $union (
   { $prop tag "global"  $decl ty 0  $decl id 0  $decl fn 0 },
   // A root-block intrinsic (§8), by name: the backend maps these to C.
   { $prop tag "prim"    $decl ty 0  $decl id 0  $decl name "" },
+  // §4.16's `$extern "symbol" sig`: a C function, by symbol. Its *type* is the
+  // signature, which is all the backend needs to declare it and to call it —
+  // §4.16's ABI mapping is a function of the type and nothing else. Like a
+  // `prim` it is a leaf that may stand in callee position or in value position,
+  // and unlike one it is opaque: rule 1 makes an extern call unsafe by
+  // declaration, so the compiler reasons about nothing beyond the signature.
+  { $prop tag "extern"  $decl ty 0  $decl id 0  $decl sym "" },
 
   // §4.6, as a layout position (§7.2).
   { $prop tag "field"   $decl ty 0  $decl id 0  $decl target $alloc proto_expr  $decl index 0 },
@@ -206,6 +213,7 @@ $decl e_local   $func ($decl t 0, $decl i 0) { $prop tag "local"   $decl ty t  $
 $decl e_capture $func ($decl t 0, $decl i 0) { $prop tag "capture" $decl ty t  $decl id ($call fresh_id ())  $decl slot i }
 $decl e_global  $func ($decl t 0, $decl i 0) { $prop tag "global"  $decl ty t  $decl id ($call fresh_id ())  $decl fn i }
 $decl e_prim    $func ($decl t 0, $decl n "") { $prop tag "prim"   $decl ty t  $decl id ($call fresh_id ())  $decl name n }
+$decl e_extern  $func ($decl t 0, $decl y "") { $prop tag "extern" $decl ty t  $decl id ($call fresh_id ())  $decl sym y }
 
 $decl e_field $func ($decl t 0, $decl e proto_expr, $decl i 0)
   { $prop tag "field" $decl ty t  $decl id ($call fresh_id ())  $decl target $alloc e  $decl index i }
@@ -387,6 +395,7 @@ $decl show $func ($decl e proto_expr) $match e (
   $case {$prop tag "capture"} $call concat ("(capture ", $call concat ($call int_to_str (e.slot), ")")),
   $case {$prop tag "global"}  $call concat ("(global ", $call concat ($call int_to_str (e.fn), ")")),
   $case {$prop tag "prim"}    $call concat ("(prim ", $call concat (e.name, ")")),
+  $case {$prop tag "extern"}  $call concat ("(extern \"", $call concat (e.sym, "\")")),
   $case {$prop tag "field"}
     $call concat ("(field ", $call concat ($call show (e.target),
         $call concat (" ", $call concat ($call int_to_str (e.index), ")")))),
