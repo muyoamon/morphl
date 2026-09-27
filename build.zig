@@ -147,6 +147,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/effect.mpl", .want = "46\n" },
         .{ .src = "stage1/fixtures/init_order.mpl", .want = "106\n" },
         .{ .src = "stage1/fixtures/alias.mpl", .want = "42\n" },
+        .{ .src = "stage1/fixtures/tramp.mpl", .want = "21\n" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
@@ -234,6 +235,10 @@ pub fn build(b: *std.Build) void {
         // §6a's indirect case resolved through an alias, where the two
         // implementations could disagree about which target a thunk names.
         "stage1/fixtures/alias.mpl",
+        // §6a's indirect case: the pending block's tag is an interned type
+        // index, so the two implementations must agree on the whole type table
+        // for the emitted trampoline to match.
+        "stage1/fixtures/tramp.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);

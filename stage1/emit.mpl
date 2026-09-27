@@ -89,6 +89,13 @@ $decl estate $func ()
     // `global` is a call to a compile-time-constant target, so it is direct
     // (§6a, and `res_fn` above says why).
     $decl aliases $mut $alloc fnals.node
+    // §6a's indirect case. `reps` is the functions that *report* an indirect
+    // tail call rather than make it, `tsigs` the callee types a driver has to be
+    // able to call, and `inrep` whether the function being emitted right now is
+    // one of the reporters — which is what its tail-call sites need to know.
+    $decl reps  $mut $alloc IR.ints.node
+    $decl tsigs $mut $alloc IR.ints.node
+    $decl inrep $mut $alloc $union (false, true)
     // The struct definitions already written. A type is defined after
     // everything it contains *by value*, which is not index order — a `μ` is
     // interned before the members it embeds, because they name it.
@@ -286,6 +293,19 @@ $decl mem_int $func ($decl xs IR.ints.node, $decl i 0) $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_int (xs.head, i)) true ($call mem_int ($call IR.ints.val (xs.tail), i)),
   $case xs false
+)
+
+$decl mem_int_e $func ($decl xs IR.ints.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head, i)) true ($call mem_int_e (xs.tail, i)),
+  $case xs false
+)
+// A member of a contified group has no definition of its own — the group
+// function holds its body and the wrapper carries its name (§6a).
+$decl in_a_group $func ($decl gs IR.groups.node, $decl i 0) $match gs (
+  $case {$prop tag "cons"}
+    $if ($call mem_int_e ($call IR.ints.val (gs.head.members), i)) true
+        ($call in_a_group ($call IR.groups.val (gs.tail), i)),
+  $case gs false
 )
 
 // Which types get a C struct of their own.
@@ -531,6 +551,31 @@ $decl prim_call $func ($decl f "", $decl as strs.node)
 
 // Through a closure: cast the code pointer to the signature the call site
 // knows, and hand it the environment the pair carries.
+// §6a: filling the pending block instead of making the call. The arguments are
+// already in temporaries (`emit_args` put them there), so nothing can clobber
+// anything; `mpl_tc` goes last so a partly-filled block is never live. The
+// destination is assigned a zero of its own type because the caller's `return`
+// will hand it back and nothing may read it — a compound literal, which is valid
+// for a struct and for a machine word alike.
+$decl tc_stores $func ($decl st proto_est, $decl m "", $decl as strs.node, $decl k 0) $match as (
+  $case {$prop tag "cons"}
+    { $decl d $call say (st, $call concat ("  ", $call concat (m,
+          $call concat (".a", $call concat ($call int_to_str (k),
+          $call concat (" = ", $call concat (as.head, ";\n")))))))
+      $decl r $call tc_stores (st, m, as.tail, $call add (k, 1)) }.r,
+  $case as ()
+)
+
+$decl emit_report $func ($decl st proto_est, $decl ts T.tys.node, $decl fv "",
+                         $decl as strs.node, $decl dest "", $decl cty 0, $decl rty 0)
+  { $decl m  $call concat ("mpl_tc_args.s", $call int_to_str (cty))
+    $decl d0 $call tc_stores (st, m, as, 0)
+    $decl d1 $call say (st, $call concat ("  mpl_tc_fn = ", $call concat (fv, ";\n")))
+    $decl d2 $call say (st, $call concat ("  mpl_tc_tag = ", $call concat ($call int_to_str (cty), ";\n")))
+    $decl d3 $call say (st, "  mpl_tc = 1;\n")
+    $decl r  $call assign (st, dest, $call concat ("(",
+                 $call concat ($call c_type (st, ts, rty), "){0}"))) }.r
+
 $decl indirect_call $func ($decl sig "", $decl fv "", $decl as strs.node)
   $call concat ("(", $call concat (sig,
       $call concat (fv, $call concat (".code)(",
@@ -1037,6 +1082,205 @@ $decl callee_name $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
   $case c "0"
 )
 
+// ------------------------------------------- §6a's indirect case: reporting
+//
+// A tail call through a function *value* cannot become a loop: the target is
+// unknown until run time, so there is no body to jump back into. §6a's answer is
+// a trampoline, and this is it — the smallest one that keeps §7.7.
+//
+// **The function reports the call instead of making it.** It fills a pending
+// block, returns a zero of its own result type, and whoever called it drives the
+// chain to completion. So the chain costs one frame per *hop*, reused, instead of
+// one frame per hop accumulated. Nothing about any function's C signature
+// changes, which is what makes this affordable: BOOTSTRAP §6a expected "every
+// function returns a value or a pending call", a whole-program calling
+// convention, and that is not needed if the pending call travels beside the
+// value rather than inside it.
+//
+// The pending block is static. §7.8 puts concurrency behind `$extern` and gives
+// the language none of its own, so there is one chain at a time; the driver
+// copies the block into locals *before* calling, so a nested drive — an indirect
+// call in a non-tail position, say — cannot clobber the outer one.
+//
+// Who reports and who drives:
+//
+//   - a function containing an indirect tail call **reports** it, and every call
+//     site that can reach such a function drives afterwards: every indirect call
+//     site (the target is unknown, so it might), and every direct call to a
+//     function known to report.
+//   - a member of a contified group is excluded and **drives locally** instead.
+//     Reporting from inside a group function would have to travel out through
+//     the wrappers, and one frame per such member is bounded anyway.
+//
+// A call is indirect exactly when emit would not make it directly — which is the
+// same question `is_global` and the alias resolution answer, so it is asked
+// through them rather than duplicated.
+$decl is_direct_callee $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
+  $case {$prop tag "prim"} true,
+  $case {$prop tag "global"}
+    $if ($call is_global (st, c)) true
+        ($call not ($call eq_str ($call alias_prim (st, c.fn), ""))),
+  $case c false
+)
+
+$fwd indirect_tails
+
+$decl indirect_tails_arms $func ($decl st proto_est, $decl xs IR.arms.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call indirect_tails (st, xs.head.body)) true
+        ($call indirect_tails_arms (st, xs.tail)),
+  $case xs false
+)
+
+// Only tail positions, for the same reason `self_tails` walks only these: §7.7
+// says what they are, and a call anywhere else is not a tail call at all.
+$decl indirect_tails $func ($decl st proto_est, $decl e IR.proto_expr) $match e (
+  $case {$prop tag "call"}
+    $if e.tail ($call not ($call is_direct_callee (st, $call IR.eval (e.callee)))) false,
+  $case {$prop tag "if"}
+    $if ($call indirect_tails (st, e.then)) true ($call indirect_tails (st, e.els)),
+  $case {$prop tag "do"} ($call indirect_tails (st, e.then)),
+  $case {$prop tag "switch"}
+    $if ($call indirect_tails_arms (st, $call IR.arms.val (e.arms))) true
+        ($call indirect_tails (st, e.default)),
+  $case e false
+)
+
+$fwd tail_sigs
+
+$decl tail_sigs_arms $func ($decl st proto_est, $decl xs IR.arms.node, $decl acc IR.ints.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $call tail_sigs_arms (st, xs.tail, $call tail_sigs (st, xs.head.body, acc)),
+    $case xs acc
+  )
+
+// The callee *type* at every indirect tail call: one `case` in the driver's
+// switch and one member of its argument union, because the driver has to make
+// the call with the right C signature and §3.6 gives it no other way to know.
+$decl tail_sigs $func ($decl st proto_est, $decl e IR.proto_expr, $decl acc IR.ints.node)
+  $match e (
+    $case {$prop tag "call"}
+      { $decl c $call IR.eval (e.callee)
+        $decl r $if e.tail
+            ($if ($call is_direct_callee (st, c)) acc
+                 ($if ($call mem_int (acc, c.ty)) acc ($call IR.ints.cons (c.ty, acc))))
+            acc }.r,
+    $case {$prop tag "if"}
+      $call tail_sigs (st, e.els, $call tail_sigs (st, e.then, acc)),
+    $case {$prop tag "do"} ($call tail_sigs (st, e.then, acc)),
+    $case {$prop tag "switch"}
+      $call tail_sigs (st, e.default, $call tail_sigs_arms (st, $call IR.arms.val (e.arms), acc)),
+    $case e acc
+  )
+
+$decl reporter_ids $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.groups.node,
+                          $decl i 0, $decl acc IR.ints.node) $match fs (
+  $case {$prop tag "cons"}
+    { $decl rep $if ($call in_a_group (gs, i)) false
+                    ($call indirect_tails (st, fs.head.body))
+      $decl r $call reporter_ids (st, $call IR.fns.val (fs.tail), gs, $call add (i, 1),
+                  $if rep ($call IR.ints.cons (i, acc)) acc) }.r,
+  $case fs acc
+)
+
+$decl all_tail_sigs $func ($decl st proto_est, $decl fs IR.fns.node, $decl acc IR.ints.node)
+  $match fs (
+    $case {$prop tag "cons"}
+      $call all_tail_sigs (st, $call IR.fns.val (fs.tail), $call tail_sigs (st, fs.head.body, acc)),
+    $case fs acc
+  )
+
+$decl reports $func ($decl st proto_est, $decl i 0) $call mem_int (st.reps, i)
+
+// Whether a *direct* call needs driving afterwards: the callee is resolved first,
+// because an alias reports exactly when the function it names does.
+$decl callee_reports $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
+  $case {$prop tag "global"} ($call reports (st, $call res_fn (st, c.fn))),
+  $case c false
+)
+
+// One union member per participating signature: the arguments of a pending call,
+// which the driver has to hold across the hop.
+$decl tcargs_fields $func ($decl st proto_est, $decl ts T.tys.node, $decl xs T.tys.node,
+                           $decl k 0, $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    { $decl f $call IR.find_ty (ts, xs.head)
+      $decl r $call tcargs_fields (st, ts, xs.tail, $call add (k, 1),
+                  $call concat (acc, $call concat (" ",
+                  $call concat ($if f.hit ($call c_type (st, ts, f.id)) "int64_t",
+                  $call concat (" a", $call concat ($call int_to_str (k), ";")))))) }.r,
+  $case xs acc
+)
+
+$decl tcargs_member $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  { $decl t $call type_at (ts, i)
+    $decl r $match t (
+        $case {$prop tag "func"}
+          ($call concat ("  struct {",
+              $call concat ($call tcargs_fields (st, ts, $call T.tys.val (t.params), 0, ""),
+              $call concat (" } s", $call concat ($call int_to_str (i), ";\n"))))),
+        $case t ""
+      ) }.r
+
+$decl tcargs_members $func ($decl st proto_est, $decl ts T.tys.node, $decl xs IR.ints.node,
+                            $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call tcargs_members (st, ts, $call IR.ints.val (xs.tail),
+        $call concat (acc, $call tcargs_member (st, ts, xs.head))),
+  $case xs acc
+)
+
+// The arguments of a pending call, read out of the union member its tag names.
+$decl tcd_args $func ($decl m "", $decl n 0, $decl k 0, $decl acc "")
+  $if ($call not ($call lt (k, n))) acc
+      ($call tcd_args (m, n, $call add (k, 1),
+          $call concat (acc, $call concat (", ", $call concat (m,
+              $call concat (".a", $call int_to_str (k)))))))
+
+// One `case` per signature: make the call with that signature and write the
+// result through `out`. The result type comes from the signature too, and along a
+// chain it never changes — §7.7 makes a tail call's result the calling
+// function's, so every hop answers what the original call site asked for.
+$decl tcdrive_case $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  { $decl t $call type_at (ts, i)
+    $decl r $match t (
+        $case {$prop tag "func"}
+          { $decl rf $call IR.find_ty (ts, t.result)
+            $decl rc $if rf.hit ($call c_type (st, ts, rf.id)) "int64_t"
+            $decl np $call T.tys.length ($call T.tys.val (t.params), 0)
+            $decl m  $call concat ("a.s", $call int_to_str (i))
+            $decl o  $call concat ("  case ", $call concat ($call int_to_str (i),
+                $call concat (": *(", $call concat (rc,
+                $call concat (" *)out = (", $call concat ($call fn_sig (st, ts, i),
+                $call concat ("f.code)(f.env", $call concat ($call tcd_args (m, np, 0, ""),
+                              "); break;\n")))))))) }.o,
+        $case t ""
+      ) }.r
+
+$decl tcdrive_cases $func ($decl st proto_est, $decl ts T.tys.node, $decl xs IR.ints.node,
+                           $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call tcdrive_cases (st, ts, $call IR.ints.val (xs.tail),
+        $call concat (acc, $call tcdrive_case (st, ts, xs.head))),
+  $case xs acc
+)
+
+// The pending block and the driver, emitted only when the program has an
+// indirect tail call at all. The copy into locals *before* the call is what makes
+// a nested drive safe; `mpl_tc = 0` after the copy, so a hop that reports again
+// sets it afresh.
+$decl emit_tramp $func ($decl st proto_est, $decl ts T.tys.node)
+  { $decl sg $call IR.ints.val (st.tsigs)
+    $decl r  $if ($call IR.ints.is_nil (sg)) ()
+        ($call say (st, $call concat (
+            "\n/* 6a's indirect case: a tail call through a function value is reported\n   here rather than made, and driven by the loop below - one frame per hop,\n   reused. Static because 7.8 gives the language no concurrency of its own. */\ntypedef union {\n",
+            $call concat ($call tcargs_members (st, ts, sg, ""),
+            $call concat ("} mpl_tcargs;\nstatic int mpl_tc = 0;\nstatic int mpl_tc_tag = 0;\nstatic mpl_fun mpl_tc_fn;\nstatic mpl_tcargs mpl_tc_args;\n\nstatic void mpl_tcdrive(void *out) {\n  while (mpl_tc) {\n    mpl_fun f = mpl_tc_fn;\n    int tag = mpl_tc_tag;\n    mpl_tcargs a = mpl_tc_args;\n    mpl_tc = 0;\n    switch (tag) {\n",
+            $call concat ($call tcdrive_cases (st, ts, sg, ""),
+                          "    default: mpl_panic(\"bad tail-call signature\");\n    }\n  }\n}\n")))))) }.r
+
+
 // §8's failing operations: `str_to_int`, `from_code` and `read_file` answer an
 // *option* — `<{tag "none"}, {tag "some", v T}>` — where every other intrinsic
 // answers a machine word or a `mpl_str`. So they cannot be a `prim_fn` entry:
@@ -1217,22 +1461,37 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
           { $decl ts2 $if e.tail ($call tail_state (st, cal, fi)) -1
             $decl o $if ($call eq_int (ts2, -1))
               ($if ($call is_global (st, cal))
-                  ($call assign (st, dest, $call call_expr ($call callee_name (st, cal), as)))
+                  // A direct call, and it has to **drive** afterwards if the
+                  // callee is one of the functions that report an indirect tail
+                  // call: the value it handed back is a zero and the real answer
+                  // is at the end of the chain it left pending (§6a).
+                  { $decl d0 $call assign (st, dest, $call call_expr ($call callee_name (st, cal), as))
+                    $decl r  $if ($call callee_reports (st, cal))
+                        ($call say (st, $call concat ("  mpl_tcdrive(&", $call concat (dest, ");\n"))))
+                        () }.r
                   // §7.3: through the pair. The signature comes from the static
                   // type at the call site, since every function value has the
                   // same shape and carries none of it.
                   { $decl fv $call into_tmp (st, fi, cal, ts)
-                    // §6a's third case. A tail call through a function *value*
-                    // cannot become a loop — the target is unknown until run
-                    // time — and its answer is a trampoline, which needs every
-                    // function to return "a value or a pending call" and so a
-                    // calling convention this backend does not have. A plain
-                    // call is correct but not §7.7's guarantee, so it is marked
-                    // in the output rather than left to look eliminated.
-                    $decl mk $if e.tail
-                        ($call say (st, "  /* tail call through a value: not eliminated (6a) */\n")) ()
-                    $decl r  $call assign (st, dest,
-                        $call indirect_call ($call fn_sig (st, ts, cal.ty), fv, as)) }.r)
+                    // §6a's indirect case. In **tail** position, inside a
+                    // function that reports, the call is not made at all: the
+                    // pending block is filled and a zero returned, and the
+                    // driver above whoever called us makes the call. That is
+                    // what keeps §7.7 — the chain reuses one frame per hop
+                    // instead of accumulating one.
+                    //
+                    // Anywhere else the call is made and then driven to
+                    // completion here, because this position needs the value:
+                    // a non-tail call, or a tail call in a function that is not
+                    // a reporter (a contified group's member, which drives
+                    // locally rather than reporting out through its wrapper).
+                    $decl rep $if e.tail ($call P.bval (st.inrep)) false
+                    $decl r  $if rep
+                        ($call emit_report (st, ts, fv, as, dest, cal.ty, e.ty))
+                        { $decl d0 $call assign (st, dest,
+                              $call indirect_call ($call fn_sig (st, ts, cal.ty), fv, as))
+                          $decl d1 $call say (st, $call concat ("  mpl_tcdrive(&",
+                                        $call concat (dest, ");\n"))) }.d1 }.r)
                 // §6a: the parameters are updated *in parallel* — every new
                 // argument is already in a temporary — then the loop re-enters,
                 // at another member's state if this is a mutual call.
@@ -1553,18 +1812,27 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
   // §7.3: the captures are copied *here*, where the literal stood, into an
   // environment the pair points at. The struct is anonymous — nothing reads it
   // but the lifted body, which knows its shape from the capture order.
+  // §7.3: the pair is a code pointer and an environment. **A literal with no
+  // free names has no environment**, and `emit_envs` emits `mpl_env<N>` only for
+  // a function that captures — so allocating one unconditionally named a struct
+  // that was never declared. Unreached for a long time because every `$func`
+  // literal in the compiler's own source captures something; `cc` is what found
+  // it, on a `$func` used as a value whose body mentions nothing outside itself.
   $case {$prop tag "closure"}
     { $decl cs $call IR.exprs.val (e.captures)
-      $decl ev $call fresh_tmp (st)
       $decl en $call env_name (e.fn)
-      $decl d0 $call say (st, $call concat ("  ", $call concat (en,
-                   $call concat (" *", $call concat (ev,
-                   $call concat (" = (", $call concat (en,
-                   $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (en, "));\n")))))))))
-      $decl d1 $call emit_env (st, fi, cs, ev, 0, ts)
       $decl d2 $call assign (st, $call concat (dest, ".code"),
                    $call concat ("(void *)", $call fn_name (e.fn)))
-      $decl r  $call assign (st, $call concat (dest, ".env"), $call concat ("(void *)", ev)) }.r,
+      $decl r  $if ($call IR.exprs.is_nil (cs))
+          ($call assign (st, $call concat (dest, ".env"), "0"))
+          { $decl ev $call fresh_tmp (st)
+            $decl d0 $call say (st, $call concat ("  ", $call concat (en,
+                         $call concat (" *", $call concat (ev,
+                         $call concat (" = (", $call concat (en,
+                         $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (en, "));\n")))))))))
+            $decl d1 $call emit_env (st, fi, cs, ev, 0, ts)
+            $decl z  $call assign (st, $call concat (dest, ".env"),
+                         $call concat ("(void *)", ev)) }.z }.r,
   // §7.3 again: a capture is read out of the environment the pair carried in.
   $case {$prop tag "capture"}
     $call assign (st, dest, $call concat ("((", $call concat ($call env_name (fi),
@@ -1630,12 +1898,15 @@ $decl emit_fn $func ($decl st proto_est, $decl i 0, $decl f IR.proto_fn, $decl t
     $decl h3  $call say (st, "  (void)env;\n")
     $decl s0  $call emit_slots (st, $call IR.ints.val (f.slots), ts, 0, np)
     $decl fr  $set st.fnres f.result
+    // §6a: whether an indirect tail call in this body reports or drives.
+    $decl ir0 $set st.inrep ($call reports (st, i))
     $decl r0  $call say (st, $call concat ("  ",
                   $call concat ($call c_type (st, ts, f.result), " ret;\n")))
     $decl l0  $if f.self_tail ($call say (st, "  while (1) {\n")) ()
     $decl b0  $call emit_as (st, i, f.body, "ret", f.result, ts)
     $decl r1  $call emit_return (st)
     $decl l1  $if f.self_tail ($call say (st, "  }\n")) ()
+    $decl ir1 $set st.inrep false
     $decl r2  $call say (st, "}\n") }.r2
 
 // §6a's mutual case: the group becomes one function with a state variable and
@@ -1950,18 +2221,6 @@ $decl emit_inits $func ($decl st proto_est, $decl fs IR.fns.node, $decl es IR.ef
   $case fs ($call emit_effects (st, es, i, inmod))
 )
 
-$decl mem_int_e $func ($decl xs IR.ints.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call eq_int (xs.head, i)) true ($call mem_int_e (xs.tail, i)),
-  $case xs false
-)
-// A member of a contified group has no definition of its own — the group
-// function holds its body and the wrapper carries its name (§6a).
-$decl in_a_group $func ($decl gs IR.groups.node, $decl i 0) $match gs (
-  $case {$prop tag "cons"}
-    $if ($call mem_int_e ($call IR.ints.val (gs.head.members), i)) true
-        ($call in_a_group ($call IR.groups.val (gs.tail), i)),
-  $case gs false
-)
 
 
 $decl emit_fns $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.tys.node,
@@ -1988,13 +2247,19 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl tk $set st.thunks ($call thunk_ids (fs, 0, IR.ints.nil))
     // Before anything is emitted: `res_fn` is asked at every global callee.
     $decl al $set st.aliases ($call collect_aliases (fs, 0, fnals.nil))
+    $decl gs $call IR.groups.val (p.groups)
+    // §6a's indirect case, both halves of it, before any body is emitted: a call
+    // site has to know whether its callee reports, and the driver's switch has to
+    // know every signature it may be handed.
+    $decl rp $set st.reps ($call reporter_ids (st, fs, gs, 0, IR.ints.nil))
+    $decl sg $set st.tsigs ($call all_tail_sigs (st, fs, IR.ints.nil))
     $decl h  $call say (st, $call concat (runtime_c, "\n"))
     $decl sd $call emit_structs (st, ts, ts, 0)
     $decl gap $call say (st, "\n")
     $decl d0 $call emit_protos (st, fs, ts, 0)
+    $decl tr $call emit_tramp (st, ts)
     $decl en $call emit_envs (st, fs, ts, 0)
     $decl gv $call emit_globals (st, fs, ts, 0)
-    $decl gs $call IR.groups.val (p.groups)
     $decl d1 $call emit_fns (st, fs, ts, 0, gs)
     $decl d3 $call emit_groups (st, fs, gs, 0, ts)
     // §4.10 in two passes, and the order between them is the whole point.

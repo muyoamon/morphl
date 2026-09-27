@@ -1172,6 +1172,30 @@ C for the marker emit already writes at each unhandled site. A backend that
 *reports* where it fell short of a guarantee can be audited with a count, which
 is how the fifteen were found and how they were confirmed gone.
 
+## §6a's trampoline cost nothing, because it is emitted conditionally
+
+The pending block, the argument union and the driver are emitted **only when the
+program contains an indirect tail call**. After the alias devirtualisation the
+compiler contains none, so its own C carries no trampoline at all — and
+regenerating for the change reached a fixed point in *one* iteration instead of
+the usual two, which is itself the evidence: the backend change is inert on its
+own source.
+
+That is worth stating as a principle rather than an accident. A backend
+obligation that only some programs incur should be paid by those programs. The
+alternative design BOOTSTRAP §6a anticipated — "every function returns a value or
+a pending call" — would have changed all 2,266 functions' calling convention and
+cost every call in every program, to serve a construct the compiler never uses.
+What made the cheap version possible is letting the pending call travel *beside*
+the value (a static block plus a flag) rather than inside it (a wider return
+type), which needs no signature change at all.
+
+The one thing to watch if this is ever revisited: the flag is tested after every
+indirect call site and after every direct call to a reporting function. Both sets
+are statically known and, in the compiler, empty. In a program that does use
+function values heavily the test is a load and a well-predicted branch, and it has
+not been measured — there is no workload in the tree that exercises it.
+
 ## Hypotheses tested and rejected
 
 Recorded so they are not retried blind.

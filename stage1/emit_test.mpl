@@ -352,12 +352,28 @@ $decl t46 $call check ("a mutual tail call is a state change, not a call",
 $decl t47 $call check ("each member keeps a wrapper entering at its state",
   $call has (mut_c.code, "return mpl_grp0(env, 1, s0);"))
 
-// §6a's third case has no answer here: a trampoline needs every function to
-// return "a value or a pending call", which is a calling convention this
-// backend does not have. The plain call is correct but not §7.7's guarantee,
-// so it is marked in the output rather than left looking eliminated.
-$decl t48 $call check ("an indirect tail call is marked, not silently un-eliminated",
-  $call has (clo_c.code, "not eliminated (6a)"))
+// §6a's third case: a tail call through a function *value*. `apply`'s body is
+// `$call f (x)` in tail position, and the target is unknown until run time, so
+// there is no body to loop back into — the call is **reported** rather than made,
+// and a driver runs the chain in one reused frame. Three things say so: the
+// pending block is filled, the flag is set last, and the caller drives.
+$decl t48 $call check ("an indirect tail call is reported, not made",
+  $if ($call has (clo_c.code, "  mpl_tc_fn = "))
+      ($call has (clo_c.code, "  mpl_tc = 1;")) false)
+
+$decl t48b $call check ("the caller of a reporting function drives the chain",
+  $call has (clo_c.code, "mpl_tcdrive(&"))
+
+// The driver picks the C signature per hop, because §6a's chain may change
+// signature at every one: the tag is the callee's interned type index and the
+// arguments live in a union member named by it.
+$decl t48c $call check ("the driver dispatches on the callee's signature",
+  $if ($call has (clo_c.code, "static void mpl_tcdrive(void *out) {"))
+      ($call has (clo_c.code, "    switch (tag) {")) false)
+
+// Nothing is left claiming to be un-eliminated.
+$decl t48d $call check ("no indirect tail call is left marked",
+  $call not ($call has (clo_c.code, "not eliminated (6a)")))
 
 // ------------------------------------------------------------------ unions
 
