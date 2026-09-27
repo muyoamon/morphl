@@ -20,12 +20,15 @@ $decl show_errs $func ($decl xs Pa.diags.node, $decl what "") $match xs (
   $case xs ()
 )
 
-// Everything runs inside `main`, and that is not style. A top-level `$decl` is a
-// thunk assigned by `mpl_init` in index order (§4.10), and the entry file's own
-// items are lifted *before* the members of the modules it imports — so a
-// top-level `$decl` here that called `C.check` would read a zeroed `P` and
-// segfault. `main` runs after `mpl_init` has finished, which is the only place
-// an imported module is known to be initialised.
+// Everything runs inside `main`, which is now a choice rather than a necessity.
+// It used to be the only thing that worked: a top-level `$decl` is a thunk
+// assigned by `mpl_init`, and the entry file's own globals were assigned before
+// the members of the modules it imports, so a top-level `$decl` here that called
+// `C.check` read a zeroed `P` and segfaulted. `mpl_init` now initialises the
+// lifted region first (§4.10, and `stage1/fixtures/init_order.mpl` is the
+// regression test), so the top-level form works too. It stays here because a
+// top-level `$decl` is a *static*, and three of them naming `ckd` would run the
+// pipeline once each.
 $decl main $func ()
   { $decl argv $call args ()
     $decl path $if ($call lt (0, $call alen (argv)))

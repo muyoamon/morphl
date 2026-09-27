@@ -1392,8 +1392,9 @@ $decl lower_effect $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.prot
                   $call take_slots (st), v.ir, false, false, IR.ints.nil)
     $decl put $call put_lifted (st, idx, f)
     $decl b   $call restore_slots (st, o)
-    $decl at  $if ($call lt (after, 0)) idx after
-    $decl s   $set st.effs ($call IR.effects.cons ($call IR.effect (at, idx),
+    $decl inm $call lt (after, 0)
+    $decl at  $if inm idx after
+    $decl s   $set st.effs ($call IR.effects.cons ($call IR.effect (at, idx, inm),
                    $call IR.effects.val (st.effs)))
     $decl r   0 }.r
 
@@ -2413,6 +2414,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl gs   $call find_groups (es, 0, $call IR.fns.length (all, 0), IR.groups.nil)
     // Newest first while they are collected, since a file and the modules it
     // imports both append here.
+    // `st.fnbase` is the boundary §4.10 needs in the backend, not just here.
     $decl out  $call IR.program ($call all_types (st), all, gs, 0,
                    $call IR.effects.reverse ($call IR.effects.val (st.effs),
-                       IR.effects.nil)) }.out
+                       IR.effects.nil), $call P.ival (st.fnbase)) }.out

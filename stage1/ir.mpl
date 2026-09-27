@@ -293,15 +293,33 @@ $decl groups $specialize P.list proto_group
 // Not a thunk: a thunk *is* a global and is named by its static. An effect has
 // no name and nothing reads it, so it is an ordinary function that is called
 // and whose result is dropped.
-$decl effect $func ($decl a 0, $decl f 0) { $decl after a  $decl fn f }
-$decl proto_effect $call effect (0, 0)
+// `inmod` says which numbering `after` uses, and it is not decoration: a file's
+// effect counts *fields* and a module's counts *lifted indices*, and the two
+// spaces meet at `fnbase` — a bare expression as the entry file's last item has
+// `after == fnbase`, and so does a module effect that happens to be the first
+// lifted thing. Since `mpl_init` now runs the lifted region before the file's
+// own globals, those two want opposite ends of the output, so the collision has
+// to be resolvable. Lowering already knows which is which: `lower_effect` is
+// called with a negative `after` for a module.
+$decl effect $func ($decl a 0, $decl f 0, $decl im P.boolean)
+  { $decl after a  $decl fn f  $decl inmod im }
+$decl proto_effect $call effect (0, 0, false)
 $decl effects $specialize P.list proto_effect
 
+// `fnbase` is where the entry file's own globals end and the lifted functions
+// begin. A global's index is its position among the top-level `$decl`s, so the
+// first `fnbase` entries are the entry file's and everything after them was
+// lifted — a module's members (§4.14), a `$specialize`'s (§4.9), a `$func`
+// literal's (§7.3), a §3.3 effect's. The backend needs the boundary because
+// §4.10's initialisation order does not follow index order across it: an
+// `$import` evaluates the module's block where it stands, so the module's
+// statics have to be assigned before the importing file's.
 $decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
-                     $decl e 0, $decl efs effects.node)
-  { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs }
+                     $decl e 0, $decl efs effects.node, $decl fb 0)
+  { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
+    $decl fnbase fb }
 
-$decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0, effects.nil)
+$decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0, effects.nil, 0)
 
 // ------------------------------------------------------------------ interning
 //

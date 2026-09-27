@@ -1795,24 +1795,39 @@ $decl emit_globals $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.t
 // `after` order and a walk that kept its place would stop at the first one out
 // of turn. There are a handful of effects against a few thousand functions, so
 // the cost is nothing and the independence is worth having.
-$decl emit_effects $func ($decl st proto_est, $decl es IR.effects.node, $decl i 0) $match es (
+$decl same_bool $func ($decl a P.boolean, $decl b P.boolean) $if a b ($call not (b))
+
+// `inmod` selects which numbering this pass is walking: a module's effects count
+// lifted indices and a file's count fields, and the two collide at `fnbase`
+// (`IR.effect` says why). Without it a trailing bare expression in the entry
+// file would fire in the module pass, which is before the globals it is meant to
+// run after.
+$decl emit_effects $func ($decl st proto_est, $decl es IR.effects.node, $decl i 0,
+                          $decl inmod P.boolean) $match es (
   $case {$prop tag "cons"}
-    $do ($if ($call eq_int (es.head.after, i))
+    $do ($if ($call and ($call eq_int (es.head.after, i),
+                         $call same_bool (es.head.inmod, inmod)))
              ($call say (st, $call concat ("  (void)",
                  $call concat ($call fn_name (es.head.fn), "(NULL);\n"))))
              ())
-        ($call emit_effects (st, $call IR.effects.val (es.tail), i)),
+        ($call emit_effects (st, $call IR.effects.val (es.tail), i, inmod)),
   $case es ()
 )
 
+// One pass over the table, assigning the thunks whose index falls in `[glo, ghi)`
+// and running the effects of the matching kind. The effects need no window of
+// their own: `inmod` already separates them, and each fires at the single `i`
+// its `after` names.
 $decl emit_inits $func ($decl st proto_est, $decl fs IR.fns.node, $decl es IR.effects.node,
-                        $decl i 0) $match fs (
+                        $decl i 0, $decl glo 0, $decl ghi 0, $decl inmod P.boolean) $match fs (
   $case {$prop tag "cons"}
-    { $decl e $call emit_effects (st, es, i)
-      $decl d $if fs.head.thunk
+    { $decl e $call emit_effects (st, es, i, inmod)
+      $decl w $if ($call lt (i, glo)) false ($call lt (i, ghi))
+      $decl d $if ($call and (w, fs.head.thunk))
           ($call assign (st, $call gbl_name (i), $call concat ($call fn_name (i), "(NULL)"))) ()
-      $decl r $call emit_inits (st, $call IR.fns.val (fs.tail), es, $call add (i, 1)) }.r,
-  $case fs ($call emit_effects (st, es, i))
+      $decl r $call emit_inits (st, $call IR.fns.val (fs.tail), es, $call add (i, 1),
+                  glo, ghi, inmod) }.r,
+  $case fs ($call emit_effects (st, es, i, inmod))
 )
 
 $decl mem_int_e $func ($decl xs IR.ints.node, $decl i 0) $match xs (
@@ -1860,8 +1875,18 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl gs $call IR.groups.val (p.groups)
     $decl d1 $call emit_fns (st, fs, ts, 0, gs)
     $decl d3 $call emit_groups (st, fs, gs, 0, ts)
+    // §4.10 in two passes, and the order between them is the whole point.
+    // `$import` evaluates the module's block where it stands, so everything that
+    // was *lifted* — a module's members above all — is initialised before the
+    // entry file's own globals, not after them as index order would have it. §4.10
+    // makes the coarseness exact: an item can only name what precedes it, so a
+    // file global can only depend on an import declared above it, and §4.14
+    // lowers a module against the root block alone so no module member can
+    // depend on the importer at all.
+    $decl nfn $call IR.fns.length (fs, 0)
     $decl i0 $call say (st, "\nstatic void mpl_init(void) {\n")
-    $decl i1 $call emit_inits (st, fs, $call IR.effects.val (p.effs), 0)
+    $decl i1 $call emit_inits (st, fs, $call IR.effects.val (p.effs), 0, p.fnbase, nfn, true)
+    $decl i1b $call emit_inits (st, fs, $call IR.effects.val (p.effs), 0, 0, p.fnbase, false)
     $decl i2 $call say (st, "}\n")
     $decl mi  $call find_main (fs, 0)
     $decl mfn $if ($call lt (mi, 0)) IR.proto_fn ($call IR.fns.nth (fs, mi))

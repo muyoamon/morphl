@@ -1101,6 +1101,45 @@ to the message was the first change made and the one that made the rest cheap.
 A diagnostic that reports a category rather than an instance costs whoever reads
 it the entire investigation.
 
+## The initialisation-order bug, and why nothing caught it
+
+`mpl_init` assigned the emitted statics in index order, and a global's index is
+its position among the *entry file's* top-level `$decl`s — so the entry file's
+globals were assigned before every lifted function, a module's members included.
+§4.14 makes `$import` evaluate the module's block where it stands, so that is
+backwards: a top-level `$decl` whose initializer called into an import read a
+zeroed static.
+
+The instructive part is the instrument. Nothing in the project could see it:
+
+- **Stage 0 does not have the bug**, so every `.mpl` file in the tree ran
+  correctly and every suite passed. "It runs under the interpreter" is worth
+  nothing for an ordering question the interpreter decides differently.
+- **`verify` could not see it.** It checks what the tree asserts about itself, and
+  the tree asserted nothing about initialisation order until this change gave it
+  `fnbase` to assert.
+- **`cc -Wall` could not see it.** The C is well-formed; the statics are assigned,
+  just late.
+- **Every emit fixture passed**, because a fixture's answer comes from `main`,
+  which runs after `mpl_init` finishes. Only a top-level `$decl` that *reads*
+  across the boundary is affected, and no fixture had one.
+- **The compiler's own driver is immune by accident.** `mplc.mpl` does everything
+  inside `main`. So the whole bootstrap — stages 1, 2 and 3, byte-identical
+  outputs and all — was built on top of it without noticing.
+
+What found it was compiling a driver that had never been compiled before, and it
+presented as a **segfault on a one-line input**. `stage1/fixtures/init_order.mpl`
+turns that into arithmetic: 106 correct, 101 if the ordering regresses. Making it
+arithmetic needed care — the module member has to be a non-`$func` `$decl`,
+because a `$func` member is a plain C function and needs no initialisation, so
+nothing would be observable at all.
+
+The lesson worth keeping: **the differential is only as strong as the shapes it
+covers.** Stage 0 against stage 2 on real files had been run many times and is
+the project's best check, but every one of those runs went through a driver whose
+work lives in `main`. A whole class of programs — the obvious way to write a
+driver — was outside every test in the project.
+
 ## Hypotheses tested and rejected
 
 Recorded so they are not retried blind.

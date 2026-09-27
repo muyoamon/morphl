@@ -68,13 +68,18 @@ $decl eval_ids   $func ($decl x IR.ints.node) x
 // index of the function itself, so a call can be recognised as a self call;
 // it is -1 while checking the program rather than a function.
 $decl vcx $func ($decl a 0, $decl b 0, $decl c 0, $decl d 0, $decl e 0, $decl f "",
-                 $decl g IR.fns.node)
+                 $decl g IR.fns.node, $decl h 0, $decl k P.boolean)
   { $decl ntypes a  $decl nfuncs b  $decl nslots c  $decl nenv d  $decl self e  $decl fname f
     // The whole table, because a call has to be checked against the callee's
     // arity and a closure against its function's environment.
-    $decl funcs g }
+    $decl funcs g
+    // §4.10's initialisation order, which the tree also asserts. `fnbase` is
+    // where the entry file's globals end, and `early` says this function is a
+    // thunk above that boundary — so `mpl_init` runs it in the first pass,
+    // before the entry file's own statics are assigned.
+    $decl fnbase h  $decl early k }
 
-$decl proto_vcx $call vcx (0, 0, 0, 0, 0, "", IR.fns.nil)
+$decl proto_vcx $call vcx (0, 0, 0, 0, 0, "", IR.fns.nil, 0, bfalse)
 
 $decl where_of $func ($decl cx proto_vcx, $decl id 0)
   $if ($call lt (id, 0)) cx.fname
@@ -264,7 +269,20 @@ $decl vexpr $func ($decl st proto_vst, $decl cx proto_vcx, $decl e IR.proto_expr
   $do ($call note (st, cx, e)) ($match e (
     $case {$prop tag "local"}   ($call need (st, cx, e.id, e.slot, cx.nslots, "slot")),
     $case {$prop tag "capture"} ($call need (st, cx, e.id, e.slot, cx.nenv, "capture")),
-    $case {$prop tag "global"}  ($call need (st, cx, e.id, e.fn, cx.nfuncs, "function")),
+    // A `global` in value position is the function *pair* for a `$func` and the
+    // *static* for a thunk, so only a thunk below the boundary is a read of
+    // something `mpl_init` has not assigned yet. Naming an entry-file `$func`
+    // from lifted code is ordinary and needs no initialisation at all.
+    $case {$prop tag "global"}
+      $do ($call need (st, cx, e.id, e.fn, cx.nfuncs, "function"))
+          ($if ($call and (cx.early, $call lt (e.fn, cx.fnbase)))
+               ($if ($call lt (e.fn, cx.nfuncs))
+                    ($if ($call IR.fns.nth (cx.funcs, e.fn)).thunk
+                         ($call err (st, cx, e.id,
+                             "a lifted thunk reads a static of the entry file; §4.10 initialises the lifted region first, so this runs before that static is assigned"))
+                         0)
+                    0)
+               0),
 
     // §7.3: the captures are the environment the body will read, so there are
     // exactly as many of them as the lifted function has entries.
@@ -356,9 +374,10 @@ $decl vself $func ($decl st proto_vst, $decl cx proto_vcx, $decl flag P.boolean)
 $decl vfn $func ($decl st proto_vst, $decl cx0 proto_vcx, $decl f IR.proto_fn, $decl idx 0)
   { $decl slots $call IR.ints.val (f.slots)
     $decl envs  $call IR.ints.val (f.env)
+    $decl early $if ($call lt (idx, cx0.fnbase)) bfalse f.thunk
     $decl cx $call vcx (cx0.ntypes, cx0.nfuncs,
                  $call IR.ints.length (slots, 0), $call IR.ints.length (envs, 0),
-                 idx, f.name, $call IR.fns.val (cx0.funcs))
+                 idx, f.name, $call IR.fns.val (cx0.funcs), cx0.fnbase, early)
     $decl a $call vints (st, cx, slots, "slot type")
     $decl b $call vints (st, cx, envs, "capture type")
     $decl c $call need (st, cx, -1, f.result, cx.ntypes, "result type")
@@ -426,7 +445,7 @@ $decl verify $func ($decl p IR.proto_program)
   { $decl st $call vstate ()
     $decl fs $call IR.fns.val (p.funcs)
     $decl cx $call vcx ($call T.tys.length ($call T.tys.val (p.types), 0),
-                 $call IR.fns.length (fs, 0), 0, 0, -1, "program", fs)
+                 $call IR.fns.length (fs, 0), 0, 0, -1, "program", fs, p.fnbase, bfalse)
     // A program with no functions has no entry — which is what `check` returns
     // when it could not build one, and not something to report twice.
     $decl a $if ($call eq_int (cx.nfuncs, 0)) 0
