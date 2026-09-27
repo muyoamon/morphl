@@ -1140,6 +1140,38 @@ the project's best check, but every one of those runs went through a driver whos
 work lives in `main`. A whole class of programs — the obvious way to write a
 driver — was outside every test in the project.
 
+## Devirtualising §6a's indirect case bought no speed
+
+Predicted a win, measured none. Worth recording because the mechanism was real
+and the reasoning was the usual one.
+
+Every indirect tail call in the emitted compiler — fifteen of them — was a call
+to an aliased `not`, `and`, `or` or `isub`, which §7.3 makes a *thunk* and so a
+call through a function value even though the callee is a compile-time constant.
+Resolving them took the compiler's emitted C from 15 marked tail calls and 121
+indirect calls to **zero of each**, and shrank it (`lexer.mpl` 3,388 → 3,323
+lines, `types.mpl` 9,465 → 9,428), because an indirect call needs a temporary for
+the pair and a cast where a direct one is a single line.
+
+`and`, `or` and `not` are among the most-called things in the codebase, so this
+looked like it had to pay. It did not:
+
+| emitting | before | after |
+|---|---|---|
+| `types.mpl`, three runs | 0.41 / 0.39 / 0.45s | 0.45 / 0.40 / 0.39s |
+| the whole compiler, once each | 185.4s | 189.2s |
+
+Flat, within the noise this box shows. An indirect call through a static that is
+written once is well predicted by the hardware, and 121 sites — however hot — are
+not where 2.6e9 calls go. The change is worth having because §7.7 is mandatory
+and this was the last place it did not hold for anything stage 1 contains, not
+because it is faster.
+
+The instrument that mattered was not a profiler at all: `grep -c` on the emitted
+C for the marker emit already writes at each unhandled site. A backend that
+*reports* where it fell short of a guarantee can be audited with a count, which
+is how the fifteen were found and how they were confirmed gone.
+
 ## Hypotheses tested and rejected
 
 Recorded so they are not retried blind.
@@ -1158,3 +1190,5 @@ Recorded so they are not retried blind.
 - the group-retry predicate (old self-only test also OOMs)
 - module reloading as a leak (**exactly 2 loads per module**, no cascade)
 - `lookup` scan width growing with program size (flat at ~16.8)
+- devirtualising the alias thunks as a *speed* change (see above: 121 indirect
+  calls removed, wall time unmoved)

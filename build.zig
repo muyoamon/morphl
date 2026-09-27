@@ -146,6 +146,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/prop_union.mpl", .want = "9\n" },
         .{ .src = "stage1/fixtures/effect.mpl", .want = "46\n" },
         .{ .src = "stage1/fixtures/init_order.mpl", .want = "106\n" },
+        .{ .src = "stage1/fixtures/alias.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
@@ -230,6 +231,9 @@ pub fn build(b: *std.Build) void {
         // to disagree: the group function's parameter list is every member's
         // concatenated, so an ordering difference would show here and nowhere else.
         "stage1/fixtures/mutual_sig.mpl",
+        // §6a's indirect case resolved through an alias, where the two
+        // implementations could disagree about which target a thunk names.
+        "stage1/fixtures/alias.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);

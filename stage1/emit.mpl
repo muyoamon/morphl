@@ -40,6 +40,13 @@ $decl and P.and
 
 $decl strs $specialize P.list ""
 
+// A global and what it really names. §4.10 puts it here because `estate` below
+// holds a list of these, and the functions that build and read them are down
+// with `is_thunk`, where the reason they exist is written out.
+$decl fnal $func ($decl f 0, $decl t 0, $decl pn "") { $decl from f  $decl to t  $decl prim pn }
+$decl proto_fnal $call fnal (0, 0, "")
+$decl fnals $specialize P.list proto_fnal
+
 // ------------------------------------------------------------------- state
 
 $decl estate $func ()
@@ -78,6 +85,10 @@ $decl estate $func ()
     // value, not a function to call — so naming one is reading `mpl_g<i>`, and
     // calling one is an indirect call through the pair that static holds.
     $decl thunks $mut $alloc IR.ints.node
+    // Which globals are aliases, and of what: a thunk whose body is one
+    // `global` is a call to a compile-time-constant target, so it is direct
+    // (§6a, and `res_fn` above says why).
+    $decl aliases $mut $alloc fnals.node
     // The struct definitions already written. A type is defined after
     // everything it contains *by value*, which is not index order — a `μ` is
     // interned before the members it embeds, because they name it.
@@ -901,10 +912,110 @@ $decl thunk_ids $func ($decl fs IR.fns.node, $decl i 0, $decl acc IR.ints.node) 
   $case fs acc
 )
 
+// An **alias is a thunk whose whole body is one `global`**, and resolving it is
+// what §6a's indirect case mostly consists of in practice.
+//
+// `$decl not P.not` and `$decl isub sub` — the idiom CLAUDE.md prescribes for
+// keeping an intrinsic a file shadows — are top-level `$decl`s that are not
+// `$func`s, so they lower to thunks (§7.3: a thunk's index names a *static*, not
+// something to call). A call through one is therefore a call through a function
+// *value*, which §6a cannot turn into a loop because the target is unknown until
+// run time. Except that here it is not unknown at all: the static is assigned
+// once from a `global` naming a real function, so the callee is a compile-time
+// constant and the call can be direct.
+//
+// Every one of the fifteen indirect tail calls in the compiler's own emitted C
+// was this — `not`, `and`, `or` and `isub` — and none of them was a genuinely
+// dynamic target. Resolving them makes §7.7 hold for all of them and turns the
+// most-called helpers in the codebase into direct calls.
+//
+// This lives in the backend rather than in the tree, which is deliberate: §6a is
+// an obligation on emit, the whole function table is right here to derive it
+// from, and nothing about the tree changes — so `verify` still checks what
+// lowering built and no node gains a second index (§9.3).
+// An alias's body is one node, and there are two kinds worth resolving: a
+// `global`, which names another function, and a **`prim`**, which names an §8
+// intrinsic. `$decl isub sub` is the second — it is the idiom for keeping an
+// operator a file shadows, and §8's operators are emitted *infix* when called,
+// so resolving it turns the call back into `a - b` rather than a call at all.
+// That was the fifteenth of the fifteen, and the one an alias-of-a-function test
+// alone does not catch.
+$decl alias_of_body $func ($decl i 0, $decl e IR.proto_expr) $match e (
+  $case {$prop tag "global"} ($call fnal (i, e.fn, "")),
+  $case {$prop tag "prim"} ($call fnal (i, -1, e.name)),
+  $case e ($call fnal (i, -1, ""))
+)
+
+$decl is_alias $func ($decl a proto_fnal)
+  $if ($call lt (-1, a.to)) true ($call not ($call eq_str (a.prim, "")))
+
+$decl collect_aliases $func ($decl fs IR.fns.node, $decl i 0, $decl acc fnals.node) $match fs (
+  $case {$prop tag "cons"}
+    { $decl a $if fs.head.thunk ($call alias_of_body (i, $call IR.eval (fs.head.body)))
+                                ($call fnal (i, -1, ""))
+      $decl r $call collect_aliases ($call IR.fns.val (fs.tail), $call add (i, 1),
+                  $if ($call is_alias (a)) ($call fnals.cons (a, acc)) acc) }.r,
+  $case fs acc
+)
+
+$decl fnal_at $func ($decl as fnals.node, $decl i 0) $match as (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (as.head.from, i)) as.head ($call fnal_at (as.tail, i)),
+  $case as ($call fnal (i, -1, ""))
+)
+
+// An alias may name an alias, so follow the chain as far as it goes and answer
+// the index it ends at. Bounded by the number of aliases, because nothing here
+// rules out a cycle and a compiler must not hang on one; running out of budget
+// stops where it is, which resolves to "not an alias" below.
+$decl chase_alias $func ($decl as fnals.node, $decl i 0, $decl n 0)
+  $if ($call lt (n, 1)) i
+      { $decl t $call fnal_at (as, i)
+        $decl r $if ($call lt (t.to, 0)) i ($call chase_alias (as, t.to, $call sub (n, 1))) }.r
+
+$decl end_of_alias $func ($decl st proto_est, $decl i 0)
+  { $decl as $call fnals.val (st.aliases)
+    $decl r  $call chase_alias (as, i, $call fnals.length (as, 0)) }.r
+
+// The index a global callee really names: itself when it is an ordinary
+// function, the end of the alias chain when it is one, and -1 when it is a thunk
+// this cannot see through — a static holding a function value computed at run
+// time, which is §6a's genuinely indirect case.
+$decl res_fn $func ($decl st proto_est, $decl i 0)
+  $if ($call not ($call is_thunk (st, i))) i
+      { $decl j $call end_of_alias (st, i)
+        $decl r $if ($call is_thunk (st, j)) -1 j }.r
+
+// The intrinsic a global callee names, if it aliases one.
+$decl alias_prim $func ($decl st proto_est, $decl i 0)
+  $if ($call not ($call is_thunk (st, i))) ""
+      { $decl as $call fnals.val (st.aliases)
+        $decl a  $call fnal_at (as, $call end_of_alias (st, i))
+        $decl r  $call P.sval (a.prim) }.r
+
+// An alias resolves to its target here too, so a tail call through one gets the
+// same treatment its target would: the group's state if the target is a member,
+// and otherwise a direct call.
+//
+// **The `-2` test deliberately asks about the *unresolved* callee.** `-2` means
+// "this very function", which makes emit write `continue` — and the `while (1)`
+// around it is there only if lowering set `self_tail`, which it decided from the
+// tree, where the callee is still the alias. So resolving in the `-2` test would
+// be emit contradicting the tree, and the result would be a `continue` outside
+// any loop. As it happens that cannot arise — §4.10 makes an alias strictly
+// later than its target and a body can only name what precedes it, so a call
+// through an alias never reaches the function it sits in, and the checker
+// rejects both ways of trying — but the agreement is free here and `verify`
+// cannot see a disagreement between the tree and the C.
+//
+// The *group* case is safe resolved: if the target is a member then this code is
+// inside that group's function and its dispatch loop exists, and if it is not
+// then `st.grp` is nil and `state_of` answers -1.
 $decl tail_state $func ($decl st proto_est, $decl c IR.proto_expr, $decl fi 0) $match c (
   $case {$prop tag "global"}
-    { $decl g $if ($call is_thunk (st, c.fn)) IR.ints.nil ($call IR.ints.val (st.grp))
-      $decl s $call state_of (g, c.fn, 0)
+    { $decl fn $call res_fn (st, c.fn)
+      $decl g $if ($call lt (fn, 0)) IR.ints.nil ($call IR.ints.val (st.grp))
+      $decl s $call state_of (g, fn, 0)
       // -1: not a loop at all. -2: this very function, so the state does not
       // change. Otherwise the state to jump to.
       $decl r $if ($call eq_int (s, -1)) ($if ($call eq_int (c.fn, fi)) -2 -1) s }.r,
@@ -917,12 +1028,12 @@ $decl tail_state $func ($decl st proto_est, $decl c IR.proto_expr, $decl fi 0) $
 // an indirect call through the function value that static holds (§7.3), which
 // is the branch below.
 $decl is_global $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
-  $case {$prop tag "global"} ($call not ($call is_thunk (st, c.fn))),
+  $case {$prop tag "global"} ($call lt (-1, $call res_fn (st, c.fn))),
   $case c false
 )
 
-$decl callee_name $func ($decl c IR.proto_expr) $match c (
-  $case {$prop tag "global"} ($call fn_name (c.fn)),
+$decl callee_name $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
+  $case {$prop tag "global"} ($call fn_name ($call res_fn (st, c.fn))),
   $case c "0"
 )
 
@@ -1075,29 +1186,38 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
     $decl cty $call type_at (ts, cal.ty)
     $decl ps  $match cty ($case {$prop tag "func"} ($call T.tys.val (cty.params)), $case cty T.tys.nil)
     $decl as  $call emit_args (st, fi, $call IR.exprs.val (e.args), ps, ts, strs.nil)
-    $decl out $match cal (
+    // The intrinsic this call names, directly or through an alias — "" when it
+    // names none. A `global` gets here when it is a thunk whose whole body is a
+    // `prim`, which is what `$decl isub sub` lowers to: the callee is a
+    // compile-time constant, so §8 emits it infix exactly as a direct call.
+    $decl pnm $match cal (
+        $case {$prop tag "prim"} cal.name,
+        $case {$prop tag "global"} ($call alias_prim (st, cal.fn)),
+        $case cal ""
+      )
+    $decl out $if ($call not ($call eq_str (pnm, "")))
         // §8's operators inline; nothing else in the root block has a C form
         // this slice can emit.
-        $case {$prop tag "prim"}
-          { $decl op $call prim_op (cal.name)
-            $decl cf $call prim_fn (cal.name)
-            $decl of $call opt_fn (cal.name)
-            $decl r  $if ($call not ($call eq_str (op, "")))
-                ($call assign (st, dest, $call binop_expr (as, op)))
-              ($if ($call not ($call eq_str (cf, "")))
-                ($call assign (st, dest, $call prim_call (cf, as)))
-              ($if ($call not ($call eq_str (of, "")))
-                ($call emit_opt_prim (st, ts, of, as, dest, e.ty))
-              ($if ($call arr_prim (cal.name))
-                ($call emit_arr_prim (st, ts, cal.name, as, dest, e.ty))
-                ($call eerr (st, $call concat ("cannot emit the intrinsic ", cal.name)))))) }.r,
+        { $decl op $call prim_op (pnm)
+          $decl cf $call prim_fn (pnm)
+          $decl of $call opt_fn (pnm)
+          $decl r  $if ($call not ($call eq_str (op, "")))
+              ($call assign (st, dest, $call binop_expr (as, op)))
+            ($if ($call not ($call eq_str (cf, "")))
+              ($call assign (st, dest, $call prim_call (cf, as)))
+            ($if ($call not ($call eq_str (of, "")))
+              ($call emit_opt_prim (st, ts, of, as, dest, e.ty))
+            ($if ($call arr_prim (pnm))
+              ($call emit_arr_prim (st, ts, pnm, as, dest, e.ty))
+              ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm)))))) }.r
+      $match cal (
         $case cal
           // §6a: a direct self tail call is the loop; anything else is a plain
           // call, which is correct but is not §7.7's guarantee.
           { $decl ts2 $if e.tail ($call tail_state (st, cal, fi)) -1
             $decl o $if ($call eq_int (ts2, -1))
               ($if ($call is_global (st, cal))
-                  ($call assign (st, dest, $call call_expr ($call callee_name (cal), as)))
+                  ($call assign (st, dest, $call call_expr ($call callee_name (st, cal), as)))
                   // §7.3: through the pair. The signature comes from the static
                   // type at the call site, since every function value has the
                   // same shape and carries none of it.
@@ -1866,6 +1986,8 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
   { $decl ts $call T.tys.val (p.types)
     $decl fs $call IR.fns.val (p.funcs)
     $decl tk $set st.thunks ($call thunk_ids (fs, 0, IR.ints.nil))
+    // Before anything is emitted: `res_fn` is asked at every global callee.
+    $decl al $set st.aliases ($call collect_aliases (fs, 0, fnals.nil))
     $decl h  $call say (st, $call concat (runtime_c, "\n"))
     $decl sd $call emit_structs (st, ts, ts, 0)
     $decl gap $call say (st, "\n")
