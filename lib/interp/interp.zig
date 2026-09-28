@@ -891,6 +891,13 @@ pub const Interp = struct {
                     );
                 }
             }
+            if (!constPropShape(&f.operands[1])) {
+                return self.rt.fail(
+                    e.span,
+                    "a $prop must be fully evaluable by the compiler (4.10); '{s}' is not",
+                    .{pname},
+                );
+            }
             slots[i] = .{
                 .name = pname,
                 .expr = &f.operands[1],
@@ -1656,6 +1663,39 @@ pub const Interp = struct {
 
     /// Is this pattern prop written as a literal? Testing one then needs no
     /// evaluation and therefore no scope.
+    /// §4.10's list of what a `$prop` initializer may be: "a literal,
+    /// `true`/`false`, a `$func`/`$template` literal, a block made only of
+    /// props, or one of the compile-time forms `$overload`, `$union`,
+    /// `$specialize`, `$impl`, `$traitsof`, and projection of a prop. Never
+    /// `$new`, never `$call`."
+    ///
+    /// Stage 0 does no static checking (BOOTSTRAP.md §1.3), and this is not an
+    /// exception to that — it is a *shape* question about the source, decidable
+    /// without types, and refusing it here is what stops stage 0 quietly
+    /// evaluating a "compile-time constant" at run time. It used to: `$prop bad
+    /// $call f ()` returned 3, which is §4.10's one explicit "never".
+    ///
+    /// The name case — `$prop tag x` over an enclosing parameter — needs to know
+    /// whether a binding is compile-time, which stage 0 has no notion of. Stage
+    /// 1's checker reports that one, at the `$prop`, with a span.
+    fn constPropShape(n: *const Node) bool {
+        return switch (n.data) {
+            .int, .str, .float, .bool_lit, .unit, .name => true,
+            .proj_name => |p| constPropShape(p.target),
+            .proj_index => |p| constPropShape(p.target),
+            // "a block made only of props" — one with a `$decl` has a layout,
+            // so it is a runtime value.
+            .block => |items| for (items) |*it| {
+                if (!it.isForm(.prop)) break false;
+            } else true,
+            .form => |f| switch (f.keyword) {
+                .func, .template, .@"union", .overload, .specialize, .impl, .traitsof => true,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
     fn isLiteral(n: *const Node) bool {
         return switch (n.data) {
             .int, .str, .float, .bool_lit, .unit => true,

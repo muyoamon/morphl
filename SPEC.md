@@ -276,13 +276,13 @@ Specializing with an overload argument is an error; resolve first.
 
 ### 4.10 `$prop name e`
 
-Declares a **compile-time constant** member of the enclosing block. `e` must be fully evaluable by the compiler: a literal, `true`/`false`, a `$func`/`$template` literal, a block made only of props, or one of the compile-time forms `$overload`, `$union`, `$specialize`, `$impl`, `$traitsof`, and projection of a prop. Never `$new`, never `$call`.
+Declares a **compile-time constant** member of the enclosing block. `e` must be fully evaluable by the compiler: a literal, `true`/`false`, a `$func`/`$template` literal, a block made only of props, one of the compile-time forms `$overload`, `$union`, `$specialize`, `$impl`, `$traitsof`, a name bound to a prop or to a `$template` generic, or a projection of one of these. Never `$new`, never `$call`.
 
 **Props are visible throughout their block**, regardless of order, and are typed together as one system (§5.5). Props have no layout, so the no-hoisting rule (§4.11) does not apply to them.
 
 - A prop is in the block's namespace and **type**, not its layout. It costs no slot.
 - **A prop's value is part of the enclosing block's type.** `{$prop kind "circle"}` and `{$prop kind "square"}` are different types. This is the only place a value appears in a type, and it is how tags work.
-- A prop initializer may reference other props and enclosing scopes, but not ordered siblings (there is no instance to read them from). A prop function reaches instance fields through an explicit receiver parameter.
+- A prop initializer may reference other props and enclosing **compile-time** bindings — a prop of an enclosing block, a `$template` generic — but not ordered siblings (there is no instance to read them from) and **not an enclosing runtime binding** such as a parameter or a `$decl`. The restriction is forced by the rule above it: a prop's value is part of its block's type and §5.1 matches props by value equality, so a prop reading a parameter would give its block a different type per call, which is not a type. A prop function reaches instance fields through an explicit receiver parameter.
 - Access is uniform: `p.len` and `point.len` both work.
 
 ### 4.11 `$fwd name`

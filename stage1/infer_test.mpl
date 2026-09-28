@@ -259,8 +259,40 @@ $decl t42 $call check_str ("recursive data is inferred, not declared",
 $decl t43 $call check_str ("a prop may name a later prop",
   $call field_ty ("$decl b { $prop a c  $prop c 7 }  $decl x b.a", "x"), "Int")
 // §4.10: "not ordered siblings (there is no instance to read them from)."
+// Reported as an ordinary unknown name, because the prop-only environment does
+// not contain it at all — which is the more useful thing to say, so the §4.10
+// check below deliberately defers to it for a name that does not resolve.
 $decl t44 $call check_str ("a prop may not name an ordered sibling",
   $call errs_of ("$decl b { $decl d 1  $prop p d }"), "unknown name 'd'")
+
+// §4.10: "`e` must be fully evaluable by the compiler … Never `$new`, never
+// `$call`." Nothing enforced this, and the consequences were live: a `$call` in a
+// prop ran at *run time* under stage 0, and a prop over an enclosing parameter
+// became a per-call value there while the backend refused it at each use. §4.10
+// also said an initializer "may reference … enclosing scopes", which cannot hold
+// alongside "fully evaluable" — a parameter is an enclosing scope. The spec now
+// says enclosing *compile-time* bindings, because the alternative is incoherent:
+// a prop's value is part of its block's type and §5.1 matches props by value
+// equality, so a prop reading a parameter gives its block a type per call.
+$decl t44b $call check_str ("a $prop may not be a $call",
+  $call errs_of ("$decl f $func () 3  $decl b { $prop p $call f () }"),
+  "a $prop must be fully evaluable by the compiler (§4.10), and $call is not")
+
+$decl t44c $call check_str ("a $prop may not read an enclosing parameter",
+  $call errs_of ("$decl mk $func ($decl x 0) { $prop tag x  $decl y 1 }"),
+  "a $prop must be fully evaluable by the compiler (§4.10), and 'x' is not")
+
+// §4.10 allows "a block made only of props"; one with a `$decl` has a layout, so
+// it is a runtime value and cannot be a compile-time constant.
+$decl t44d $call check_str ("a $prop may not be a block with a $decl",
+  $call errs_of ("$decl b { $prop p { $decl y 1 }  $decl z 2 }"),
+  "a $prop must be fully evaluable by the compiler (§4.10), and a block with a $decl in it is not")
+
+// And the legitimate shapes stay legitimate: a `$func`, a `$union`, a prop-only
+// block, a scalar, and a sibling prop by name (t43 above).
+$decl t44e $call check_str ("the compile-time shapes are accepted",
+  $call errs_of ($call concat ("$decl b { $prop f $func ($decl n 0) n  $prop u $union (1, 2) ",
+                               " $prop n { $prop two 2 }  $prop k 7 }")), "")
 
 // §4.11: the slot's layout position is the `$fwd`, not the `$decl`.
 $decl t45 $call check_str ("$fwd holds the layout position",

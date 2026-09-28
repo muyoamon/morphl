@@ -1196,6 +1196,45 @@ are statically known and, in the compiler, empty. In a program that does use
 function values heavily the test is a load and a well-predicted branch, and it has
 not been measured — there is no workload in the tree that exercises it.
 
+## The type table's size swings 58% on an inert edit
+
+Standing item in this file: the whole-compiler type table holds ~6,300 entries
+where the front end alone needs ~1,470, because §5.5 placeholders are interned
+unconditionally and never removed, and ~47% of the entries are duplicates modulo
+placeholder id. Two attempts to attack the placeholder side were tried and
+reverted (above).
+
+**A new fact, found by accident and confirmed by a single-variable A/B against a
+fixed binary: adding one *unused* field to `infer.mpl`'s `ctx` block takes the
+table from 6,468 entries to 2,736**, the emitted C for `mplc.mpl` from 69,769
+lines to 67,289, and the μ-alias typedefs from 4,050 to 1,562. Nothing about any
+program's meaning changes: the emitted C for `lexer.mpl` and `types.mpl` stays
+**byte-identical to stage 0's**, the fixed point holds, and `mplc.mpl` emits zero
+diagnostics either way.
+
+| `infer.mpl` | table | emitted lines | typedefs |
+|---|---|---|---|
+| committed | 6,468 | 69,769 | 4,050 |
+| + one unused `ctx` field | 2,736 | 67,289 | 1,562 |
+| + the §4.10 prop check (which also adds a `ctx` field) | 2,741 | 67,791 | 1,565 |
+
+The third row is what found it. The prop check happens to add a field to `ctx`,
+and the drop was initially mistaken for an effect of the check — the isolation
+above is what showed the check contributes only its own 502 lines.
+
+**Do not read this as a 58% win to bank.** What it says is that the junk half of
+the table is *unstable*: its size is a function of an irrelevant detail of one
+block's field count, which means `intern` is sensitive to something it should not
+be. The mechanism is **not known**. `ctx` is mentioned by nearly every function in
+`infer.mpl`, so its interned identity is load-bearing for a large share of the
+table, but why perturbing it should *halve* the placeholder duplicates rather than
+shift them is exactly the question. Until that is understood, the smaller table is
+a coincidence that happens to be correct, not a design.
+
+The lesson for method: this was found because a line count moved in the wrong
+direction and got chased instead of accepted. A 1,978-line *decrease* from a
+change that only adds code is the kind of discrepancy worth three minutes of A/B.
+
 ## Hypotheses tested and rejected
 
 Recorded so they are not retried blind.

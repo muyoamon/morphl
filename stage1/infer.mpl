@@ -74,6 +74,12 @@ $decl bind $func ($decl e env.node, $decl n "", $decl t T.proto_ty)
 
 $decl strs $specialize P.list ""
 
+$decl join_strs $func ($decl xs strs.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} ($call join_strs (xs.tail, $call strs.cons (xs.head, acc))),
+  $case xs acc
+)
+
+
 // `file` is the file the template was *written* in. §10.7 checks a template
 // body only at specialization, which routinely happens in another file after an
 // `$import`, and a node carries a line and column but not a file — so without
@@ -149,7 +155,18 @@ $decl ctx $func ()
     // The file currently being typed. A diagnostic belongs to the file whose
     // source raised it, which is not the file the checker was invoked on as
     // soon as anything is imported.
-    $decl file   $mut $alloc "" }
+    $decl file   $mut $alloc ""
+    // §4.10's compile-time names: every `$prop` bound anywhere, and every
+    // `$template` generic. A prop initializer may name one of these and nothing
+    // else — a parameter or a `$decl` is an enclosing *runtime* binding, and
+    // §4.10 requires the initializer to be "fully evaluable by the compiler".
+    //
+    // It only ever grows: a name that has gone out of scope stays in the set, so
+    // the check can be too permissive but never too strict. That is the safe
+    // direction — a missed report rather than a rejected valid program — and it
+    // avoids a save/restore discipline over a mutable context that is otherwise
+    // append-only.
+    $decl ctnames $mut $alloc strs.node }
 
 $decl proto_ctx $call ctx ()
 
@@ -749,6 +766,9 @@ $decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $ma
 // will need and hands back an identity.
 $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
   { $decl gs    $call generic_names ($call op (n, 0), strs.nil)
+    // §4.9 monomorphises, so a generic is a compile-time value and a prop inside
+    // the body may name it — `list T`'s `$prop cons $func ($decl h T, …)` does.
+    $decl ctg   $set cx.ctnames ($call join_strs (gs, cx.ctnames))
     $decl id    $call fresh (cx)
     $decl rec   $call tmpl_rec (id, gs, $call op (n, 1), e, $call sval (cx.file))
     $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
@@ -954,8 +974,11 @@ $decl const_of $func ($decl cx proto_ctx, $decl n Pa.proto_node) $match n (
 $decl prebind_props $func ($decl cx proto_ctx, $decl items Pa.nodes.node, $decl acc env.node) $match items (
   $case {$prop tag "cons"}
     { $decl it items.head
+      $decl nm $call name_of ($call op (it, 0))
+      $decl ct $if ($call is_form (it, "prop"))
+          ($set cx.ctnames ($call strs.cons (nm, cx.ctnames))) ()
       $decl e2 $if ($call is_form (it, "prop"))
-          ($call bind (acc, $call name_of ($call op (it, 0)), $call T.t_var ($call fresh (cx))))
+          ($call bind (acc, nm, $call T.t_var ($call fresh (cx))))
           acc
       $decl out $call prebind_props (cx, items.tail, e2) }.out,
   $case items acc
@@ -989,10 +1012,90 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
     // complete that one rather than appending a second.
     $decl added $set s.flds ($call put_field (s.flds, nm, ty)) }
 
+$decl mem_str $func ($decl xs strs.node, $decl n "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head, n)) true ($call mem_str (xs.tail, n)),
+  $case xs false
+)
+
+// §4.10's list of what a prop initializer may be, made real.
+//
+// The section says two things that cannot both hold: `e` "must be **fully
+// evaluable by the compiler** … Never `$new`, never `$call`", and an initializer
+// "may reference other props and **enclosing scopes**". A parameter is an
+// enclosing scope and is not evaluable by the compiler.
+//
+// "Fully evaluable" has to win, because the section's central claim rests on it:
+// "a prop's value is part of the enclosing block's type", and §5.1 matches props
+// by *value equality* — so a prop naming a parameter would give its block a
+// different type per call, which is not a type. So the enclosing-scope clause is
+// read as *enclosing compile-time* bindings, which `cx.ctnames` tracks.
+//
+// Nothing enforced this before. `$prop bad $call f ()` type-checked and stage 0
+// evaluated the call at run time; `$prop tag x` over a parameter type-checked,
+// ran as a per-call field in stage 0, and was refused by lowering at each *use*
+// with a message about the backend's difficulty rather than about the rule.
+$decl ct_kw $func ($decl k "")
+  $if ($call eq_str (k, "func")) true
+  ($if ($call eq_str (k, "template")) true
+  ($if ($call eq_str (k, "union")) true
+  ($if ($call eq_str (k, "overload")) true
+  ($if ($call eq_str (k, "specialize")) true
+  ($if ($call eq_str (k, "impl")) true
+  ($if ($call eq_str (k, "traitsof")) true false))))))
+
+// "a block made only of props" — one with a `$decl` has a layout, so it is a
+// runtime value and cannot be a compile-time constant.
+$decl props_only $func ($decl items Pa.nodes.node) $match items (
+  $case {$prop tag "cons"}
+    $if ($call is_form (items.head, "prop")) ($call props_only ($call Pa.nodes.val (items.tail)))
+        false,
+  $case items true
+)
+
+$decl ct_init $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node) $match n (
+  $case {$prop tag "int"}   true,
+  $case {$prop tag "float"} true,
+  $case {$prop tag "str"}   true,
+  $case {$prop tag "bool"}  true,
+  $case {$prop tag "unit"}  true,
+  // §4.10 allows "projection of a prop", and the target is held to the same
+  // rule — so `math.inner.two` is in and a projection off a parameter is out.
+  $case {$prop tag "proj_name"}  ($call ct_init (cx, pe, n.target)),
+  $case {$prop tag "proj_index"} ($call ct_init (cx, pe, n.target)),
+  // A name that is not in scope here at all is §4.10's *other* rule — an
+  // ordered sibling, which the prop-only environment already excludes — so it is
+  // left to inference's ordinary "unknown name", which says the more useful
+  // thing. This reports only a name that resolves and is not compile-time.
+  $case {$prop tag "name"}
+    $if ($call not ($call lookup (pe, n.text)).ok) true
+        ($call mem_str ($call strs.val (cx.ctnames), n.text)),
+  $case {$prop tag "block"} ($call props_only (n.items)),
+  // A compile-time form. Its operands are not walked: §5.7 makes `$union`'s
+  // members and a `$func`'s parameter defaults type-only positions, never
+  // evaluated, so what they mention is not a runtime read.
+  $case {$prop tag "form"}  ($call ct_kw (n.keyword)),
+  $case n false
+)
+
+$decl ct_desc $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "form"} ($call concat ("$", n.keyword)),
+  $case {$prop tag "name"} ($call concat ("'", $call concat (n.text, "'"))),
+  // §4.10 allows "a block made only of props"; one with a `$decl` has a layout.
+  $case {$prop tag "block"} "a block with a $decl in it",
+  $case n "this"
+)
+
 // The type of one prop. §4.10: the initializer sees other props and enclosing
 // scopes, but *not* ordered siblings — hence the prop-only environment.
 $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl it Pa.proto_node)
   { $decl init $call op (it, 1)
+    // Reported here, at the `$prop`, with its span — not at each projection that
+    // later fails to reach the value. `err` is quiet during the first of the two
+    // prop passes, so this is said once.
+    $decl ct   $if ($call ct_init (cx, pe, init)) T.t_bot
+        ($call err (cx, $call concat ("a $prop must be fully evaluable by the compiler (§4.10), and ",
+            $call concat ($call ct_desc (init), " is not")), it))
     $decl id   $call var_id ($call lookup (pe, nm)).ty
     $decl out $if ($call is_form (init, "func"))
         ($call infer_rec_func (cx, pe, nm, init))
