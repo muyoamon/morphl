@@ -1196,6 +1196,221 @@ are statically known and, in the compiler, empty. In a program that does use
 function values heavily the test is a load and a well-predicted branch, and it has
 not been measured — there is no workload in the tree that exercises it.
 
+## The swing is the derivation count, and one rejected fix should be reopened
+
+The section below records the observation; this one explains it, and the
+explanation was already in this file — "Why the type table grows" says the count
+"tracks the *number of derivations*, not the program", because `take_snap`/`put_snap`
+roll back the lifted functions, modules, specialisations and templates around a
+discarded first pass **but not the table**.
+
+That is the whole mechanism. The retry in `lower_prop_func` fires for a member
+whose first pass read an *unsettled* sibling (`lstate.nplace`), so:
+
+- perturbing `infer.mpl`'s `ctx` changes which members read an unsettled sibling,
+- which changes how many members are lowered twice,
+- which changes how many discarded derivations leave placeholder types interned
+  permanently,
+- which is why the count is **bistable** rather than noisy: the retry set is
+  discrete, so a run lands in one basin or the other.
+
+**Correction to that last point.** It first looked as though only `mplc.mpl` showed
+the swing, because `half.mpl` and `compiler.mpl` came out identical between the two
+sources — but that comparison used the *new* binary, and the new binary is
+insensitive to the perturbation. Re-measured against the binary that is sensitive,
+**every closure containing `infer.mpl` shows it**:
+
+| input | sensitive binary + pre-prop `infer.mpl` | + prop-check `infer.mpl` | insensitive binary, either |
+|---|---|---|---|
+| `typecheck.mpl` | 6,463 | 2,736 | 2,735 |
+| `half.mpl` | 6,064 | 2,344 | 2,343 |
+| `compiler.mpl` | 6,457 | 2,730 | 2,730 |
+| `mplc.mpl` | 6,468 | 2,741 | 2,741 |
+
+So `half.mpl` is the cheapest reproducer, not `mplc.mpl`. And the two binaries are
+**byte-identical** on inputs whose closure does *not* contain `infer.mpl`
+(`lexer.mpl` 69,817 bytes, `types.mpl` 187,027 — identical), diverging only on
+those that do. That is a narrower and less alarming statement than "two compilers
+disagree": the divergence is confined to inputs including the module that was
+perturbed.
+
+**Method note, because it cost several wrong conclusions.** Replacing the harness
+binary between two A/Bs invalidates the comparison across them. This file already
+warns that stage-1 sources are read at run time, so a snapshot binary captures
+stage 0 only; the same trap has a second form — a *stage 2* binary captures stage
+1 at the moment it was built, so measurements taken before and after installing a
+new `bootstrap/mplc.c` are not comparable. Fix the binary across the whole
+question, not just within each pair.
+
+**"Which table size is canonical" is the wrong question**, and it was worth
+retiring: the table holds garbage whose quantity depends on retry accidents, so
+there is no canonical size. Both artifacts contain everything load-bearing — emit
+skips a placeholder-bearing type (`T.has_var`) — and differ in junk plus index
+renumbering. The evidence for behavioural equivalence is the fixed point and the
+byte-identical differential on `lexer.mpl` and `types.mpl`, *not* the extra
+typedefs being dead: sampling the μ-alias typedefs in the larger artifact shows
+some referenced once elsewhere and some not at all.
+
+**What the bigger basin costs, measured.** Stage 0 lowering `mplc.mpl` in the
+6,468-type configuration, with `MORPHL_PROGRESS=4`:
+
+| MB | elapsed | Δ per 4 MB | depth | innermost |
+|---|---|---|---|---|
+| 121 | 236.6s | +27.3s | 38 | `types.mpl:cons` |
+| 141 | 368.8s | +58.0s | 33 | `ir.mpl:found` |
+| 153 | 442.2s | +8.5s | 26 | **`ir.mpl:find_ty`** |
+| 157 | 504.1s | +61.9s | 116 | `ir.mpl:e_local` |
+| 161 | 574.7s | +70.6s | 167 | `lower.mpl:cons` |
+
+Three things to take from it. It is **not a loop** — it advances, so an earlier
+8h15m run of the same job would have finished eventually rather than hanging.
+`find_ty` appears *by name*, which is the linear scan this file already put at
+~31% of calls. And the cost per unit of allocation rises monotonically while
+`depth` climbs to 167, which is the non-tail recursion over the table that
+CLAUDE.md flags as a stack hazard at this size.
+
+The sharpest single number: **161.8M calls in 574.7s = 280k calls/sec**, against
+the 2.34M calls/sec this file records for a whole-compiler emit. Same machine,
+same interpreter, **8x lower call throughput** — that is what the junk costs.
+
+## Rolling the table back: done, and it was the right target
+
+**Result.** §9.3's table is now saved in `take_snap` and restored in `put_snap`,
+alongside the lifted functions, modules, specialisations and templates that were
+already being rolled back:
+
+| | at `7fd95b7` | before | **after** |
+|---|---|---|---|
+| whole-closure table (`mplc.mpl`) | 1,470 | 6,468 | **1,404** |
+| `half.mpl`, sensitive binary + pre-prop `infer.mpl` | — | 6,064 | **1,098** |
+| `half.mpl`, + prop-check `infer.mpl` | — | 2,344 | **1,101** |
+
+So the **bistability is gone** — the two basins, 3,720 entries apart, are now 3
+apart, and that residual is real source difference rather than instability. The
+table is **4.6x smaller** on the full closure and lands *below* the figure from
+before the regression, which settles what the 4.3x growth this file documented
+actually was: the placeholder types left behind by discarded derivations.
+
+**The one line that made the earlier attempt fail.** It died with `nth: index out
+of range`, and the recorded cause — `st.sltys` holds type indices and is not
+snapshotted — was not it: `lower_prop_body` already brackets slots with
+`take_slots`/`restore_slots`, so the enclosing frame's slot types all predate the
+snapshot. The real hazard is in `lower_prop_func`:
+
+    $decl und   $if again ($call put_snap (st, sn)) 0
+    $decl fty   $call fn_ty (st, lf0)      <- reads lf0's interned *indices*
+
+`lf0` is the function the discarded pass built, and `fn_ty` resolves its `params`
+and `result` *through the table*. Roll the table back first and those indices
+dangle. Computing `fty` **before** the rollback fixes it, because a `T.proto_ty`
+is structural and survives; the second pass re-interns whatever it needs. The
+other two rollback sites need no change — they read `v0.ty` and `b0.val.ty`, which
+are already structural.
+
+Why discarding is sound: every type the first pass interned was derived against a
+placeholder, the tree that named it is thrown away, and nothing outside the pass
+holds its index — `idx` is reserved *before* `take_snap` precisely so it survives.
+
+**What it is worth beyond the size: unmeasured, and one attempt failed to test it.**
+`find_ty` is a linear scan and was ~31% of calls, so a 4.6x smaller table ought to
+be proportionally cheaper per intern. The obvious A/B — stage 0 lowering
+`types.mpl`, same binary, `lower.mpl` swapped — says nothing, because that closure
+barely exercises the effect:
+
+| | table | time |
+|---|---|---|
+| with the rollback | 207 | 133.4s |
+| without | 228 | 137.5s |
+
+A 9% smaller table and a 3% time difference on one run each is noise. The reduction
+only becomes large on the *whole* closure (6,468 -> 1,404), and stage 0 on that
+takes hours, so the honest position is that the speed benefit is **not
+established**. Two precedents in this file argue for leaving it that way rather
+than assuming: interning identifiers was predicted at 1.4-1.7x and delivered 1.05x,
+and devirtualising the alias thunks removed every indirect call in the compiler and
+moved the clock not at all. The size reduction and the end of the bistability are
+the results; treat any speed claim as untested.
+
+**Method: three ways the thing under test changed underneath the measurement.**
+All three happened while doing this one fix, and each produced a plausible number
+that meant something other than what it looked like.
+
+1. **A stale binary.** An A/B across two harness binaries is not an A/B. Fixing the
+   binary *within* each pair is not enough; it has to be fixed across the whole
+   question.
+2. **The fix in the input rather than the compiler.** The first attempt to test this
+   change measured nothing, because the binary doing the lowering was compiled from
+   the old source while the change sat in `stage1/lower.mpl` — the *input*. Stage-1
+   sources are read at run time, which makes stage-0 A/Bs trivial and stage-2 A/Bs
+   treacherous, because a stage-2 binary freezes stage 1 at the moment it was built.
+   To test a backend change, build a binary *from* the changed source and run that.
+3. **Two concurrent jobs mutating the same file.** A throughput A/B that swapped
+   `lower.mpl` between fixed and unfixed ran at the same time as the stage-0
+   differential, so the differential compared a fixed `mplc` against an *unfixed*
+   stage 0 and reported `lexer` and `parser` as DIFFERS. The giveaway was that
+   `types` — emitted after the swap had been reverted — was identical. Nothing in
+   the check could have caught it, because it never looked at what source it read.
+
+The differential now fingerprints `stage1/lower.mpl` with `md5sum` before and after
+and refuses to call the result valid if it moved. Worth doing for any comparison
+that reads stage-1 source: it is the only thing that distinguishes "the two
+implementations disagree" from "they were not given the same program".
+
+**Superseded below.** The two sections that follow diagnose the instability and
+record the measurements that led here; they are kept for the method, not as live
+guidance.
+
+**Reopen "roll the table back".** Of the three attempts recorded here, two failed
+for reasons that generalise (a placeholder's interned entry is load-bearing; a
+partitioned scan costs more per entry than it saves below ~50% placeholders). The
+third — rolling the table back in `take_snap`/`put_snap` — failed with `nth: index
+out of range` because `st.sltys` holds type indices and was not snapshotted. That
+is a missing snapshot field, not a principle, and it is the fix that matches the
+diagnosis exactly: the discarded pass's entries are garbage *by construction*.
+Doing it would collapse both basins into one and remove the pathology.
+
+**Now measured.** A counter on `lstate`, bumped at each of the three `put_snap`
+rollbacks, compiled into a binary so the run finishes in seconds. Same binary,
+same target (`half.mpl`), only the input's `infer.mpl` differing:
+
+| input `infer.mpl` | retries | types |
+|---|---|---|
+| pre-prop | **7,370** | 6,064 |
+| prop-check | **6,177** | 2,344 |
+
+The retry count differs in the predicted direction, so discarded derivations
+feeding the table is confirmed, and the `take_snap` fix rests on something real.
+
+Two results that were *not* predicted and matter for how to read it:
+
+- **The relation is not linear.** 1,193 extra retries yield 3,720 extra types —
+  ~3.1 types per marginal retry against an average of 0.8 (pre) and 0.4 (post). So
+  it is not the retry *count* that swings the table but *which* members retry: a
+  rollback on a member with a large derivation interns many placeholder types, one
+  on a small member few. That is why the table is bistable rather than noisy — the
+  step is in the identity of the retrying members, not in a smooth total.
+- **6,177 retries happen in the good configuration too.** The basin we are in
+  still discards ~6,000 derivations, each leaving placeholder types interned
+  permanently. So rolling the table back is not only about collapsing the
+  bistability; it removes junk from both basins, which is the larger prize.
+
+**Instrument note.** The first version of this counter printed each retry as it
+happened, to watch a run that might not finish. That does not work: `print` is
+stdout, stdout is block-buffered when redirected, and a run killed by `timeout`
+discards the buffer — 25 minutes produced a 0-byte file. There is no stderr
+intrinsic to write to (§8's documented gap; `panic` aborts), so incremental
+visibility from *inside* stage 1 is not available at all. Either let the run
+finish, or instrument stage 0, where `MORPHL_PROGRESS` writes to fd 2 with a raw
+`write` precisely so it cannot be buffered or lost.
+
+**Still unexplained, and both are measurements rather than guesses.** A binary
+built from the old source plus one unused `ctx` field is *equally* sensitive to the
+input (6,064 / 2,344, identical to the unmodified one), yet adding that same field
+to the input reproduced the table-size change. Sensitivity of a *binary* and
+sensitivity to an *input* are different axes, and an earlier isolation here
+conflated them. Whatever makes the prop-check binary insensitive is therefore not
+the field.
+
 ## The type table's size swings 58% on an inert edit
 
 Standing item in this file: the whole-compiler type table holds ~6,300 entries

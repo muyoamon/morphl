@@ -521,12 +521,19 @@ $decl fresh_var $func ($decl st proto_lst)
 // specialisations it memoised are keyed on the placeholder, and the functions
 // it lifted for them would be dead code carrying a type that is not a layout.
 $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $decl nm 0,
-                   $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0)
+                   $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0,
+                   $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
-    $decl specs sp   $decl tmpls tm    $decl ntmpls nt }
+    $decl specs sp   $decl tmpls tm    $decl ntmpls nt
+    // §9.3's table, both halves of the banker's queue and both counters. Every
+    // type the discarded pass interned is garbage by construction: it was
+    // derived against a placeholder, the tree that named it is thrown away, and
+    // nothing outside the pass holds its index. Leaving them behind is what made
+    // the table track the *number of derivations* rather than the program.
+    $decl tsettled ts  $decl tpend tp  $decl nsettled ns  $decl ntypes ny }
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
-                      tmpls_list.nil, 0)
+                      tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -534,7 +541,9 @@ $decl eval_specs $func ($decl x specs_list.node) x
 $decl take_snap $func ($decl st proto_lst)
   $call lsnap ($call IR.fns.val (st.lifted), $call P.ival (st.nlifted),
       $call eval_mods (st.mods), $call P.ival (st.nmods),
-      $call eval_specs (st.specs), $call eval_tmpls (st.tmpls), $call P.ival (st.ntmpls))
+      $call eval_specs (st.specs), $call eval_tmpls (st.tmpls), $call P.ival (st.ntmpls),
+      $call T.tys.val (st.tsettled), $call T.tys.val (st.tpend),
+      $call P.ival (st.nsettled), $call P.ival (st.ntypes))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -544,6 +553,10 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl e $set st.specs   ($call specs_list.val (sn.specs))
     $decl f $set st.tmpls   ($call tmpls_list.val (sn.tmpls))
     $decl g $set st.ntmpls  sn.ntmpls
+    $decl h $set st.tsettled ($call T.tys.val (sn.tsettled))
+    $decl i $set st.tpend    ($call T.tys.val (sn.tpend))
+    $decl j $set st.nsettled sn.nsettled
+    $decl k $set st.ntypes   sn.ntypes
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
@@ -1908,8 +1921,14 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
     // `$prop` discards it: the siblings it lowered were lowered against this
     // member's placeholder, so their lifted bodies are wrong in the same way
     // and have to be built again too.
-    $decl und   $if again ($call put_snap (st, sn)) 0
+    // **Before the rollback**, because `fn_ty` reads `lf0`'s interned *indices*
+    // and the rollback invalidates them — which is precisely the
+    // `nth: index out of range` an earlier attempt at this hit. A `T.proto_ty` is
+    // structural, so once it is out it survives, and the second pass re-interns
+    // whatever it needs. The other two rollback sites need no such care: they
+    // read `v0.ty` / `b0.val.ty`, which are already structural.
     $decl fty   $call fn_ty (st, lf0)
+    $decl und   $if again ($call put_snap (st, sn)) 0
     // Completed now that the body has given up its result type. The new entry
     // goes in front of the placeholder, which `find_mdone` therefore stops at.
     $decl p1    $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
