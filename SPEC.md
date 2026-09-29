@@ -362,7 +362,7 @@ Binds a C function. `symbol` is a string literal; `sig` is a type-only position 
 - **Blocks (prefix & depth)**: `S <: T` if `T`'s `$decl` fields are an ordered **prefix** of `S`'s — the same names at the same positions, each with `S_n <: T_n` — and for every prop of `T`, `S` has the same prop with the **same value**. Props are unordered, because props have no layout (§4.10).
 - **Block identity**: layout *is* the type. `S <: T` and `T <: S` exactly when `S` and `T` have the same fields in the same order and the same props — so mutual subtyping is equality, and nothing is ever reordered to satisfy a coercion.
 
-Prefix rather than unordered width, for three reasons. Subtyping stays antisymmetric, so mutual subtyping and equality coincide and a canonical form is meaningful. A supertype's fields sit at the same offsets as the subtype's, so every structural upcast is free and stays a thin pointer (§7.4). And a block's field *order* becomes part of its published interface, which is checkable by reading the declaration rather than by computing a coercion.
+Prefix rather than unordered width, for three reasons. Subtyping stays antisymmetric, so mutual subtyping and equality coincide and a canonical form is meaningful. A supertype's fields sit at the same offsets as the subtype's, so a structural upcast never reorders and never needs an offset table: through a reference it is free and stays a thin pointer, and by value it is a copy of the supertype's fields (§7.4). And a block's field *order* becomes part of its published interface, which is checkable by reading the declaration rather than by computing a coercion.
 - **Groups**: elementwise, same arity.
 - **Functions**: contravariant in parameters, covariant in result.
 - **Unions/intersections**: standard lattice rules. `⊥` is a subtype of everything.
@@ -517,12 +517,16 @@ Prefix subtyping (§5.1) makes structural coercion nearly free: a supertype's fi
 - Value → block prefix supertype: a prefix copy. No field-by-field scatter.
 - `&const S → &const T` with `T` a prefix supertype: **free**, and still a thin pointer.
 - `&mut` never coerces structurally (invariant), so it is always a thin pointer.
+- Member → union: a discriminator write and a copy of the member.
+- **Union → union**: one `case` per source member, each writing the target's position and moving the payload — a branch, not a copy, because §3.6 makes a union a set and §7.5 makes the position the discriminator, so the two need not agree. Where the source's members are a prefix of the target's canonical order the map is the identity and the branch is a copy.
+- `μR. B` ↔ its unrolling: free. They are one type (§5.5) and two terms, so the backend emits one as an alias of the other.
+- From `⊥`: nothing. The code is unreachable.
 - A reference's **kind** (§3.5) costs nothing at runtime: frame and allocated references are both thin pointers, and the distinction exists only to be checked.
 - **Fat references remain only for trait objects**: a `&const trait` carries the `$impl` witness (§4.12), emitted statically. That table exists because the trait's props are function implementations, not because of layout.
 
 ### 7.5 Runtime type information
 
-Values of union type carry a discriminator so `$match` can test them. Blocks differing only in props are distinguished by that discriminator; no other construct reads it.
+Values of union type carry a discriminator so `$match` can test them. **Which position a member takes is canonical**: §3.6 makes a union a set with no intrinsic order, so the members are ordered by a rule the compiler fixes, and a member's discriminator is therefore a function of the member set alone — not of the order the members were written in, and not of where else in the program the same union appears. Nothing observable depends on the numbering: a program names members, never tags. Blocks differing only in props are distinguished by that discriminator; no other construct reads it.
 
 ### 7.6 Memory: two kinds of storage, no collector and no inference
 

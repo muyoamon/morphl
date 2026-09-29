@@ -309,8 +309,12 @@ $decl t39 $call check ("a program using $try emits cleanly",
   $call eq_int (try_c.nerrs, 0))
 
 // §4.15: a conditional return from the nearest enclosing `$func`.
+// The tag is 1, not 0, because a union's member list is canonically ordered now
+// (`t_union` sorts by the same key `show` uses) — `<Int, none>` puts `Int` first.
+// Pinning the number is fair game *because* of that: it is a function of the
+// member set, where before the change it was an artifact of writing order.
 $decl t40 $call check ("$try is a discriminator test and a return",
-  $if ($call has (try_c.code, ".tag == 0) {")) ($call has (try_c.code, "  return ret;")) false)
+  $if ($call has (try_c.code, ".tag == 1) {")) ($call has (try_c.code, "  return ret;")) false)
 
 // Nothing declares the failure: §4.15 widens the *inferred* result to include
 // it, so the C function returns the union rather than the body's own type.
@@ -319,7 +323,7 @@ $decl t41 $call check ("the function's result is widened to carry the failure",
 
 // §4.15 again: what survives is `type(e) & ¬pat`, read straight out.
 $decl t42 $call check ("what survives is the other member",
-  $call has (try_c.code, ".u.m1;"))
+  $call has (try_c.code, ".u.m0;"))
 
 // §4.15's shapes are root-block values, not callees — a prop-only block with
 // no fields.
@@ -437,7 +441,7 @@ $decl t55 $call check ("the type a recursive binder names is a discriminated uni
 // member sits at a different position in each.
 $decl u2u_src $call concat (
   "$decl a { $prop tag \"a\"  $decl v 1 }  $decl b { $prop tag \"b\"  $decl v 2 } ",
-  $call concat ("$decl c { $prop tag \"c\"  $decl v 3 }  $decl small $union (a, b)  $decl big $union (c, a, b) ",
+  $call concat ("$decl c { $prop tag \"c\"  $decl v 3 }  $decl small $union (b, c)  $decl big $union (c, a, b) ",
                 "$decl widen $func ($decl x big) $match x ($case {$prop tag \"a\"} x.v, $case x x.v) "))
 
 $decl u2u_c $call compile ($call concat (u2u_src, "$decl main $func () $call widen (small) "))
@@ -448,6 +452,15 @@ $decl t56 $call check ("a union coerced into a larger union emits cleanly",
 $decl t57 $call check ("...as a switch on the source's discriminator",
   $call has (u2u_c.code, "switch ((int)"))
 
+// `small` is `<b,c>` and `big` is `<a,b,c>`, both canonically ordered, so the
+// source's `c` sits at position 1 and the target's at position 2 — the re-tag has
+// to move it. That example matters: when the source's members happen to be a
+// *prefix* of the target's canonical order the re-tag is the identity and this
+// assertion would pass on a backend that wrongly copied the source's tag. It used
+// to be such a case, which the ordering change exposed.
+//
+// Worth noting for later: identity re-tags are now common, and a switch whose
+// every case writes the tag it read could be elided entirely.
 $decl t58 $call check ("...that writes the target's position, not the source's",
   $call has (u2u_c.code, ".tag = 2;"))
 

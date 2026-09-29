@@ -55,6 +55,25 @@ $decl t01 $call check_str ("base types render", $call T.show (int), "Int")
 $decl t02 $call check_str ("bottom renders", $call T.show (bot), "!")
 $decl t03 $call check_str ("Bool is the union of the two tag types (§3.2)",
   $call T.show (bool), "<false,true>")
+// §7.5 lays a union out by the order of its member list, so that order has to be
+// a function of the member *set* and nothing else — otherwise two spellings of one
+// type disagree about their discriminators, which is a miscompile. `show` cannot
+// test this, because `show_set` sorts independently and would hide the difference;
+// the member list is inspected directly.
+$decl first_member $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "union"} ($call T.show ($call T.tval ($call T.tys.nth (t.members, 0)))),
+  $case t "(not a union)"
+)
+$decl u_fwd $call T.t_union ($call T.tys.cons (int, $call T.tys.cons (str, T.tys.nil)))
+$decl u_rev $call T.t_union ($call T.tys.cons (str, $call T.tys.cons (int, T.tys.nil)))
+
+$decl t03a $call check_str ("a union's member order is canonical, not written order",
+  $call first_member (u_rev), "Int")
+$decl t03b $call check ("...so the two spellings have the same member order",
+  $call eq_str ($call first_member (u_fwd), $call first_member (u_rev)))
+$decl t03c $call check ("...and they are the same type either way (§3.6)",
+  $call T.same (u_fwd, u_rev))
+
 $decl t04 $call check_str ("a block renders fields then props",
   $call T.show ($call T.t_block ($call fld2 ("a", int, "b", str), $call T.p1 ("k", $call T.cv_str ("c")))),
   "{a:Int,b:Str,k=s\"c\",}")

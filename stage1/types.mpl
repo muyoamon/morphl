@@ -541,11 +541,71 @@ $decl union_add $func ($decl t proto_ty, $decl acc tys.node) $match t (
   $case t ($call tys_insert (t, acc))
 )
 
+// **The member list is sorted**, by the same key `show` uses — so §7.5's
+// discriminator is a function of the member *set* alone, and the layout agrees
+// with what a diagnostic prints.
+//
+// Neither was true before. `union_addall` folds left and `union_add` conses, so
+// the list came out in *reverse* source order; `show_set` sorts independently, so
+// a reader saw `<a,b,c>` while the machine used c=0, b=1, a=2. Worse, nothing was
+// canonical: `$union (b, a)` and `$union (a, b)` built different lists and counted
+// as one type only because `same` compares sets, so whichever was interned first
+// governed the other — the hazard `canon_ty` exists to paper over, and the source
+// of a real miscompile where lowering numbered arms one way and the backend laid
+// the union out another.
+//
+// Sorting is not a departure from §3.6, it *implements* it. A union is a join in a
+// lattice (SPEC follows Dolan and Parreaux's Simple-sub), so it has no intrinsic
+// order; §7.5 needs one to lay out a discriminator, and a canonical one is the
+// only kind that makes the discriminator a property of the type. Nor does it cost
+// verbatim-ness: the user writes the members and the data, never the tag, and has
+// no way to observe it — a compiler choice is only a verbatim concern when it
+// contradicts something that was written.
+//
+// What the fold does that matters is unchanged: a nested union is flattened, `⊥`
+// is dropped as the identity, a repeat keeps one copy. Sorting happens after, and
+// only when there are two or more members — `t_union` returns early otherwise, so
+// the common join of two equal types never sorts at all.
+//
+// Sorted by *rendering* rather than by a structural comparator. That is one `show`
+// per member, which this file warns about in hot paths — and the measurement below
+// is why it stands: a structural `ty_cmp` would have to mirror all nineteen kinds
+// of `same` exactly, and a single case answering "equal" for types that are not
+// would lose canonicity silently. Correct and measured beats fast and subtle;
+// swap it for `ty_cmp` if a profile ever asks.
+$decl shty $func ($decl k "", $decl t proto_ty) { $decl key k  $decl ty t }
+$decl proto_shty $call shty ("", t_bot)
+$decl shtys $specialize P.list proto_shty
+
+$decl shty_ins $func ($decl p proto_shty, $decl xs shtys.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call str_lt (p.key, xs.head.key)) ($call shtys.cons (p, xs))
+        ($call shtys.cons (xs.head, $call shty_ins (p, $call shtys.val (xs.tail)))),
+  $case xs ($call shtys.cons (p, shtys.nil))
+)
+
+$decl shty_addall $func ($decl xs tys.node, $decl acc shtys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call shty_addall (xs.tail,
+        $call shty_ins ($call shty ($call show (xs.head), xs.head), acc)),
+  $case xs acc
+)
+
+$decl shty_tys $func ($decl xs shtys.node, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call shty_tys ($call shtys.val (xs.tail), $call tys.cons ($call tval (xs.head.ty), acc)),
+  $case xs ($call tys.reverse (acc, tys.nil))
+)
+
+$decl sort_tys $func ($decl xs tys.node)
+  $call shty_tys ($call shty_addall (xs, shtys.nil), tys.nil)
+
 $decl t_union $func ($decl xs tys.node)
-  { $decl m $call union_addall (xs, tys.nil)
-    $decl n $call tys.length (m, 0)
+  { $decl m0 $call union_addall (xs, tys.nil)
+    $decl n  $call tys.length (m0, 0)
     $decl out $if ($call eq_int (n, 0)) t_bot
-             ($if ($call eq_int (n, 1)) ($call tys.nth (m, 0)) ($call raw_union (m))) }.out
+             ($if ($call eq_int (n, 1)) ($call tys.nth (m0, 0))
+                  ($call raw_union ($call sort_tys (m0)))) }.out
 
 $decl union2 $func ($decl a proto_ty, $decl b proto_ty)
   $call t_union ($call tys.cons (a, $call tys.cons (b, tys.nil)))
