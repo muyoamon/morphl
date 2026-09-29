@@ -1,4 +1,4 @@
-// A round-trip fixture for §4.16's `$extern "symbol" sig`. Prints 77.
+// A round-trip fixture for §4.16's `$extern "symbol" sig`. Prints 185.
 //
 // §9 makes `$extern` "the only door to the platform", and it was the one door
 // stage 1 had not built: the form parsed in both stages and nothing after the
@@ -31,16 +31,37 @@ $decl dref  $extern "host_deref"  $func ($decl p $new 0) 0
 // exercises it.
 $decl apply2 $func ($decl f add2, $decl a 0, $decl b 0) $call f (a, b)
 
+// §4.16 rule 2's **allowed** case, and the reason the mapping needed a function
+// entry it did not have. §7.3 makes a morphl function two words, which occupy two
+// argument registers, so declaring a callback parameter as the pair shifts every
+// argument after it — the first cut of this answered 1000 where 1042 was right,
+// with no `cc` complaint, because a pair is a perfectly good struct. What crosses
+// is the code pointer alone, spelt through a typedef, and rule 2 is what makes
+// dropping the environment word sound: `dbl` captures nothing.
+$decl dbl $func ($decl n 0) $call mul (n, 2)
+$decl capply $extern "host_apply" $func ($decl f dbl, $decl x 0) 0
+
+// And the other direction: a C function *returned*. It cannot be §7.3's `code`,
+// since it has no `void *env` — so the pair points at a generated adapter and
+// carries the C pointer as its environment, which is what that word is for.
+$decl cpick $extern "host_pick" $func ($decl n 0) dbl
+
 // `&T` as a thin pointer needs the argument to arrive as storage, which §5.4
 // permits precisely because a `&Int` parameter does not expect a value: "Passing
 // `0` to a `&Int` parameter is an error; write `$new 0`."
-// 25 + 3 + 11 + 4 + 2 + 21 + 11 = 77.
+// 25 + 3 + 11 + 4 + 2 + 21 + 11 = 77, then 108 for the callback out
+// (4 * 2 + 100) and... see `main`.
 $decl main $func ()
   { $decl c  $new 7
     $decl s  $call swap ({ $decl x 1  $decl y 2 })
-    $decl r  $call add2 ($call labs (-25),
+    // 4 * 2 + 100 = 108.
+    $decl cb $call capply (dbl, 4)
+    // `host_pick` hands back `host_triple`; 77 + 108 + 0 = 185 once `p` is 0.
+    $decl pf $call cpick (0)
+    $decl p  $call sub ($call pf (5), 15)
+    $decl r  $call add2 (cb, $call add2 (p, $call add2 ($call labs (-25),
                  $call add2 ($call add2 (1, 2),
                  $call add2 ($call none0 (),
                  $call add2 ($call slen ("abcd"),
                  $call add2 (s.x,
-                 $call add2 ($call dref (c), $call apply2 (add2, 5, 6))))))) }.r
+                 $call add2 ($call dref (c), $call apply2 (add2, 5, 6))))))))) }.r

@@ -540,3 +540,59 @@ $decl t80 $call check ("an uncompleted $fwd still reports",
   $call lt (0, $call n_errs ("$decl b { $fwd never  $decl other 1 }")))
 
 $decl done3 $call nl ("all mutual-recursion tests passed")
+
+// ------------------------------------------------- C callbacks (§4.16 rule 2)
+
+// "C callbacks must be capture-free. A `$func` maps to a C function pointer only
+// if its captured set is empty … Captures are not in the type (§7.3), so this is a
+// property of the *expression* in the argument position: it holds when the
+// compiler can see which `$func` literal the value came from."
+//
+// So the check has exactly three answers, and all three are here. A literal is
+// seen. A name bound to a literal by one `$decl` is seen. Anything else is not,
+// which is what "a closure arriving through a mutable function slot is rejected
+// because it cannot be seen" means.
+$decl xsig "$decl cb $extern \"host_apply\" $func ($decl f ($func ($decl n 0) n), $decl x 0) 0 "
+
+$decl t81 $call check_str ("a capture-free literal crosses",
+  $call errs_of ($call concat (xsig,
+      "$decl m $func () $call cb ($func ($decl n 0) ($call mul (n, 2)), 21)")), "")
+
+$decl t82 $call check_str ("a capturing literal is refused, and the capture named",
+  $call errs_of ($call concat (xsig,
+      "$decl m $func () { $decl k 3  $decl r $call cb ($func ($decl n 0) ($call mul (n, k)), 21) }.r")),
+  "a callback passed to C must be capture-free (§4.16 rule 2): it captures k")
+
+// Reading a *global* is not a capture — §7.3 reaches one through a static, not
+// through the environment word — so a literal that names a top-level `$decl` or a
+// root-block intrinsic is still capture-free. Without this the rule would reject
+// nearly every callback anyone would write.
+$decl t83 $call check_str ("naming a global is not capturing it",
+  $call errs_of ($call concat ("$decl two 2 ", $call concat (xsig,
+      "$decl m $func () $call cb ($func ($decl n 0) ($call mul (n, two)), 21)"))), "")
+
+$decl t84 $call check_str ("a name bound to a capture-free literal crosses",
+  $call errs_of ($call concat (xsig,
+      "$decl d $func ($decl n 0) $call mul (n, 2)  $decl m $func () $call cb (d, 21)")), "")
+
+$decl t85 $call check_str ("...and one bound to a capturing literal does not",
+  $call errs_of ($call concat (xsig,
+      "$decl m $func () { $decl k 3  $decl c $func ($decl n 0) ($call mul (n, k))  $decl r $call cb (c, 21) }.r")),
+  "a callback passed to C must be capture-free (§4.16 rule 2): c captures k")
+
+// The mutable slot §4.16 names outright: the value read out of it could have been
+// written anywhere, so no literal is in view.
+$decl t86 $call check_str ("a function read out of a $mut slot is refused",
+  $call errs_of ($call concat (xsig,
+      "$decl d $func ($decl n 0) $call mul (n, 2) $decl m $func () { $decl s $mut $new d  $decl r $call cb (s, 21) }.r")),
+  "a callback passed to C must be capture-free (§4.16 rule 2): s is not a $decl of a $func literal")
+
+// The rule is about crossing into C, so an ordinary morphl call is untouched:
+// §7.3's pair carries the environment and a capture costs nothing there.
+$decl t87 $call check_str ("an ordinary higher-order call is unaffected",
+  $call errs_of ($call concat (
+      "$decl ap $func ($decl f ($func ($decl n 0) n), $decl x 0) $call f (x) ",
+      "$decl m $func () { $decl k 3  $decl r $call ap ($func ($decl n 0) ($call mul (n, k)), 21) }.r")),
+  "")
+
+$decl done4 $call nl ("all C-callback tests passed")

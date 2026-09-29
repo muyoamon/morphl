@@ -464,4 +464,49 @@ $decl t57 $call check ("...as a switch on the source's discriminator",
 $decl t58 $call check ("...that writes the target's position, not the source's",
   $call has (u2u_c.code, ".tag = 2;"))
 
+// ------------------------------------------------- §4.16's function ABI entry
+//
+// §4.16's ABI mapping listed blocks, `&T`, `Int`, `Float`, `Str` and `array` and
+// said nothing about a `$func`. The pair went out as the pair, which is a
+// perfectly good C struct occupying two argument registers, so every argument
+// after a callback was read from the wrong one — 1000 where 1042 was right, no
+// `cc` complaint, no morphl diagnostic. The fixture answers 185 end to end; these
+// pin the *shape*, since that is what the register layout turns on.
+$decl cb_c $call compile ($call concat (
+  "$decl dbl $func ($decl n 0) $call mul (n, 2) ",
+  $call concat (
+  "$decl ap $extern \"host_apply\" $func ($decl f dbl, $decl x 0) 0 ",
+  "$decl main $func () $call ap (dbl, 21) ")))
+
+$decl t59 $call check ("a callback parameter is a bare code pointer, not the pair",
+  $call has (cb_c.code, "extern int64_t host_apply(mpl_fp"))
+// A function-pointer type in C is a declarator, not a type name: as a *result* it
+// wraps itself around the function's own name, which no concatenation of a type
+// and a name produces. One typedef per function type makes every FFI position an
+// identifier and the declarator grammar stops mattering.
+$decl t60 $call check ("...spelt through a typedef",
+  $call has (cb_c.code, "typedef int64_t (*mpl_fp"))
+$decl t61 $call check ("the typedef precedes the declaration that names it",
+  $call lt ($call idx (cb_c.code, "typedef int64_t (*mpl_fp"),
+            $call idx (cb_c.code, "extern int64_t host_apply")))
+$decl t62 $call check ("and the call site passes the code word alone",
+  $call has (cb_c.code, ".code, "))
+
+// The other direction. A C function pointer cannot be §7.3's `code`, because every
+// morphl function takes `void *env` first and a C one does not — so the pair points
+// at a generated adapter and carries the C pointer as its *environment*, which is
+// exactly what that word is for and costs no allocation.
+$decl pk_c $call compile ($call concat (
+  "$decl dbl $func ($decl n 0) $call mul (n, 2) ",
+  $call concat (
+  "$decl pick $extern \"host_pick\" $func ($decl n 0) dbl ",
+  "$decl main $func () { $decl f $call pick (0)  $decl r $call f (21) }.r ")))
+
+$decl t63 $call check ("a function returned from C gets an adapter",
+  $call has (pk_c.code, "static int64_t mpl_fpw"))
+$decl t64 $call check ("...which calls through its environment",
+  $call has (pk_c.code, ")env)("))
+$decl t65 $call check ("...and the pair carries the C pointer there",
+  $call has (pk_c.code, ".env = (void *)host_pick("))
+
 $decl done $call nl ("all C backend tests passed")

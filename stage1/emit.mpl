@@ -101,6 +101,8 @@ $decl estate $func ()
     // everything it contains *by value*, which is not index order — a `μ` is
     // interned before the members it embeds, because they name it.
     $decl emitted $mut $alloc IR.ints.node
+    // The §4.16 function-pointer typedefs already written, by interned index.
+    $decl fps $mut $alloc IR.ints.node
     $decl errs $mut $alloc Pa.diags.node }
 
 $decl proto_est $call estate ()
@@ -1114,6 +1116,123 @@ $decl callee_name $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
 // Both need the whole set before any body is emitted, which is why this walks the
 // tree. It is the one full traversal in the backend: everything else emit needs
 // it reads off `IR.fn` or the type table.
+// §4.16's ABI mapping differs from §7.2's layout in exactly one place, and the
+// section does not say so: it lists blocks, `&T`, `Int`, `Float`, `Str` and
+// `array`, and omits **functions**. §7.3 makes a morphl function value two words,
+// a code pointer and an environment, and C wants one pointer — so rendering a
+// function-typed parameter with `c_type` declared `extern int64_t host_apply
+// (mpl_fun, int64_t);` against a host `int64_t host_apply(int64_t (*)(int64_t),
+// int64_t)`. That links (C has no mangling) and miscompiles: on SysV the pair
+// takes two registers, so every later argument is read from the wrong one. It
+// answered 1000 where 1042 was correct, silently.
+//
+// So a function crossing to C is its **code pointer alone**, which is exactly why
+// §4.16 rule 2 requires the captured set to be empty — a closure's code pointer
+// without its environment is meaningless. `emit_ffi_arg` and the rule in
+// `infer.mpl` are two halves of one thing.
+// §4.16's ABI mapping names blocks, `&T`, `Int`, `Float`, `Str` and `array`, and
+// says nothing about a **function**. It has to: §7.3 makes a morphl function value
+// a two-word pair, which occupies two argument registers, so declaring a callback
+// parameter as the pair puts every argument after it in the wrong register — a
+// silent miscompile, not a `cc` error, since the pair is a perfectly good struct.
+// What crosses is the *code pointer alone*, and §4.16 rule 2 — a callback may not
+// capture — is exactly what makes dropping the environment word sound.
+//
+// The C type is spelt through a **typedef** rather than inline. A function-pointer
+// type in C is a declarator and not a type name: as a parameter `int64_t (*)(int64_t)`
+// works, but as a *result* the declarator wraps itself around the function's own
+// name (`int64_t (*host_pick(void))(int64_t)`), which no `concat` of a type and a
+// name can produce. One `typedef` per function type makes every FFI position a
+// plain identifier and the problem disappears.
+$decl fp_name $func ($decl i 0) $call concat ("mpl_fp", $call int_to_str (i))
+
+// A C function pointer cannot be §7.3's `code`: every morphl function takes
+// `void *env` first, and a C one does not, so calling it through the pair shifts
+// every argument by a register. The pair points at a generated **adapter**
+// instead and carries the C pointer as its *environment* — which is exactly what
+// the environment word is for, and needs no allocation because a C function
+// pointer is one word.
+$decl fpw_name $func ($decl i 0) $call concat ("mpl_fpw", $call int_to_str (i))
+
+$decl c_type_ffi $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  { $decl t $call type_at (ts, i)
+    $decl r $match t (
+        $case {$prop tag "func"} ($call fp_name (i)),
+        $case t ($call c_type (st, ts, i))
+      ) }.r
+
+$decl ffi_params $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node,
+                        $decl acc "", $decl first P.boolean) $match ps (
+  $case {$prop tag "cons"}
+    { $decl f $call IR.find_ty (ts, ps.head)
+      $decl r $call ffi_params (st, ts, ps.tail,
+                  $call concat (acc, $call concat ($if first "" ", ",
+                      $if f.hit ($call c_type_ffi (st, ts, f.id)) "int64_t")), false) }.r,
+  $case ps acc
+)
+
+// Resolving a parameter *type value* to its interned index, tolerating a list
+// that has run out — §3.4 fixes a parameter's type, not its presence.
+$decl ps_id $func ($decl ts T.tys.node, $decl ps T.tys.node) $match ps (
+  $case {$prop tag "cons"}
+    { $decl f $call IR.find_ty (ts, ps.head)
+      $decl r $if f.hit f.id -1 }.r,
+  $case ps -1
+)
+
+$decl ps_rest $func ($decl ps T.tys.node) $match ps (
+  $case {$prop tag "cons"} ($call T.tys.val (ps.tail)),
+  $case ps T.tys.nil
+)
+
+$decl is_func_ty $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  { $decl t $call type_at (ts, i)
+    $decl r $match t ($case {$prop tag "func"} true, $case t false) }.r
+
+// One argument on its way to C. Everything but a function crosses as itself;
+// a function crosses as its **code pointer**, cast to the signature §4.16 gives
+// it, because C has no place to put §7.3's environment word. §4.16 rule 2 is what
+// makes discarding it sound — an empty captured set means there is nothing in it.
+$decl ffi_one $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0, $decl a "")
+  $if ($call lt (i, 0)) a
+      ($if ($call is_func_ty (st, ts, i))
+           ($call concat ("(", $call concat ($call c_type_ffi (st, ts, i),
+               $call concat (")", $call concat (a, ".code")))))
+           a)
+
+// The other direction: a C function *returned* has no environment, so §7.3's pair
+// is the pointer and a NULL env. §4.16 rule 2 is symmetric here — a C function
+// cannot capture, so there is nothing the missing word could have held.
+$decl ffi_ret $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0,
+                     $decl dest "", $decl rhs "")
+  $if ($call is_func_ty (st, ts, i))
+      { $decl d0 $call say (st, $call concat ("  ", $call concat (dest,
+                     $call concat (".code = (void *)", $call concat ($call fpw_name (i), ";\n")))))
+        $decl d1 $call assign (st, $call concat (dest, ".env"),
+                     $call concat ("(void *)", rhs)) }.d1
+      ($call assign (st, dest, rhs))
+
+$decl ffi_args $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node,
+                      $decl as strs.node, $decl acc "", $decl first P.boolean) $match as (
+  $case {$prop tag "cons"}
+    { $decl one $call ffi_one (st, ts, $call ps_id (ts, ps), as.head)
+      $decl r $call ffi_args (st, ts, $call ps_rest (ps), as.tail,
+                  $call concat (acc, $call concat ($if first "" ", ", one)), false) }.r,
+  $case as acc
+)
+
+// The same for the generated wrapper, whose parameters are `x0`, `x1`, … and whose
+// own signature stays morphl-side because morphl is what calls it.
+$decl ffi_wargs $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node,
+                       $decl k 0, $decl acc "", $decl first P.boolean) $match ps (
+  $case {$prop tag "cons"}
+    { $decl one $call ffi_one (st, ts, $call ps_id (ts, ps),
+                    $call concat ("x", $call int_to_str (k)))
+      $decl r $call ffi_wargs (st, ts, $call ps_rest (ps), $call add (k, 1),
+                  $call concat (acc, $call concat ($if first "" ", ", one)), false) }.r,
+  $case ps acc
+)
+
 $decl xt $func ($decl y "", $decl t 0) { $decl sym y  $decl ty t }
 $decl proto_xt $call xt ("", 0)
 $decl xts $specialize P.list proto_xt
@@ -1189,7 +1308,7 @@ $decl xt_params $func ($decl st proto_est, $decl ts T.tys.node, $decl xs T.tys.n
     { $decl f $call IR.find_ty (ts, xs.head)
       $decl r $call xt_params (st, ts, xs.tail,
                   $call concat (acc, $call concat ($if first "" ", ",
-                      $if f.hit ($call c_type (st, ts, f.id)) "int64_t")), false) }.r,
+                      $if f.hit ($call c_type_ffi (st, ts, f.id)) "int64_t")), false) }.r,
   $case xs acc
 )
 
@@ -1211,6 +1330,132 @@ $decl xt_wargs $func ($decl n 0, $decl k 0, $decl acc "", $decl first P.boolean)
           $call concat (acc, $call concat ($if first "" ", ",
               $call concat ("x", $call int_to_str (k)))), false))
 
+// What a C function's result becomes on the morphl side. A plain value is
+// returned as itself; a *function* is §7.3's pair, built around the adapter above.
+$fwd fn_inside
+
+// Whether a `$func` appears somewhere §4.16's mapping cannot spell it. A function
+// directly, or behind a `&T`, is fine: the first crosses as a code pointer and the
+// second as a pointer to §7.3's pair, and C can write either. Inside a **block
+// field, group member, union member or array element** it is not, because §7.2
+// lays the pair out inline and two words is not one — a C struct declared with a
+// function pointer where morphl put a pair disagrees about every field after it,
+// silently. §4.16's mapping says nothing about this shape, so it is reported here
+// rather than emitted; the workaround is to pass the callback beside the block.
+$decl fn_in_flds $func ($decl ts T.tys.node, $decl fs T.fields.node) $match fs (
+  $case {$prop tag "cons"}
+    $if ($call fn_inside (ts, $call T.tval (fs.head.ty), true)) true
+        ($call fn_in_flds (ts, $call T.fields.val (fs.tail))),
+  $case fs false
+)
+
+$decl fn_in_tys $func ($decl ts T.tys.node, $decl xs T.tys.node, $decl inner P.boolean)
+  $match xs (
+    $case {$prop tag "cons"}
+      $if ($call fn_inside (ts, $call T.tval (xs.head), inner)) true
+          ($call fn_in_tys (ts, $call T.tys.val (xs.tail), inner)),
+    $case xs false
+  )
+
+$decl fn_inside $func ($decl ts T.tys.node, $decl t T.proto_ty, $decl inner P.boolean)
+  $match t (
+    // A callback's own signature is an FFI position too, by the same argument, so
+    // the rule applies inside it at top-level status rather than stopping here.
+    $case {$prop tag "func"}
+      $if inner true
+          ($if ($call fn_in_tys (ts, $call T.tys.val (t.params), false)) true
+               ($call fn_inside (ts, $call T.tval (t.result), false))),
+    // A reference crosses as a pointer, so what it points at is written through
+    // the pointer and the pair is fine there — the top-level status carries.
+    $case {$prop tag "ref"} ($call fn_inside (ts, $call T.tval (t.inner), inner)),
+    $case {$prop tag "block"} ($call fn_in_flds (ts, $call T.fields.val (t.fields))),
+    $case {$prop tag "group"} ($call fn_in_tys (ts, $call T.tys.val (t.items), true)),
+    $case {$prop tag "union"} ($call fn_in_tys (ts, $call T.tys.val (t.members), true)),
+    $case {$prop tag "array"} ($call fn_inside (ts, $call T.tval (t.elem), true)),
+    $case {$prop tag "rec"} ($call fn_inside (ts, $call T.tval (t.body), true)),
+    $case t false
+  )
+
+$decl chk_ffi_ty $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0, $decl sym "",
+                        $decl what "")
+  $if ($if ($call lt (i, 0)) false
+           ($call fn_inside (ts, $call type_at (ts, i), false)))
+      { $decl m $call concat ("$extern \"", $call concat (sym,
+                    $call concat ("\": §4.16's ABI mapping cannot cross a $func inside a block, group, union or array (",
+                    $call concat (what, ")"))))
+        // Said in the C as well as in the diagnostics. An emit diagnostic is
+        // non-fatal (a library with no `main` reports one), so the declaration
+        // below is emitted anyway — and unlike §6a's refusal, which emits
+        // something correct that is merely not a loop, this one emits a struct
+        // the C side cannot match. The artifact has to say so on its own.
+        // ASCII, like `runtime_c`: the emitted file is bytes and `emit_test`
+        // slices it by byte. The detail is in the diagnostic, which is text.
+        $decl d $call say (st, $call concat ("/* unmappable (4.16 ABI): a $func inside a block, group, union or array, in ",
+                    $call concat (what, " */\n")))
+        $decl r $call eerr (st, m) }.r ()
+
+$decl chk_ffi_ps $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node,
+                        $decl sym "", $decl k 0) $match ps (
+  $case {$prop tag "cons"}
+    { $decl d $call chk_ffi_ty (st, ts, $call ps_id (ts, ps), sym,
+                  $call concat ("parameter ", $call int_to_str (k)))
+      $decl r $call chk_ffi_ps (st, ts, $call ps_rest (ps), sym, $call add (k, 1)) }.r,
+  $case ps ()
+)
+
+$decl ffi_retstmt $func ($decl st proto_est, $decl ts T.tys.node, $decl ri 0, $decl c "")
+  $if ($if ($call lt (ri, 0)) false ($call is_func_ty (st, ts, ri)))
+      ($call concat ("mpl_fun r; r.code = (void *)",
+          $call concat ($call fpw_name (ri),
+          $call concat ("; r.env = (void *)", $call concat (c, "; return r; }\n")))))
+      ($call concat ("return ", $call concat (c, "; }\n")))
+
+$fwd emit_fp
+
+// A function type reached through another one's signature needs its own typedef,
+// and needs it *first*: C has no forward declaration for a typedef name.
+$decl emit_fp_ps $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node)
+  $match ps (
+    $case {$prop tag "cons"}
+      { $decl f $call IR.find_ty (ts, ps.head)
+        $decl d $if f.hit ($call emit_fp (st, ts, f.id)) ()
+        $decl r $call emit_fp_ps (st, ts, $call T.tys.val (ps.tail)) }.r,
+    $case ps ()
+  )
+
+$decl emit_fp $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  $if ($call mem_int (st.fps, i)) ()
+      { $decl t $call type_at (ts, i)
+        $decl r $match t (
+            $case {$prop tag "func"}
+              { $decl m  $set st.fps ($call IR.ints.cons (i, st.fps))
+                $decl ps $call T.tys.val (t.params)
+                $decl np $call T.tys.length (ps, 0)
+                $decl rf $call IR.find_ty (ts, t.result)
+                $decl d0 $if rf.hit ($call emit_fp (st, ts, rf.id)) ()
+                $decl d1 $call emit_fp_ps (st, ts, ps)
+                $decl d2 $call say (st, $call concat ("typedef ",
+                             $call concat ($if rf.hit ($call c_type_ffi (st, ts, rf.id)) "int64_t",
+                             $call concat (" (*", $call concat ($call fp_name (i),
+                             $call concat (")(", $call concat ($if ($call eq_int (np, 0)) "void"
+                                     ($call ffi_params (st, ts, ps, "", true)),
+                                 ");\n"))))))) 
+                // The adapter: morphl's convention outside, C's inside. Its own
+                // parameters are the morphl ones, so a nested callback still
+                // crosses through `ffi_wargs` rather than by assignment.
+                $decl w0 $call say (st, $call concat ("static ",
+                             $call concat ($if rf.hit ($call c_type (st, ts, rf.id)) "int64_t",
+                             $call concat (" ", $call concat ($call fpw_name (i),
+                             $call concat ("(void *env", $call concat ($call xt_wparams (st, ts, ps, 0, ""),
+                                           ") { ")))))))
+                $decl w1 $call say (st, $call ffi_retstmt (st, ts, $if rf.hit rf.id -1,
+                             $call concat ("((", $call concat ($call fp_name (i),
+                             $call concat (")env)(", $call concat ($call ffi_wargs (st, ts, ps, 0, "", true),
+                                           ")")))))) }.w1,
+            $case t ()
+          ) }.r
+
+
 $decl emit_xt $func ($decl st proto_est, $decl ts T.tys.node, $decl x proto_xt)
   { $decl t $call type_at (ts, x.ty)
     $decl r $match t (
@@ -1218,20 +1463,30 @@ $decl emit_xt $func ($decl st proto_est, $decl ts T.tys.node, $decl x proto_xt)
           { $decl ps $call T.tys.val (t.params)
             $decl np $call T.tys.length (ps, 0)
             $decl rf $call IR.find_ty (ts, t.result)
-            $decl rc $if rf.hit ($call c_type (st, ts, rf.id)) "int64_t"
+            // The typedefs first: they are what `c_type_ffi` names below, and a
+            // typedef name has no forward declaration in C.
+            $decl c0 $call chk_ffi_ps (st, ts, ps, x.sym, 0)
+            $decl c1 $call chk_ffi_ty (st, ts, $if rf.hit rf.id -1, x.sym, "the result")
+            $decl f0 $if rf.hit ($call emit_fp (st, ts, rf.id)) ()
+            $decl f1 $call emit_fp_ps (st, ts, ps)
+            $decl rc $if rf.hit ($call c_type_ffi (st, ts, rf.id)) "int64_t"
             $decl d0 $call say (st, $call concat ("extern ", $call concat (rc,
                          $call concat (" ", $call concat (x.sym,
                          $call concat ("(", $call concat ($if ($call eq_int (np, 0)) "void"
                                  ($call xt_params (st, ts, ps, "", true)), ");\n")))))))
             // §7.3's pair needs morphl's convention, which a C function does not
             // have — so a symbol used as a *value* points at this instead.
-            $decl d1 $call say (st, $call concat ("static ", $call concat (rc,
+            // The wrapper is called *by morphl*, so its own signature is the
+            // morphl one — `c_type`, not `c_type_ffi`. When the result is itself a
+            // function the two differ, and the pair has to be built here.
+            $decl wc $if rf.hit ($call c_type (st, ts, rf.id)) "int64_t"
+            $decl d1 $call say (st, $call concat ("static ", $call concat (wc,
                          $call concat (" ", $call concat ($call xt_sym (st, x.sym),
                          $call concat ("(void *env", $call concat ($call xt_wparams (st, ts, ps, 0, ""),
-                                       ") { (void)env; return ")))))))
-            $decl d2 $call say (st, $call concat (x.sym,
-                         $call concat ("(", $call concat ($call xt_wargs (np, 0, "", true),
-                                       "); }\n")))) }.d2,
+                                       ") { (void)env; ")))))))
+            $decl d2 $call say (st, $call ffi_retstmt (st, ts, $if rf.hit rf.id -1,
+                         $call concat (x.sym, $call concat ("(",
+                         $call concat ($call ffi_wargs (st, ts, ps, 0, "", true), ")"))))) }.d2,
         $case t ($call eerr (st, $call concat ("the signature of $extern \"",
                      $call concat (x.sym, "\" is not a function type"))))
       ) }.r
@@ -1352,6 +1607,14 @@ $decl all_tail_sigs $func ($decl st proto_est, $decl fs IR.fns.node, $decl acc I
   )
 
 $decl reports $func ($decl st proto_est, $decl i 0) $call mem_int (st.reps, i)
+
+// Whether the driver exists at all. It is emitted only for a program that has an
+// indirect *tail* call, since only one of those ever reports — so a program with
+// an ordinary indirect call and no tail call through a value must not drive after
+// it: there is nothing that could have left a pending block, and naming
+// `mpl_tcdrive` where it was never emitted is a link error.
+$decl any_reports $func ($decl st proto_est)
+  $call not ($call IR.ints.is_nil ($call IR.ints.val (st.tsigs)))
 
 // Whether a *direct* call needs driving afterwards: the callee is resolved first,
 // because an alias reports exactly when the function it names does.
@@ -1613,8 +1876,8 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
         // A tail call to a C function cannot be a loop and needs no trampoline:
         // §7.7 is a rule about morphl functions, and C's stack is C's business —
         // an extern is opaque (§4.16 rule 1), so it does not tail-call back in.
-        ($call assign (st, dest, $call concat (xnm,
-            $call concat ("(", $call concat ($call join_args (as, "", true), ")")))))
+        ($call ffi_ret (st, ts, e.ty, dest, $call concat (xnm,
+            $call concat ("(", $call concat ($call ffi_args (st, ts, ps, as, "", true), ")")))))
       ($if ($call not ($call eq_str (pnm, "")))
         // §8's operators inline; nothing else in the root block has a C form
         // this slice can emit.
@@ -1666,8 +1929,9 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
                         ($call emit_report (st, ts, fv, as, dest, cal.ty, e.ty))
                         { $decl d0 $call assign (st, dest,
                               $call indirect_call ($call fn_sig (st, ts, cal.ty), fv, as))
-                          $decl d1 $call say (st, $call concat ("  mpl_tcdrive(&",
-                                        $call concat (dest, ");\n"))) }.d1 }.r)
+                          $decl d1 $if ($call any_reports (st))
+                              ($call say (st, $call concat ("  mpl_tcdrive(&",
+                                        $call concat (dest, ");\n")))) () }.d1 }.r)
                 // §6a: the parameters are updated *in parallel* — every new
                 // argument is already in a temporary — then the loop re-enters,
                 // at another member's state if this is a mutual call.

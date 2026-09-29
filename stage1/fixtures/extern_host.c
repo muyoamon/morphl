@@ -13,3 +13,9 @@ int64_t host_none(void)                { return 11; }
 int64_t host_deref(int64_t *p)         { return *p * 3; }
 int64_t host_strlen(mpl_str s)         { return s.n; }
 pt      host_swap(pt v)                { pt r; r.x = v.y; r.y = v.x; return r; }
+
+/* §4.16 rule 2, both directions. The parameter is a plain C function pointer,
+   which is what a capture-free morphl `$func` maps to; the result is one too. */
+int64_t host_apply(int64_t (*f)(int64_t), int64_t x) { return f(x) + 100; }
+static int64_t host_triple(int64_t n)                { return n * 3; }
+int64_t (*host_pick(int64_t n))(int64_t)             { (void)n; return host_triple; }

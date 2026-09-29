@@ -151,7 +151,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/init_order.mpl", .want = "106\n" },
         .{ .src = "stage1/fixtures/alias.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/tramp.mpl", .want = "21\n" },
-        .{ .src = "stage1/fixtures/extern.mpl", .want = "77\n",
+        .{ .src = "stage1/fixtures/extern.mpl", .want = "185\n",
            .host = "stage1/fixtures/extern_host.c" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
     }) |fixture| {

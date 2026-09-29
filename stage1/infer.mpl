@@ -111,6 +111,21 @@ $decl fwd_ent $func ($decl n "", $decl i 0) { $decl name n  $decl id i }
 $decl proto_fwd $call fwd_ent ("", 0)
 $decl fwd_list $specialize P.list proto_fwd
 
+// §4.16 rule 2 asks "which `$func` literal did this value come from", so what a
+// `$decl` of a literal records is the **literal**, not a verdict about it. The
+// capture analysis is two AST walks and is wanted only for an argument that
+// actually crosses into C, which in a program with no `$extern` is none.
+$decl fnlit_ent $func ($decl n "", $decl l Pa.proto_node) { $decl name n  $decl lit l }
+$decl proto_fnlit $call fnlit_ent ("", Pa.proto_node)
+$decl fnlit_list $specialize P.list proto_fnlit
+
+$decl find_fnlit $func ($decl xs fnlit_list.node, $decl nm "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.name, nm)) xs.head
+        ($call find_fnlit ($call fnlit_list.val (xs.tail), nm)),
+  $case xs ($call fnlit_ent ("", Pa.proto_node))
+)
+
 $decl find_fwd $func ($decl xs fwd_list.node, $decl nm "") $match xs (
   $case {$prop tag "cons"} $if ($call eq_str (xs.head.name, nm)) xs.head ($call find_fwd (xs.tail, nm)),
   $case xs ($call fwd_ent ("", -1))
@@ -175,7 +190,30 @@ $decl ctx $func ()
     // `infer_rec_func`, `infer_fwd_body`). Two of them are indented alike and the
     // third is not, which is how a first attempt at this patched two and silently
     // missed one — the exact shape of no-op this file warns about twice.
-    $decl fdepth  $mut $alloc 0 }
+    $decl fdepth  $mut $alloc 0
+    // §4.16 rule 2. The section makes capture-freeness "a property of the
+    // *expression* in the argument position", holding "when the compiler can see
+    // which `$func` literal the value came from" — so the check is syntactic, and
+    // these three sets are what it can see.
+    //
+    // `extnames` is the names bound to an `$extern`, which is how a call site
+    // knows it is crossing into C: §4.16's signature is an ordinary `$func` type
+    // and carries nothing to say so. `cffns` maps a name to the `$func` **literal**
+    // its `$decl` gave it — the literal itself, not a verdict about it, since the
+    // capture analysis is two AST walks and is wanted only for an argument that
+    // actually crosses. `topnames` is the names bound at a file's top
+    // level, which lowering lifts to globals — reading one is not a capture
+    // (§7.3), so they are what the captured set is taken modulo.
+    //
+    // All three grow and never shrink, like `ctnames` above, and all three err
+    // the same way: `topnames` too large, or `cffns` answering for a name that is
+    // no longer the one in scope, means a capture missed,
+    // which §5.3a's scope-blind `Pa.bound_names` already accepts as the right
+    // direction. `extnames` too large is the one that could reject a valid
+    // program, and takes a call to an unrelated name spelled like an extern.
+    $decl extnames $mut $alloc strs.node
+    $decl cffns    $mut $alloc fnlit_list.node
+    $decl topnames $mut $alloc strs.node }
 
 $decl proto_ctx $call ctx ()
 
@@ -470,6 +508,100 @@ $decl caps_frame $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
   $case ns false
 )
 
+// §4.16 rule 2: "C callbacks must be capture-free." §7.3 keeps captures out of
+// the type, so the rule is stated on the *expression* in the argument position —
+// it "holds when the compiler can see which `$func` literal the value came from,
+// and a closure arriving through a mutable function slot is rejected because it
+// cannot be seen". Everything below is that sentence made mechanical.
+$decl in_strs $func ($decl xs strs.node, $decl n "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head, n)) true ($call in_strs (xs.tail, n)),
+  $case xs false
+)
+
+// The first name a `$func` literal captures, or "". A free name of the body is a
+// capture unless the literal binds it — a parameter, or a `$decl` inside — or it
+// is a **global**: a file top-level `$decl` or a root-block intrinsic, which §7.3
+// reaches through a static rather than through the environment word.
+$decl first_cap $func ($decl cx proto_ctx, $decl ns Pa.pstrs.node, $decl skip Pa.pstrs.node)
+  $match ns (
+    $case {$prop tag "cons"}
+      { $decl nm ns.head
+        $decl gl $call lookup (root_env, nm)
+        $decl ok $if ($call Pa.mem_pstr (skip, nm)) true
+                     ($if ($call in_strs ($call strs.val (cx.topnames), nm)) true gl.ok)
+        $decl r  $if ok ($call first_cap (cx, $call Pa.pstrs.val (ns.tail), skip)) nm }.r,
+    $case ns ""
+  )
+
+$decl lit_caps $func ($decl cx proto_ctx, $decl n Pa.proto_node)
+  { $decl ps   $call group_items ($call op (n, 0))
+    $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+    $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+    $decl r    $call first_cap (cx, free, shad) }.r
+
+// "Can the compiler see which `$func` literal this came from?" A literal, yes. A
+// name bound to one by a `$decl`, yes — `cffns` is that set. Anything else is no,
+// and that is the whole of what rule 2 rejects: a call's result, a projection, a
+// read through a `$mut` slot. There is no partial answer, which is the point —
+// captures are by copy and static per literal, so seeing the literal is seeing
+// the captured set.
+$decl cb_ok $func ($decl cx proto_ctx, $decl a Pa.proto_node) $match a (
+  $case {$prop tag "form"}
+    $if ($call eq_str (a.keyword, "func")) ($call eq_str ($call lit_caps (cx, a), "")) false,
+  $case {$prop tag "name"}
+    { $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
+      $decl r $if ($call eq_str (f.name, "")) false
+                  ($call eq_str ($call lit_caps (cx, f.lit), "")) }.r,
+  $case a false
+)
+
+$decl cb_why $func ($decl cx proto_ctx, $decl a Pa.proto_node) $match a (
+  $case {$prop tag "form"}
+    $if ($call eq_str (a.keyword, "func"))
+        ($call concat ("it captures ", $call lit_caps (cx, a)))
+        "the compiler cannot see which $func literal it is",
+  $case {$prop tag "name"}
+    { $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
+      $decl r $if ($call eq_str (f.name, ""))
+                  ($call concat (a.text, " is not a $decl of a $func literal"))
+                  ($call concat (a.text, $call concat (" captures ",
+                      $call lit_caps (cx, f.lit)))) }.r,
+  $case a "the compiler cannot see which $func literal it is"
+)
+
+$decl is_fn_ty $func ($decl t T.proto_ty) $match t ($case {$prop tag "func"} true, $case t false)
+
+$decl tys_head $func ($decl ts T.tys.node) $match ts (
+  $case {$prop tag "cons"} ($call T.tval (ts.head)),
+  $case ts T.t_bot
+)
+
+$decl tys_rest $func ($decl ts T.tys.node) $match ts (
+  $case {$prop tag "cons"} ($call T.tys.val (ts.tail)),
+  $case ts T.tys.nil
+)
+
+// Applied only where the callee is an extern, because it is only there that §7.3's
+// pair has nowhere to go — an ordinary morphl call carries the environment word.
+$decl chk_cbs $func ($decl cx proto_ctx, $decl ts T.tys.node, $decl as Pa.nodes.node)
+  $match as (
+    $case {$prop tag "cons"}
+      { $decl pt  $call deref_ty ($call tys_head (ts))
+        $decl bad $if ($call is_fn_ty (pt)) ($call not ($call cb_ok (cx, as.head))) false
+        $decl rep $if bad ($call err (cx,
+                      $call concat ("a callback passed to C must be capture-free (§4.16 rule 2): ",
+                          $call cb_why (cx, as.head)), as.head)) T.t_unit
+        $decl r   $call chk_cbs (cx, $call tys_rest (ts), $call Pa.nodes.val (as.tail)) }.r,
+    $case as T.t_unit
+  )
+
+$decl extern_callee $func ($decl cx proto_ctx, $decl c Pa.proto_node) $match c (
+  $case {$prop tag "name"} ($call in_strs ($call strs.val (cx.extnames), c.text)),
+  $case {$prop tag "form"} ($call eq_str (c.keyword, "extern")),
+  $case c false
+)
+
 // §5.3a: "A frame-bound type may not appear in a function's result, and a
 // frame-bound value may not be written into storage that is not itself
 // frame-bound." That is the whole rule — a structural check on types already
@@ -692,6 +824,8 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     $decl out $match ft (
         $case {$prop tag "func"}
           { $decl ok $call check_args (cx, e, ft.params, args, n, 1)
+            $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
+                ($call chk_cbs (cx, $call T.tys.val (ft.params), args)) T.t_unit
             // A `$decl` initializer keeps a reference (§5.4), and `result` is
             // storage now, so the type has to be taken out of it here.
             $decl r  $if ok ($call T.tval (ft.result)) T.t_bot }.r,
@@ -1050,6 +1184,15 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
         ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
                                           $call eval_res (s.res))))
         ()
+    // §4.16 rule 2's three sets — see `ctx`. `topnames` is guarded on `fdepth`
+    // because a `$decl` inside a `$func` body takes a frame slot (§7.2) and
+    // reading it *is* a capture, while a file top-level one is lifted to a global.
+    $decl xn $if ($call is_form (init, "extern"))
+        ($set cx.extnames ($call strs.cons (nm, cx.extnames))) ()
+    $decl cf $if ($call is_form (init, "func"))
+        ($set cx.cffns ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))) ()
+    $decl tn $if ($call eq_int ($call ival (cx.fdepth), 0))
+        ($set cx.topnames ($call strs.cons (nm, cx.topnames))) ()
     $decl bound $set s.env ($call bind (s.env, nm, ty))
     // A `$fwd` already reserved this slot at its own position (§4.11), so
     // complete that one rather than appending a second.
