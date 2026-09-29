@@ -166,7 +166,16 @@ $decl ctx $func ()
     // direction — a missed report rather than a rejected valid program — and it
     // avoids a save/restore discipline over a mutable context that is otherwise
     // append-only.
-    $decl ctnames $mut $alloc strs.node }
+    $decl ctnames $mut $alloc strs.node
+    // How many `$func` bodies enclose the expression being typed. §4.15 makes
+    // `$try` outside one a compile error — it returns from "the nearest enclosing
+    // `$func`", and at a file's top level or in a prop initializer there is none.
+    //
+    // Bumped at **all three** places a `$func` body is typed (`infer_func`,
+    // `infer_rec_func`, `infer_fwd_body`). Two of them are indented alike and the
+    // third is not, which is how a first attempt at this patched two and silently
+    // missed one — the exact shape of no-op this file warns about twice.
+    $decl fdepth  $mut $alloc 0 }
 
 $decl proto_ctx $call ctx ()
 
@@ -602,7 +611,9 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "", $
     $decl benv $call bind (r.env, nm, self)
     $decl saved   $call tval (cx.tryset)
     $decl cleared $set cx.tryset T.t_bot
+    $decl din $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
     $decl body    $call infer (cx, benv, $call op (n, 1))
+    $decl dout   $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
     $decl tries   $call tval (cx.tryset)
     $decl restored $set cx.tryset saved
     $decl res0 $call T.join (body, tries)
@@ -628,7 +639,9 @@ $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     // enclosing one, since `$try` targets the *nearest* function.
     $decl saved   $call tval (cx.tryset)
     $decl cleared $set cx.tryset T.t_bot
+    $decl din $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
     $decl body    $call infer (cx, r.env, $call op (n, 1))
+    $decl dout   $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
     $decl tries   $call tval (cx.tryset)
     $decl restored $set cx.tryset saved
     // §4.15: "The enclosing function's inferred return type gains
@@ -760,7 +773,14 @@ $decl infer_match $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_for
 
 // §4.15. The error set is inferred, not declared.
 $decl infer_try $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl vt $call infer (cx, e, $call op (n, 0))
+  { // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
+    // error." `$try` returns from the nearest enclosing `$func`, and there is none
+    // — so nothing rejected it, and such a program was refused only *incidentally*,
+    // by the backend failing to coerce the matched member into the thunk's result
+    // type. That message named the symptom and not the rule.
+    $decl here $if ($call lt (0, $call ival (cx.fdepth))) T.t_bot
+        ($call err (cx, "$try is only valid inside a $func: it returns from the nearest enclosing one, and a file's top level or a $prop initializer has none (§4.15)", n))
+    $decl vt $call infer (cx, e, $call op (n, 0))
     $decl pt $call infer (cx, e, $call op (n, 1))
     $decl added $set cx.tryset
         ($call T.join (cx.tryset, $call T.restrict ($call deref_ty (vt), pt)))
@@ -1208,7 +1228,9 @@ $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.pro
         $decl r  $call infer_params (cx, e, ps, T.tys.nil, e)
         $decl saved    $call tval (cx.tryset)
         $decl cleared  $set cx.tryset T.t_bot
+        $decl din  $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
         $decl body     $call infer (cx, r.env, $call op (n, 1))
+        $decl dout    $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
         $decl tries    $call tval (cx.tryset)
         $decl restored $set cx.tryset saved
         $decl res0 $call T.join (body, tries)

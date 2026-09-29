@@ -312,6 +312,20 @@ $decl t44g $call check_str ("...but a trailing catch-all after exhaustive arms i
       "$decl f $func ($decl x $union (a, b)) $match x ($case {$prop k \"a\"} 1, $case {$prop k \"b\"} 2, $case x 3)")),
   "")
 
+// §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
+// error." Nothing enforced this. Such a program was rejected only *incidentally* —
+// the backend could not coerce the matched member into the thunk's result type —
+// with a message that named the symptom rather than the rule.
+$decl t44h $call check_str ("$try outside a $func is refused",
+  $call errs_of ("$decl v $union (1, none)  $decl x $try v none"),
+  "$try is only valid inside a $func: it returns from the nearest enclosing one, and a file's top level or a $prop initializer has none (§4.15)")
+
+// And the case that keeps it usable: a `$try` nested inside a `$func` is fine
+// wherever that `$func` lives, including one a `$prop` holds — §4.15 is about
+// having no enclosing function, not about where the function sits.
+$decl t44i $call check_str ("...but one inside a $func is fine, even a prop-held one",
+  $call errs_of ("$decl v $union (1, none)  $decl b { $prop p $func () $try v none }"), "")
+
 // §4.11: the slot's layout position is the `$fwd`, not the `$decl`.
 $decl t45 $call check_str ("$fwd holds the layout position",
   $call field_ty ("$decl b { $fwd y  $decl a 1  $decl y 2 }", "b"), "{y:Int,a:Int,}")
