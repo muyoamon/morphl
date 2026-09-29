@@ -294,6 +294,24 @@ $decl t44e $call check_str ("the compile-time shapes are accepted",
   $call errs_of ($call concat ("$decl b { $prop f $func ($decl n 0) n  $prop u $union (1, 2) ",
                                " $prop n { $prop two 2 }  $prop k 7 }")), "")
 
+// §4.7's first fit, and §5.7's reason it bites. A pattern is a type-only position
+// and there is no type syntax, so `$case 1` denotes `Int` and claims every integer
+// — the second arm then answers for nothing, silently, and `classify (7)` returns
+// the *first* arm's value. This was a documented footgun with no diagnostic.
+$decl t44f $call check_str ("an arm covering the whole scrutinee kills the arms after it",
+  $call errs_of ("$decl f $func ($decl n 0) $match n ($case 1 100, $case n 200)"),
+  "this arm's pattern is the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1")
+
+// The test that keeps it usable: §5.6 requires exhaustiveness and BOOTSTRAP §1.3
+// makes a trailing catch-all the idiom throughout stage 1, so an arm the *types*
+// say is unreachable is the normal shape of correct code. Only an arm that covers
+// everything by itself is evidence of the mistake — which is why the check asks
+// about the whole scrutinee and not about what earlier arms left.
+$decl t44g $call check_str ("...but a trailing catch-all after exhaustive arms is fine",
+  $call errs_of ($call concat ("$decl a { $prop k \"a\" }  $decl b { $prop k \"b\" } ",
+      "$decl f $func ($decl x $union (a, b)) $match x ($case {$prop k \"a\"} 1, $case {$prop k \"b\"} 2, $case x 3)")),
+  "")
+
 // §4.11: the slot's layout position is the `$fwd`, not the `$decl`.
 $decl t45 $call check_str ("$fwd holds the layout position",
   $call field_ty ("$decl b { $fwd y  $decl a 1  $decl y 2 }", "b"), "{y:Int,a:Int,}")

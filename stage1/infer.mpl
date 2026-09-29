@@ -715,6 +715,24 @@ $decl narrow $func ($decl e env.node, $decl scrut Pa.proto_node, $decl t T.proto
   $case scrut e
 )
 
+// §4.7 is **first fit**, so an arm whose pattern covers the *whole* scrutinee type
+// leaves every arm after it dead. That is worth reporting, because it is almost
+// always one mistake: a pattern is a type-only position (§5.7) and there is no
+// syntax for writing a type, so `$case 1` denotes the *type* of `1` — `Int` — and
+// claims every integer. The intended `$match n ($case 1 …, $case n …)` then answers
+// the first arm for every `n`, and nothing said so.
+//
+// The test is against the whole scrutinee, not against what earlier arms left, and
+// that distinction is the whole design of the check. "This arm exhausts the
+// remainder" is true of the *last meaningful* arm of every correct `$match` —
+// §5.6 requires exhaustiveness and BOOTSTRAP §1.3 makes a trailing catch-all the
+// idiom throughout stage 1, so a catch-all that the types say is unreachable is
+// the normal shape of working code. Only an arm that covers everything *by itself*
+// is evidence of the error, and no correct arm of a partitioning `$match` does.
+//
+// It therefore does not catch a merely duplicated arm (`$case A …, $case A …`).
+// Reporting that needs "what the earlier arms left", which is exactly the test that
+// fires on every catch-all — so it is left out rather than made noisy.
 $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.proto_node,
                         $decl st T.proto_ty, $decl arms Pa.nodes.node, $decl acc T.proto_ty) $match arms (
   $case {$prop tag "cons"}
@@ -722,10 +740,15 @@ $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.pro
       // A pattern is a type-only position (§5.7): never evaluated, only its
       // type used — which is exactly what `infer` returns.
       $decl pt $call infer (cx, e, $call op (a, 0))
+      $decl rest $call Pa.nodes.val (arms.tail)
+      $decl dead $if ($call Pa.nodes.is_nil (rest)) 0
+          ($if ($call T.same (pt, st))
+               ($do ($call err (cx, "this arm's pattern is the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1", a)) 0)
+               0)
       // §4.7: narrowed to `type(e) & P` — as a selection, not an intersection.
       $decl e2 $call narrow (e, scrut, $call T.restrict (st, pt))
       $decl bt $call infer (cx, e2, $call op (a, 1))
-      $decl out $call infer_arms (cx, e, scrut, st, arms.tail, $call T.join (acc, bt)) }.out,
+      $decl out $call infer_arms (cx, e, scrut, st, rest, $call T.join (acc, bt)) }.out,
   $case arms acc
 )
 
