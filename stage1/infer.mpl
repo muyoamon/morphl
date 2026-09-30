@@ -1187,12 +1187,23 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
     // §4.16 rule 2's three sets — see `ctx`. `topnames` is guarded on `fdepth`
     // because a `$decl` inside a `$func` body takes a frame slot (§7.2) and
     // reading it *is* a capture, while a file top-level one is lifted to a global.
-    $decl xn $if ($call is_form (init, "extern"))
-        ($set cx.extnames ($call strs.cons (nm, cx.extnames))) ()
-    $decl cf $if ($call is_form (init, "func"))
-        ($set cx.cffns ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))) ()
-    $decl tn $if ($call eq_int ($call ival (cx.fdepth), 0))
-        ($set cx.topnames ($call strs.cons (nm, cx.topnames))) ()
+    //
+    // The condition is inside the `$set`, not around it, and that is not a style
+    // choice. `$if c ($set …) ()` has arms of two *different* types, so §3.6 joins
+    // them into a union and §7.5 gives the slot a discriminator and a payload — for
+    // a value nothing reads, since these three exist only for the store. Worse, the
+    // block copies every slot into its result, so the unit path copies a payload it
+    // never wrote: `cc -Wall` reports exactly that, and it was the only warning in
+    // the compiler's own C. Storing unconditionally — the same list back when the
+    // test fails — makes both arms one type, and the union, the tag and the copy
+    // all go away.
+    $decl xn $set cx.extnames ($if ($call is_form (init, "extern"))
+        ($call strs.cons (nm, cx.extnames)) ($call strs.val (cx.extnames)))
+    $decl cf $set cx.cffns ($if ($call is_form (init, "func"))
+        ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))
+        ($call fnlit_list.val (cx.cffns)))
+    $decl tn $set cx.topnames ($if ($call eq_int ($call ival (cx.fdepth), 0))
+        ($call strs.cons (nm, cx.topnames)) ($call strs.val (cx.topnames)))
     $decl bound $set s.env ($call bind (s.env, nm, ty))
     // A `$fwd` already reserved this slot at its own position (§4.11), so
     // complete that one rather than appending a second.
