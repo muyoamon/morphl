@@ -1599,8 +1599,15 @@ $decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node)
   { $decl ms $call find_mod (st.mods, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
+          // A **fourth** place that lowers a module's code, beside the three
+          // `lower_prop_*`. Without entering the module here, the effect's function is
+          // attributed to the entry file, and a per-module initialiser never claims it —
+          // `stage1/fixtures/effect.mpl` answers 4 instead of 46, which is exactly what
+          // "dropped" looks like.
           { $decl pe $call benv.val (ms.head.penv)
-            $decl z  $call lower_effect (st, pe, pn, -1) }.z,
+            $decl msave $call enter_mod (st, $call mod_short (ms.head.path))
+            $decl z  $call lower_effect (st, pe, pn, -1)
+            $decl mrest $call leave_mod (st, msave) }.z,
         $case ms 0
       ) }.r
 

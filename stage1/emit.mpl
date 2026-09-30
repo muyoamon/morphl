@@ -1447,7 +1447,10 @@ $decl exported_ids $func ($decl st proto_est, $decl fs IR.fns.node, $decl i 0,
     $case {$prop tag "cons"}
       { $decl a0 $call xmod_add (st, $call gref_of (fs.head.body, IR.ints.nil),
                      fs.head.mod, acc)
-        $decl a1 $if fs.head.thunk ($call gref_add (a0, i)) a0
+        // No longer forced: a thunk's function is called by *its own* module's
+        // initialiser now, so it needs no linkage beyond that file. Its *static* is still
+        // exported when another module reads it, which `gref_of` does see.
+        $decl a1 a0
         $decl r  $call exported_ids (st, $call IR.fns.val (fs.tail), $call add (i, 1), a1) }.r,
     $case fs acc
   )
@@ -2883,15 +2886,22 @@ $decl same_bool $func ($decl a P.boolean, $decl b P.boolean) $if a b ($call not 
 // (`IR.effect` says why). Without it a trailing bare expression in the entry
 // file would fire in the module pass, which is before the globals it is meant to
 // run after.
-$decl emit_effects $func ($decl st proto_est, $decl es IR.effects.node, $decl i 0,
-                          $decl inmod P.boolean) $match es (
+// An effect belongs to the module its *function* was lowered in, which is how it finds
+// its way into that module's initialiser.
+// `all` is the **whole** function table, not the suffix `emit_inits` is walking: an
+// effect's `fn` is a global index, and indexing a suffix with one is out of range. That
+// is what an empty emitted file and a missing `main` turned out to be.
+$decl emit_effects $func ($decl st proto_est, $decl all IR.fns.node,
+                          $decl es IR.effects.node, $decl i 0,
+                          $decl inmod P.boolean, $decl md "") $match es (
   $case {$prop tag "cons"}
     $do ($if ($call and ($call eq_int (es.head.after, i),
-                         $call same_bool (es.head.inmod, inmod)))
+                  $call and ($call same_bool (es.head.inmod, inmod),
+                             $call eq_str (($call fn_at (all, es.head.fn)).mod, md))))
              ($call say (st, $call concat ("  (void)",
                  $call concat ($call fn_name (st, es.head.fn), "(NULL);\n"))))
              ())
-        ($call emit_effects (st, $call IR.effects.val (es.tail), i, inmod)),
+        ($call emit_effects (st, all, $call IR.effects.val (es.tail), i, inmod, md)),
   $case es ()
 )
 
@@ -2899,16 +2909,26 @@ $decl emit_effects $func ($decl st proto_est, $decl es IR.effects.node, $decl i 
 // and running the effects of the matching kind. The effects need no window of
 // their own: `inmod` already separates them, and each fires at the single `i`
 // its `after` names.
-$decl emit_inits $func ($decl st proto_est, $decl fs IR.fns.node, $decl es IR.effects.node,
-                        $decl i 0, $decl glo 0, $decl ghi 0, $decl inmod P.boolean) $match fs (
+// `md` narrows this to one module's own globals and effects, which is what lets each
+// module carry its own `mpl_init_<mod>`. The index window and `inmod` stay: they encode
+// *which numbering* `after` is in — a file's effect counts fields and a module's counts
+// lifted indices, and the two spaces meet at `fnbase` — and §4.10's order here has
+// already been got wrong once silently (`stage1/fixtures/init_order.mpl`, answer 106).
+// Adding a filter beside them changes which entries a pass acts on and nothing about the
+// order it acts in.
+$decl emit_inits $func ($decl st proto_est, $decl all IR.fns.node, $decl fs IR.fns.node,
+                        $decl es IR.effects.node,
+                        $decl i 0, $decl glo 0, $decl ghi 0, $decl inmod P.boolean,
+                        $decl md "") $match fs (
   $case {$prop tag "cons"}
-    { $decl e $call emit_effects (st, es, i, inmod)
+    { $decl e $call emit_effects (st, all, es, i, inmod, md)
       $decl w $if ($call lt (i, glo)) false ($call lt (i, ghi))
-      $decl d $if ($call and (w, fs.head.thunk))
+      $decl mine $call eq_str (fs.head.mod, md)
+      $decl d $if ($call and (w, $call and (mine, fs.head.thunk)))
           ($call assign (st, $call gbl_name (st, i), $call concat ($call fn_name (st, i), "(NULL)"))) ()
-      $decl r $call emit_inits (st, $call IR.fns.val (fs.tail), es, $call add (i, 1),
-                  glo, ghi, inmod) }.r,
-  $case fs ($call emit_effects (st, es, i, inmod))
+      $decl r $call emit_inits (st, all, $call IR.fns.val (fs.tail), es, $call add (i, 1),
+                  glo, ghi, inmod, md) }.r,
+  $case fs ($call emit_effects (st, all, es, i, inmod, md))
 )
 
 
@@ -2953,18 +2973,44 @@ $decl mods_of $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
   $case fs ($call strs.reverse (acc, strs.nil))
 )
 
+$decl emit_mod_calls $func ($decl st proto_est, $decl ms strs.node) $match ms (
+  $case {$prop tag "cons"}
+    $do ($call say (st, $call concat ("  mpl_init_", $call concat (ms.head, "();\n"))))
+        ($call emit_mod_calls (st, ms.tail)),
+  $case ms ()
+)
+
+// Declared in the shared header, because the entry file's `mpl_init` calls them and they
+// are defined in another translation unit.
+$decl emit_mod_init_decls $func ($decl st proto_est, $decl ms strs.node) $match ms (
+  $case {$prop tag "cons"}
+    $do ($call say (st, $call concat ("void mpl_init_", $call concat (ms.head, "(void);\n"))))
+        ($call emit_mod_init_decls (st, ms.tail)),
+  $case ms ()
+)
+
 // One output per module: that module's function bodies and its contified groups, and
 // nothing else — every declaration is in the header, which is what makes the outputs
 // valid to concatenate *and* separately compilable.
 $decl emit_mod_files $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.tys.node,
                             $decl gs IR.groups.node, $decl ms strs.node,
+                            $decl efs IR.effects.node, $decl fb 0, $decl nf 0,
                             $decl acc IR.ofiles.node) $match ms (
   $case {$prop tag "cons"}
     { $decl pr $call emit_protos (st, fs, ts, 0, ms.head, false)
       $decl d0 $call emit_fns (st, fs, ts, 0, gs, ms.head)
       $decl d1 $call emit_groups (st, fs, gs, 0, ts, ms.head)
+      // This module's own initialiser: §4.10's source order over *its* globals and
+      // effects. It exists so a module's thunks and effect functions can stay private —
+      // the one initialiser in the entry file had to be able to call every one of them,
+      // which is what forced 269 extra exports.
+      $decl j0 $call say (st, $call concat ("\nvoid mpl_init_", $call concat (ms.head,
+                    "(void) {\n")))
+      $decl j1 $call emit_inits (st, fs, fs, $call IR.effects.val (efs), 0, fb, nf, true, ms.head)
+      $decl j2 $call say (st, "}\n")
       $decl f  $call IR.ofile ($call concat (ms.head, ".c"), $call cut_out (st))
-      $decl r  $call emit_mod_files (st, fs, ts, gs, ms.tail, $call IR.ofiles.cons (f, acc)) }.r,
+      $decl r  $call emit_mod_files (st, fs, ts, gs, ms.tail, efs, fb, nf,
+                   $call IR.ofiles.cons (f, acc)) }.r,
   $case ms ($call IR.ofiles.reverse (acc, IR.ofiles.nil))
 )
 
@@ -2993,8 +3039,7 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // Reported in the artifact while the split is being built: how much of the
     // program would actually need external linkage. If nearly everything crosses,
     // splitting buys no isolation and the answer is worth knowing before the work.
-    $decl xs0 $set st.exported ($call exported_ids (st, fs, 0,
-                   $call export_effs ($call IR.effects.val (p.effs), IR.ints.nil)))
+    $decl xs0 $set st.exported ($call exported_ids (st, fs, 0, IR.ints.nil))
     $decl xp $call IR.ints.length ($call IR.ints.val (st.exported), 0)
     $decl nf $call IR.fns.length (fs, 0)
     $decl hx $call say (st, $call concat ("/* cross-module references: ",
@@ -3015,6 +3060,7 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl tr $call emit_tramp (st, ts)
     $decl en $call emit_envs (st, fs, ts, 0)
     $decl gv $call emit_globals (st, fs, ts, 0, true)
+    $decl mid $call emit_mod_init_decls (st, $call mods_of (fs, strs.nil))
     // §9.1's first output. Everything above is a *declaration* — the runtime, §7.2's
     // layouts, §4.16's extern decls, every prototype, §6a's driver, the capture structs
     // and §4.10's statics — and every declaration has to precede every definition both
@@ -3024,8 +3070,10 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // functions are *not* a contiguous range of the table — loading one module can load
     // another partway through a member — so each pass walks the whole table and keeps
     // what is its own, which costs a scan per module and nothing else.
-    $decl mfs $call emit_mod_files (st, fs, ts, gs, $call mods_of (fs, strs.nil),
-                  IR.ofiles.nil)
+    $decl nfn0 $call IR.fns.length (fs, 0)
+    $decl mods $call mods_of (fs, strs.nil)
+    $decl mfs $call emit_mod_files (st, fs, ts, gs, mods,
+                  $call IR.effects.val (p.effs), p.fnbase, nfn0, IR.ofiles.nil)
     $decl ep  $call emit_protos (st, fs, ts, 0, "", false)
     $decl eg  $call emit_globals (st, fs, ts, 0, false)
     $decl e0  $call emit_fns (st, fs, ts, 0, gs, "")
@@ -3040,8 +3088,14 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // depend on the importer at all.
     $decl nfn $call IR.fns.length (fs, 0)
     $decl i0 $call say (st, "\nstatic void mpl_init(void) {\n")
-    $decl i1 $call emit_inits (st, fs, $call IR.effects.val (p.effs), 0, p.fnbase, nfn, true)
-    $decl i1b $call emit_inits (st, fs, $call IR.effects.val (p.effs), 0, 0, p.fnbase, false)
+    // Each module's initialiser first, in the order the modules were loaded, then the
+    // entry file's own globals. That order *is* §4.14's: loading a module finishes it
+    // before the importer's next member is appended, so a module a module imports has a
+    // lower first index and so comes first in `mods_of` — which is the same coarse
+    // guarantee §4.10 gave when this was one pass over an index window.
+    $decl i1 $call emit_mod_calls (st, mods)
+    $decl i1b $call emit_inits (st, fs, fs, $call IR.effects.val (p.effs), 0, 0, p.fnbase,
+                   false, "")
     $decl i2 $call say (st, "}\n")
     $decl mi  $call find_main (fs, 0)
     $decl mfn $if ($call lt (mi, 0)) IR.proto_fn ($call IR.fns.nth (fs, mi))
