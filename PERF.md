@@ -1582,3 +1582,84 @@ newest-first was tried and cost 30%, because it reordered a scan whose hot entri
 (`Int`, `Str`, unit, the booleans) are interned first and so sit at its head. A hash
 does not scan at all, so that failure does not transfer. Count it before believing it
 anyway.
+
+## A structural hash on every type: `intern`'s comparisons, 4.3x cumulative
+
+Measured first, for once, and the measurement is what shaped the design. An
+instrumented `emit_diag` counting `find_ty` calls and scan steps over `mplc.mpl`:
+
+| | |
+|---|---|
+| `find_ty` calls | **1,199,073** |
+| scan steps (`same` calls from the table) | **275,020,404** |
+| average scan length | **229** of 6,348 entries |
+| cost per comparison | **146 ns** (40.3s / 275M) |
+
+146 ns says the comparisons were not cheap tag checks: the table is mostly *block*
+types, so `same` went into `same_fields`, which does an `eq_str` per field name and
+recurses into field types. So every type now carries a structural hash and `same`
+settles a mismatch with one integer compare.
+
+| | emit `mplc.mpl` | output |
+|---|---|---|
+| before (per-node reachability tree) | 62.7s | |
+| with the `h` field but the old `same` | 68.2s | |
+| with the hash guard | **37.4s** | 69,244 lines, **byte-identical** |
+
+The `h` field costs **5.5s** on its own — every type value is one word bigger and
+every constructor computes it — and the guard saves **30.8s**. Net 1.68x, and
+**159.5s → 37.4s, 4.26x** over the three changes.
+
+**The soundness condition is one-directional and it decided the whole design.**
+`same (a, b)` must imply `hash_of (a) = hash_of (b)`; the converse need not hold,
+since equal hashes only cost a fallthrough to the structural walk. So the hash is
+built from a deliberate *coarsening* of what `same` compares, and anything `same`
+ignores is excluded:
+
+- `frame` is **not** hashed — `same`'s `func` case does not compare it, so two
+  functions differing only in §5.3a's closure flag are one type.
+- a field contributes its name's **length**, not its name — equal strings have equal
+  lengths, so this cannot separate an equal pair.
+- a prop contributes its value's **tag**, not its value — `cv_eq` requires matching
+  tags, and the payload is left out rather than audited.
+- a prop's `ty` is not hashed at all, because `same_props` does not compare it.
+
+**The one real bug the audit found was intersections.** §3.6 makes an intersection a
+set and it is deliberately *not* canonicalised — unlike a union, which `t_union`
+sorts — so `same` compares intersections with `same_set`, order-insensitively. A
+positional fold would have given two *equal* intersections different hashes, interned
+one type twice, and had the backend lay out two C structs for it. `hash_tys_comm` is
+a commutative fold for that case alone. It did **not** show up in the byte-identity
+check, because reordered intersections do not arise while compiling the compiler —
+which is exactly why it needed reasoning rather than a test run. `types_test`'s
+`t66`–`t69` pin it, along with the `frame` exclusion.
+
+Two smaller notes. `hash_of` names every compound tag rather than using a catch-all:
+§4.7 narrows a catch-all to the *union* of what is left and §5.1 can only project a
+common prefix, but `h` sits at a different position in each member, so `t.h` on that
+union does not typecheck. And `same` had to be split into a guard plus `same_deep`
+placed *after* it, because §4.10's source order will not let the guard name a
+declaration below it.
+
+### Where the compiled compiler spends its time now
+
+37.4s, and the shape has changed — the top entry is a **contified group**, §6a
+having folded `same` and `same_deep` into one function with a dispatch loop:
+
+| symbol | share | absolute |
+|---|---|---|
+| `mpl_grp1` (`same` + `same_deep`) | 49.10% | 18.4s |
+| `find_ty_at` | 13.10% | 4.9s |
+| `hash_of` | 9.88% | 3.7s |
+| `same_tys` | 5.63% | 2.1s |
+| `has_var` | 5.24% | 2.0s |
+| `lookup` | 2.84% | 1.1s |
+| `find_mdone` | 2.02% | 0.8s |
+
+**The constant factor is now close to the floor for a linear scan, and what is left
+is the scan.** 275M iterations at ~65ns each is the call into `same`, two `hash_of`
+dispatches and an integer compare — there is no structural walking left to remove.
+Going further means reducing the *number* of iterations, which is a different change:
+either cache each type's interned index on the node (a `$mut` field set on first
+intern) or bucket the table, which needs integer arrays that BOOTSTRAP §2 does not
+give stage 1 — the root block's arrays are monomorphic at `Str`.

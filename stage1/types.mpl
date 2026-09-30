@@ -156,7 +156,29 @@ $decl t_bot   { $prop tag "bottom" }
 
 // §5.5's placeholder `R`: a type not yet solved. Its id comes from a global
 // counter and is meaningful only until the knot is tied.
-$decl t_var $func ($decl i 0) { $prop tag "var" $decl id i }
+// §9.3's table is scanned with `same` against every entry for every type
+// interned — 275,020,404 comparisons over one emit of the compiler, an average
+// scan of 229 for 1,199,073 lookups, and 40.3s of a 62.7s run. So every type
+// carries a structural hash, and `same` settles the common answer (a mismatch)
+// with one integer compare instead of walking two records.
+//
+// **The hash may depend only on what `same` actually compares, and it is built
+// from a deliberate *coarsening* of that.** Including something `same` ignores
+// would make two equal types hash differently, intern twice, and hand the
+// backend two C structs for one type — so `frame` is excluded (`same`'s `func`
+// case does not compare it), a prop contributes its value's *tag* rather than
+// its value (`cv_eq` is structural, so equal values share a tag), a field
+// contributes its name's *length* (equal names have equal lengths), and a prop's
+// `ty` is not used at all (`same_props` does not compare it). Omitting anything
+// only costs a fallthrough to the structural comparison; including one thing too
+// many is a miscompile.
+//
+// `mul` panics on overflow (§8), so the mix is modular.
+$decl hmod 1000000007
+$decl hmix $func ($decl a 0, $decl b 0)
+  $call mod ($call add ($call mul (a, 31), $call mod (b, hmod)), hmod)
+
+$decl t_var $func ($decl i 0) { $prop tag "var" $decl id i  $decl h $call hmix (10, i) }
 
 // A bound recursion variable, as a de Bruijn index: `bnd 0` is the innermost
 // enclosing `rec`, `bnd 1` the one outside it. Binders therefore carry no name
@@ -164,7 +186,7 @@ $decl t_var $func ($decl i 0) { $prop tag "var" $decl id i }
 // the same recursive type built at two declarations come out equal, and the
 // assumption set in `sub` can recognise a goal it has already seen. Naming
 // binders by a unique integer, which is what this replaced, cannot do that.
-$decl t_bnd $func ($decl k 0) { $prop tag "bnd" $decl idx k }
+$decl t_bnd $func ($decl k 0) { $prop tag "bnd" $decl idx k  $decl h $call hmix (11, k) }
 
 // The type of types.
 //
@@ -188,21 +210,22 @@ $decl proto_ty $union (
     // `value` is any compile-time value, not just unit: a prop holding a
     // function renders as `copaque`, and writing `cv_unit` here said no block
     // with such a prop was a type at all.
-    $decl props $alloc ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node },
-  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node },
+    $decl props $alloc ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node
+    $decl h 0 },
+  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0 },
   { $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node  $decl result $alloc proto_ty
-    $decl frame P.boolean },
+    $decl frame P.boolean  $decl h 0 },
   // §3.5: storage has a **kind** as well as a qualifier, and the two are
   // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
   // `""` and allocated is `"alloc"`, so a reference built without saying is
   // frame, which is what `$new` makes.
-  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind "" },
-  { $prop tag "array" $decl elem $alloc proto_ty },
-  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node },
-  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node },
-  { $prop tag "rec"   $decl body $alloc proto_ty },
-  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node },
-  { $prop tag "tmpl"  $decl id 0 }
+  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0 },
+  { $prop tag "array" $decl elem $alloc proto_ty  $decl h 0 },
+  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0 },
+  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0 },
+  { $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0 },
+  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0 },
+  { $prop tag "tmpl"  $decl id 0  $decl h 0 }
 )
 
 $decl tval $func ($decl t proto_ty) t
@@ -237,22 +260,109 @@ $decl tys    $specialize P.list proto_ty
 $decl fields $specialize P.list proto_field
 $decl props  $specialize P.list proto_prop
 
+// The stored hash, or a per-tag constant for the leaves — which carry nothing, so
+// their tag *is* their identity and they need no field.
+// Every compound tag is named rather than caught: §4.7 narrows a catch-all to the
+// *union* of what is left, and §5.1 can only project a common prefix — `h` sits at
+// a different position in each member, so `t.h` on that union does not typecheck.
+// Naming each one narrows to a single member, where the field is reachable.
+$decl hash_of $func ($decl t proto_ty) $match t (
+  $case {$prop tag "int"}    1,
+  $case {$prop tag "float"}  2,
+  $case {$prop tag "str"}    3,
+  $case {$prop tag "true"}   4,
+  $case {$prop tag "false"}  5,
+  $case {$prop tag "unit"}   6,
+  $case {$prop tag "bottom"} 7,
+  $case {$prop tag "var"}    t.h,
+  $case {$prop tag "bnd"}    t.h,
+  $case {$prop tag "block"}  t.h,
+  $case {$prop tag "group"}  t.h,
+  $case {$prop tag "func"}   t.h,
+  $case {$prop tag "ref"}    t.h,
+  $case {$prop tag "array"}  t.h,
+  $case {$prop tag "union"}  t.h,
+  $case {$prop tag "inter"}  t.h,
+  $case {$prop tag "rec"}    t.h,
+  $case {$prop tag "over"}   t.h,
+  $case {$prop tag "tmpl"}   t.h,
+  $case t 0
+)
+
+// A compile-time value contributes only its *tag*. `cv_eq` is structural, so
+// equal values agree on it; the payload is left out rather than audited.
+$decl cv_tag_h $func ($decl c proto_cv) $match c (
+  $case {$prop tag "cint"}    1,
+  $case {$prop tag "cstr"}    2,
+  $case {$prop tag "cbool"}   3,
+  $case {$prop tag "cunit"}   4,
+  $case c 5
+)
+
+$decl hash_tys $func ($decl xs tys.node, $decl acc 0) $match xs (
+  $case {$prop tag "cons"}
+    $call hash_tys (xs.tail, $call hmix (acc, $call hash_of ($call tval (xs.head)))),
+  $case xs acc
+)
+
+// An **intersection** is compared with `same_set`, which is order-insensitive,
+// because intersections are deliberately not canonicalised — they carry no
+// discriminator, so there is nothing for an order to mean. A positional fold
+// would therefore give two *equal* intersections different hashes and split
+// them, which is the one way this optimisation could miscompile: one type would
+// intern twice and the backend would lay out two C structs for it. So the fold
+// for an intersection is commutative. A union needs no such care, since
+// `t_union` sorts and `same` compares its members positionally.
+$decl hash_tys_comm $func ($decl xs tys.node, $decl acc 0) $match xs (
+  $case {$prop tag "cons"}
+    $call hash_tys_comm (xs.tail,
+        $call mod ($call add (acc, $call hash_of ($call tval (xs.head))), hmod)),
+  $case xs acc
+)
+
+// A field's *name length*, not its name: `same_fields` compares names with
+// `eq_str`, and equal strings have equal lengths, so this is a coarsening and
+// cannot separate two equal types.
+$decl hash_fields $func ($decl xs fields.node, $decl acc 0) $match xs (
+  $case {$prop tag "cons"}
+    $call hash_fields (xs.tail,
+        $call hmix ($call hmix (acc, $call len (xs.head.name)),
+                    $call hash_of ($call tval (xs.head.ty)))),
+  $case xs acc
+)
+
+// A prop's `ty` is deliberately absent: `same_props` compares the name and the
+// value and nothing else.
+$decl hash_props $func ($decl xs props.node, $decl acc 0) $match xs (
+  $case {$prop tag "cons"}
+    $call hash_props (xs.tail,
+        $call hmix ($call hmix (acc, $call len (xs.head.name)),
+                    $call cv_tag_h (xs.head.value))),
+  $case xs acc
+)
+
 // Raw constructors. `raw_union`/`raw_inter` are not for general use — build
 // unions with `t_union`, which normalises.
 $decl raw_block $func ($decl fs fields.node, $decl ps props.node)
-  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps }
+  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps
+    $decl h $call hmix ($call hmix (13, $call hash_fields (fs, 0)), $call hash_props (ps, 0)) }
 
-$decl raw_union $func ($decl ms tys.node) { $prop tag "union" $decl members $alloc ms }
-$decl raw_inter $func ($decl ms tys.node) { $prop tag "inter" $decl members $alloc ms }
+$decl raw_union $func ($decl ms tys.node)
+  { $prop tag "union" $decl members $alloc ms  $decl h $call hmix (18, $call hash_tys (ms, 0)) }
+$decl raw_inter $func ($decl ms tys.node)
+  { $prop tag "inter" $decl members $alloc ms
+    $decl h $call hmix (19, $call hash_tys_comm (ms, 0)) }
 
-$decl t_group $func ($decl xs tys.node)  { $prop tag "group" $decl items $alloc xs }
+$decl t_group $func ($decl xs tys.node)
+  { $prop tag "group" $decl items $alloc xs  $decl h $call hmix (14, $call hash_tys (xs, 0)) }
 // `frame` is §5.3a's closure clause. §7.3 keeps a closure's captures out of its
 // *type* — that is what makes every function value two words — so a `$func`
 // literal that captured a frame reference has to record that it did somewhere,
 // and this is it. It is not about the parameters or the result: those are
 // frame-bound or not on their own.
 $decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean)
-  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr }
+  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr
+    $decl h $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r)) }
 
 $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r, false)
 
@@ -263,7 +373,9 @@ $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r
 // written and `verify` rejects the mismatch. So the common case keeps its
 // arity and the kinded case gets a name.
 $decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "")
-  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k }
+  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k
+    $decl h $call hmix ($call hmix ($call hmix (16, $call len (q)), $call len (k)),
+                        $call hash_of (t)) }
 
 $decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
 
@@ -271,15 +383,19 @@ $decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
 // that means "allocated" lives in one place.
 $decl k_alloc "alloc"
 $decl is_alloc $func ($decl k "") $call eq_str (k, k_alloc)
-$decl t_array $func ($decl e proto_ty) { $prop tag "array" $decl elem $alloc e }
-$decl t_rec   $func ($decl b proto_ty) { $prop tag "rec" $decl body $alloc b }
-$decl t_over  $func ($decl cs tys.node) { $prop tag "over" $decl cands $alloc cs }
+$decl t_array $func ($decl e proto_ty)
+  { $prop tag "array" $decl elem $alloc e  $decl h $call hmix (17, $call hash_of (e)) }
+$decl t_rec   $func ($decl b proto_ty)
+  { $prop tag "rec" $decl body $alloc b  $decl h $call hmix (20, $call hash_of (b)) }
+$decl t_over  $func ($decl cs tys.node)
+  { $prop tag "over" $decl cands $alloc cs  $decl h $call hmix (21, $call hash_tys (cs, 0)) }
 
 // A template (§4.9). Its body is *not* type-checked at declaration, so there is
 // nothing structural to record here: the type is an identity, and whoever built
 // it keeps the body and the environment it was written in. Two templates are
 // the same type when they are the same template.
-$decl t_tmpl  $func ($decl i 0) { $prop tag "tmpl" $decl id i }
+$decl t_tmpl  $func ($decl i 0)
+  { $prop tag "tmpl" $decl id i  $decl h $call hmix (12, i) }
 
 // Props have no layout (§4.10), so their order is not part of the type.
 // Sorting them at construction is what makes the rendering below canonical.
@@ -436,7 +552,7 @@ $decl same_set $func ($decl xs tys.node, $decl ys tys.node)
   $if ($call eq_int ($call tys.length (xs, 0), $call tys.length (ys, 0)))
       ($call subset_tys (xs, ys)) false
 
-$decl same $func ($decl a proto_ty, $decl b proto_ty) $match a (
+$decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
   $case {$prop tag "var"} $match b ($case {$prop tag "var"} $call eq_int (a.id, b.id), $case b false),
   $case {$prop tag "block"} $match b (
       $case {$prop tag "block"}
@@ -528,6 +644,14 @@ $decl same $func ($decl a proto_ty, $decl b proto_ty) $match a (
         )
     )
 )
+
+// The hash decides the common case — a mismatch — with one integer compare, and
+// the structural walk runs only when the hashes agree. Since the hash is a
+// coarsening of what `same` compares, equal types always agree and the answer is
+// unchanged; unequal types that happen to agree simply fall through, which is why
+// a weak hash is sound and only a hash that separates equal types is not.
+$decl same $func ($decl a proto_ty, $decl b proto_ty)
+  $if ($call eq_int ($call hash_of (a), $call hash_of (b))) ($call same_deep (a, b)) false
 
 $decl ty_eq $func ($decl a proto_ty, $decl b proto_ty) $call same (a, b)
 

@@ -302,3 +302,37 @@ $decl blk_expanded  $call T.t_block ($call T.f1 ("fields", $call list_of (elem_e
 
 $decl t65 $call check ("expansion nested in a second recursive type still relates",
   $call T.sub (blk_expanded, outer))
+
+// ----------------------------------------------- the structural hash (§3.6, §9.3)
+
+// `same` settles a mismatch with one integer compare on a structural hash, so the
+// hash may depend only on a *coarsening* of what `same` compares. The one way that
+// can go wrong is a hash that separates two **equal** types: the pair would intern
+// twice and the backend would lay out two C structs for one type, silently.
+//
+// An intersection is where it nearly did. §3.6 makes it a set and it is
+// deliberately *not* canonicalised — unlike a union, which `t_union` sorts — so
+// `same` compares intersections with `same_set`, order-insensitively. A positional
+// fold over the members would therefore give these two different hashes. The fold
+// for an intersection is commutative for exactly this reason.
+$decl ia $call T.t_inter ($call T.tys.cons (int, $call T.tys.cons (str, T.tys.nil)))
+$decl ib $call T.t_inter ($call T.tys.cons (str, $call T.tys.cons (int, T.tys.nil)))
+
+$decl t66 $call check ("two intersections written in different orders are the same type",
+  $call T.same (ia, ib))
+$decl t67 $call check ("...and neither is equal to an intersection with a different member",
+  $call not ($call T.same (ia,
+      $call T.t_inter ($call T.tys.cons (int, $call T.tys.cons (unit, T.tys.nil))))))
+
+// A union's members *are* canonical, so the same two spellings are one type with one
+// member order — which is what lets `same` walk them positionally at all.
+$decl t68 $call check ("a union is order-insensitive too, by being sorted",
+  $call T.same ($call T.union2 (int, str), $call T.union2 (str, int)))
+
+// `frame` is §5.3a's closure flag and `same` does not compare it, so the hash must
+// not either: two functions differing only in it are one type.
+$decl t69 $call check ("the closure flag is not part of type identity, nor of the hash",
+  $call T.same ($call T.t_func (T.tys.nil, int),
+                $call T.t_func_fr (T.tys.nil, int, true)))
+
+$decl done_h $call nl ("all hash-invariant tests passed")
