@@ -2327,39 +2327,59 @@ $decl collect_edges $func ($decl fs IR.fns.node, $decl i 0, $decl acc edges.node
   $case fs acc
 )
 
-$fwd reaches
-
-// Depth first, with the visited set as the termination argument — the graph is
-// finite and `seen` only grows.
-$decl reaches_from $func ($decl es edges.node, $decl all edges.node, $decl a 0, $decl b 0,
-                          $decl seen IR.ints.node) $match es (
+// The tail-call graph with every edge turned around. Mutual reachability is an
+// *intersection* — `j` is in `i`'s component exactly when `i` reaches `j` and `j`
+// reaches `i` — and reaching `i` backwards is reaching it forwards along these.
+// One list, built once, and the backward search is then the same code as the
+// forward one.
+$decl rev_edges $func ($decl es edges.node, $decl acc edges.node) $match es (
   $case {$prop tag "cons"}
-    $if ($call eq_int (es.head.from, a))
-        ($if ($call eq_int (es.head.to, b)) true
-             ($if ($call reaches (all, es.head.to, b, $call IR.ints.cons (a, seen))) true
-                  ($call reaches_from (es.tail, all, a, b, seen))))
-        ($call reaches_from (es.tail, all, a, b, seen)),
-  $case es false
+    $call rev_edges (es.tail, $call edges.cons ($call edge (es.head.to, es.head.from), acc)),
+  $case es acc
 )
 
-$decl reaches $func ($decl es edges.node, $decl a 0, $decl b 0, $decl seen IR.ints.node)
-  $if ($call mem_int (seen, a)) false ($call reaches_from (es, es, a, b, seen))
+$fwd reach_add
 
-// Everything mutually reachable with `i`, itself included.
-$decl scc_of $func ($decl es edges.node, $decl i 0, $decl j 0, $decl n 0,
-                    $decl acc IR.ints.node)
+// Depth first, accumulating the visited set rather than answering one question
+// about it. `acc` is the termination argument: the graph is finite and it only
+// grows. A node lands in its own set exactly when a cycle returns to it, which is
+// what makes the intersection below mean what it should.
+$decl reach_edges $func ($decl es edges.node, $decl all edges.node, $decl a 0,
+                         $decl acc IR.ints.node) $match es (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (es.head.from, a))
+        ($call reach_edges (es.tail, all, a, $call reach_add (all, es.head.to, acc)))
+        ($call reach_edges (es.tail, all, a, acc)),
+  $case es acc
+)
+
+$decl reach_add $func ($decl all edges.node, $decl b 0, $decl acc IR.ints.node)
+  $if ($call mem_int (acc, b)) acc
+      ($call reach_edges (all, all, b, $call IR.ints.cons (b, acc)))
+
+$decl reach_from $func ($decl es edges.node, $decl a 0)
+  $call reach_edges (es, es, a, IR.ints.nil)
+
+// Everything mutually reachable with `i`, itself included, in ascending order —
+// `find_groups` needs the order, because it keeps a component only at its lowest
+// member. `fw` and `bw` are computed once per `i` by the caller; this used to run
+// two whole depth-first searches *per pair*, which is 2n² of them over the table
+// against 2n now, each one scanning the entire edge list.
+$decl scc_of $func ($decl fw IR.ints.node, $decl bw IR.ints.node, $decl i 0, $decl j 0,
+                    $decl n 0, $decl acc IR.ints.node)
   $if ($call not ($call lt (j, n))) ($call IR.ints.reverse (acc, IR.ints.nil))
-      ($call scc_of (es, i, $call add (j, 1), n,
+      ($call scc_of (fw, bw, i, $call add (j, 1), n,
           $if ($call eq_int (i, j)) ($call IR.ints.cons (j, acc))
-              ($if ($call and ($call reaches (es, i, j, IR.ints.nil),
-                               $call reaches (es, j, i, IR.ints.nil)))
+              ($if ($call and ($call mem_int (fw, j), $call mem_int (bw, j)))
                    ($call IR.ints.cons (j, acc)) acc)))
 
 // One entry per component, recorded against its lowest member so a component
 // is not emitted once per member.
-$decl find_groups $func ($decl es edges.node, $decl i 0, $decl n 0, $decl acc IR.groups.node)
+$decl find_groups $func ($decl es edges.node, $decl rev edges.node, $decl i 0, $decl n 0,
+                         $decl acc IR.groups.node)
   $if ($call not ($call lt (i, n))) ($call IR.groups.reverse (acc, IR.groups.nil))
-      { $decl g $call scc_of (es, i, 0, n, IR.ints.nil)
+      { $decl g $call scc_of ($call reach_from (es, i), $call reach_from (rev, i),
+                    i, 0, n, IR.ints.nil)
         $decl keep $match g (
             $case {$prop tag "cons"}
               // More than one member, and this is the lowest of them.
@@ -2369,7 +2389,7 @@ $decl find_groups $func ($decl es edges.node, $decl i 0, $decl n 0, $decl acc IR
                   false,
             $case g false
           )
-        $decl r $call find_groups (es, $call add (i, 1), n,
+        $decl r $call find_groups (es, rev, $call add (i, 1), n,
                     $if keep ($call IR.groups.cons ($call IR.group_of (g), acc)) acc) }.r
 
 $decl append_fns $func ($decl xs IR.fns.node, $decl ys IR.fns.node) $match xs (
@@ -2483,7 +2503,8 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
                    $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil))
     $decl all  $call mark_self (all0, 0, IR.fns.nil)
     $decl es   $call collect_edges (all, 0, edges.nil)
-    $decl gs   $call find_groups (es, 0, $call IR.fns.length (all, 0), IR.groups.nil)
+    $decl gs   $call find_groups (es, $call rev_edges (es, edges.nil), 0,
+                    $call IR.fns.length (all, 0), IR.groups.nil)
     // Newest first while they are collected, since a file and the modules it
     // imports both append here.
     // `st.fnbase` is the boundary §4.10 needs in the backend, not just here.

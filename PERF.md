@@ -1526,3 +1526,59 @@ connected components; Tarjan computes them in one pass. That is the next lever, 
 after it `intern`'s O(T²) `same` calls, which want a structural hash rather than a
 scan — note that holding the table newest-first was already tried and cost 30%,
 because a hash is not a scan and that attempt was.
+
+## §6a's SCC search ran two depth-first searches per *pair*, not per node
+
+Same tree, same instrument, immediately after the `same` fix above.
+
+`find_groups` walked `i` over all n functions, `scc_of` walked `j` over all n, and
+each pair called `reaches` **twice** — so 2n² depth-first searches over the tail-call
+graph, each one scanning the whole edge *list* per visited node. At n = 2,480 that is
+**12.3 million** searches to find three groups.
+
+Mutual reachability is an intersection, so it needs two searches **per node**, not per
+pair: `j` is in `i`'s component exactly when `i` reaches `j` and `j` reaches `i`, and
+"reaches `i`" is forward reachability on the edge list turned around. `reach_from`
+accumulates the reachable set instead of answering one question about it, `rev_edges`
+builds the reversed list once, and `scc_of` becomes two `mem_int` tests.
+
+| | emit `mplc.mpl` | output |
+|---|---|---|
+| pairwise `reaches` | 86.5s | 68,644 lines |
+| per-node `reach_from` | **62.7s** | 68,644 lines, **byte-identical** |
+
+2n² searches → 2n, a 2,480x reduction in search count for 1.38x on the whole run —
+`reaches` was 22.2s of 86.5s and it is now absent from the profile. Predicted 64.3s,
+measured 62.7s, within 2.5%. `q1 == q2` byte-for-byte is the check that matters: the
+same three components are found, so §6a contifies exactly what it did before.
+
+Each search is still O(V·E), because `reach_edges` rescans the edge list per visited
+node; grouping edges by source into an adjacency list would make it O(V+E). That was
+**not** done, because after this change reachability does not appear in the profile at
+all and there is nothing left to win there.
+
+### Where the compiled compiler spends its time now
+
+62.7s total, after both fixes (159.5s → 62.7s, **2.54x**):
+
+| symbol | share | absolute |
+|---|---|---|
+| `same` | 64.24% | 40.3s |
+| `same_tys` | 11.86% | 7.4s |
+| `find_ty_at` | 6.46% | 4.1s |
+| `has_var` | 2.57% | 1.6s |
+| `lookup` | 1.57% | 1.0s |
+| `cv_eq` | 1.45% | 0.9s |
+| `find_mdone` | 1.10% | 0.7s |
+
+Type comparison is **76%** again, and now it is unambiguously `intern`: the table is
+scanned with `same` against every entry for every type interned, so it is O(T²)
+comparisons with T = 6,348. `find_ty_at` at 6.46% is the scan *loop*; `same` is the
+comparisons it asks for.
+
+The fix is a **structural hash** cached on the type, making interning O(1) expected —
+and note that this is *not* the thing that failed before. Holding the table
+newest-first was tried and cost 30%, because it reordered a scan whose hot entries
+(`Int`, `Str`, unit, the booleans) are interned first and so sit at its head. A hash
+does not scan at all, so that failure does not transfer. Count it before believing it
+anyway.
