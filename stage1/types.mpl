@@ -458,10 +458,28 @@ $decl same $func ($decl a proto_ty, $decl b proto_ty) $match a (
     ),
   $case {$prop tag "array"} $match b (
       $case {$prop tag "array"} $call same (a.elem, b.elem), $case b false),
-  // §3.6 makes these *sets*, so membership decides equality, not order. That is
-  // what lets construction skip sorting entirely.
+  // §3.6 makes both of these *sets*, so membership and not order is what decides
+  // equality — but a **union** is now canonically ordered by construction, and
+  // that makes the set comparison unnecessary. `t_union` is the only caller of
+  // `raw_union` and it always passes `sort_tys`, so two equal unions arrive with
+  // their members in the same order and a positional walk answers the same
+  // question `same_set` does. The difference is the cost: `same_set` is a length
+  // check plus `subset_tys`, which is one `mem_ty` per member and one `same` per
+  // candidate — O(n·m) on the members, each of which may itself be a big union.
+  // `same_tys` is O(n). `intern` calls `same` against every table entry for every
+  // type it interns, so this is the hot path of the whole compiler: `perf` on an
+  // emit of the compiler put `same` at 56.9%, `mem_ty` at 13.1% and `same_set` at
+  // 3.3%, against `find_ty_at`'s 2.5% — the cost was never the table scan.
+  //
+  // An **intersection** keeps the set comparison, because intersections are
+  // deliberately not canonicalised: they carry no discriminator, so there is
+  // nothing for an order to mean and `inter_addall` does not sort.
+  //
+  // The check that this is sound is that the emitted C stays byte-identical. If a
+  // positional walk answered differently anywhere, `intern` would hand out
+  // different indices and every `mpl_tN` after that point would move.
   $case {$prop tag "union"} $match b (
-      $case {$prop tag "union"} $call same_set (a.members, b.members), $case b false),
+      $case {$prop tag "union"} $call same_tys (a.members, b.members), $case b false),
   $case {$prop tag "inter"} $match b (
       $case {$prop tag "inter"} $call same_set (a.members, b.members), $case b false),
   // No binder name to compare: two recursive types are equal exactly when

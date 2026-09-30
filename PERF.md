@@ -1470,3 +1470,59 @@ Recorded so they are not retried blind.
 - `lookup` scan width growing with program size (flat at ~16.8)
 - devirtualising the alias thunks as a *speed* change (see above: 121 indirect
   calls removed, wall time unmoved)
+
+## `T.same` on unions was 76% of the compiled compiler, and canonical order made
+## the set comparison unnecessary
+
+Taken on the tree at `5200da0` plus the `$if`/`$set` union-slot fix, with
+`perf record -g` on `cc -O2 -g -fno-omit-frame-pointer` of `bootstrap/mplc.c`.
+This is the first profile of the *compiled* compiler by time rather than by
+allocation, and it is cheap — one 160s run against stage 0's ninety minutes — so
+it should be the first instrument reached for from now on.
+
+`mplc stage1/mplc.mpl`, 694,928 samples:
+
+| symbol | before | after |
+|---|---|---|
+| `same` | 56.90% = 90.7s | 48.10% = **42.5s** |
+| `mem_ty` | 13.06% = 20.9s | **absent** |
+| `same_set` | 3.33% = 5.3s | **absent** |
+| `tys.length` | 1.73% = 2.7s | **absent** |
+| `same_tys` | — | 8.84% = 7.8s |
+| `reaches` | 13.03% = 20.7s | 25.17% = 22.2s |
+| `find_ty_at` | 2.53% = 4.0s | 4.73% = 4.2s |
+| **whole emit** | **159.5s** | **88.3s** |
+
+**1.8x, and the output is byte-identical** — 68,592 lines, `cmp` clean, which is
+the only check that matters here: if a positional walk had disagreed anywhere,
+`intern` would have handed out a different index and every `mpl_tN` after that
+point would have moved.
+
+The mechanism, and the arithmetic that confirms it. §3.6 makes a union a *set*, so
+`same` compared two unions with `same_set` — a length check plus `subset_tys`,
+which is one `mem_ty` per member and one `same` per candidate: O(n·m) on members
+that may themselves be big unions. But **a union is now canonically ordered by
+construction**: `t_union` is the only caller of `raw_union` and always passes
+`sort_tys`. So `same_tys`, the positional walk already used for groups, `$func`
+parameters and `$overload` candidates, answers the same question in O(n).
+Predicted saving 69.3s, measured 71.2s — 3%.
+
+Two things worth carrying:
+
+- **The canonical order was introduced for §7.5's discriminators, not for this.**
+  Making the member order part of the type so a tag belongs to the type rather
+  than to the writing happened to make set comparison redundant. The speed was
+  found afterwards, by profiling, not predicted.
+- **`find_ty_at` was 2.53%, so the type-table *scan* was never the problem.** That
+  is the fifth time in this codebase a structure's scan length was suspected when
+  the cost was the price of one comparison — `IR.find_ty`, `append_ty`, `T.unroll`,
+  `Scope.findLocal`, and now this. The scan still drives the O(T²) `same` calls
+  (`intern` compares against every entry), but halving `same` is what paid.
+
+`reaches` is now the largest single non-`same` cost — 22.2s, unchanged in absolute
+terms and only larger as a share because the total shrank. It is `lower.mpl`'s
+repeated graph reachability with a list-based `seen`, used to find §6a's strongly
+connected components; Tarjan computes them in one pass. That is the next lever, and
+after it `intern`'s O(T²) `same` calls, which want a structural hash rather than a
+scan — note that holding the table newest-first was already tried and cost 30%,
+because a hash is not a scan and that attempt was.
