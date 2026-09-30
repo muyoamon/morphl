@@ -203,6 +203,86 @@ pub fn build(b: *std.Build) void {
     mplc_cc.addFileArg(b.path("bootstrap/mplc.c"));
     stage2_step.dependOn(&b.addInstallBinFile(mplc_bin, "mplc").step);
 
+    // ------------------------------------------------- §9.1's list of outputs
+    //
+    // `emit` answers one output per module (§9.1), and the point of that is a file
+    // per source module that compiles on its own — so this builds a program the way
+    // a real build would: write the outputs, compile each *separately*, link them.
+    //
+    // It is the only step that can find a linkage mistake. `test-emit` concatenates
+    // everything into one translation unit, where a symbol that should have been
+    // external is indistinguishable from one that is `static`; `verify` cannot see
+    // linkage at all. Three bugs were found exactly here, all of them references
+    // `mpl_init` makes that no walk over function bodies can see.
+    //
+    // No `#include` is emitted — §9 makes the build a program, so how a target
+    // invokes its C compiler is the build's business — hence `-include mpl.h` below.
+    //
+    // The expected file list is declared rather than globbed, which also pins the
+    // partition: if `emit` stopped giving a module its own output, this fails.
+    const split_step = b.step("test-split", "Build a program from one C file per module");
+    {
+        // The writing driver, compiled: §8's `write_file` is emitted, so a compiled
+        // driver can put each output where its `path` says. Under stage 0 it could
+        // not — `--run` never calls `main`, which is where a compiled driver's work
+        // has to live, or the link fails for want of `main`.
+        const ef_emit = std.Build.Step.Run.create(b, "mplc emits the writing driver");
+        ef_emit.addFileArg(mplc_bin);
+        ef_emit.addArg("stage1/emit_files.mpl");
+        ef_emit.setCwd(b.path("."));
+        ef_emit.has_side_effects = true;
+        const ef_c = ef_emit.captureStdOut(.{ .basename = "emit_files.c" });
+        const ef_cc = b.addSystemCommand(&.{ "cc", "-O2", "-w", "-o" });
+        const ef_bin = ef_cc.addOutputFileArg("emit_files");
+        ef_cc.addFileArg(ef_c);
+
+        for ([_]struct { src: []const u8, want: []const u8, mods: []const []const u8 }{
+            // Two modules and a global read across the boundary.
+            .{ .src = "stage1/fixtures/import.mpl", .want = "57\n", .mods = &.{"import_util"} },
+            // §3.3's effects, which is what per-module initialisers are for: each
+            // module runs its own, in §4.10's order, and the answer pins the order.
+            // Three outputs, not two: `effect_util` imports the prelude, so that is a
+            // module of this program too. Declaring the list rather than globbing is what
+            // caught the omission — `prelude.c` was written and never compiled, and the
+            // link failed on `mpl_fprelude_4`.
+            .{ .src = "stage1/fixtures/effect.mpl", .want = "46\n", .mods = &.{ "prelude", "effect_util" } },
+            // A cycle between two module members (§5.5), so each is named from the
+            // other's output.
+            .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n", .mods = &.{"mutual_util"} },
+        }) |fx| {
+            const write = std.Build.Step.Run.create(b, "emit one output per module");
+            write.addFileArg(ef_bin);
+            write.addArg(fx.src);
+            const dir = write.addOutputDirectoryArg("split");
+            write.setCwd(b.path("."));
+            write.has_side_effects = true;
+
+            const link = b.addSystemCommand(&.{ "cc", "-o" });
+            const prog = link.addOutputFileArg("prog");
+
+            // Every module's output, plus the entry file's, each its own translation
+            // unit. `-w` because a compiler emits statics nothing calls, and here
+            // every file sees the whole header.
+            var names = std.ArrayList([]const u8).initCapacity(b.allocator, fx.mods.len + 1) catch @panic("OOM");
+            for (fx.mods) |m| names.appendAssumeCapacity(b.fmt("{s}.c", .{m}));
+            names.appendAssumeCapacity("main.c");
+            for (names.items) |name| {
+                const cc = b.addSystemCommand(&.{ "cc", "-O0", "-w", "-include" });
+                cc.addFileArg(dir.path(b, "mpl.h"));
+                cc.addArgs(&.{ "-c", "-o" });
+                const obj = cc.addOutputFileArg(b.fmt("{s}.o", .{name}));
+                cc.addFileArg(dir.path(b, name));
+                link.addFileArg(obj);
+            }
+
+            const run_split = std.Build.Step.Run.create(b, "run the separately built program");
+            run_split.addFileArg(prog);
+            run_split.expectStdOutEqual(fx.want);
+            split_step.dependOn(&run_split.step);
+            test_step.dependOn(&run_split.step);
+        }
+    }
+
     const s2_step = b.step("test-stage2", "mplc against stage 0, and the committed C against itself");
 
     // **The guard against `bootstrap/mplc.c` rotting.** The committed C has to be
