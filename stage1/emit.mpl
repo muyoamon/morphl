@@ -202,7 +202,17 @@ $decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#
 
 $decl type_at $func ($decl ts T.tys.node, $decl i 0) $call T.tys.nth (ts, i)
 
-$decl ty_name $func ($decl i 0) $call concat ("mpl_t", $call int_to_str (i))
+// A struct's name is derived from the type's **content**, not from its position in
+// §9.3's table. The index would do for one whole-program emit — one index per
+// distinct type is the point of interning — but it makes the name depend on every
+// other type in the program: interning one more type early renumbers everything
+// after it, so two modules lowered separately would disagree about what `mpl_t7`
+// is, and the emitted C changes under edits that have nothing to do with it.
+// Hashing the structure gives a name two independent lowerings agree on, which is
+// what any per-module or cached scheme needs first. A collision would be two
+// conflicting definitions of one struct name, which `cc` rejects — see `hmod`.
+$decl ty_name $func ($decl ts T.tys.node, $decl i 0)
+  $call concat ("mpl_t", $call int_to_str ($call T.hash_of ($call T.tval ($call type_at (ts, i)))))
 
 // A type's C spelling, by its interned index — the index is the struct's name,
 // which is the whole point of interning (§5.1: one index per distinct type).
@@ -226,24 +236,24 @@ $decl c_type $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
   { $decl t   $call type_at (ts, i)
     $decl out $match t (
         // §7.2: a block is a C struct in `$decl` order.
-        $case {$prop tag "block"} ($call ty_name (i)),
+        $case {$prop tag "block"} ($call ty_name (ts, i)),
         // §5.5's `μ` is laid out as its unrolling, under its own index's name:
         // one struct however the type was spelled, which is what makes the
         // index a C struct name at all.
-        $case {$prop tag "rec"} ($call ty_name (i)),
+        $case {$prop tag "rec"} ($call ty_name (ts, i)),
         // §7.2: "Groups are laid out elementwise" — a struct whose members
         // have positions instead of names, which is what `.n` indexes.
-        $case {$prop tag "group"} ($call ty_name (i)),
+        $case {$prop tag "group"} ($call ty_name (ts, i)),
         // §7.5: a value of union type carries a discriminator, and that is the
         // only construct that reads it (§4.7). Except `Bool` — §3.2 makes it
         // the union `true | false`, but its discriminator *is* its value, which
         // is what lets `$if` take one as a condition.
         $case {$prop tag "union"}
-          $if ($call T.same (t, T.t_bool)) "int64_t" ($call ty_name (i)),
+          $if ($call T.same (t, T.t_bool)) "int64_t" ($call ty_name (ts, i)),
         // §7.3: every function value has the same shape, which is what lets a
         // function-typed slot have a size at all (§7.2).
         $case {$prop tag "func"} "mpl_fun",
-        $case {$prop tag "array"} ($call ty_name (i)),
+        $case {$prop tag "array"} ($call ty_name (ts, i)),
         // §7.4: `&T` and `&mut T` are thin pointers.
         $case {$prop tag "ref"}
           { $decl f $call IR.find_ty (ts, t.inner)
@@ -393,10 +403,10 @@ $decl emit_fwd1 $func ($decl st proto_est, $decl all T.tys.node, $decl t0 T.prot
           // An alias always names a *lower* index, so the thing it names was
           // declared on an earlier turn of this same walk.
           $decl w $if ($call lt (-1, k))
-              ($call say (st, $call concat ("typedef ", $call concat ($call ty_name (k),
-                   $call concat (" ", $call concat ($call ty_name (i), ";\n"))))))
-              ($call say (st, $call concat ("typedef struct ", $call concat ($call ty_name (i),
-                   $call concat (" ", $call concat ($call ty_name (i), ";\n")))))) }.w
+              ($call say (st, $call concat ("typedef ", $call concat ($call ty_name (all, k),
+                   $call concat (" ", $call concat ($call ty_name (all, i), ";\n"))))))
+              ($call say (st, $call concat ("typedef struct ", $call concat ($call ty_name (all, i),
+                   $call concat (" ", $call concat ($call ty_name (all, i), ";\n")))))) }.w
         () }.r
 
 $decl emit_fwds $func ($decl st proto_est, $decl all T.tys.node, $decl ts T.tys.node,
@@ -447,7 +457,7 @@ $decl emit_gfields $func ($decl st proto_est, $decl ts T.tys.node, $decl xs T.ty
 $decl emit_group_struct $func ($decl st proto_est, $decl all T.tys.node,
                                $decl its T.tys.node, $decl i 0)
   { $decl d $call emit_dep_tys (st, all, its)
-    $decl h $call say (st, $call concat ("struct ", $call concat ($call ty_name (i),
+    $decl h $call say (st, $call concat ("struct ", $call concat ($call ty_name (all, i),
                  $call concat (" {", $if ($call T.tys.is_nil (its)) " char unit;" ""))))
     $decl f $call emit_gfields (st, all, its, 0)
     $decl e $call say (st, " };\n") }.e
@@ -455,7 +465,7 @@ $decl emit_group_struct $func ($decl st proto_est, $decl all T.tys.node,
 $decl emit_block_struct $func ($decl st proto_est, $decl all T.tys.node,
                                $decl fs T.fields.node, $decl i 0)
   { $decl d $call emit_dep_flds (st, all, fs)
-    $decl h $call say (st, $call concat ("struct ", $call concat ($call ty_name (i),
+    $decl h $call say (st, $call concat ("struct ", $call concat ($call ty_name (all, i),
                  $call concat (" {", $if ($call T.fields.is_nil (fs)) " char unit;" ""))))
     $decl f $call emit_fields (st, all, fs, 0)
     $decl e $call say (st, " };\n") }.e
@@ -465,7 +475,7 @@ $decl emit_block_struct $func ($decl st proto_est, $decl all T.tys.node,
 $decl emit_union_struct $func ($decl st proto_est, $decl all T.tys.node,
                                $decl ms T.tys.node, $decl i 0)
   { $decl d $call emit_dep_tys (st, all, ms)
-    $decl h $call say (st, $call concat ("struct ", $call concat ($call ty_name (i),
+    $decl h $call say (st, $call concat ("struct ", $call concat ($call ty_name (all, i),
                  " { int64_t tag; union {")))
     $decl m $call emit_members (st, all, ms, 0)
     $decl e $call say (st, " } u; };\n") }.e
@@ -477,7 +487,7 @@ $decl emit_array_struct $func ($decl st proto_est, $decl all T.tys.node,
                                $decl el T.proto_ty, $decl i 0)
   { $decl f $call IR.find_ty (all, el)
     $decl et $if f.hit ($call c_type (st, all, f.id)) "int64_t"
-    $decl h  $call say (st, $call concat ("struct ", $call concat ($call ty_name (i),
+    $decl h  $call say (st, $call concat ("struct ", $call concat ($call ty_name (all, i),
                  $call concat (" { ", $call concat (et, " *p; int64_t n; };\n"))))) }.h
 
 // Marked *before* the dependencies are walked, which is what stops a cycle —

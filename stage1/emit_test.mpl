@@ -40,6 +40,25 @@ $decl idx_at $func ($decl hay "", $decl needle "", $decl i 0)
 
 $decl idx $func ($decl hay "", $decl needle "") $call idx_at (hay, needle, 0)
 
+// The last occurrence of `needle` at or before `limit`, or -1.
+$decl last_idx_before $func ($decl hay "", $decl needle "", $decl from 0, $decl best -1,
+                             $decl limit 0)
+  { $decl i $call idx_at (hay, needle, from)
+    $decl r $if ($call lt (i, 0)) best
+             ($if ($call lt (limit, i)) best
+                  ($call last_idx_before (hay, needle, $call add (i, 1), i, limit))) }.r
+
+// The name of the struct whose definition body is `body`, **read off the output**.
+// A struct's name is derived from its type's content, not from a table position, so
+// hard-coding one makes a test that fails whenever anything about that type changes —
+// exactly the reason a `verify` node index may not be hard-coded either. Three
+// assertions here did hard-code `mpl_t1`, and the rename is what found them.
+$decl struct_name_at $func ($decl code "", $decl body "")
+  { $decl b $call idx (code, body)
+    $decl s $call last_idx_before (code, "struct ", 0, -1, b)
+    $decl r $if ($call lt (s, 0)) ""
+                ($call slice (code, $call add (s, 7), $call sub (b, 1))) }.r
+
 $decl result $func ($decl c "", $decl n 0) { $decl code c  $decl nerrs n }
 
 $decl compile $func ($decl src "")
@@ -137,10 +156,14 @@ $decl t10 $call check ("a program using blocks emits cleanly",
 // type reach itself through storage and a pointer to a struct needs only the
 // declaration. That is what lets a recursive type be laid out at all.
 $decl t11 $call check ("a block becomes a struct in $decl order",
-  $call has (blk_c.code, "struct mpl_t1 { int64_t f0; int64_t f1; };"))
+  $call has (blk_c.code, "{ int64_t f0; int64_t f1; };"))
 
 $decl t11b $call check ("...declared before it is defined",
-  $call has (blk_c.code, "typedef struct mpl_t1 mpl_t1;"))
+  { $decl nm $call struct_name_at (blk_c.code, "{ int64_t f0; int64_t f1; };")
+    $decl r  $if ($call eq_str (nm, "")) false
+        ($call has (blk_c.code,
+            $call concat ("typedef struct ", $call concat (nm, $call concat (" ",
+                $call concat (nm, ";")))))) }.r)
 
 // §4.10: a prop is in the type but occupies no space, so this struct has one
 // field, not two.
@@ -151,9 +174,14 @@ $decl t12 $call check ("a $prop takes no space in the struct",
 // is, because lowering interns a field's type before the block containing it,
 // and §5.5 makes the nesting acyclic.
 $decl t13 $call check ("a nested block is a struct of structs, declared in order",
-  { $decl inner $call idx (blk_c.code, "int64_t f0; int64_t f1; }")
-    $decl outer $call idx (blk_c.code, "mpl_t1 f0; mpl_t1 f1; }")
-    $decl out $if ($call lt (0, inner)) ($call lt (inner, outer)) false }.out)
+  { $decl nm    $call struct_name_at (blk_c.code, "{ int64_t f0; int64_t f1; };")
+    $decl inner $call idx (blk_c.code, "int64_t f0; int64_t f1; }")
+    // The outer struct embeds the inner one twice, so it is spelled with the inner's
+    // own name — which is why that name has to be read rather than assumed.
+    $decl outer $call idx (blk_c.code,
+                    $call concat (nm, $call concat (" f0; ", $call concat (nm, " f1; }"))))
+    $decl out $if ($call eq_str (nm, "")) false
+        ($if ($call lt (0, inner)) ($call lt (inner, outer)) false) }.out)
 
 // §4.6 as a layout position.
 $decl t14 $call check ("projection is a field by index",

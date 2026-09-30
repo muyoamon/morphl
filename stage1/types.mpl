@@ -173,10 +173,28 @@ $decl t_bot   { $prop tag "bottom" }
 // only costs a fallthrough to the structural comparison; including one thing too
 // many is a miscompile.
 //
-// `mul` panics on overflow (§8), so the mix is modular.
-$decl hmod 1000000007
+// `mul` panics on overflow (§8), so the mix is modular — and the modulus is as wide
+// as that allows, because the hash is also what **names** a C struct. As a filter a
+// narrow modulus only costs an occasional fallthrough, but as a name a collision is
+// two distinct types sharing one struct name: 30 bits gives a birthday collision
+// around 2% over the compiler's 6,348 types, which is far too likely. `hmix` does
+// `a * 31 + b` with `a < hmod`, so `hmod` may go up to 2^63/31 ≈ 2.97e17; at 1e17 the
+// collision probability is ~1e-10, and a collision that did happen would be two
+// conflicting definitions of one struct name, which `cc` rejects rather than
+// miscompiles.
+$decl hmod 100000000000000003
 $decl hmix $func ($decl a 0, $decl b 0)
   $call mod ($call add ($call mul (a, 31), $call mod (b, hmod)), hmod)
+
+// Every byte of a string, because the hash has to be **faithful** and not merely a
+// filter. Hashing a name's *length* is enough to settle a comparison — a mismatch
+// falls through to the structural walk — but the same hash names the C struct, and
+// there a collision is two distinct types sharing one identity. Coarsening by length
+// made `{name, ty}` and `{a, bc}` collide, and `cc` reported a redefined struct.
+$decl hash_str $func ($decl s "", $decl i 0, $decl acc 0)
+  $if ($call lt (i, $call len (s)))
+      ($call hash_str (s, $call add (i, 1), $call hmix (acc, $call byte (s, i))))
+      acc
 
 $decl t_var $func ($decl i 0) { $prop tag "var" $decl id i  $decl h $call hmix (10, i) }
 
@@ -289,14 +307,18 @@ $decl hash_of $func ($decl t proto_ty) $match t (
   $case t 0
 )
 
-// A compile-time value contributes only its *tag*. `cv_eq` is structural, so
-// equal values agree on it; the payload is left out rather than audited.
+// A compile-time value in full. `cv_eq` is structural and compares the payload of
+// every kind — the int, the string, the bool, and a `copaque`'s identity — so all of
+// it may be hashed, and all of it must be, since §5.1 makes a prop's *value* part of
+// the block's type and two blocks differing only in one are distinct types needing
+// distinct struct names.
 $decl cv_tag_h $func ($decl c proto_cv) $match c (
-  $case {$prop tag "cint"}    1,
-  $case {$prop tag "cstr"}    2,
-  $case {$prop tag "cbool"}   3,
-  $case {$prop tag "cunit"}   4,
-  $case c 5
+  $case {$prop tag "cint"}    ($call hmix (1, $call mod (c.v, hmod))),
+  $case {$prop tag "cstr"}    ($call hash_str (c.v, 0, 2)),
+  $case {$prop tag "cbool"}   ($if c.v 3 4),
+  $case {$prop tag "cunit"}   5,
+  $case {$prop tag "copaque"} ($call hmix (6, c.id)),
+  $case c 7
 )
 
 $decl hash_tys $func ($decl xs tys.node, $decl acc 0) $match xs (
@@ -320,23 +342,22 @@ $decl hash_tys_comm $func ($decl xs tys.node, $decl acc 0) $match xs (
   $case xs acc
 )
 
-// A field's *name length*, not its name: `same_fields` compares names with
-// `eq_str`, and equal strings have equal lengths, so this is a coarsening and
-// cannot separate two equal types.
+// A field's name in full — `same_fields` compares names with `eq_str`, so every byte
+// of one is something `same` compares and may be hashed.
 $decl hash_fields $func ($decl xs fields.node, $decl acc 0) $match xs (
   $case {$prop tag "cons"}
     $call hash_fields (xs.tail,
-        $call hmix ($call hmix (acc, $call len (xs.head.name)),
+        $call hmix ($call hash_str (xs.head.name, 0, acc),
                     $call hash_of ($call tval (xs.head.ty)))),
   $case xs acc
 )
 
 // A prop's `ty` is deliberately absent: `same_props` compares the name and the
-// value and nothing else.
+// value and nothing else, so hashing the type would separate two equal types.
 $decl hash_props $func ($decl xs props.node, $decl acc 0) $match xs (
   $case {$prop tag "cons"}
     $call hash_props (xs.tail,
-        $call hmix ($call hmix (acc, $call len (xs.head.name)),
+        $call hmix ($call hash_str (xs.head.name, 0, acc),
                     $call cv_tag_h (xs.head.value))),
   $case xs acc
 )
@@ -374,7 +395,7 @@ $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r
 // arity and the kinded case gets a name.
 $decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "")
   { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k
-    $decl h $call hmix ($call hmix ($call hmix (16, $call len (q)), $call len (k)),
+    $decl h $call hmix ($call hash_str (k, 0, $call hash_str (q, 0, 16)),
                         $call hash_of (t)) }
 
 $decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
