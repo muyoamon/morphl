@@ -154,6 +154,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/extern.mpl", .want = "185\n",
            .host = "stage1/fixtures/extern_host.c" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
+        .{ .src = "stage1/fixtures/write.mpl", .want = "161\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -248,6 +249,10 @@ pub fn build(b: *std.Build) void {
         // §4.16: the declarations and wrappers are derived from the signature's
         // interned type, so this compares the ABI mapping on both sides.
         "stage1/fixtures/extern.mpl",
+        // §8's `write_file` answers `<unit, err>` with both members nullary, so which
+        // position each takes comes from the call site's interned union (§7.5) — the
+        // two implementations have to agree about that, not just about the bytes.
+        "stage1/fixtures/write.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);

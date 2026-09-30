@@ -73,7 +73,7 @@ $decl t5 $call check ("verify accepts what check produced",
 
 $decl t6 $call check ("emit turns it into C",
   $call P.and ($call Pa.diags.is_nil ($call Pa.diags.val (($call C.emit (c1.program)).diagnostics)),
-               $call not ($call eq_str ($call P.sval (($call C.emit (c1.program)).text), ""))))
+               $call not ($call eq_str ($call C.sole_text ($call C.emit (c1.program)), ""))))
 
 // A file the parser rejects stops at `parse`: §4.15 makes an expected failure
 // a value, so the next step is still handed a `program` — an empty one.

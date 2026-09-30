@@ -24,6 +24,6 @@ $decl emit_it $func ($decl s "")
   { $decl ckd $call C.check ($call C.parse (s, path))
     $decl bad $call C.verify (ckd.program)
     $decl out $call C.emit (ckd.program)
-    $decl r   $call P.sval (out.text) }.r
+    $decl r   $call C.sole_text (out) }.r
 
 $decl main $func () $call emit_it (src)

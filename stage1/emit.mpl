@@ -110,6 +110,8 @@ $decl estate $func ()
     // shift. Held here rather than threaded, because the expression emitter carries
     // `est` everywhere and the function table nowhere.
     $decl fnames $mut $alloc strs.node
+    // The module of each function, by index — the other half of an identity.
+    $decl fmods $mut $alloc strs.node
     $decl errs $mut $alloc Pa.diags.node }
 
 $decl proto_est $call estate ()
@@ -217,7 +219,7 @@ $decl fn_name   $func ($decl st proto_est, $decl i 0)
 // `int_to_str` have to put their result somewhere. That somewhere is `malloc`
 // and never `free`, which is stage 0's model exactly (BOOTSTRAP.md §3) and what
 // §7.6's regions are meant to replace.
-$decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\ntypedef struct { const char *p; int64_t n; } mpl_str;\n\n/* A function value is a code pointer and an environment, two words whatever\n   its signature (7.3): captures belong to the body, not to the type. */\ntypedef struct { void *code; void *env; } mpl_fun;\n\nstatic _Noreturn void mpl_panic(const char *m) { fputs(m, stderr); fputc('\\n', stderr); abort(); }\n\nstatic char *mpl_alloc(int64_t n) {\n  char *p = (char *)malloc((size_t)(n > 0 ? n : 1));\n  if (!p) mpl_panic(\"out of memory\");\n  return p;\n}\n\n/* 8's `args`, as the host gave them. Set before `mpl_init` runs, because a\n   top-level `$decl` initializer may read them (4.10). */\nstatic int mpl_argc = 0;\nstatic char **mpl_argv = 0;\n\nstatic mpl_str mpl_concat(mpl_str a, mpl_str b) {\n  char *p = mpl_alloc(a.n + b.n);\n  memcpy(p, a.p, (size_t)a.n);\n  memcpy(p + a.n, b.p, (size_t)b.n);\n  return (mpl_str){ p, a.n + b.n };\n}\n\nstatic int64_t mpl_str_eq(mpl_str a, mpl_str b) {\n  return a.n == b.n && memcmp(a.p, b.p, (size_t)a.n) == 0;\n}\n\nstatic int64_t mpl_len(mpl_str s) { return s.n; }\n\nstatic mpl_str mpl_slice(mpl_str s, int64_t i, int64_t j) {\n  if (i < 0 || j < i || j > s.n) mpl_panic(\"slice: out of range\");\n  return (mpl_str){ s.p + i, j - i };\n}\n\nstatic int64_t mpl_byte(mpl_str s, int64_t i) {\n  if (i < 0 || i >= s.n) mpl_panic(\"byte: index out of range\");\n  return (int64_t)(unsigned char)s.p[i];\n}\n\nstatic mpl_str mpl_int_to_str(int64_t v) {\n  char buf[24];\n  int k = snprintf(buf, sizeof buf, \"%lld\", (long long)v);\n  char *p = mpl_alloc(k);\n  memcpy(p, buf, (size_t)k);\n  return (mpl_str){ p, k };\n}\n\nstatic int64_t mpl_print(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stdout);\n  return 0;\n}\n\n/* 8's arithmetic and comparisons are C operators, so they have no address. A\n   value of function type is a pair (7.3), and a pair needs one - `$decl isub\n   sub` is an intrinsic used as a value, which the compiler's own sources do.\n   These are that address, and nothing else calls them: a *call* to an\n   intrinsic is still emitted infix. */\n#define MPL_BINOP(n, op) \\\n  static int64_t mpl_fn_##n(void *env, int64_t a, int64_t b) { (void)env; return a op b; }\nMPL_BINOP(add, +)\nMPL_BINOP(sub, -)\nMPL_BINOP(mul, *)\nMPL_BINOP(div, /)\nMPL_BINOP(mod, %)\nMPL_BINOP(lt, <)\nMPL_BINOP(eq_int, ==)\n#undef MPL_BINOP\n\n/* 7.8: `panic` aborts. It takes a morphl `Str`, which is bytes and not a C\n   string (3.1), so it is written out by length rather than by NUL. The return\n   type is a lie the call site needs and the body never tells: nothing after a\n   call to this runs. */\nstatic int64_t mpl_panic_str(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stderr);\n  fputc('\\n', stderr);\n  abort();\n}\n\n/* 8 makes a failing operation answer an option rather than panic, and 7.5\n   lays that out as a tag and a union. These do the work and report whether it\n   succeeded; the *emitted* code builds the option, because only the call site\n   knows which position `some` and `none` took in its own interned union - 3.6\n   makes a union a set and 7.5 makes the order the discriminator, so the two\n   numbers are not fixed. */\nstatic int mpl_str_to_int(mpl_str s, int64_t *out) {\n  uint64_t v = 0;\n  uint64_t limit;\n  int64_t i = 0;\n  int neg = 0;\n  if (s.n == 0) return 0;\n  if (s.p[0] == '-' || s.p[0] == '+') { neg = (s.p[0] == '-'); i = 1; }\n  if (i >= s.n) return 0;\n  /* Stage 0 is Zig's parseInt, so `_` may separate digits but may not begin or\n     end the number; two implementations of one intrinsic have to agree. */\n  if (s.p[i] == '_' || s.p[s.n - 1] == '_') return 0;\n  /* The negative range is one larger, and -9223372036854775808 does parse. */\n  limit = neg ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;\n  for (; i < s.n; i++) {\n    unsigned char c = (unsigned char)s.p[i];\n    if (c == '_') continue;\n    if (c < '0' || c > '9') return 0;\n    if (v > (limit - (uint64_t)(c - '0')) / 10u) return 0;\n    v = v * 10u + (uint64_t)(c - '0');\n  }\n  if (neg) *out = (v == (uint64_t)INT64_MAX + 1u) ? INT64_MIN : -(int64_t)v;\n  else *out = (int64_t)v;\n  return 1;\n}\n\n/* 3.1 makes a `Str` UTF-8, so this is the encoder, and a code point outside\n   the scalar range has no encoding - which is the `none`. */\nstatic int mpl_from_code(int64_t cp, mpl_str *out) {\n  char *p;\n  int64_t n;\n  if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;\n  n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  p = mpl_alloc(n);\n  if (n == 1) { p[0] = (char)cp; }\n  else if (n == 2) { p[0] = (char)(0xC0 | (cp >> 6)); p[1] = (char)(0x80 | (cp & 0x3F)); }\n  else if (n == 3) { p[0] = (char)(0xE0 | (cp >> 12)); p[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[2] = (char)(0x80 | (cp & 0x3F)); }\n  else { p[0] = (char)(0xF0 | (cp >> 18)); p[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); p[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[3] = (char)(0x80 | (cp & 0x3F)); }\n  out->p = p;\n  out->n = n;\n  return 1;\n}\n\n/* Stage 0 validates UTF-8 before answering `some` (3.1 again), so this does\n   too: a file that is not text is `none`, not a `Str` that lies about itself. */\nstatic int mpl_utf8_ok(const char *p, int64_t n) {\n  int64_t i = 0;\n  while (i < n) {\n    unsigned char c = (unsigned char)p[i];\n    int64_t k, j;\n    int64_t lo;\n    if (c < 0x80) { i++; continue; }\n    else if ((c & 0xE0) == 0xC0) { k = 2; lo = 0x80; }\n    else if ((c & 0xF0) == 0xE0) { k = 3; lo = 0x800; }\n    else if ((c & 0xF8) == 0xF0) { k = 4; lo = 0x10000; }\n    else return 0;\n    if (i + k > n) return 0;\n    {\n      int64_t cp = c & (0xFF >> (k + 1));\n      for (j = 1; j < k; j++) {\n        unsigned char cc = (unsigned char)p[i + j];\n        if ((cc & 0xC0) != 0x80) return 0;\n        cp = (cp << 6) | (cc & 0x3F);\n      }\n      if (cp < lo || cp > 0x10FFFF) return 0;\n      if (cp >= 0xD800 && cp <= 0xDFFF) return 0;\n    }\n    i += k;\n  }\n  return 1;\n}\n\n/* Read by growing, never by `ftell`: a directory opens for reading on Linux\n   and reports a size of LONG_MAX, which sized an allocation that aborted where\n   stage 0 simply answers `none`. `fread` failing is the only signal trusted. */\nstatic int mpl_read_file(mpl_str path, mpl_str *out) {\n  char *name = mpl_alloc(path.n + 1);\n  FILE *f;\n  char *buf;\n  int64_t cap = 4096;\n  int64_t n = 0;\n  memcpy(name, path.p, (size_t)path.n);\n  name[path.n] = 0;\n  f = fopen(name, \"rb\");\n  free(name);\n  if (!f) return 0;\n  buf = mpl_alloc(cap);\n  for (;;) {\n    size_t got;\n    if (n == cap) {\n      char *nb = mpl_alloc(cap * 2);\n      memcpy(nb, buf, (size_t)n);\n      buf = nb;\n      cap *= 2;\n    }\n    got = fread(buf + n, 1, (size_t)(cap - n), f);\n    n += (int64_t)got;\n    if (got == 0) break;\n  }\n  if (ferror(f)) { fclose(f); return 0; }\n  fclose(f);\n  if (!mpl_utf8_ok(buf, n)) return 0;\n  out->p = buf;\n  out->n = n;\n  return 1;\n}\n"
+$decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\ntypedef struct { const char *p; int64_t n; } mpl_str;\n\n/* A function value is a code pointer and an environment, two words whatever\n   its signature (7.3): captures belong to the body, not to the type. */\ntypedef struct { void *code; void *env; } mpl_fun;\n\nstatic _Noreturn void mpl_panic(const char *m) { fputs(m, stderr); fputc('\\n', stderr); abort(); }\n\nstatic char *mpl_alloc(int64_t n) {\n  char *p = (char *)malloc((size_t)(n > 0 ? n : 1));\n  if (!p) mpl_panic(\"out of memory\");\n  return p;\n}\n\n/* 8's `args`, as the host gave them. Set before `mpl_init` runs, because a\n   top-level `$decl` initializer may read them (4.10). */\nstatic int mpl_argc = 0;\nstatic char **mpl_argv = 0;\n\nstatic mpl_str mpl_concat(mpl_str a, mpl_str b) {\n  char *p = mpl_alloc(a.n + b.n);\n  memcpy(p, a.p, (size_t)a.n);\n  memcpy(p + a.n, b.p, (size_t)b.n);\n  return (mpl_str){ p, a.n + b.n };\n}\n\nstatic int64_t mpl_str_eq(mpl_str a, mpl_str b) {\n  return a.n == b.n && memcmp(a.p, b.p, (size_t)a.n) == 0;\n}\n\nstatic int64_t mpl_len(mpl_str s) { return s.n; }\n\nstatic mpl_str mpl_slice(mpl_str s, int64_t i, int64_t j) {\n  if (i < 0 || j < i || j > s.n) mpl_panic(\"slice: out of range\");\n  return (mpl_str){ s.p + i, j - i };\n}\n\nstatic int64_t mpl_byte(mpl_str s, int64_t i) {\n  if (i < 0 || i >= s.n) mpl_panic(\"byte: index out of range\");\n  return (int64_t)(unsigned char)s.p[i];\n}\n\nstatic mpl_str mpl_int_to_str(int64_t v) {\n  char buf[24];\n  int k = snprintf(buf, sizeof buf, \"%lld\", (long long)v);\n  char *p = mpl_alloc(k);\n  memcpy(p, buf, (size_t)k);\n  return (mpl_str){ p, k };\n}\n\nstatic int64_t mpl_print(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stdout);\n  return 0;\n}\n\n/* 8's arithmetic and comparisons are C operators, so they have no address. A\n   value of function type is a pair (7.3), and a pair needs one - `$decl isub\n   sub` is an intrinsic used as a value, which the compiler's own sources do.\n   These are that address, and nothing else calls them: a *call* to an\n   intrinsic is still emitted infix. */\n#define MPL_BINOP(n, op) \\\n  static int64_t mpl_fn_##n(void *env, int64_t a, int64_t b) { (void)env; return a op b; }\nMPL_BINOP(add, +)\nMPL_BINOP(sub, -)\nMPL_BINOP(mul, *)\nMPL_BINOP(div, /)\nMPL_BINOP(mod, %)\nMPL_BINOP(lt, <)\nMPL_BINOP(eq_int, ==)\n#undef MPL_BINOP\n\n/* 7.8: `panic` aborts. It takes a morphl `Str`, which is bytes and not a C\n   string (3.1), so it is written out by length rather than by NUL. The return\n   type is a lie the call site needs and the body never tells: nothing after a\n   call to this runs. */\nstatic int64_t mpl_panic_str(mpl_str s) {\n  fwrite(s.p, 1, (size_t)s.n, stderr);\n  fputc('\\n', stderr);\n  abort();\n}\n\n/* 8 makes a failing operation answer an option rather than panic, and 7.5\n   lays that out as a tag and a union. These do the work and report whether it\n   succeeded; the *emitted* code builds the option, because only the call site\n   knows which position `some` and `none` took in its own interned union - 3.6\n   makes a union a set and 7.5 makes the order the discriminator, so the two\n   numbers are not fixed. */\nstatic int mpl_str_to_int(mpl_str s, int64_t *out) {\n  uint64_t v = 0;\n  uint64_t limit;\n  int64_t i = 0;\n  int neg = 0;\n  if (s.n == 0) return 0;\n  if (s.p[0] == '-' || s.p[0] == '+') { neg = (s.p[0] == '-'); i = 1; }\n  if (i >= s.n) return 0;\n  /* Stage 0 is Zig's parseInt, so `_` may separate digits but may not begin or\n     end the number; two implementations of one intrinsic have to agree. */\n  if (s.p[i] == '_' || s.p[s.n - 1] == '_') return 0;\n  /* The negative range is one larger, and -9223372036854775808 does parse. */\n  limit = neg ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;\n  for (; i < s.n; i++) {\n    unsigned char c = (unsigned char)s.p[i];\n    if (c == '_') continue;\n    if (c < '0' || c > '9') return 0;\n    if (v > (limit - (uint64_t)(c - '0')) / 10u) return 0;\n    v = v * 10u + (uint64_t)(c - '0');\n  }\n  if (neg) *out = (v == (uint64_t)INT64_MAX + 1u) ? INT64_MIN : -(int64_t)v;\n  else *out = (int64_t)v;\n  return 1;\n}\n\n/* 3.1 makes a `Str` UTF-8, so this is the encoder, and a code point outside\n   the scalar range has no encoding - which is the `none`. */\nstatic int mpl_from_code(int64_t cp, mpl_str *out) {\n  char *p;\n  int64_t n;\n  if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;\n  n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  p = mpl_alloc(n);\n  if (n == 1) { p[0] = (char)cp; }\n  else if (n == 2) { p[0] = (char)(0xC0 | (cp >> 6)); p[1] = (char)(0x80 | (cp & 0x3F)); }\n  else if (n == 3) { p[0] = (char)(0xE0 | (cp >> 12)); p[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[2] = (char)(0x80 | (cp & 0x3F)); }\n  else { p[0] = (char)(0xF0 | (cp >> 18)); p[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); p[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); p[3] = (char)(0x80 | (cp & 0x3F)); }\n  out->p = p;\n  out->n = n;\n  return 1;\n}\n\n/* Stage 0 validates UTF-8 before answering `some` (3.1 again), so this does\n   too: a file that is not text is `none`, not a `Str` that lies about itself. */\nstatic int mpl_utf8_ok(const char *p, int64_t n) {\n  int64_t i = 0;\n  while (i < n) {\n    unsigned char c = (unsigned char)p[i];\n    int64_t k, j;\n    int64_t lo;\n    if (c < 0x80) { i++; continue; }\n    else if ((c & 0xE0) == 0xC0) { k = 2; lo = 0x80; }\n    else if ((c & 0xF0) == 0xE0) { k = 3; lo = 0x800; }\n    else if ((c & 0xF8) == 0xF0) { k = 4; lo = 0x10000; }\n    else return 0;\n    if (i + k > n) return 0;\n    {\n      int64_t cp = c & (0xFF >> (k + 1));\n      for (j = 1; j < k; j++) {\n        unsigned char cc = (unsigned char)p[i + j];\n        if ((cc & 0xC0) != 0x80) return 0;\n        cp = (cp << 6) | (cc & 0x3F);\n      }\n      if (cp < lo || cp > 0x10FFFF) return 0;\n      if (cp >= 0xD800 && cp <= 0xDFFF) return 0;\n    }\n    i += k;\n  }\n  return 1;\n}\n\n/* Read by growing, never by `ftell`: a directory opens for reading on Linux\n   and reports a size of LONG_MAX, which sized an allocation that aborted where\n   stage 0 simply answers `none`. `fread` failing is the only signal trusted. */\n/* 8's `write_file`, the counterpart of `mpl_read_file`. Answers 1 on success and\n   0 on any failure, which the call site turns into 8's `unit` or `err` - which of\n   the two positions each takes belongs to the call site's interned union (7.5),\n   not to this. Truncating, like stage 0's platform. */\nstatic int mpl_write_file(mpl_str path, mpl_str data) {\n  char *name = mpl_alloc(path.n + 1);\n  FILE *f;\n  size_t put;\n  memcpy(name, path.p, (size_t)path.n);\n  name[path.n] = 0;\n  f = fopen(name, \"wb\");\n  free(name);\n  if (!f) return 0;\n  put = data.n > 0 ? fwrite(data.p, 1, (size_t)data.n, f) : 0;\n  if (put != (size_t)data.n) { fclose(f); return 0; }\n  if (fclose(f) != 0) return 0;\n  return 1;\n}\n\nstatic int mpl_read_file(mpl_str path, mpl_str *out) {\n  char *name = mpl_alloc(path.n + 1);\n  FILE *f;\n  char *buf;\n  int64_t cap = 4096;\n  int64_t n = 0;\n  memcpy(name, path.p, (size_t)path.n);\n  name[path.n] = 0;\n  f = fopen(name, \"rb\");\n  free(name);\n  if (!f) return 0;\n  buf = mpl_alloc(cap);\n  for (;;) {\n    size_t got;\n    if (n == cap) {\n      char *nb = mpl_alloc(cap * 2);\n      memcpy(nb, buf, (size_t)n);\n      buf = nb;\n      cap *= 2;\n    }\n    got = fread(buf + n, 1, (size_t)(cap - n), f);\n    n += (int64_t)got;\n    if (got == 0) break;\n  }\n  if (ferror(f)) { fclose(f); return 0; }\n  fclose(f);\n  if (!mpl_utf8_ok(buf, n)) return 0;\n  out->p = buf;\n  out->n = n;\n  return 1;\n}\n"
 
 // ------------------------------------------------------------------- types
 //
@@ -1325,6 +1327,92 @@ $decl xt_of $func ($decl e IR.proto_expr, $decl acc xts.node) $match e (
   $case e acc
 )
 
+// ------------------------------------------------ what crosses a module boundary
+//
+// Step two of per-module lowering. A symbol only needs external linkage if a
+// *different* module names it; everything else can stay `static`, which is what
+// makes a per-file split give any isolation at all. §7.3's pair and §4.10's statics
+// mean a function is named from two kinds of node — `global` in callee or value
+// position, and `closure` for the code pointer — so this is the same full-body walk
+// as `xt_of`, collecting function indices instead of extern symbols.
+
+$fwd gref_of
+
+$decl gref_of_list $func ($decl xs IR.exprs.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call gref_of_list ($call IR.exprs.val (xs.tail), $call gref_of (xs.head, acc)),
+  $case xs acc
+)
+
+$decl gref_of_slots $func ($decl xs IR.bslots.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call gref_of_slots ($call IR.bslots.val (xs.tail), $call gref_of (xs.head.init, acc)),
+  $case xs acc
+)
+
+$decl gref_of_arms $func ($decl xs IR.arms.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call gref_of_arms ($call IR.arms.val (xs.tail), $call gref_of (xs.head.body, acc)),
+  $case xs acc
+)
+
+$decl gref_add $func ($decl acc IR.ints.node, $decl i 0)
+  $if ($call mem_int (acc, i)) acc ($call IR.ints.cons (i, acc))
+
+$decl gref_of $func ($decl e IR.proto_expr, $decl acc IR.ints.node) $match e (
+  $case {$prop tag "global"}  ($call gref_add (acc, e.fn)),
+  $case {$prop tag "closure"}
+    ($call gref_of_list ($call IR.exprs.val (e.captures), $call gref_add (acc, e.fn))),
+  $case {$prop tag "field"}   ($call gref_of ($call IR.eval (e.target), acc)),
+  $case {$prop tag "new"}     ($call gref_of ($call IR.eval (e.init), acc)),
+  $case {$prop tag "deref"}   ($call gref_of ($call IR.eval (e.src), acc)),
+  $case {$prop tag "copy"}    ($call gref_of ($call IR.eval (e.src), acc)),
+  $case {$prop tag "try"}     ($call gref_of ($call IR.eval (e.value), acc)),
+  $case {$prop tag "set"}
+    $call gref_of ($call IR.eval (e.value), $call gref_of ($call IR.eval (e.target), acc)),
+  $case {$prop tag "do"}
+    $call gref_of ($call IR.eval (e.then), $call gref_of ($call IR.eval (e.first), acc)),
+  $case {$prop tag "if"}
+    $call gref_of ($call IR.eval (e.els),
+        $call gref_of ($call IR.eval (e.then), $call gref_of ($call IR.eval (e.cond), acc))),
+  $case {$prop tag "call"}
+    $call gref_of_list ($call IR.exprs.val (e.args), $call gref_of ($call IR.eval (e.callee), acc)),
+  $case {$prop tag "group"}   ($call gref_of_list ($call IR.exprs.val (e.items), acc)),
+  $case {$prop tag "block"}   ($call gref_of_slots ($call IR.bslots.val (e.slots), acc)),
+  $case {$prop tag "switch"}
+    $call gref_of ($call IR.eval (e.default),
+        $call gref_of_arms ($call IR.arms.val (e.arms), $call gref_of ($call IR.eval (e.scrut), acc))),
+  $case e acc
+)
+
+// Anything `here` does not own, marked for export. `mods_at` is the module of an
+// index, read from the same list the names come from.
+$decl mods_at $func ($decl st proto_est, $decl i 0)
+  $call strs.nth ($call strs.val (st.fmods), i)
+
+$decl xmod_add $func ($decl st proto_est, $decl rs IR.ints.node, $decl here "",
+                      $decl acc IR.ints.node) $match rs (
+  $case {$prop tag "cons"}
+    { $decl m $call mods_at (st, rs.head)
+      $decl a $if ($call eq_str (m, here)) acc ($call gref_add (acc, rs.head))
+      $decl r $call xmod_add (st, $call IR.ints.val (rs.tail), here, a) }.r,
+  $case rs acc
+)
+
+$decl exported_ids $func ($decl st proto_est, $decl fs IR.fns.node, $decl acc IR.ints.node)
+  $match fs (
+    $case {$prop tag "cons"}
+      $call exported_ids (st, $call IR.fns.val (fs.tail),
+          $call xmod_add (st, $call gref_of (fs.head.body, IR.ints.nil), fs.head.mod, acc)),
+    $case fs acc
+  )
+
+$decl fn_mods $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
+  $case {$prop tag "cons"}
+    $call fn_mods ($call IR.fns.val (fs.tail), $call strs.cons (fs.head.mod, acc)),
+  $case fs ($call strs.reverse (acc, strs.nil))
+)
+
 $decl xts_of_fns $func ($decl fs IR.fns.node, $decl acc xts.node) $match fs (
   $case {$prop tag "cons"}
     $call xts_of_fns ($call IR.fns.val (fs.tail), $call xt_of (fs.head.body, acc)),
@@ -1776,6 +1864,45 @@ $decl opt_payload_c $func ($decl st proto_est, $decl ts T.tys.node, $decl m T.pr
         $case fs "int64_t"
       ) }.r
 
+// §8's `write_file` answers `<unit, err>`, where **both** members are nullary — so
+// `opt_slot`, which tells `some` from `none` by which one has a field, cannot separate
+// them. They are told apart structurally instead: one *is* the unit type and the other
+// is §4.15's `err` tag block. The positions still belong to the call site's interned
+// union and not to the intrinsic, for the reason §7.5 gives.
+$decl res_slot $func ($decl ms T.tys.node, $decl wantu P.boolean, $decl i 0) $match ms (
+  $case {$prop tag "cons"}
+    { $decl isu $call T.same ($call T.tval (ms.head), T.t_unit)
+      $decl hit $if wantu isu ($call not (isu))
+      $decl r   $if hit i
+                    ($call res_slot ($call T.tys.val (ms.tail), wantu, $call add (i, 1))) }.r,
+  $case ms -1
+)
+
+// Not `res_fn`: that name is already the alias resolver, and §4.1 binds a name once
+// per block — which is what reported this.
+$decl unit_err_fn $func ($decl n "")
+  $if ($call eq_str (n, "write_file")) "mpl_write_file" ""
+
+// Only the tag is written, as `emit_opt_prim` does for `none`: §4.7 narrows to the
+// member the discriminator selected and neither of these carries anything to bind.
+$decl emit_res_prim $func ($decl st proto_est, $decl ts T.tys.node, $decl cf "",
+                           $decl as strs.node, $decl dest "", $decl ty 0)
+  { $decl wt $call type_at (ts, ty)
+    $decl ms $call union_members (wt)
+    $decl ku $call res_slot (ms, true, 0)
+    $decl ke $call res_slot (ms, false, 0)
+    $decl ok $if ($call lt (-1, ku)) ($call lt (-1, ke)) false
+    $decl r $if ($call not (ok))
+        ($call eerr (st, $call concat ("the result of ", $call concat (cf,
+             " is not <unit, err>; cannot emit it"))))
+        { $decl d0 $call say (st, $call concat ("  if (", $call concat (cf,
+                       $call concat ("(", $call concat ($call join_args (as, "", true),
+                       ")) {\n")))))
+          $decl d1 $call assign (st, $call concat (dest, ".tag"), $call int_to_str (ku))
+          $decl d2 $call say (st, "  } else {\n")
+          $decl d3 $call assign (st, $call concat (dest, ".tag"), $call int_to_str (ke))
+          $decl d4 $call say (st, "  }\n") }.d4 }.r
+
 $decl emit_opt_prim $func ($decl st proto_est, $decl ts T.tys.node, $decl cf "",
                            $decl as strs.node, $decl dest "", $decl ty 0)
   { $decl wt $call type_at (ts, ty)
@@ -1919,15 +2046,18 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
         { $decl op $call prim_op (pnm)
           $decl cf $call prim_fn (pnm)
           $decl of $call opt_fn (pnm)
+          $decl rf $call unit_err_fn (pnm)
           $decl r  $if ($call not ($call eq_str (op, "")))
               ($call assign (st, dest, $call binop_expr (as, op)))
             ($if ($call not ($call eq_str (cf, "")))
               ($call assign (st, dest, $call prim_call (cf, as)))
             ($if ($call not ($call eq_str (of, "")))
               ($call emit_opt_prim (st, ts, of, as, dest, e.ty))
+            ($if ($call not ($call eq_str (rf, "")))
+              ($call emit_res_prim (st, ts, rf, as, dest, e.ty))
             ($if ($call arr_prim (pnm))
               ($call emit_arr_prim (st, ts, pnm, as, dest, e.ty))
-              ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm)))))) }.r
+              ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm))))))) }.r
       $match cal (
         $case cal
           // §6a: a direct self tail call is the loop; anything else is a plain
@@ -2729,6 +2859,7 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl fs $call IR.fns.val (p.funcs)
     // Before anything is emitted: every name comes from here.
     $decl nms $set st.fnames ($call fn_keys (fs, strs.nil))
+    $decl nmd $set st.fmods ($call fn_mods (fs, strs.nil))
     $decl tk $set st.thunks ($call thunk_ids (fs, 0, IR.ints.nil))
     // Before anything is emitted: `res_fn` is asked at every global callee.
     $decl al $set st.aliases ($call collect_aliases (fs, 0, fnals.nil))
@@ -2738,6 +2869,14 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // know every signature it may be handed.
     $decl rp $set st.reps ($call reporter_ids (st, fs, gs, 0, IR.ints.nil))
     $decl sg $set st.tsigs ($call all_tail_sigs (st, fs, IR.ints.nil))
+    // Reported in the artifact while the split is being built: how much of the
+    // program would actually need external linkage. If nearly everything crosses,
+    // splitting buys no isolation and the answer is worth knowing before the work.
+    $decl xp $call IR.ints.length ($call exported_ids (st, fs, IR.ints.nil), 0)
+    $decl nf $call IR.fns.length (fs, 0)
+    $decl hx $call say (st, $call concat ("/* cross-module references: ",
+                 $call concat ($call int_to_str (xp), $call concat (" of ",
+                 $call concat ($call int_to_str (nf), " functions */\n")))))
     $decl h  $call say (st, $call concat (runtime_c, "\n"))
     $decl sd $call emit_structs (st, ts, ts, 0)
     $decl gap $call say (st, "\n")
@@ -2784,4 +2923,6 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
         ($call eerr (st, "no top-level $decl named 'main'"))
         ($call say (st, $call concat ("\nint main(int argc, char **argv) {\n  mpl_argc = argc;\n  mpl_argv = argv;\n  mpl_init();\n",
              $call concat (body, "  return 0;\n}\n"))))
+    // One entry for now: the shape §9.1 asks for, with the split still to come, so
+    // the text is byte-for-byte what a single-artifact emit produced before.
     $decl r  $call out_of (st) }.r

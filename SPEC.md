@@ -637,7 +637,7 @@ build:
 parse   : (Str, path)  -> { $decl ast … $decl path … $decl base … $decl diagnostics … }
 check   : parsed       -> { $decl program … $decl diagnostics … }
 verify  : program      -> diagnostics
-emit    : program      -> { $decl text … $decl diagnostics … }   // the target's source or object text
+emit    : program      -> { $decl files … $decl diagnostics … }   // one entry per output: { $decl path … $decl text … }
 link    : (emitted, …) -> { $decl path … $decl diagnostics … }
 ```
 
@@ -647,6 +647,17 @@ has to hand the next one something of the right shape. `verify` is the one that
 cannot fail, because it *is* the diagnostics. The path travels with the text
 because a diagnostic names its own file and `$import` resolves relative to the
 entry (§4.14) — the caller is not asked to remember it.
+
+`emit` answers **a list** of outputs and not a single text, because §4.14 makes a
+file a unit the compiler can keep: a target may want one output per source module
+so that an unchanged module need not be translated again, and a target that wants
+a single artifact simply gets a list of one. Each entry carries the `path` it
+should be written to, relative to wherever the build program puts it, for the
+same reason `parse` takes one — the caller is not asked to invent names for the
+compiler's own outputs. Whether a symbol may be referenced from another output is
+the target's question, not the language's: §4.14 already says what a module can
+name, and the mapping onto a linker's notion of internal and external linkage
+belongs with §4.16's ABI mapping.
 
 `program` is the **typed tree**: names resolved to frame slots, projections as
 layout positions (§7.2), §5.4's implicit dereferences written out, tail position

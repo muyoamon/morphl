@@ -23,4 +23,4 @@ $decl src $match rf (
 $decl ckd $call C.check ($call C.parse (src, path))
 $decl out $call C.emit (ckd.program)
 
-$decl main $func () $call P.sval (out.text)
+$decl main $func () $call C.sole_text (out)

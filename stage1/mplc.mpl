@@ -53,4 +53,4 @@ $decl main $func ()
     $decl nv  $call Pa.diags.length (bad, 0)
     $decl g2  $if ($call lt (0, nv)) ($call panic ($call first_msg (bad, "verify", nv))) ""
     $decl out $call C.emit (ckd.program)
-    $decl r   $call P.sval (out.text) }.r
+    $decl r   $call C.sole_text (out) }.r
