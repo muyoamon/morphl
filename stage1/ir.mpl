@@ -267,11 +267,41 @@ $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
 // `env` is the type of each value this function captured, in order (§7.3) —
 // the body reads them out of the environment the closure carried in, so it has
 // to know their shape, and the type is where that lives.
+// `mod` is the short name of the module this function came from — `types`, `lexer` —
+// or **"" for the entry file**. A *name* and not the module id, because an id is
+// handed out in load order, so reordering the entry file's `$import`s would renumber
+// every module and rename every function with it. The point of not using the table
+// index is that a name survives an edit elsewhere, and an id gives that up. It exists so a function can be *named* by
+// something other than its position in the table: §4.14 lets two modules bind the
+// same name (`types.mpl` and `parser.mpl` both have a `show`), so the morphl name
+// alone does not identify one.
+//
+// Two constructors rather than one with a default, which is this codebase's rule for
+// the problem: a *short* call is not a defaulted call — §3.4 fixes a parameter's
+// type, not its presence — so inference accepts `fn` with eight arguments while
+// lowering emits exactly eight and `verify` rejects the arity. `fn` keeps its arity
+// and the module-carrying case gets a name.
+// `rank` is this function's position **within its own module**, counted as it was
+// lowered. Together with `mod` it is a stable identity: `IR.fn.name` is not one,
+// because every lifted `$func` literal is called "lambda" and §4.14 lets two modules
+// bind the same member name. Editing one module renumbers only its own ranks, which
+// is what makes a name survive an edit elsewhere — the whole point of not using the
+// table index.
+//
+// **A pass that rebuilds a function must carry both across.** `mark_self` and
+// `fold` do exactly that, and dropping them would give two functions one name; `cc`
+// rejects the duplicate definition, so it is loud rather than silent.
+$decl fn_m $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
+                  $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
+                  $decl ev ints.node, $decl md "", $decl rk 0)
+  { $decl name nm  $decl params ps  $decl result res  $decl slots ns
+    $decl body $alloc bd  $decl self_tail st  $decl thunk th  $decl env ev
+    $decl mod md  $decl rank rk }
+
 $decl fn $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                 $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
                 $decl ev ints.node)
-  { $decl name nm  $decl params ps  $decl result res  $decl slots ns
-    $decl body $alloc bd  $decl self_tail st  $decl thunk th  $decl env ev }
+  $call fn_m (nm, ps, res, ns, bd, st, th, ev, "", 0)
 
 $decl proto_fn $call fn ("", ints.nil, 0, ints.nil, $call e_unit (0), false, false, ints.nil)
 $decl fns $specialize P.list proto_fn

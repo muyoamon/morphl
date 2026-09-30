@@ -230,6 +230,10 @@ $decl find_mdone $func ($decl xs mdones.node, $decl n "") $match xs (
 // `$new` takes the type of its operand, so `$new xs.nil` would be storage only
 // the empty list fits).
 
+$decl mrank $func ($decl m "", $decl n 0) { $decl mod m  $decl next n }
+$decl proto_mrank $call mrank ("", 0)
+$decl mranks_list $specialize P.list proto_mrank
+
 $decl lstate $func ()
   { // §9.3's table, pending half: **newest first**, so an append is one cell.
     $decl tpend  $mut $alloc T.tys.node
@@ -248,6 +252,19 @@ $decl lstate $func ()
     $decl nsettled $mut $alloc 0
     $decl mods   $mut $alloc mods_list.node
     $decl nmods  $mut $alloc 0
+    // Which module's code is being lowered right now, or -1 for the entry file.
+    // §4.14 lets two modules bind one name, so this is what lets a function be
+    // *named* by something stable rather than by its table index. Saved and restored
+    // at the three `lower_prop_*` entries, because loading a module can load another
+    // partway through one of its members — so a module's functions are **not** a
+    // contiguous range of the table, which is why this is per function and not a
+    // span. Those three are the same three places this file has twice been caught
+    // patching only some of.
+    $decl curmod $mut $alloc ""
+    // One rank counter per module, so a function's identity is (module, rank) and an
+    // edit to one module renumbers only its own. An assoc list because there are a
+    // handful of modules, not thousands.
+    $decl mranks $mut $alloc mranks_list.node
     // §4.9's templates, and the specialisations already built from them.
     $decl tmpls  $mut $alloc tmpls_list.node
     $decl ntmpls $mut $alloc 0
@@ -281,6 +298,59 @@ $decl lstate $func ()
     $decl errs   $mut $alloc Pa.diags.node }
 
 $decl proto_lst $call lstate ()
+
+// Enter a module for the duration of lowering one of its members, answering the
+// previous value so the caller can put it back. A module's members can load another
+// module, so these nest.
+// The module's short name — its file's basename without the extension, which is what
+// names its functions. Two modules with one basename would collide, and `cc` rejects
+// the duplicate definition rather than accepting it silently.
+$decl mod_short $func ($decl path "")
+  { $decl sl $call P.last_slash (path, 0, -1)
+    $decl b  $if ($call lt (sl, 0)) path
+                 ($call slice (path, $call add (sl, 1), $call len (path)))
+    $decl n $call len (b)
+    $decl r $if ($call lt (4, n))
+        ($if ($call eq_str ($call slice (b, $call sub (n, 4), n), ".mpl"))
+             ($call slice (b, 0, $call sub (n, 4))) b)
+        b }.r
+
+$decl enter_mod $func ($decl st proto_lst, $decl mid "")
+  { $decl prev $call P.sval (st.curmod)
+    $decl set  $set st.curmod mid
+    $decl r    prev }.r
+
+$decl leave_mod $func ($decl st proto_lst, $decl prev "")
+  { $decl set $set st.curmod prev
+    $decl r   0 }.r
+
+$decl find_mrank $func ($decl xs mranks_list.node, $decl m "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.mod, m)) xs.head.next
+        ($call find_mrank ($call mranks_list.val (xs.tail), m)),
+  $case xs 0
+)
+
+$decl put_mrank $func ($decl xs mranks_list.node, $decl m "", $decl n 0, $decl acc mranks_list.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $if ($call eq_str (xs.head.mod, m))
+          ($call mranks_list.reverse (acc, $call mranks_list.cons ($call mrank (m, n),
+               $call mranks_list.val (xs.tail))))
+          ($call put_mrank ($call mranks_list.val (xs.tail), m, n,
+               $call mranks_list.cons (xs.head, acc))),
+    $case xs ($call mranks_list.reverse (acc, $call mranks_list.cons ($call mrank (m, n),
+                  mranks_list.nil)))
+  )
+
+// The next rank for the module being lowered, bumping it.
+$decl next_rank $func ($decl st proto_lst)
+  { $decl m $call P.sval (st.curmod)
+    $decl i $call find_mrank ($call mranks_list.val (st.mranks), m)
+    $decl p $set st.mranks ($call put_mrank ($call mranks_list.val (st.mranks), m,
+                 $call add (i, 1), mranks_list.nil))
+    $decl r i }.r
+
 
 $decl eval_tys   $func ($decl x T.tys.node) x
 $decl eval_diags $func ($decl x Pa.diags.node) x
@@ -1444,8 +1514,9 @@ $decl lower_effect $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.prot
     // Not a thunk: a thunk *is* a global and is named by its static. This has
     // no name and nothing reads it, so it is an ordinary zero-argument
     // function that is called and whose result is dropped.
-    $decl f   $call IR.fn ("(top-level effect)", IR.ints.nil, $call intern (st, v.ty),
-                  $call take_slots (st), v.ir, false, false, IR.ints.nil)
+    $decl f   $call IR.fn_m ("(top-level effect)", IR.ints.nil, $call intern (st, v.ty),
+                  $call take_slots (st), v.ir, false, false, IR.ints.nil,
+                  $call P.sval (st.curmod), $call next_rank (st))
     $decl put $call put_lifted (st, idx, f)
     $decl b   $call restore_slots (st, o)
     $decl inm $call lt (after, 0)
@@ -1774,7 +1845,8 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
     // not know about the non-local exits inside it.
     $decl rty0  $match fty ($case {$prop tag "func"} ($call T.tval (fty.result)), $case fty body.ty)
     $decl rty   $call intern (st, rty0)
-    $decl out   $call IR.fn (nm, b.tys, rty, $call take_slots (st), body.ir, false, false, ev) }.out
+    $decl out   $call IR.fn_m (nm, b.tys, rty, $call take_slots (st), body.ir, false, false,
+                    ev, $call P.sval (st.curmod), $call next_rank (st)) }.out
 
 // The type of a lifted function, rebuilt from the types its slots were
 // interned under — lowering derives, it does not carry (§5.7).
@@ -1890,7 +1962,8 @@ $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm ""
 
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe    $call benv.val (m.penv)
+  { $decl msave $call enter_mod (st, $call mod_short (m.path))
+    $decl pe    $call benv.val (m.penv)
     $decl chk   $call no_caps (st, pe, pn)
     // The index is reserved before the body exists, because the body may name
     // this prop — §4.9 memoises before typing for exactly the same reason.
@@ -1934,7 +2007,11 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
     $decl p1    $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
     $decl lf    $if again ($call lower_prop_body (st, pe, nm, pn, fty)) lf0
     $decl put   $call put_lifted (st, idx, lf)
-    $decl r     $call lres ($call IR.e_global ($call intern (st, fty), idx), fty) }.r
+    $decl r     $call lres ($call IR.e_global ($call intern (st, fty), idx), fty)
+    // Restored after the result is computed, not before: a nested `$import` inside
+    // this member has already moved `curmod` on, and everything this member lowers
+    // must still be attributed to it.
+    $decl mrest $call leave_mod (st, msave) }.r
 
 // A prop that is not a function: a literal or a prop-only block (§1.1). It has
 // no index of its own — it is lowered afresh wherever it is named, which is
@@ -1949,7 +2026,8 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 // `B(R)`, and the result is `μR. B(R)` — or simply `B`, when `R` did not occur.
 $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe $call benv.val (m.penv)
+  { $decl msave $call enter_mod (st, $call mod_short (m.path))
+    $decl pe $call benv.val (m.penv)
     $decl self $call mem_str ($call free_names (pn, strs.nil), nm)
     $decl pv $call fresh_var (st)
     $decl p0 $call note_prop (st, m.id, $call mdone (nm, "pend", pv, T.t_bot, -1, -1))
@@ -1972,7 +2050,8 @@ $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
     // register the template twice, and then two mentions of one name would
     // name two different things.
     $decl p2 $call note_prop (st, m.id, $call mdone (nm, "value", 0, ty, v.mod, v.tmpl))
-    $decl r  $call lres4 (v.ir, ty, v.mod, v.tmpl) }.r
+    $decl r  $call lres4 (v.ir, ty, v.mod, v.tmpl)
+    $decl mrest $call leave_mod (st, msave) }.r
 
 // §4.9: a template has no runtime value at all, so it is registered once and
 // remembered — registering it twice would make two templates of one, and every
@@ -2003,7 +2082,8 @@ $decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.prot
 
 $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl pe   $call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
+  { $decl msave $call enter_mod (st, $call mod_short (m.path))
+    $decl pe   $call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
                    ($union (false, true)))
     $decl chk  $call no_caps (st, pe, pn)
     $decl idx  $call reserve_lifted (st)
@@ -2036,10 +2116,11 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
                    b0.val.mod, b0.val.tmpl))
     $decl bd   $if self ($call thunk_body (st, pe, pn)) b0
     $decl vty  $call intern (st, t)
-    $decl f    $call IR.fn (nm, IR.ints.nil, vty, $call IR.ints.val (bd.slots), bd.val.ir,
-                    false, true, IR.ints.nil)
+    $decl f    $call IR.fn_m (nm, IR.ints.nil, vty, $call IR.ints.val (bd.slots), bd.val.ir,
+                    false, true, IR.ints.nil, $call P.sval (st.curmod), $call next_rank (st))
     $decl put  $call put_lifted (st, idx, f)
-    $decl r    $call lres4 ($call IR.e_global (vty, idx), t, bd.val.mod, bd.val.tmpl) }.r
+    $decl r    $call lres4 ($call IR.e_global (vty, idx), t, bd.val.mod, bd.val.tmpl)
+    $decl mrest $call leave_mod (st, msave) }.r
 
 $decl lower_prop_ast $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                             $decl pn Pa.proto_node, $decl n Pa.proto_node, $decl kd "")
@@ -2429,8 +2510,10 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
           { $decl reset $call take_slots (st)
             $decl v     $call lval ($call lower (st, e, init, true))
             $decl vty   $call intern (st, v.ty)
-            $decl t     $call topfn ($call IR.fn (nm, IR.ints.nil, vty, $call take_slots (st),
-                                v.ir, false, true, IR.ints.nil), v.mod, v.tmpl) }.t
+            $decl t     $call topfn ($call IR.fn_m (nm, IR.ints.nil, vty, $call take_slots (st),
+                                v.ir, false, true, IR.ints.nil,
+                                $call P.sval (st.curmod), $call next_rank (st)),
+                            v.mod, v.tmpl) }.t
       $decl f    fm.fn
       $decl idx  $call IR.fns.length (acc, 0)
       // A top-level `$decl` whose value is a block with props is a module, and
@@ -2475,9 +2558,11 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
 $decl mark_self $func ($decl xs IR.fns.node, $decl i 0, $decl acc IR.fns.node) $match xs (
   $case {$prop tag "cons"}
     $call mark_self ($call IR.fns.val (xs.tail), $call add (i, 1),
-        $call IR.fns.cons ($call IR.fn (xs.head.name, xs.head.params, xs.head.result,
+        // A copy, so `mod` and `rank` come across — they are this function's name.
+        $call IR.fns.cons ($call IR.fn_m (xs.head.name, xs.head.params, xs.head.result,
             xs.head.slots, $call IR.eval (xs.head.body),
-            $call self_tails (xs.head.body, i), xs.head.thunk, xs.head.env),
+            $call self_tails (xs.head.body, i), xs.head.thunk, xs.head.env,
+            xs.head.mod, xs.head.rank),
             acc)),
   $case xs ($call IR.fns.reverse (acc, IR.fns.nil))
 )

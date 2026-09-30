@@ -96,7 +96,7 @@ $decl body_of $func ($decl code "", $decl marker "")
     $decl out  $if ($call lt (nxt, 0)) rest ($call slice (rest, 0, nxt)) }.out
 
 $decl t3 $call check ("...and its own body does not call it",
-  $call not ($call has ($call body_of (loop_c.code, "/* count */"), "mpl_f0(")))
+  $call not ($call has ($call body_of (loop_c.code, "/* count */"), "mpl_f")))
 
 // §6a's hazard: `$call f (b, a)` must not clobber `b` before reading it, so
 // every new argument lands in a temporary before any slot is written.
@@ -111,8 +111,11 @@ $decl t5 $call check ("§8's arithmetic is emitted infix",
 
 // §7.3 gives every function value the same shape, so every function takes an
 // environment — even one that captures nothing, which is handed NULL.
+// Asserted on the *shape*, never on a name: a function's C name comes from its
+// module and its rank now, so naming one here would break on any edit that shifts
+// the rank — the same reason a `verify` node index may not be hard-coded.
 $decl t6 $call check ("every function takes an environment",
-  $if ($call has (loop_c.code, "mpl_f1(void *env)"))
+  $if ($call has (loop_c.code, "(void *env)"))
       ($call has (loop_c.code, "(NULL")) false)
 
 // §9 leaves the entry point to the build program; this is the stand-in. It takes
@@ -190,8 +193,8 @@ $decl t14 $call check ("projection is a field by index",
 // A top-level `$decl` that is not a `$func` has a static of its own (§4.10,
 // initialised once in source order), and naming it reads that.
 $decl t15 $call check ("global data is read from its static",
-  $if ($call has (blk_c.code, "= mpl_g2;"))
-      ($call has (blk_c.code, "mpl_g2 = mpl_f2(NULL);")) false)
+  $if ($call has (blk_c.code, "= mpl_g"))
+      ($call has (blk_c.code, "(NULL);")) false)
 
 // ----------------------------------------------------------------- strings
 
@@ -218,7 +221,7 @@ $decl t19 $call check ("a string intrinsic is a call, not an operator",
 // §9 leaves the entry point to the build program; a `Str` result is written
 // out rather than printed as a number.
 $decl t20 $call check ("a Str-returning main is printed as bytes",
-  $call has (str_c.code, "mpl_print(mpl_f1(NULL));"))
+  $call has (str_c.code, "mpl_print(mpl_f"))
 
 // The escaping has to survive a quote, a backslash, a newline and a multi-byte
 // code point — and the length is bytes, not characters (§3.1).
@@ -251,8 +254,8 @@ $decl t24 $call check ("$set writes through the pointer",
 // §4.10: a global is initialised once, in source order — not re-evaluated at
 // each mention, which for storage would mean a different cell every time.
 $decl t25 $call check ("a global has a static, assigned once by mpl_init",
-  $if ($call has (sto_c.code, "static int64_t * mpl_g0;"))
-      ($call has (sto_c.code, "mpl_g0 = mpl_f0(NULL);")) false)
+  $if ($call has (sto_c.code, "static int64_t * mpl_g"))
+      ($call has (sto_c.code, "(NULL);")) false)
 
 $decl t26 $call check ("...and mpl_init runs before the entry point",
   { $decl i $call idx (sto_c.code, "mpl_init();")
@@ -432,7 +435,7 @@ $decl bool_c $call compile ($call concat (
 
 $decl t51 $call check ("a Bool union stays a machine word",
   $if ($call eq_int (bool_c.nerrs, 0))
-      ($call has (bool_c.code, "static int64_t * mpl_g0;")) false)
+      ($call has (bool_c.code, "static int64_t * mpl_g")) false)
 
 $decl t52 $call check ("...and a $match on one is an $if, not a switch",
   $call not ($call has (bool_c.code, "switch")))

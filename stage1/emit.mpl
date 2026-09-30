@@ -103,6 +103,13 @@ $decl estate $func ()
     $decl emitted $mut $alloc IR.ints.node
     // The §4.16 function-pointer typedefs already written, by interned index.
     $decl fps $mut $alloc IR.ints.node
+    // One C name per function, computed once from the table. §7.3's pair, §4.10's
+    // statics and every direct call name a function from anywhere in the program, so
+    // the name has to come from the function's own identity — `IR.fn`'s `mod` and
+    // `rank` — and not from its table index, which every other module's contents
+    // shift. Held here rather than threaded, because the expression emitter carries
+    // `est` everywhere and the function table nowhere.
+    $decl fnames $mut $alloc strs.node
     $decl errs $mut $alloc Pa.diags.node }
 
 $decl proto_est $call estate ()
@@ -182,8 +189,26 @@ $decl emit_return $func ($decl st proto_est)
   { $decl c $call P.sval (st.retc)
     $decl r $if ($call eq_str (c, "")) ($call say (st, "  return ret;\n"))
         ($call say (st, $call concat ("  *(", $call concat (c, " *)retp = ret;\n  return;\n")))) }.r
-$decl gbl_name  $func ($decl i 0) $call concat ("mpl_g", $call int_to_str (i))
-$decl fn_name   $func ($decl i 0) $call concat ("mpl_f", $call int_to_str (i))
+// A function's stable suffix: its module's short name and its rank within that
+// module, so an edit to another module leaves it alone. The entry file has no module
+// name and takes `e`.
+$decl fn_key $func ($decl f IR.proto_fn)
+  $call concat ($if ($call eq_str (f.mod, "") ) "e" f.mod,
+      $call concat ("_", $call int_to_str (f.rank)))
+
+$decl fn_keys $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
+  $case {$prop tag "cons"}
+    $call fn_keys ($call IR.fns.val (fs.tail), $call strs.cons ($call fn_key (fs.head), acc)),
+  $case fs ($call strs.reverse (acc, strs.nil))
+)
+
+$decl key_at $func ($decl st proto_est, $decl i 0)
+  $call strs.nth ($call strs.val (st.fnames), i)
+
+$decl gbl_name  $func ($decl st proto_est, $decl i 0)
+  $call concat ("mpl_g", $call key_at (st, i))
+$decl fn_name   $func ($decl st proto_est, $decl i 0)
+  $call concat ("mpl_f", $call key_at (st, i))
 
 // The C side of §8's string intrinsics.
 //
@@ -1104,7 +1129,7 @@ $decl is_global $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
 )
 
 $decl callee_name $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
-  $case {$prop tag "global"} ($call fn_name ($call res_fn (st, c.fn))),
+  $case {$prop tag "global"} ($call fn_name (st, $call res_fn (st, c.fn))),
   $case c "0"
 )
 
@@ -2100,9 +2125,9 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     // function named as a value is §7.3's pair — with a null environment,
     // because a top-level function captures nothing, which is what makes the
     // pair two words whatever the signature.
-    $if ($call is_thunk (st, e.fn)) ($call assign (st, dest, $call gbl_name (e.fn)))
+    $if ($call is_thunk (st, e.fn)) ($call assign (st, dest, $call gbl_name (st, e.fn)))
         ($do ($call assign (st, $call concat (dest, ".code"),
-                  $call concat ("(void *)", $call fn_name (e.fn))))
+                  $call concat ("(void *)", $call fn_name (st, e.fn))))
              ($call assign (st, $call concat (dest, ".env"), "NULL"))),
   // §4.15: the root block declares `err` and `none` as prop-only blocks, so a
   // `prim` can stand in value position as well as callee position. With no
@@ -2280,7 +2305,7 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     { $decl cs $call IR.exprs.val (e.captures)
       $decl en $call env_name (e.fn)
       $decl d2 $call assign (st, $call concat (dest, ".code"),
-                   $call concat ("(void *)", $call fn_name (e.fn)))
+                   $call concat ("(void *)", $call fn_name (st, e.fn)))
       $decl r  $if ($call IR.exprs.is_nil (cs))
           ($call assign (st, $call concat (dest, ".env"), "0"))
           { $decl ev $call fresh_tmp (st)
@@ -2350,7 +2375,7 @@ $decl emit_fn $func ($decl st proto_est, $decl i 0, $decl f IR.proto_fn, $decl t
   { $decl np  $call IR.ints.length (f.params, 0)
     $decl h0  $call say (st, $call concat ("\nstatic ",
                   $call concat ($call c_type (st, ts, f.result),
-                  $call concat (" ", $call concat ($call fn_name (i), "(void *env")))))
+                  $call concat (" ", $call concat ($call fn_name (st, i), "(void *env")))))
     $decl h1  $call emit_params (st, f.params, ts, 0, false)
     $decl h2  $call say (st, $call concat (") {  /* ", $call concat (f.name, " */\n")))
     $decl h3  $call say (st, "  (void)env;\n")
@@ -2426,7 +2451,7 @@ $decl emit_wrappers $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.
     { $decl f  $call fn_at (fs, g.head)
       $decl h0 $call say (st, $call concat ("\nstatic ",
                    $call concat ($call c_type (st, ts, f.result),
-                   $call concat (" ", $call concat ($call fn_name (g.head), "(void *env")))))
+                   $call concat (" ", $call concat ($call fn_name (st, g.head), "(void *env")))))
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
       $decl h2 $call say (st, $call concat (") {  /* ", $call concat (f.name, " */\n  return ")))
       $decl h3 $call say (st, $call concat ($call grp_name (gi),
@@ -2542,7 +2567,7 @@ $decl emit_wrappers_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g
       $decl rc $call c_type (st, ts, f.result)
       $decl h0 $call say (st, $call concat ("\nstatic ",
                    $call concat (rc, $call concat (" ",
-                   $call concat ($call fn_name (g.head), "(void *env")))))
+                   $call concat ($call fn_name (st, g.head), "(void *env")))))
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
       $decl h2 $call say (st, $call concat (") {  /* ", $call concat (f.name,
                    $call concat (" */\n  ", $call concat (rc, " r;\n  ")))))
@@ -2613,7 +2638,7 @@ $decl emit_protos $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.ty
   $case {$prop tag "cons"}
     { $decl h0 $call say (st, $call concat ("static ",
           $call concat ($call c_type (st, ts, fs.head.result),
-          $call concat (" ", $call concat ($call fn_name (i), "(void *env")))))
+          $call concat (" ", $call concat ($call fn_name (st, i), "(void *env")))))
       $decl h1 $call emit_params (st, fs.head.params, ts, 0, false)
       $decl h2 $call say (st, ");\n")
       $decl r  $call emit_protos (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1)) }.r,
@@ -2629,7 +2654,7 @@ $decl emit_globals $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.t
     { $decl d $if fs.head.thunk
           ($call say (st, $call concat ("static ",
               $call concat ($call c_type (st, ts, fs.head.result),
-              $call concat (" ", $call concat ($call gbl_name (i),
+              $call concat (" ", $call concat ($call gbl_name (st, i),
               $call concat (";  /* ", $call concat (fs.head.name, " */\n")))))))) ()
       $decl r $call emit_globals (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1)) }.r,
   $case fs ()
@@ -2657,7 +2682,7 @@ $decl emit_effects $func ($decl st proto_est, $decl es IR.effects.node, $decl i 
     $do ($if ($call and ($call eq_int (es.head.after, i),
                          $call same_bool (es.head.inmod, inmod)))
              ($call say (st, $call concat ("  (void)",
-                 $call concat ($call fn_name (es.head.fn), "(NULL);\n"))))
+                 $call concat ($call fn_name (st, es.head.fn), "(NULL);\n"))))
              ())
         ($call emit_effects (st, $call IR.effects.val (es.tail), i, inmod)),
   $case es ()
@@ -2673,7 +2698,7 @@ $decl emit_inits $func ($decl st proto_est, $decl fs IR.fns.node, $decl es IR.ef
     { $decl e $call emit_effects (st, es, i, inmod)
       $decl w $if ($call lt (i, glo)) false ($call lt (i, ghi))
       $decl d $if ($call and (w, fs.head.thunk))
-          ($call assign (st, $call gbl_name (i), $call concat ($call fn_name (i), "(NULL)"))) ()
+          ($call assign (st, $call gbl_name (st, i), $call concat ($call fn_name (st, i), "(NULL)"))) ()
       $decl r $call emit_inits (st, $call IR.fns.val (fs.tail), es, $call add (i, 1),
                   glo, ghi, inmod) }.r,
   $case fs ($call emit_effects (st, es, i, inmod))
@@ -2702,6 +2727,8 @@ $decl find_main $func ($decl fs IR.fns.node, $decl i 0) $match fs (
 $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
   { $decl ts $call T.tys.val (p.types)
     $decl fs $call IR.fns.val (p.funcs)
+    // Before anything is emitted: every name comes from here.
+    $decl nms $set st.fnames ($call fn_keys (fs, strs.nil))
     $decl tk $set st.thunks ($call thunk_ids (fs, 0, IR.ints.nil))
     // Before anything is emitted: `res_fn` is asked at every global callee.
     $decl al $set st.aliases ($call collect_aliases (fs, 0, fnals.nil))
@@ -2742,10 +2769,17 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // §9 leaves the entry point to the build program; this prints whichever of
     // `Int` or `Str` the entry returns, which is as far as a stand-in goes.
     $decl mt  $if ($call lt (mi, 0)) T.t_bot ($call type_at (ts, mfn.result))
-    $decl body $if ($call T.same (mt, T.t_str))
-        ($call concat ("  mpl_print(", $call concat ($call fn_name (mi), "(NULL));\n")))
-        ($call concat ("  printf(\"%lld\\n\", (long long)",
-             $call concat ($call fn_name (mi), "(NULL));\n")))
+    // Guarded on `mi`, and it did not need to be until names became a *lookup*.
+    // §7.1 makes morphl strict, so this `$decl` is built on every emit including one
+    // with no `main` — harmless while the name was `concat ("mpl_f", int_to_str (-1))`
+    // and a panic now that it indexes `st.fnames`. Same shape as the `$decl bad
+    // $call concat (…T.show…)` that used to render two types at every coercion:
+    // a `$decl` is not a branch.
+    $decl body $if ($call lt (mi, 0)) ""
+        ($if ($call T.same (mt, T.t_str))
+            ($call concat ("  mpl_print(", $call concat ($call fn_name (st, mi), "(NULL));\n")))
+            ($call concat ("  printf(\"%lld\\n\", (long long)",
+                 $call concat ($call fn_name (st, mi), "(NULL));\n"))))
     $decl d2 $if ($call lt (mi, 0))
         ($call eerr (st, "no top-level $decl named 'main'"))
         ($call say (st, $call concat ("\nint main(int argc, char **argv) {\n  mpl_argc = argc;\n  mpl_argv = argv;\n  mpl_init();\n",
