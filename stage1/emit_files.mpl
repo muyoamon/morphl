@@ -1,5 +1,5 @@
-// `emit_files <file.mpl>` — §9.1's `emit` produces a *list* of outputs, and this is the
-// driver that shows them: one line per file, its path and its size in bytes.
+// `emit_files <file.mpl> [dir]` — §9.1's `emit` produces a *list* of outputs, and this is
+// the driver that writes them, one file each, under `dir` (default `.`).
 //
 // It exists because every other driver joins the list into one artifact (`sole_text`),
 // which is right for a target that wants a single file but hides the split entirely. The
@@ -10,11 +10,19 @@ $decl P  $import "prelude"
 
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
-$decl show $func ($decl fs C.ir.ofiles.node) $match fs (
+// Each output written where its `path` says, under `dir`. §8's `write_file` answers
+// `<unit, err>`; a failure is reported and does not stop the rest, because a build wants
+// to know about every one rather than the first.
+$decl put $func ($decl dir "", $decl fs C.ir.ofiles.node) $match fs (
   $case {$prop tag "cons"}
-    $do ($call nl ($call concat (fs.head.path, $call concat ("  ",
-             $call int_to_str ($call len (fs.head.text))))))
-        ($call show ($call C.ir.ofiles.val (fs.tail))),
+    { $decl full $call concat (dir, $call concat ("/", fs.head.path))
+      $decl w    $call write_file (full, fs.head.text)
+      $decl say  $match w (
+          $case {$prop tag "err"} ($call nl ($call concat ("cannot write ", full))),
+          $case w ($call nl ($call concat (full, $call concat ("  ",
+                       $call int_to_str ($call len (fs.head.text))))))
+        )
+      $decl r $call put (dir, $call C.ir.ofiles.val (fs.tail)) }.r,
   $case fs ()
 )
 
@@ -38,5 +46,6 @@ $decl main $func ()
       )
     $decl ckd $call C.check ($call C.parse (src, path))
     $decl out $call C.emit (ckd.program)
-    $decl d   $call show ($call C.ir.ofiles.val (out.files))
+    $decl dir $if ($call lt (1, $call alen (argv))) ($call P.sval ($call at (argv, 1))) "."
+    $decl d   $call put (dir, $call C.ir.ofiles.val (out.files))
     $decl r   "" }.r

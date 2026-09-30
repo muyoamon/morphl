@@ -261,8 +261,12 @@ $decl t24 $call check ("$set writes through the pointer",
 
 // §4.10: a global is initialised once, in source order — not re-evaluated at
 // each mention, which for storage would mean a different cell every time.
-$decl t25 $call check ("a global has a static, assigned once by mpl_init",
-  $if ($call has (sto_c.code, "static int64_t * mpl_g"))
+// §4.10: a global has a C variable of its own, assigned once by `mpl_init`. It is no
+// longer `static`: §9.1's split means the module that reads it and the `mpl_init` that
+// assigns it can be different translation units, so it is `extern` in the shared header
+// and defined once beside `mpl_init`. The keyword was never the property under test.
+$decl t25 $call check ("a global has a variable of its own, assigned once by mpl_init",
+  $if ($call has (sto_c.code, "int64_t * mpl_g"))
       ($call has (sto_c.code, "(NULL);")) false)
 
 $decl t26 $call check ("...and mpl_init runs before the entry point",
@@ -443,7 +447,7 @@ $decl bool_c $call compile ($call concat (
 
 $decl t51 $call check ("a Bool union stays a machine word",
   $if ($call eq_int (bool_c.nerrs, 0))
-      ($call has (bool_c.code, "static int64_t * mpl_g")) false)
+      ($call has (bool_c.code, "int64_t * mpl_g")) false)
 
 $decl t52 $call check ("...and a $match on one is an $if, not a switch",
   $call not ($call has (bool_c.code, "switch")))

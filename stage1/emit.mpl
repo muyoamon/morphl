@@ -112,6 +112,10 @@ $decl estate $func ()
     $decl fnames $mut $alloc strs.node
     // The module of each function, by index — the other half of an identity.
     $decl fmods $mut $alloc strs.node
+    // The functions some *other* module names, so they need external linkage; every
+    // other one stays `static` and is private to its own output. 231 of the compiler's
+    // 1,277, so the isolation is real.
+    $decl exported $mut $alloc IR.ints.node
     $decl errs $mut $alloc Pa.diags.node }
 
 $decl proto_est $call estate ()
@@ -1415,11 +1419,36 @@ $decl xmod_add $func ($decl st proto_est, $decl rs IR.ints.node, $decl here "",
   $case rs acc
 )
 
-$decl exported_ids $func ($decl st proto_est, $decl fs IR.fns.node, $decl acc IR.ints.node)
+// A **thunk's** function is exported whatever its body says, because `mpl_init` calls
+// every one of them and `mpl_init` is emitted once, in the entry file's output. That is a
+// cross-module reference no walk over bodies can see — it comes from the initialiser the
+// backend writes, not from the program — and missing it is a link error, not a silent
+// one: `mpl_init` referred to a `static` in another translation unit.
+//
+// Exporting them is the smaller of the two fixes. The other is an `mpl_init` per module
+// (BOOTSTRAP §274), which would keep a thunk private to its own output and is the better
+// end state; this keeps the initialiser whole and in one place.
+// §3.3's top-level effects, which `mpl_init` also calls and which are deliberately *not*
+// thunks — so the thunk rule above does not reach them. Together the two say the whole
+// rule: **every reference `mpl_init` makes is invisible to a walk over function bodies**,
+// because the initialiser is written by the backend rather than contained in the program.
+// Both holes showed up as link errors against a `static` in another translation unit,
+// which is the only reason they were found — `verify` cannot see linkage and the
+// concatenated build cannot either.
+$decl export_effs $func ($decl es IR.effects.node, $decl acc IR.ints.node) $match es (
+  $case {$prop tag "cons"}
+    $call export_effs ($call IR.effects.val (es.tail), $call gref_add (acc, es.head.fn)),
+  $case es acc
+)
+
+$decl exported_ids $func ($decl st proto_est, $decl fs IR.fns.node, $decl i 0,
+                          $decl acc IR.ints.node)
   $match fs (
     $case {$prop tag "cons"}
-      $call exported_ids (st, $call IR.fns.val (fs.tail),
-          $call xmod_add (st, $call gref_of (fs.head.body, IR.ints.nil), fs.head.mod, acc)),
+      { $decl a0 $call xmod_add (st, $call gref_of (fs.head.body, IR.ints.nil),
+                     fs.head.mod, acc)
+        $decl a1 $if fs.head.thunk ($call gref_add (a0, i)) a0
+        $decl r  $call exported_ids (st, $call IR.fns.val (fs.tail), $call add (i, 1), a1) }.r,
     $case fs acc
   )
 
@@ -1744,6 +1773,9 @@ $decl all_tail_sigs $func ($decl st proto_est, $decl fs IR.fns.node, $decl acc I
       $call all_tail_sigs (st, $call IR.fns.val (fs.tail), $call tail_sigs (st, fs.head.body, acc)),
     $case fs acc
   )
+
+$decl is_exported $func ($decl st proto_est, $decl i 0)
+  $call mem_int ($call IR.ints.val (st.exported), i)
 
 $decl reports $func ($decl st proto_est, $decl i 0) $call mem_int (st.reps, i)
 
@@ -2519,7 +2551,9 @@ $decl emit_slots $func ($decl st proto_est, $decl xs IR.ints.node, $decl ts T.ty
 
 $decl emit_fn $func ($decl st proto_est, $decl i 0, $decl f IR.proto_fn, $decl ts T.tys.node)
   { $decl np  $call IR.ints.length (f.params, 0)
-    $decl h0  $call say (st, $call concat ("\nstatic ",
+    // `static` unless another module names it. A contified group needs no such test:
+    // §4.14 keeps a tail-call cycle inside one module, so a group is always private.
+    $decl h0  $call say (st, $call concat ($if ($call is_exported (st, i)) "\n" "\nstatic ",
                   $call concat ($call c_type (st, ts, f.result),
                   $call concat (" ", $call concat ($call fn_name (st, i), "(void *env")))))
     $decl h1  $call emit_params (st, f.params, ts, 0, false)
@@ -2595,7 +2629,11 @@ $decl emit_wrappers $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.
                            $decl gi 0, $decl ts T.tys.node, $decl i 0) $match g (
   $case {$prop tag "cons"}
     { $decl f  $call fn_at (fs, g.head)
-      $decl h0 $call say (st, $call concat ("\nstatic ",
+      // A group *member* keeps its own name, so another module can call it — `T.same` and
+      // `T.sub` are both members of one — and its linkage has to match what the header
+      // declared. The group *function* (`mpl_grpN`) stays `static`: it has no name outside
+      // this file, because §4.14 keeps a tail-call cycle inside one module.
+      $decl h0 $call say (st, $call concat ($if ($call is_exported (st, g.head)) "\n" "\nstatic ",
                    $call concat ($call c_type (st, ts, f.result),
                    $call concat (" ", $call concat ($call fn_name (st, g.head), "(void *env")))))
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
@@ -2711,7 +2749,7 @@ $decl emit_wrappers_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g
   $case {$prop tag "cons"}
     { $decl f  $call fn_at (fs, g.head)
       $decl rc $call c_type (st, ts, f.result)
-      $decl h0 $call say (st, $call concat ("\nstatic ",
+      $decl h0 $call say (st, $call concat ($if ($call is_exported (st, g.head)) "\n" "\nstatic ",
                    $call concat (rc, $call concat (" ",
                    $call concat ($call fn_name (st, g.head), "(void *env")))))
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
@@ -2787,30 +2825,45 @@ $decl emit_groups $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.g
 // Forward declarations first: §4.10 is source order, but C needs every callee
 // visible before its caller, and a `$fwd` group is mutually recursive by
 // construction (§5.5).
+// `pub` picks which half. The shared header declares the functions another module names,
+// with no `static` because they must be reachable from another translation unit; a
+// module's own output declares the rest `static`, because a `static` declaration in the
+// header would be a promise every *other* file could not keep.
 $decl emit_protos $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.tys.node,
-                         $decl i 0) $match fs (
+                         $decl i 0, $decl md "", $decl pub P.boolean) $match fs (
   $case {$prop tag "cons"}
-    { $decl h0 $call say (st, $call concat ("static ",
-          $call concat ($call c_type (st, ts, fs.head.result),
-          $call concat (" ", $call concat ($call fn_name (st, i), "(void *env")))))
-      $decl h1 $call emit_params (st, fs.head.params, ts, 0, false)
-      $decl h2 $call say (st, ");\n")
-      $decl r  $call emit_protos (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1)) }.r,
+    { $decl ex   $call is_exported (st, i)
+      $decl mine $if pub ex ($if ex false ($call eq_str (fs.head.mod, md)))
+      $decl h0 $if ($call not (mine)) ()
+          ($call say (st, $call concat ($if pub "" "static ",
+              $call concat ($call c_type (st, ts, fs.head.result),
+              $call concat (" ", $call concat ($call fn_name (st, i), "(void *env"))))))
+      $decl h1 $if mine ($call emit_params (st, fs.head.params, ts, 0, false)) ()
+      $decl h2 $if mine ($call say (st, ");\n")) ()
+      $decl r  $call emit_protos (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1),
+                   md, pub) }.r,
   $case fs ()
 )
 
 // One static per thunk, and one assignment each in source order (§4.10). A
 // later global may name an earlier one, and index order is source order, so
 // running them in order is all it takes.
+// §4.10's statics, **declared** in the header and **defined once** beside the `mpl_init`
+// that assigns them. `static` was right while there was one output and is wrong with
+// several: each file would take a private copy, and `mpl_init` would assign its own while
+// every other module read a zero. Defining them all in one place also keeps `mpl_init`
+// whole — a `static` global could only be assigned from its own file, which is what would
+// force an `mpl_init` per module.
 $decl emit_globals $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.tys.node,
-                          $decl i 0) $match fs (
+                          $decl i 0, $decl decl_only P.boolean) $match fs (
   $case {$prop tag "cons"}
     { $decl d $if fs.head.thunk
-          ($call say (st, $call concat ("static ",
+          ($call say (st, $call concat ($if decl_only "extern " "",
               $call concat ($call c_type (st, ts, fs.head.result),
               $call concat (" ", $call concat ($call gbl_name (st, i),
               $call concat (";  /* ", $call concat (fs.head.name, " */\n")))))))) ()
-      $decl r $call emit_globals (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1)) }.r,
+      $decl r $call emit_globals (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1),
+                  decl_only) }.r,
   $case fs ()
 )
 
@@ -2907,7 +2960,8 @@ $decl emit_mod_files $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T
                             $decl gs IR.groups.node, $decl ms strs.node,
                             $decl acc IR.ofiles.node) $match ms (
   $case {$prop tag "cons"}
-    { $decl d0 $call emit_fns (st, fs, ts, 0, gs, ms.head)
+    { $decl pr $call emit_protos (st, fs, ts, 0, ms.head, false)
+      $decl d0 $call emit_fns (st, fs, ts, 0, gs, ms.head)
       $decl d1 $call emit_groups (st, fs, gs, 0, ts, ms.head)
       $decl f  $call IR.ofile ($call concat (ms.head, ".c"), $call cut_out (st))
       $decl r  $call emit_mod_files (st, fs, ts, gs, ms.tail, $call IR.ofiles.cons (f, acc)) }.r,
@@ -2939,7 +2993,9 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // Reported in the artifact while the split is being built: how much of the
     // program would actually need external linkage. If nearly everything crosses,
     // splitting buys no isolation and the answer is worth knowing before the work.
-    $decl xp $call IR.ints.length ($call exported_ids (st, fs, IR.ints.nil), 0)
+    $decl xs0 $set st.exported ($call exported_ids (st, fs, 0,
+                   $call export_effs ($call IR.effects.val (p.effs), IR.ints.nil)))
+    $decl xp $call IR.ints.length ($call IR.ints.val (st.exported), 0)
     $decl nf $call IR.fns.length (fs, 0)
     $decl hx $call say (st, $call concat ("/* cross-module references: ",
                  $call concat ($call int_to_str (xp), $call concat (" of ",
@@ -2955,10 +3011,10 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // §4.16's declarations and wrappers, before anything that may call one. They go
     // after the structs, because a signature may name one, and before the prototypes.
     $decl xs $call emit_xts (st, ts, $call xts_of_fns (fs, xts.nil))
-    $decl d0 $call emit_protos (st, fs, ts, 0)
+    $decl d0 $call emit_protos (st, fs, ts, 0, "", true)
     $decl tr $call emit_tramp (st, ts)
     $decl en $call emit_envs (st, fs, ts, 0)
-    $decl gv $call emit_globals (st, fs, ts, 0)
+    $decl gv $call emit_globals (st, fs, ts, 0, true)
     // §9.1's first output. Everything above is a *declaration* — the runtime, §7.2's
     // layouts, §4.16's extern decls, every prototype, §6a's driver, the capture structs
     // and §4.10's statics — and every declaration has to precede every definition both
@@ -2970,6 +3026,8 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // what is its own, which costs a scan per module and nothing else.
     $decl mfs $call emit_mod_files (st, fs, ts, gs, $call mods_of (fs, strs.nil),
                   IR.ofiles.nil)
+    $decl ep  $call emit_protos (st, fs, ts, 0, "", false)
+    $decl eg  $call emit_globals (st, fs, ts, 0, false)
     $decl e0  $call emit_fns (st, fs, ts, 0, gs, "")
     $decl e1  $call emit_groups (st, fs, gs, 0, ts, "")
     // §4.10 in two passes, and the order between them is the whole point.
