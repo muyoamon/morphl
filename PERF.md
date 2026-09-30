@@ -1663,3 +1663,59 @@ Going further means reducing the *number* of iterations, which is a different ch
 either cache each type's interned index on the node (a `$mut` field set on first
 intern) or bucket the table, which needs integer arrays that BOOTSTRAP §2 does not
 give stage 1 — the root block's arrays are monomorphic at `Str`.
+
+## Rejected: caching the interned index on the type node
+
+Built, measured, reverted. Recorded because the reasoning that motivated it is
+appealing and wrong, and the shape of the error is reusable.
+
+The idea: give every type a `$mut $alloc` cell holding its §9.3 index, so a lookup
+is a field read instead of a 229-entry scan. Copying a type copies the *reference*
+(§7.3), so every copy of one node shares one cell — the hash-consing arrangement
+a compiler normally uses.
+
+| | emit `mplc.mpl` |
+|---|---|
+| cache cells present, compiler without the cache | 34.9s |
+| the cache in use | **37.1s** |
+
+**Slower by ~2.2s**, with `c1 == c2` byte-identical so it was always *correct*. The
+hit rate says why:
+
+| `ty_find` | count |
+|---|---|
+| cache hits | 40,818 |
+| cache misses | 880,947 |
+| **hit rate** | **4.4%** |
+
+**`ty_find`'s job is interning, and interning is by nature a question about a node
+that has just been built.** Lowering derives a type bottom-up — `t_block (…)`,
+`t_ref (…)` — and *then* asks whether it is already known. The node handed in is
+therefore fresh every time and its cell is empty every time, so the cache pays an
+allocation per type constructed and answers 4.4% of the lookups. A node cache can
+only help *repeated lookups of a stored node*, which is `emit`'s pattern —
+`IR.find_ty (ts, t.result)`, `(ts, xs.head.ty)`, where the node came out of the
+table — and that is at most 279,583 of 1,200,953 lookups, 23%.
+
+So the split measured beforehand was read the wrong way round. 921,370 of the
+lookups being in `ty_find` said "cache here"; what it actually meant was "these are
+the lookups a node cache cannot serve". **Count the hit rate, not the call count** —
+a cache's value is in the hits, and the two numbers can point in opposite
+directions.
+
+Extending it to `emit` was not done. The cell cost is already sunk at construction,
+so emit's reads would be upside — but ~4.2s of scan against a −2.2s floor lands
+inside this box's noise (the same compiler measured 37.4s and 34.9s on comparable
+input), and it needs `tsafe` plumbed through `IR.program`, which is the short-call
+arity trap.
+
+**What interning actually wants is a content-addressed map**, hash to bucket, which
+is O(1) rather than a 229-entry scan. That needs integer arrays, and BOOTSTRAP §2
+keeps the root block's arrays monomorphic at `Str`, so stage 1 cannot express one
+today. That is the honest blocker, and it is a §8/BOOTSTRAP question rather than a
+lowering one.
+
+For the record, the staleness rule was sound and is worth keeping if this is ever
+revisited: `tsafe` is the minimum `ntypes` the table has ever been rolled back to,
+and a cached index is trusted only below it, because §5.5's snapshot truncates the
+table and every index at or above a rollback target is handed out again.
