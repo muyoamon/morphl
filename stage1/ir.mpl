@@ -357,6 +357,13 @@ $decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.nod
   { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
     $decl fnbase fb }
 
+// §9.1: one output of `emit`, carrying the path it should be written to. It lives here
+// rather than in `compiler` because `emit` is what builds them and cannot import its own
+// caller; `compiler.emitted` holds the list.
+$decl ofile $func ($decl p "", $decl t "") { $decl path p  $decl text t }
+$decl proto_ofile $call ofile ("", "")
+$decl ofiles $specialize P.list proto_ofile
+
 $decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0, effects.nil, 0)
 
 // ------------------------------------------------------------------ interning

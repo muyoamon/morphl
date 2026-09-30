@@ -63,21 +63,24 @@ $decl proto_checked $call checked (IR.proto_program, Pa.diags.nil)
 // a list of one. Each entry carries the path it should be written to, for the same
 // reason `parse` takes one: the caller is not asked to invent names for the
 // compiler's own outputs.
-$decl ofile $func ($decl p "", $decl t "") { $decl path p  $decl text t }
-$decl proto_ofile $call ofile ("", "")
-$decl ofiles $specialize P.list proto_ofile
-
-$decl emitted $func ($decl fs ofiles.node, $decl d Pa.diags.node)
+$decl emitted $func ($decl fs IR.ofiles.node, $decl d Pa.diags.node)
   { $decl files fs  $decl diagnostics d }
 
-$decl proto_emitted $call emitted (ofiles.nil, Pa.diags.nil)
+$decl proto_emitted $call emitted (IR.ofiles.nil, Pa.diags.nil)
 
-// The one artifact a single-output target wants, or "" when emit produced none.
-// Every driver that writes to stdout goes through this rather than reaching into the
-// list, so a driver written before the split keeps working after it.
+// Every output joined, in order — what a target that wants a single artifact gets, and
+// what a driver writing to stdout prints. Every such driver goes through this rather
+// than reaching into the list, so a driver written before §9.1 answered a list keeps
+// working after it: the outputs are emitted in an order that is valid to concatenate,
+// declarations before the code that uses them.
+$decl join_files $func ($decl fs IR.ofiles.node, $decl acc "") $match fs (
+  $case {$prop tag "cons"}
+    $call join_files ($call IR.ofiles.val (fs.tail), $call concat (acc, fs.head.text)),
+  $case fs acc
+)
+
 $decl sole_text $func ($decl e proto_emitted)
-  { $decl fs $call ofiles.val (e.files)
-    $decl r  $match fs ($case {$prop tag "cons"} fs.head.text, $case fs "") }.r
+  $call join_files ($call IR.ofiles.val (e.files), "")
 
 $decl artifact $func ($decl p "", $decl d Pa.diags.node)
   { $decl path p  $decl diagnostics d }
@@ -152,8 +155,7 @@ $decl verify V.verify
 $decl emit $func ($decl pr IR.proto_program)
   { $decl st  $call E.estate ()
     $decl c   $call E.emit_program (st, pr)
-    $decl out $call emitted ($call ofiles.cons ($call ofile ("", c), ofiles.nil),
-                  $call E.emit_errs (st)) }.out
+    $decl out $call emitted (c, $call E.emit_errs (st)) }.out
 
 // -------------------------------------------------------------------- link
 //
@@ -175,7 +177,7 @@ $decl compile $func ($decl src "", $decl path "")
   { $decl ckd $call check ($call parse (src, path))
     $decl out $if ($call Pa.diags.is_nil ($call Pa.diags.val (ckd.diagnostics)))
         ($call emit (ckd.program))
-        ($call emitted (ofiles.nil, $call Pa.diags.val (ckd.diagnostics))) }.out
+        ($call emitted (IR.ofiles.nil, $call Pa.diags.val (ckd.diagnostics))) }.out
 
 // ------------------------------------------------------------ host and target
 //

@@ -59,6 +59,12 @@ $decl struct_name_at $func ($decl code "", $decl body "")
     $decl r $if ($call lt (s, 0)) ""
                 ($call slice (code, $call add (s, 7), $call sub (b, 1))) }.r
 
+$decl join_ofiles $func ($decl fs IR.ofiles.node, $decl acc "") $match fs (
+  $case {$prop tag "cons"}
+    $call join_ofiles ($call IR.ofiles.val (fs.tail), $call concat (acc, fs.head.text)),
+  $case fs acc
+)
+
 $decl result $func ($decl c "", $decl n 0) { $decl code c  $decl nerrs n }
 
 $decl compile $func ($decl src "")
@@ -68,7 +74,9 @@ $decl compile $func ($decl src "")
     $decl prims $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil)
     $decl prog  $call L.lower_file (st, $call Pa.nodes.val (ast.exprs), r.ty, prims)
     $decl est   $call E.estate ()
-    $decl c     $call E.emit_program (est, prog)
+    // §9.1 makes `emit_program` answer a *list* of outputs, so the text these tests
+    // search is all of them joined — which is valid to concatenate, declarations first.
+    $decl c     $call join_ofiles ($call E.emit_program (est, prog), "")
     $decl out   $call result (c, $call Pa.diags.length ($call E.emit_errs (est), 0)) }.out
 
 // ---------------------------------------------------------------- the cases
