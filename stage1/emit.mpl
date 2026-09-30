@@ -2760,19 +2760,27 @@ $decl emit_group $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.int
     $decl g1  $set st.grp IR.ints.nil
     $decl w0  $call emit_wrappers (st, fs, g, gi, ts, 0) }.w0
 
+// Filtered by module like `emit_fns`, and a group *has* one: §4.14 lowers a module
+// against the root block alone, so a module cannot name its importer and a tail-call
+// cycle cannot cross that edge — every contified group therefore lives inside one
+// module, which is checked (all five of the compiler's own are within `parser`, `types`
+// or `emit`). Its module is its lowest member's.
 $decl emit_groups $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.groups.node,
-                         $decl gi 0, $decl ts T.tys.node) $match gs (
+                         $decl gi 0, $decl ts T.tys.node, $decl md "") $match gs (
   $case {$prop tag "cons"}
     { $decl g  $call IR.ints.val (gs.head.members)
       $decl f0 $call fn_at (fs, $call IR.ints.nth (g, 0))
+      $decl mine $call eq_str (f0.mod, md)
       $decl ok $call same_sig (fs, g, $call IR.ints.val (f0.params), f0.result)
       // Both paths contify, so §7.7 holds either way; the fast one is kept
       // because it is what the emitted compiler's own hot mutual recursions go
       // through, and a shared signature lets it pass parameters as parameters
       // and return a value as a value.
-      $decl d  $if ok ($call emit_group (st, fs, g, gi, ts))
-                      ($call emit_group_gen (st, fs, g, gi, ts))
-      $decl r  $call emit_groups (st, fs, $call IR.groups.val (gs.tail), $call add (gi, 1), ts) }.r,
+      $decl d  $if ($call not (mine)) ()
+                   ($if ok ($call emit_group (st, fs, g, gi, ts))
+                           ($call emit_group_gen (st, fs, g, gi, ts)))
+      $decl r  $call emit_groups (st, fs, $call IR.groups.val (gs.tail), $call add (gi, 1),
+                   ts, md) }.r,
   $case gs ()
 )
 
@@ -2852,17 +2860,60 @@ $decl emit_inits $func ($decl st proto_est, $decl fs IR.fns.node, $decl es IR.ef
 
 
 
+// `md` is the module whose bodies this pass emits — §9.1's list of outputs means one
+// file per module, and a function's `mod` is what says which. The *index* stays global,
+// because a name comes from `st.fnames` by index and every file must agree on it.
 $decl emit_fns $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.tys.node,
-                      $decl i 0, $decl gs IR.groups.node) $match fs (
+                      $decl i 0, $decl gs IR.groups.node, $decl md "") $match fs (
   $case {$prop tag "cons"}
-    { $decl d $if ($call in_a_group (gs, i)) () ($call emit_fn (st, i, fs.head, ts))
-      $decl r $call emit_fns (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1), gs) }.r,
+    { $decl mine $call eq_str (fs.head.mod, md)
+      $decl d $if ($call not (mine)) ()
+          ($if ($call in_a_group (gs, i)) () ($call emit_fn (st, i, fs.head, ts)))
+      $decl r $call emit_fns (st, $call IR.fns.val (fs.tail), ts, $call add (i, 1), gs, md) }.r,
   $case fs ()
 )
 
 // The `main` a hosted C program needs: whichever top-level `$decl` was named
 // `main`, printed. §9 leaves the entry point to the build program; this is the
 // stand-in that makes an emitted file runnable.
+$decl append_ofiles $func ($decl xs IR.ofiles.node, $decl ys IR.ofiles.node) $match xs (
+  $case {$prop tag "cons"}
+    $call IR.ofiles.cons (xs.head, $call append_ofiles ($call IR.ofiles.val (xs.tail), ys)),
+  $case xs ys
+)
+
+$decl has_str $func ($decl xs strs.node, $decl n "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head, n)) true ($call has_str (xs.tail, n)),
+  $case xs false
+)
+
+// The modules this program is made of, in the order they first appear, with the entry
+// file's own ("") left out — it is emitted last, because it is the one that holds
+// `mpl_init` and `main`.
+$decl mods_of $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
+  $case {$prop tag "cons"}
+    { $decl m fs.head.mod
+      $decl a $if ($call eq_str (m, "")) acc
+                  ($if ($call has_str ($call strs.val (acc), m)) acc ($call strs.cons (m, acc)))
+      $decl r $call mods_of ($call IR.fns.val (fs.tail), a) }.r,
+  $case fs ($call strs.reverse (acc, strs.nil))
+)
+
+// One output per module: that module's function bodies and its contified groups, and
+// nothing else — every declaration is in the header, which is what makes the outputs
+// valid to concatenate *and* separately compilable.
+$decl emit_mod_files $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.tys.node,
+                            $decl gs IR.groups.node, $decl ms strs.node,
+                            $decl acc IR.ofiles.node) $match ms (
+  $case {$prop tag "cons"}
+    { $decl d0 $call emit_fns (st, fs, ts, 0, gs, ms.head)
+      $decl d1 $call emit_groups (st, fs, gs, 0, ts, ms.head)
+      $decl f  $call IR.ofile ($call concat (ms.head, ".c"), $call cut_out (st))
+      $decl r  $call emit_mod_files (st, fs, ts, gs, ms.tail, $call IR.ofiles.cons (f, acc)) }.r,
+  $case ms ($call IR.ofiles.reverse (acc, IR.ofiles.nil))
+)
+
 $decl find_main $func ($decl fs IR.fns.node, $decl i 0) $match fs (
   $case {$prop tag "cons"}
     $if ($call eq_str (fs.head.name, "main")) i
@@ -2901,17 +2952,26 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // every file needs the struct for a type it touches, and with content-derived names
     // two files spell the same type the same way, so C is content to see the definition
     // in each translation unit that includes this.
-    $decl hdr $call cut_out (st)
-    // §4.16's declarations and wrappers, before anything that may call one. They
-    // go after the structs, because a signature may name one, and before the
-    // prototypes, which is merely tidy.
+    // §4.16's declarations and wrappers, before anything that may call one. They go
+    // after the structs, because a signature may name one, and before the prototypes.
     $decl xs $call emit_xts (st, ts, $call xts_of_fns (fs, xts.nil))
     $decl d0 $call emit_protos (st, fs, ts, 0)
     $decl tr $call emit_tramp (st, ts)
     $decl en $call emit_envs (st, fs, ts, 0)
     $decl gv $call emit_globals (st, fs, ts, 0)
-    $decl d1 $call emit_fns (st, fs, ts, 0, gs)
-    $decl d3 $call emit_groups (st, fs, gs, 0, ts)
+    // §9.1's first output. Everything above is a *declaration* — the runtime, §7.2's
+    // layouts, §4.16's extern decls, every prototype, §6a's driver, the capture structs
+    // and §4.10's statics — and every declaration has to precede every definition both
+    // for the outputs to be valid concatenated and for each to compile on its own.
+    $decl hdr $call cut_out (st)
+    // One output per imported module, then the entry file's own below. A module's
+    // functions are *not* a contiguous range of the table — loading one module can load
+    // another partway through a member — so each pass walks the whole table and keeps
+    // what is its own, which costs a scan per module and nothing else.
+    $decl mfs $call emit_mod_files (st, fs, ts, gs, $call mods_of (fs, strs.nil),
+                  IR.ofiles.nil)
+    $decl e0  $call emit_fns (st, fs, ts, 0, gs, "")
+    $decl e1  $call emit_groups (st, fs, gs, 0, ts, "")
     // §4.10 in two passes, and the order between them is the whole point.
     // `$import` evaluates the module's block where it stands, so everything that
     // was *lifted* — a module's members above all — is initialised before the
@@ -2951,6 +3011,9 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // The body, and for now one of it: the per-module split is the next slice, and
     // keeping the content in one piece here makes this step's output byte-for-byte what
     // a single artifact already was.
+    // The entry file's output holds `mpl_init` and `main`, which is why it is last and
+    // why it is the one place `runtime_state` is defined.
     $decl bdy $call cut_out (st)
     $decl r   $call IR.ofiles.cons ($call IR.ofile ("mpl.h", hdr),
-                  $call IR.ofiles.cons ($call IR.ofile ("mpl.c", bdy), IR.ofiles.nil)) }.r
+                  $call append_ofiles (mfs,
+                      $call IR.ofiles.cons ($call IR.ofile ("main.c", bdy), IR.ofiles.nil))) }.r
