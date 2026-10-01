@@ -1719,3 +1719,161 @@ For the record, the staleness rule was sound and is worth keeping if this is eve
 revisited: `tsafe` is the minimum `ntypes` the table has ever been rolled back to,
 and a cached index is trusted only below it, because §5.5's snapshot truncates the
 table and every index at or above a rollback target is handed out again.
+
+## Per-module headers: measured as worthwhile, attempted, reverted
+
+The whole-program header is 249 KB of the compiler's ~1.9 MB of emitted C, and every edit
+regenerates it, so every output recompiles. A header per module would fix that, and the
+measurement says the share each module needs is small — distinct struct names mentioned per
+output, against 674 in the table:
+
+| module | share | module | share |
+|---|---|---|---|
+| `lower` | 41% | `types` | 11% |
+| `emit` | 28% | `parser` | 10% |
+| `main` | 28% | `ir` | 9% |
+| `infer` | 26% | `verify` | 8% |
+| `compiler` | 5% | `lexer` | 5% |
+| | | `prelude` | 0.3% |
+
+The median module needs about 10%, and those are the types each *body* mentions — a header
+needs only what its **exported signatures** name, so smaller again. Crucially a module's
+header would depend on that module's code alone, because a struct's name comes from the
+type's content: editing `emit.mpl` could not change `types.h`.
+
+**Three of the five pieces worked.** Per-type include guards (`#ifndef mpl_tN_D`), which are
+what make a type definable in several headers — sound precisely because a content-derived
+name means two definitions under one guard *are* the same definition. A per-module type
+collection (`tys_of_mod`), walking every node's `ty`, every slot and every signature. And the
+restructuring itself: `mpl_rt.h` for the runtime, §4.16's declarations and §6a's driver; a
+`<mod>.h` and `<mod>.c` per module; `#include` lines emitted per output, with `join_files`
+dropping them for a single-artifact target, since concatenating *is* inlining an include.
+
+**It failed on the transitive closure, and that is the thing to get right first.** Compiling
+the result gave **3,196 `unknown type name` errors**. `tys_of_mod` collects the types a module
+*mentions*, but a struct definition names its field types, so those need a forward
+declaration present too — the set has to be closed over **both** by-value and pointer edges,
+and `emit_struct_at` closes only the by-value ones (which is all it ever needed when one
+header held every type). `emit_fwd1` was also left unguarded, so a repeated `typedef struct X
+X;` is an error in its own right.
+
+### Second attempt: both fixes made, and a third defect underneath
+
+Both fixes were then made and are sound in isolation:
+
+- **The guards were split into `_F` and `_D`.** A forward declaration and a definition are
+  *different* guards for one type, because a header that needs only a pointer emits the
+  typedef and not the struct — sharing one key suppresses the definition where it is wanted.
+- **`close_tys` closes the set over every edge that requires a declaration** — a block's
+  fields, a group's items, a union's members, a reference's pointee, an array's element, a
+  `μ`'s body — to a fixed point, terminating on set *size* because the set only grows and is
+  bounded by the table. §5.5 makes the reference graph cyclic, so a size test is the right
+  termination condition rather than a visited check.
+- Checked against an independent analysis of the same graph: for `effect.mpl`, 22 types with
+  `prelude` 12, `effect_util` 6, entry 8; for `parser.mpl`, 221 with `lexer` 82, `prelude` 12,
+  entry 154.
+
+The errors fell from 3,196 to **2,735** and changed character. The remaining one is not
+completeness but **ordering**: a header defines a struct with a pointer field whose typedef
+is emitted in a *later* header — `mpl_t95655782043184525` is used at line 440 and declared at
+2076. Separate compilation would be fine, since each header emits its own closure's typedefs
+before its own definitions; the *concatenated* form is not, because header A's definitions
+precede header B's declarations.
+
+Two things follow for whoever picks this up. `mpl_rt.h` names types in §4.16's extern
+declarations and §6a's driver signatures, so it needs the closure of *its own* content — the
+restructure removed all type emission from it without accounting for that. And the
+concatenated and split forms want *different* orderings, which the single ordering
+`join_files` produces cannot satisfy: every declaration in the program must precede every
+definition for concatenation, while a header must be self-contained for separate
+compilation. Emitting all forward declarations in `mpl_rt.h` would fix the ordering and give
+up the incrementality, since that file would then change whenever any type is added.
+
+Reverted again, for the same reason as the first attempt: it emitted C that did not compile.
+The tree is at 237/237. The measurement above still says the feature is worth having; what it
+needs is that ordering question settled *first*, not another round of patching.
+
+One design decision from the attempt is worth keeping whatever comes next. Emitting the
+`#include` lines rather than leaving them to the build is right: a file that names its own
+dependencies can be handed to any C compiler, and the single target that cannot use them is
+the one that does not need them. §6a's driver has to stay whole-program regardless, because
+its pending block is shared *state* like `mpl_argc` — a copy per file would break a chain
+that crosses one.
+
+## Where a compile's time goes, and what that says about caching it
+
+The one number that orders the incremental-compilation work, on `stage1/types.mpl` through
+stage 0:
+
+| driver | phases | time |
+|---|---|---|
+| `lower_dump.mpl` | parse + infer + lower + **verify** | 47.7s |
+| `emit_c.mpl` | parse + infer + lower + **emit** | 60.9s |
+
+So **emit is at most 22% of a compile** — less than that, since the 47.7s includes a verify
+pass the 60.9s does not — and parse + infer + lower is about 80%. Caching a module's
+*emitted C* therefore buys a fifth of the compiler's own time plus whatever `cc` costs; it
+cannot buy the rest. What would is caching the **interface** a module presents to its
+importers, which §3.3 already makes a first-class thing (`check_file`'s type *is* every
+top-level name with its solved type) and §5.5 already makes serialisable (a de Bruijn binder
+carries no name, so a type needs no relocation on read and re-interns to the same entry
+because interning is by `T.same`).
+
+Two things still stand in the way, and neither is a performance question:
+
+- **The IR names a function by a flat whole-program index.** `e_global` carries `fn`, a
+  position in the function table, so two independently lowered modules would collide. The
+  emitted *name* has not had this problem since it became `mpl_f<mod>_<rank>`; making the
+  tree agree with the name is finishing that work rather than new machinery. The type table
+  has the same shape of problem — an interned index is a whole-program position — so a
+  cached fragment has to carry its types structurally and re-intern on load.
+- **A `$template` and a non-scalar `$prop` export their *body*, not a summarisable type.**
+  §10.7 checks a template's body at the specialization site, and lowering keeps a prop's
+  source (`lstate.mods`) because §4.10 makes it an identity rather than code. `P.list` is a
+  `$template`, so **prelude's interface includes prelude's body and everything imports
+  prelude** — a prelude change is genuinely a whole-program change. That is correct rather
+  than broken, but it sets the shape of the payoff: editing a leaf (`emit.mpl`, `lower.mpl`)
+  is one module, editing `types.mpl` re-checks its importers, editing `prelude.mpl` is
+  everything.
+
+### Step one: linkage made local
+
+`is_exported` used to be a whole-program answer — `gref_of` walked every function body
+collecting global references and `xmod_add` exported any whose module differed from the
+referrer's. That is finer than the local rule (235 of 1,298 functions exported) and finer is
+the defect: a module's emitted text depended on who called it. Demonstrated by A/B against a
+fixed binary, on two programs differing only in the entry file:
+
+```
+$decl main $func () $if ($call P.not (false)) 7 0                        # a
+$decl main $func () $if ($call P.or ($call P.not (false), false)) 7 0    # b
+```
+
+Under the old rule `prelude.c` differs between them — `mpl_fprelude_3 /* or */` is `static`
+in `a` and external in `b` — which is exactly the dependency a per-module cache cannot have.
+Under `IR.fn.pub` (set at the two places lowering builds a module member) the two outputs are
+byte-identical, and `zig build test-stable` is that check. It also removes emit's second full
+tree traversal; `xt_of`'s, for §4.16's symbols, is now the only one.
+
+The price is `cc`'s, not morphl's. The compiler is the worst case for the new rule — it is a
+library of modules, so **1,258 of 1,290** functions are members against the old rule's 235,
+and only the 32 lifted lambdas and §3.3 effect functions stay `static`:
+
+| whole compiler | old rule | local rule |
+|---|---|---|
+| emitted C | 2,027,093 B | 1,994,240 B |
+| `static` definitions | 2,147 | 85 |
+| `cc -O2` | 11.4s | 13.3s |
+| binary | 995 KB | 1,145 KB |
+| emitting `types.mpl` | 0.23–0.26s | 0.22–0.23s |
+
+The text is slightly *smaller* — `static ` leaves 2,062 lines and prototypes move into the
+header instead of being duplicated per output — `cc -O2` costs 17% more and the binary 15%
+more, because nothing can be internalised or dropped, and run time does not move. And the
+direction is not uniform: `types.mpl` as an entry file goes from 29 of 212 exported **down**
+to 4, since its top-level `$decl`s are entry-file globals and nothing imports the entry file.
+
+The check that no codegen changed: emitting `types.mpl` with each binary gives 10,448 lines
+either way, and all 102 differing lines are one `static`/non-`static` pair each plus the count
+comment. Three-pass regeneration reached its fixed point at pass 2 (`r2 == r3`), as a change
+that alters output rather than only naming must.

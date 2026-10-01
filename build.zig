@@ -283,6 +283,41 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // ------------------------------------------- a module's output is its own
+    //
+    // §4.14 makes a projection onto a module the only way to name a function across
+    // that edge, so a function's C linkage is decidable from the function alone —
+    // which is what makes a module's emitted text a function of its own source, and
+    // therefore cacheable per module. This is the check on that claim: two programs
+    // importing one module, differing only in which of its members the *entry file*
+    // calls, must produce a byte-identical output for it.
+    //
+    // It replaces a rule that asked whether some other module named a function. That
+    // was finer — fewer exports — and being finer was the defect: `stable_b` calling
+    // one extra prelude member flipped it from `static` to external and rewrote
+    // `prelude.c` from outside prelude. `test-split` cannot see this (it only asks
+    // whether the program links) and neither can `test-emit` (it concatenates).
+    //
+    // Under stage 0, not `mplc`, because it is `stage1/` that is being checked and a
+    // committed binary predates the change by construction.
+    const stable_step = b.step("test-stable", "One module, two programs, identical output");
+    {
+        var outs: [2]std.Build.LazyPath = undefined;
+        for ([_][]const u8{ "stable_a", "stable_b" }, 0..) |name, i| {
+            const one = std.Build.Step.Run.create(b, b.fmt("emit prelude.c for {s}", .{name}));
+            one.addFileArg(exe.getEmittedBin());
+            one.addArgs(&.{ "--run", "stage1/emit_one.mpl", b.fmt("stage1/fixtures/{s}.mpl", .{name}), "prelude.c" });
+            one.setCwd(b.path("."));
+            one.has_side_effects = true;
+            outs[i] = one.captureStdOut(.{ .basename = b.fmt("{s}.prelude.c", .{name}) });
+        }
+        const same = b.addSystemCommand(&.{"cmp"});
+        same.addFileArg(outs[0]);
+        same.addFileArg(outs[1]);
+        stable_step.dependOn(&same.step);
+        test_step.dependOn(&same.step);
+    }
+
     const s2_step = b.step("test-stage2", "mplc against stage 0, and the committed C against itself");
 
     // **The guard against `bootstrap/mplc.c` rotting.** The committed C has to be

@@ -291,12 +291,35 @@ $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
 // **A pass that rebuilds a function must carry both across.** `mark_self` and
 // `fold` do exactly that, and dropping them would give two functions one name; `cc`
 // rejects the duplicate definition, so it is loud rather than silent.
+// `pub` says whether a reference to this function can originate *outside its own
+// output*, which is what decides its C linkage. It is a property of the function
+// alone, and that is the point: the old rule asked whether some *other* module named
+// it, so a module's emitted text depended on the whole program and could not be
+// cached per module. §4.14 is what makes the local rule sound — a projection onto a
+// module is the only way to name a function across that edge, and what it can name is
+// a **member**. So a member is `pub` and a lifted `$func` literal, a §3.3 effect
+// function and an entry-file global are not: nothing outside the file they are emitted
+// in can spell their names.
+//
+// A specialisation's members are members too (§4.9 memoises per argument type, so two
+// modules share one `$specialize P.list Int`), and they reach this through the same
+// `$prop` path, so they are covered without a case of their own.
+//
+// It is deliberately *coarser* than the old rule — a member nobody imports still gets
+// external linkage — which costs some `static` and buys a module's text being a
+// function of its own source. Coarser in the safe direction: too many exports is
+// bigger code, too few is a link error.
+$decl fn_p $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
+                  $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
+                  $decl ev ints.node, $decl md "", $decl rk 0, $decl pb P.boolean)
+  { $decl name nm  $decl params ps  $decl result res  $decl slots ns
+    $decl body $alloc bd  $decl self_tail st  $decl thunk th  $decl env ev
+    $decl mod md  $decl rank rk  $decl pub pb }
+
 $decl fn_m $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                   $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
                   $decl ev ints.node, $decl md "", $decl rk 0)
-  { $decl name nm  $decl params ps  $decl result res  $decl slots ns
-    $decl body $alloc bd  $decl self_tail st  $decl thunk th  $decl env ev
-    $decl mod md  $decl rank rk }
+  $call fn_p (nm, ps, res, ns, bd, st, th, ev, md, rk, false)
 
 $decl fn $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                 $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
@@ -305,6 +328,13 @@ $decl fn $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node
 
 $decl proto_fn $call fn ("", ints.nil, 0, ints.nil, $call e_unit (0), false, false, ints.nil)
 $decl fns $specialize P.list proto_fn
+
+// A copy marked `pub`. `lower_func` serves both a module member and an entry-file
+// global, so the member path marks what it gets back rather than the constructor
+// taking a flag it would have to thread through two more layers.
+$decl fn_export $func ($decl f proto_fn)
+  $call fn_p (f.name, f.params, f.result, f.slots, $call eval (f.body), f.self_tail,
+      f.thunk, f.env, f.mod, f.rank, true)
 
 // ------------------------------------------------------------------ program
 //

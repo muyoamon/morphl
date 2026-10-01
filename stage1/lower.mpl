@@ -1963,7 +1963,10 @@ $fwd lower_prop_new
 $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm "",
                              $decl pn Pa.proto_node, $decl fty T.proto_ty)
   { $decl o $call take_slots (st)
-    $decl f $call lower_func (st, pe, nm, pn, fty, IR.ints.nil)
+    // Marked here rather than inside `lower_func`, which also serves an entry-file
+    // top-level `$decl` — §4.14 lets an importer project a *member*, and nothing
+    // imports the entry file.
+    $decl f $call IR.fn_export ($call lower_func (st, pe, nm, pn, fty, IR.ints.nil))
     $decl b $call restore_slots (st, o)
     $decl r f }.r
 
@@ -2123,8 +2126,10 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
                    b0.val.mod, b0.val.tmpl))
     $decl bd   $if self ($call thunk_body (st, pe, pn)) b0
     $decl vty  $call intern (st, t)
-    $decl f    $call IR.fn_m (nm, IR.ints.nil, vty, $call IR.ints.val (bd.slots), bd.val.ir,
-                    false, true, IR.ints.nil, $call P.sval (st.curmod), $call next_rank (st))
+    // A member, so exported (§4.14): an importer projects it and reads its static.
+    $decl f    $call IR.fn_p (nm, IR.ints.nil, vty, $call IR.ints.val (bd.slots), bd.val.ir,
+                    false, true, IR.ints.nil, $call P.sval (st.curmod),
+                    $call next_rank (st), true)
     $decl put  $call put_lifted (st, idx, f)
     $decl r    $call lres4 ($call IR.e_global (vty, idx), t, bd.val.mod, bd.val.tmpl)
     $decl mrest $call leave_mod (st, msave) }.r
@@ -2565,11 +2570,12 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
 $decl mark_self $func ($decl xs IR.fns.node, $decl i 0, $decl acc IR.fns.node) $match xs (
   $case {$prop tag "cons"}
     $call mark_self ($call IR.fns.val (xs.tail), $call add (i, 1),
-        // A copy, so `mod` and `rank` come across — they are this function's name.
-        $call IR.fns.cons ($call IR.fn_m (xs.head.name, xs.head.params, xs.head.result,
+        // A copy, so `mod` and `rank` come across — they are this function's name —
+        // and `pub` with them, which is its linkage.
+        $call IR.fns.cons ($call IR.fn_p (xs.head.name, xs.head.params, xs.head.result,
             xs.head.slots, $call IR.eval (xs.head.body),
             $call self_tails (xs.head.body, i), xs.head.thunk, xs.head.env,
-            xs.head.mod, xs.head.rank),
+            xs.head.mod, xs.head.rank, xs.head.pub),
             acc)),
   $case xs ($call IR.fns.reverse (acc, IR.fns.nil))
 )

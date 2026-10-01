@@ -110,12 +110,6 @@ $decl estate $func ()
     // shift. Held here rather than threaded, because the expression emitter carries
     // `est` everywhere and the function table nowhere.
     $decl fnames $mut $alloc strs.node
-    // The module of each function, by index — the other half of an identity.
-    $decl fmods $mut $alloc strs.node
-    // The functions some *other* module names, so they need external linkage; every
-    // other one stays `static` and is private to its own output. 231 of the compiler's
-    // 1,277, so the isolation is real.
-    $decl exported $mut $alloc IR.ints.node
     $decl errs $mut $alloc Pa.diags.node }
 
 $decl proto_est $call estate ()
@@ -1347,119 +1341,10 @@ $decl xt_of $func ($decl e IR.proto_expr, $decl acc xts.node) $match e (
   $case e acc
 )
 
-// ------------------------------------------------ what crosses a module boundary
-//
-// Step two of per-module lowering. A symbol only needs external linkage if a
-// *different* module names it; everything else can stay `static`, which is what
-// makes a per-file split give any isolation at all. §7.3's pair and §4.10's statics
-// mean a function is named from two kinds of node — `global` in callee or value
-// position, and `closure` for the code pointer — so this is the same full-body walk
-// as `xt_of`, collecting function indices instead of extern symbols.
-
-$fwd gref_of
-
-$decl gref_of_list $func ($decl xs IR.exprs.node, $decl acc IR.ints.node) $match xs (
-  $case {$prop tag "cons"}
-    $call gref_of_list ($call IR.exprs.val (xs.tail), $call gref_of (xs.head, acc)),
-  $case xs acc
-)
-
-$decl gref_of_slots $func ($decl xs IR.bslots.node, $decl acc IR.ints.node) $match xs (
-  $case {$prop tag "cons"}
-    $call gref_of_slots ($call IR.bslots.val (xs.tail), $call gref_of (xs.head.init, acc)),
-  $case xs acc
-)
-
-$decl gref_of_arms $func ($decl xs IR.arms.node, $decl acc IR.ints.node) $match xs (
-  $case {$prop tag "cons"}
-    $call gref_of_arms ($call IR.arms.val (xs.tail), $call gref_of (xs.head.body, acc)),
-  $case xs acc
-)
-
-$decl gref_add $func ($decl acc IR.ints.node, $decl i 0)
-  $if ($call mem_int (acc, i)) acc ($call IR.ints.cons (i, acc))
-
-$decl gref_of $func ($decl e IR.proto_expr, $decl acc IR.ints.node) $match e (
-  $case {$prop tag "global"}  ($call gref_add (acc, e.fn)),
-  $case {$prop tag "closure"}
-    ($call gref_of_list ($call IR.exprs.val (e.captures), $call gref_add (acc, e.fn))),
-  $case {$prop tag "field"}   ($call gref_of ($call IR.eval (e.target), acc)),
-  $case {$prop tag "new"}     ($call gref_of ($call IR.eval (e.init), acc)),
-  $case {$prop tag "deref"}   ($call gref_of ($call IR.eval (e.src), acc)),
-  $case {$prop tag "copy"}    ($call gref_of ($call IR.eval (e.src), acc)),
-  $case {$prop tag "try"}     ($call gref_of ($call IR.eval (e.value), acc)),
-  $case {$prop tag "set"}
-    $call gref_of ($call IR.eval (e.value), $call gref_of ($call IR.eval (e.target), acc)),
-  $case {$prop tag "do"}
-    $call gref_of ($call IR.eval (e.then), $call gref_of ($call IR.eval (e.first), acc)),
-  $case {$prop tag "if"}
-    $call gref_of ($call IR.eval (e.els),
-        $call gref_of ($call IR.eval (e.then), $call gref_of ($call IR.eval (e.cond), acc))),
-  $case {$prop tag "call"}
-    $call gref_of_list ($call IR.exprs.val (e.args), $call gref_of ($call IR.eval (e.callee), acc)),
-  $case {$prop tag "group"}   ($call gref_of_list ($call IR.exprs.val (e.items), acc)),
-  $case {$prop tag "block"}   ($call gref_of_slots ($call IR.bslots.val (e.slots), acc)),
-  $case {$prop tag "switch"}
-    $call gref_of ($call IR.eval (e.default),
-        $call gref_of_arms ($call IR.arms.val (e.arms), $call gref_of ($call IR.eval (e.scrut), acc))),
-  $case e acc
-)
-
-// Anything `here` does not own, marked for export. `mods_at` is the module of an
-// index, read from the same list the names come from.
-$decl mods_at $func ($decl st proto_est, $decl i 0)
-  $call strs.nth ($call strs.val (st.fmods), i)
-
-$decl xmod_add $func ($decl st proto_est, $decl rs IR.ints.node, $decl here "",
-                      $decl acc IR.ints.node) $match rs (
-  $case {$prop tag "cons"}
-    { $decl m $call mods_at (st, rs.head)
-      $decl a $if ($call eq_str (m, here)) acc ($call gref_add (acc, rs.head))
-      $decl r $call xmod_add (st, $call IR.ints.val (rs.tail), here, a) }.r,
-  $case rs acc
-)
-
-// A **thunk's** function is exported whatever its body says, because `mpl_init` calls
-// every one of them and `mpl_init` is emitted once, in the entry file's output. That is a
-// cross-module reference no walk over bodies can see — it comes from the initialiser the
-// backend writes, not from the program — and missing it is a link error, not a silent
-// one: `mpl_init` referred to a `static` in another translation unit.
-//
-// Exporting them is the smaller of the two fixes. The other is an `mpl_init` per module
-// (BOOTSTRAP §274), which would keep a thunk private to its own output and is the better
-// end state; this keeps the initialiser whole and in one place.
-// §3.3's top-level effects, which `mpl_init` also calls and which are deliberately *not*
-// thunks — so the thunk rule above does not reach them. Together the two say the whole
-// rule: **every reference `mpl_init` makes is invisible to a walk over function bodies**,
-// because the initialiser is written by the backend rather than contained in the program.
-// Both holes showed up as link errors against a `static` in another translation unit,
-// which is the only reason they were found — `verify` cannot see linkage and the
-// concatenated build cannot either.
-$decl export_effs $func ($decl es IR.effects.node, $decl acc IR.ints.node) $match es (
-  $case {$prop tag "cons"}
-    $call export_effs ($call IR.effects.val (es.tail), $call gref_add (acc, es.head.fn)),
-  $case es acc
-)
-
-$decl exported_ids $func ($decl st proto_est, $decl fs IR.fns.node, $decl i 0,
-                          $decl acc IR.ints.node)
-  $match fs (
-    $case {$prop tag "cons"}
-      { $decl a0 $call xmod_add (st, $call gref_of (fs.head.body, IR.ints.nil),
-                     fs.head.mod, acc)
-        // No longer forced: a thunk's function is called by *its own* module's
-        // initialiser now, so it needs no linkage beyond that file. Its *static* is still
-        // exported when another module reads it, which `gref_of` does see.
-        $decl a1 a0
-        $decl r  $call exported_ids (st, $call IR.fns.val (fs.tail), $call add (i, 1), a1) }.r,
-    $case fs acc
-  )
-
-$decl fn_mods $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
-  $case {$prop tag "cons"}
-    $call fn_mods ($call IR.fns.val (fs.tail), $call strs.cons (fs.head.mod, acc)),
-  $case fs ($call strs.reverse (acc, strs.nil))
-)
+// Linkage is decided by `IR.fn.pub` — a property of each function on its own, so a
+// module's emitted text depends on its own source and not on who calls it. The walk
+// that used to derive it from the whole table is gone; what it computed (a symbol is
+// external iff a *different* module names it) was finer, and finer was the problem.
 
 $decl xts_of_fns $func ($decl fs IR.fns.node, $decl acc xts.node) $match fs (
   $case {$prop tag "cons"}
@@ -1776,9 +1661,6 @@ $decl all_tail_sigs $func ($decl st proto_est, $decl fs IR.fns.node, $decl acc I
       $call all_tail_sigs (st, $call IR.fns.val (fs.tail), $call tail_sigs (st, fs.head.body, acc)),
     $case fs acc
   )
-
-$decl is_exported $func ($decl st proto_est, $decl i 0)
-  $call mem_int ($call IR.ints.val (st.exported), i)
 
 $decl reports $func ($decl st proto_est, $decl i 0) $call mem_int (st.reps, i)
 
@@ -2554,9 +2436,10 @@ $decl emit_slots $func ($decl st proto_est, $decl xs IR.ints.node, $decl ts T.ty
 
 $decl emit_fn $func ($decl st proto_est, $decl i 0, $decl f IR.proto_fn, $decl ts T.tys.node)
   { $decl np  $call IR.ints.length (f.params, 0)
-    // `static` unless another module names it. A contified group needs no such test:
-    // §4.14 keeps a tail-call cycle inside one module, so a group is always private.
-    $decl h0  $call say (st, $call concat ($if ($call is_exported (st, i)) "\n" "\nstatic ",
+    // `static` unless the function is a module member. §4.14 makes a projection onto a
+    // module the only way to name one across that edge, so `pub` is a property of the
+    // function alone — which is what lets a module's text be cached on its own source.
+    $decl h0  $call say (st, $call concat ($if f.pub "\n" "\nstatic ",
                   $call concat ($call c_type (st, ts, f.result),
                   $call concat (" ", $call concat ($call fn_name (st, i), "(void *env")))))
     $decl h1  $call emit_params (st, f.params, ts, 0, false)
@@ -2636,7 +2519,7 @@ $decl emit_wrappers $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.
       // `T.sub` are both members of one — and its linkage has to match what the header
       // declared. The group *function* (`mpl_grpN`) stays `static`: it has no name outside
       // this file, because §4.14 keeps a tail-call cycle inside one module.
-      $decl h0 $call say (st, $call concat ($if ($call is_exported (st, g.head)) "\n" "\nstatic ",
+      $decl h0 $call say (st, $call concat ($if f.pub "\n" "\nstatic ",
                    $call concat ($call c_type (st, ts, f.result),
                    $call concat (" ", $call concat ($call fn_name (st, g.head), "(void *env")))))
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
@@ -2752,7 +2635,7 @@ $decl emit_wrappers_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g
   $case {$prop tag "cons"}
     { $decl f  $call fn_at (fs, g.head)
       $decl rc $call c_type (st, ts, f.result)
-      $decl h0 $call say (st, $call concat ($if ($call is_exported (st, g.head)) "\n" "\nstatic ",
+      $decl h0 $call say (st, $call concat ($if f.pub "\n" "\nstatic ",
                    $call concat (rc, $call concat (" ",
                    $call concat ($call fn_name (st, g.head), "(void *env")))))
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
@@ -2835,7 +2718,7 @@ $decl emit_groups $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.g
 $decl emit_protos $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T.tys.node,
                          $decl i 0, $decl md "", $decl pub P.boolean) $match fs (
   $case {$prop tag "cons"}
-    { $decl ex   $call is_exported (st, i)
+    { $decl ex   fs.head.pub
       $decl mine $if pub ex ($if ex false ($call eq_str (fs.head.mod, md)))
       $decl h0 $if ($call not (mine)) ()
           ($call say (st, $call concat ($if pub "" "static ",
@@ -3014,6 +2897,14 @@ $decl emit_mod_files $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T
   $case ms ($call IR.ofiles.reverse (acc, IR.ofiles.nil))
 )
 
+// How many functions need external linkage, for the header's comment. A count over the
+// bits, not a walk over bodies — which is the whole of what changed.
+$decl pub_count $func ($decl fs IR.fns.node, $decl acc 0) $match fs (
+  $case {$prop tag "cons"}
+    $call pub_count ($call IR.fns.val (fs.tail), $if fs.head.pub ($call add (acc, 1)) acc),
+  $case fs acc
+)
+
 $decl find_main $func ($decl fs IR.fns.node, $decl i 0) $match fs (
   $case {$prop tag "cons"}
     $if ($call eq_str (fs.head.name, "main")) i
@@ -3026,7 +2917,6 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl fs $call IR.fns.val (p.funcs)
     // Before anything is emitted: every name comes from here.
     $decl nms $set st.fnames ($call fn_keys (fs, strs.nil))
-    $decl nmd $set st.fmods ($call fn_mods (fs, strs.nil))
     $decl tk $set st.thunks ($call thunk_ids (fs, 0, IR.ints.nil))
     // Before anything is emitted: `res_fn` is asked at every global callee.
     $decl al $set st.aliases ($call collect_aliases (fs, 0, fnals.nil))
@@ -3036,11 +2926,10 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // know every signature it may be handed.
     $decl rp $set st.reps ($call reporter_ids (st, fs, gs, 0, IR.ints.nil))
     $decl sg $set st.tsigs ($call all_tail_sigs (st, fs, IR.ints.nil))
-    // Reported in the artifact while the split is being built: how much of the
-    // program would actually need external linkage. If nearly everything crosses,
-    // splitting buys no isolation and the answer is worth knowing before the work.
-    $decl xs0 $set st.exported ($call exported_ids (st, fs, 0, IR.ints.nil))
-    $decl xp $call IR.ints.length ($call IR.ints.val (st.exported), 0)
+    // Reported in the artifact: how much of the program needs external linkage under
+    // the local rule. It is a whole-program figure and lives in the shared header,
+    // which is the one output that is a whole-program artifact anyway.
+    $decl xp $call pub_count (fs, 0)
     $decl nf $call IR.fns.length (fs, 0)
     $decl hx $call say (st, $call concat ("/* cross-module references: ",
                  $call concat ($call int_to_str (xp), $call concat (" of ",

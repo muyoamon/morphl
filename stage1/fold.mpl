@@ -141,9 +141,10 @@ $decl fold_expr $func ($decl e IR.proto_expr) $match e (
 $decl fold_fn $func ($decl f IR.proto_fn)
   // §9.2 makes a pass ordinary user code, and a pass that rebuilds a function has to
   // carry its identity across: `mod` and `rank` are what name it in the C, so
-  // dropping them would give two functions one name.
-  $call IR.fn_m (f.name, f.params, f.result, f.slots, $call fold_expr (f.body),
-      f.self_tail, f.thunk, f.env, f.mod, f.rank)
+  // dropping them would give two functions one name — and `pub` is its linkage, so
+  // dropping that makes a member `static` and the link fail.
+  $call IR.fn_p (f.name, f.params, f.result, f.slots, $call fold_expr (f.body),
+      f.self_tail, f.thunk, f.env, f.mod, f.rank, f.pub)
 
 $decl fold_fns $func ($decl xs IR.fns.node, $decl acc IR.fns.node) $match xs (
   $case {$prop tag "cons"}
