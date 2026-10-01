@@ -2907,10 +2907,22 @@ $decl mods_of $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
   $case fs ($call strs.reverse (acc, strs.nil))
 )
 
-$decl emit_mod_calls $func ($decl st proto_est, $decl ms strs.node) $match ms (
+// **In the order the modules' loading completed, which `IR.program.mods` carries.** Not
+// the order their functions appear in the table: a module's `$import` member takes its
+// index before the imported module's members are lifted, so index order puts the
+// importer *first* and its initialiser then reads a static its dependency has not
+// assigned yet. That was a SIGFPE at startup — `mpl_init_infer` before
+// `mpl_init_types`, dividing by a zero `hmod`.
+//
+// Filtered to the modules that actually have an output, so a call can never name an
+// `mpl_init_<mod>` that was never defined.
+$decl emit_mod_calls $func ($decl st proto_est, $decl ms strs.node, $decl have strs.node)
+  $match ms (
   $case {$prop tag "cons"}
-    $do ($call say (st, $call concat ("  mpl_init_", $call concat (ms.head, "();\n"))))
-        ($call emit_mod_calls (st, ms.tail)),
+    { $decl ok $call has_str (have, ms.head)
+      $decl a  $if ok ($call say (st, $call concat ("  mpl_init_",
+                   $call concat (ms.head, "();\n")))) ()
+      $decl r  $call emit_mod_calls (st, $call strs.val (ms.tail), have) }.r,
   $case ms ()
 )
 
@@ -3028,12 +3040,13 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     // depend on the importer at all.
     $decl nfn $call IR.fns.length (fs, 0)
     $decl i0 $call say (st, "\nstatic void mpl_init(void) {\n")
-    // Each module's initialiser first, in the order the modules were loaded, then the
-    // entry file's own globals. That order *is* §4.14's: loading a module finishes it
-    // before the importer's next member is appended, so a module a module imports has a
-    // lower first index and so comes first in `mods_of` — which is the same coarse
-    // guarantee §4.10 gave when this was one pass over an index window.
-    $decl i1 $call emit_mod_calls (st, mods)
+    // Each module's initialiser first, in the order their loading **completed**, then
+    // the entry file's own globals. The order comes from `IR.program.mods`, recorded by
+    // lowering, and is *not* derived from the table: this comment used to claim that a
+    // module's first index is lower than its importer's, and it is the other way round —
+    // the importer's `$import` member takes its index before the imported module's
+    // members are lifted. See `emit_mod_calls`.
+    $decl i1 $call emit_mod_calls (st, $call IR.strs.val (p.mods), mods)
     $decl i1b $call emit_inits (st, fs, fs, $call IR.effects.val (p.effs), 0, 0, p.fnbase,
                    false, "")
     $decl i2 $call say (st, "}\n")

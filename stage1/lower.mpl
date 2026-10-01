@@ -290,6 +290,12 @@ $decl lstate $func ()
     // whose source produced it. One field serving both put a block literal in an
     // output nothing compiled.
     $decl curfile $mut $alloc ""
+    // Imported modules in the order their loading **completed** — a dependency first,
+    // since §4.14 finishes a module before the importer's next member. It is what
+    // `mpl_init` has to call them in, and it cannot be recovered from the function
+    // table: a module's `$import` member takes its index before the imported module's
+    // members are lifted, so index order puts the importer first.
+    $decl morder  $mut $alloc strs.node
     // One rank counter per module, so a function's identity is (module, rank) and an
     // edit to one module renumbers only its own. An assoc list because there are a
     // handful of modules, not thousands.
@@ -1769,6 +1775,9 @@ $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n 
           $decl mid $call fresh_mod_at (st, $call file_props ($call Pa.nodes.val (p.exprs), mprops.nil),
                         $call benv.val (st.rootenv), $call P.dirname (key), key)
           $decl f   $call force_props (st, mid, $call mod_props (st, mid), n)
+          // Complete now, so it is appended after everything it imported.
+          $decl ord $set st.morder ($call strs.cons ($call mod_short (key),
+                        $call strs.val (st.morder)))
           $decl r   $call mod_value (st, mid) }.r }.out
 
 $decl lower_import $func ($decl st proto_lst, $decl n proto_form)
@@ -2815,6 +2824,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     // Newest first while they are collected, since a file and the modules it
     // imports both append here.
     // `st.fnbase` is the boundary §4.10 needs in the backend, not just here.
-    $decl out  $call IR.program ($call all_types (st), all, gs, 0,
+    $decl out  $call IR.program_m ($call all_types (st), all, gs, 0,
                    $call IR.effects.reverse ($call IR.effects.val (st.effs),
-                       IR.effects.nil), $call P.ival (st.fnbase)) }.out
+                       IR.effects.nil), $call P.ival (st.fnbase),
+                   $call strs.reverse ($call strs.val (st.morder), strs.nil)) }.out

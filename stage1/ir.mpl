@@ -400,10 +400,26 @@ $decl effects $specialize P.list proto_effect
 // §4.10's initialisation order does not follow index order across it: an
 // `$import` evaluates the module's block where it stands, so the module's
 // statics have to be assigned before the importing file's.
+// `mods` is the imported modules in the order their loading **completed**, which is
+// the order their `mpl_init_<mod>` must run in: §4.14 finishes a module before the
+// importer's next member, so a dependency always completes first.
+//
+// It is carried rather than derived because deriving it was **wrong**. `mods_of` took
+// the order a module's functions first appear in the table, and `CLAUDE.md` claimed
+// that was §4.14's order — but a module's own `$import` member reserves its index
+// *before* the imported module's members are lifted, so an importer always sorts ahead
+// of its dependency. The emitted `mpl_init` called `mpl_init_infer()` before
+// `mpl_init_types()`, and an `infer` top-level `$decl` that reaches `types`' `hmix`
+// divided by a `hmod` static that was still zero: SIGFPE at startup. `mplc` escaped it
+// only because `compiler.mpl`'s own statics happen not to touch another module's.
+$decl program_m $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
+                       $decl e 0, $decl efs effects.node, $decl fb 0, $decl ms strs.node)
+  { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
+    $decl fnbase fb  $decl mods ms }
+
 $decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
                      $decl e 0, $decl efs effects.node, $decl fb 0)
-  { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
-    $decl fnbase fb }
+  $call program_m (ts, fs, gs, e, efs, fb, strs.nil)
 
 // §9.1: one output of `emit`, carrying the path it should be written to. It lives here
 // rather than in `compiler` because `emit` is what builds them and cannot import its own

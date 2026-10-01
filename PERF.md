@@ -2030,3 +2030,52 @@ file's own work is never cacheable. Both are interpreter costs of the kind stage
 interface and a type cannot carry a body. Its importers key on its **source** hash
 instead, which is conservative in the right direction — a comment in `prelude`
 invalidates everything, and §10.7 makes a prelude change whole-program anyway.
+
+### The cache compiled: the gap was interpretation
+
+| whole closure | stage 0 | compiled | speedup |
+|---|---|---|---|
+| uncached | 27.90s | 0.84s | — |
+| cold, populating | 42.46s | 1.278s | 1.5x slower |
+| warm, unchanged | 10.39s | **0.142s** | **5.9x** |
+| warm, one leaf edited | 14.00s | **0.314s** | **2.7x** |
+
+Inference being additive predicted ~6x; under stage 0 the cache gave 2.7x, and the
+shortfall was attributed to the byte-at-a-time reader and the non-cacheable entry file.
+Compiled, warm is **5.9x** — so the attribution was right and the remaining gap was
+interpretation, not design.
+
+The edit case is 2.7x for a structural reason rather than an implementation one: editing
+`emit.mpl` means re-inferring it, and `emit` is one of the two costliest modules in the
+closure. You cannot skip work on the file you changed, so 0.314s is near the floor for
+that edit.
+
+Cold stays 1.5x slower in both, which is the one-off cost of populating.
+
+### `mpl_init`'s module order was derived, and derived wrongly
+
+Measuring the cache compiled is what found it. The benchmark crashed with **SIGFPE**
+before printing: `mpl_init_infer()` ran before `mpl_init_types()`, so an `infer`
+top-level `$decl` reached `types.mpl`'s `hmix` and computed `mod hmod` while that static
+was still zero.
+
+`mods_of` takes the order a module's functions *first appear* in the function table, and
+the comment on it claimed that was §4.14's dependency order because "a module a module
+imports has a lower first index". **The reverse is true.** A module's own `$import`
+member reserves its index *before* the imported module's members are lifted, so an
+importer always sorts ahead of its dependency — every initialiser ran before the ones it
+depended on. Latent since `1311b42`; `mplc` escaped it only because `compiler.mpl`'s own
+statics happen not to touch another module's during init.
+
+`IR.program` now **carries** `mods` — the order in which each module's loading completed,
+appended in lowering right after `force_props` returns, which is dependency order because
+§4.14 finishes a module before the importer's next member. `emit_mod_calls` walks that,
+filtered to modules that have an output so a call can never name an undefined
+`mpl_init_<mod>`.
+
+Ordering by *highest* index was the tempting shortcut and is wrong: for a module whose
+last top-level item is an import, the importer's maximum index is lower than its
+dependency's. The order has to be recorded, not inferred from indices.
+
+`fold.mpl` carries the new field, which is the fourth rebuild site this stretch has
+needed threading — after `pub`, `nmod` and `file`.
