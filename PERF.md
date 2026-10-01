@@ -1978,3 +1978,55 @@ real defect: the chunk joiner put its recursive call inside a `$decl` block, whi
 makes a real frame, and `types.mpl` died with "call depth limit exceeded at 8799 nested
 calls". `emit.mpl`'s joiner is split into four functions to keep every call in tail
 position and carries a comment saying why; this one now is too.
+
+### The interface cache, wired and measured
+
+`infer.mpl` can load a module's interface from disk instead of inferring it. Off by
+default (`cx.cdir` empty), because §9 makes the build a program and whether to cache is
+the build's decision; `stage1/cached_check.mpl` is the build that turns it on.
+
+| whole closure (stage 0) | time | vs uncached | hits/misses |
+|---|---|---|---|
+| uncached | 27.90s | — | — |
+| cold, populating | 42.46s | 1.5x slower | 0 / 10 |
+| warm, unchanged | **10.39s** | **2.7x** | 10 / 0 |
+| warm, one leaf edited | **14.00s** | **2.0x** | 9 / 1 |
+
+**Two wrong designs preceded this, and each was found only by measuring.**
+
+**The encoding had no sharing.** A type is a tree and a module's interface mentions the
+same types once per signature, so writing each as a tree gave `ir.mpl` a **792 KB**
+interface against a 50 KB source, and `types.mpl` 560 KB — 1.43 MB over the closure.
+Reading that back cost *more* than inferring, so the cache hit and lost: 12.56s cold
+against **15.68s warm**. Back-references (`R<n>` for a type already written) took the
+total to **32 KB, 44x smaller**, and `emit.mpl` warm from 15.68s to 6.62s. `ir`'s closure
+has 136 distinct types; the information was always small.
+
+Writer and reader number types identically because both register a type **after** its
+children, so a child can never reference its parent — sound precisely because §5.5 makes
+recursion explicit as `μ`, which makes a type a finite tree.
+
+**The key was on the import's source, not its interface.** `compiler.mpl` imports
+everything, so adding a *comment* to `emit.mpl` changed `emit`'s source hash, hence
+`compiler`'s key, hence a miss on the most expensive module in the program: editing one
+leaf cost 24.06s against 24.53s uncached — no gain at all. Keying on each import's
+serialised **interface** hash fixed it (9 hits, 1 miss), because a comment does not move
+an interface. It also deleted the separate fingerprint walk, which had been re-reading
+and re-parsing the whole closure on every run.
+
+**And the first interface-keyed version gave the saving straight back.** Computing a
+module's own interface hash by re-running `show_ty` — chosen deliberately so the hit and
+miss paths would agree by construction — cost one serialisation per module per run and
+took warm from 8.52s to 24.12s. The hash is free on both paths: on a hit the string was
+just read, on a miss just written. `iface_read` returns it alongside the type.
+
+**Against the ~6x predicted from inference being additive, this is 2.0–2.7x.** The
+prediction assumed skipped inference was free to replace. It is not: ~234 KB of interface
+is deserialised on every run by a byte-at-a-time reader under stage 0, and the entry
+file's own work is never cacheable. Both are interpreter costs of the kind stage 2 removes
+~20x of, so the same cache compiled should look better — unmeasured, and not claimed.
+
+`prelude` is deliberately not cacheable: §10.7 makes a `$template`'s body part of its
+interface and a type cannot carry a body. Its importers key on its **source** hash
+instead, which is conservative in the right direction — a comment in `prelude`
+invalidates everything, and §10.7 makes a prelude change whole-program anyway.

@@ -33,6 +33,20 @@
 //   str = <n>bytes                   length-prefixed, so no escaping is needed
 //   n   = digits ';'                 terminated, or `B2;` and a following
 //                                    length would run together
+//       | R<n>                       the n-th type written so far
+//
+// **`R` is what makes this affordable, and the first version without it was not.** A
+// type is a tree and a module's interface mentions the same types over and over — one
+// per signature — so writing each as a tree gave `ir.mpl` a **792 KB** interface
+// against a 50 KB source, and `types.mpl` 560 KB. Reading that back cost more than
+// inferring the module, so the cache hit and lost: 12.56s cold against 15.68s warm.
+// `ir`'s closure has 136 distinct types; the information was always small and the
+// encoding wrote it thousands of times.
+//
+// Writer and reader number types in the same order because both register **after** a
+// type's children, not before. A child therefore can never refer to its parent, which
+// is sound precisely because §5.5 makes recursion explicit as `μ` — a type is a finite
+// tree, so post-order terminates and nothing is ever referenced before it exists.
 $decl T  $import "types"
 $decl P  $import "prelude"
 
@@ -42,11 +56,46 @@ $decl isub sub
 
 $decl strs $specialize P.list ""
 
-// ------------------------------------------------------------------ writing
-//
-// Chunks, newest first, joined once at the end. §8's `concat` copies both
-// operands, so appending to an accumulator costs O(L·n) — `emit.mpl`'s `say` was
-// 590 MB of copying to produce 350 KB before it was folded in pairs instead.
+// A type already written or read, and the index it was given. Held newest-first with
+// the index carried, rather than oldest-first by position: appending to an immutable
+// list costs O(n) a time and this list has one entry per distinct type.
+$decl tent $func ($decl i 0, $decl t T.proto_ty) { $decl idx i  $decl ty t }
+$decl proto_tent $call tent (0, T.t_bot)
+$decl tents $specialize P.list proto_tent
+
+// One state for both directions: the chunks being written, the types seen so far, and
+// how many. The mutable block is this codebase's idiom for a walk that has to thread
+// state through a recursion (`est`, `lstate`).
+$decl cst $func ()
+  { $decl out  $mut $alloc strs.node
+    $decl ents $mut $alloc tents.node
+    $decl n    $mut $alloc 0 }
+$decl proto_cst $call cst ()
+
+$decl eval_ents $func ($decl x tents.node) x
+
+// The index of a type already seen, or -1.
+$decl seen_at $func ($decl xs tents.node, $decl t T.proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call T.same ($call T.tval (xs.head.ty), t)) xs.head.idx
+        ($call seen_at ($call tents.val (xs.tail), t)),
+  $case xs -1
+)
+
+$decl ent_at $func ($decl xs tents.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.idx, i)) ($call T.tval (xs.head.ty))
+        ($call ent_at ($call tents.val (xs.tail), i)),
+  $case xs T.t_bot
+)
+
+// Registered after the children, so the writer's numbering and the reader's agree.
+$decl note_ty $func ($decl st proto_cst, $decl t T.proto_ty)
+  { $decl i $call P.ival (st.n)
+    $decl e $set st.ents ($call tents.cons ($call tent (i, t), $call eval_ents (st.ents)))
+    $decl b $set st.n ($call add (i, 1))
+    $decl r i }.r
+
 // **Split in four so that every recursive call is a tail call (§7.7).** Reading
 // `xs.tail` twice needs a `$decl` to bind it, and a block around a recursive call is
 // a real frame — which at half the chunk count per pass is thousands of them. The
@@ -86,98 +135,119 @@ $decl join_all $func ($decl xs strs.node) $match xs (
 $decl out_of $func ($decl cs strs.node)
   $call join_all ($call strs.reverse (cs, strs.nil))
 
-$decl put $func ($decl cs strs.node, $decl s "") $call strs.cons (s, cs)
-$decl put_n $func ($decl cs strs.node, $decl n 0)
-  $call put (cs, $call concat ($call int_to_str (n), ";"))
-$decl put_s $func ($decl cs strs.node, $decl s "")
-  $call put ($call put_n (cs, $call len (s)), s)
+$decl put $func ($decl st proto_cst, $decl x "")
+  { $decl a $set st.out ($call strs.cons (x, $call strs.val (st.out)))
+    $decl r 0 }.r
 
-$decl put_cv $func ($decl cs strs.node, $decl c T.proto_cv) $match c (
-  $case {$prop tag "cint"}    ($call put_n ($call put (cs, "n"), c.v)),
-  $case {$prop tag "cstr"}    ($call put_s ($call put (cs, "c"), c.v)),
-  $case {$prop tag "cbool"}   ($call put (cs, $if c.v "y" "w")),
-  $case {$prop tag "cunit"}   ($call put (cs, "u")),
-  $case {$prop tag "copaque"} ($call put_n ($call put (cs, "o"), c.id)),
-  $case c ($call put (cs, "u"))
+$decl put_n $func ($decl st proto_cst, $decl v 0)
+  $call put (st, $call concat ($call int_to_str (v), ";"))
+
+$decl put_s $func ($decl st proto_cst, $decl x "")
+  $do ($call put_n (st, $call len (x))) ($call put (st, x))
+
+$decl put_cv $func ($decl st proto_cst, $decl c T.proto_cv) $match c (
+  $case {$prop tag "cint"}    ($do ($call put (st, "n")) ($call put_n (st, c.v))),
+  $case {$prop tag "cstr"}    ($do ($call put (st, "c")) ($call put_s (st, c.v))),
+  $case {$prop tag "cbool"}   ($call put (st, $if c.v "y" "w")),
+  $case {$prop tag "cunit"}   ($call put (st, "u")),
+  $case {$prop tag "copaque"} ($do ($call put (st, "o")) ($call put_n (st, c.id))),
+  $case c ($call put (st, "u"))
 )
 
 $fwd put_ty
 
-$decl put_tys $func ($decl cs strs.node, $decl xs T.tys.node) $match xs (
+$decl put_tys $func ($decl st proto_cst, $decl xs T.tys.node) $match xs (
   $case {$prop tag "cons"}
-    $call put_tys ($call put_ty (cs, $call T.tval (xs.head)), $call T.tys.val (xs.tail)),
-  $case xs cs
+    $do ($call put_ty (st, $call T.tval (xs.head)))
+        ($call put_tys (st, $call T.tys.val (xs.tail))),
+  $case xs 0
 )
 
-$decl put_flds $func ($decl cs strs.node, $decl xs T.fields.node) $match xs (
+$decl put_flds $func ($decl st proto_cst, $decl xs T.fields.node) $match xs (
   $case {$prop tag "cons"}
-    $call put_flds ($call put_ty ($call put_s (cs, xs.head.name), $call T.tval (xs.head.ty)),
-        $call T.fields.val (xs.tail)),
-  $case xs cs
+    $do ($do ($call put_s (st, xs.head.name)) ($call put_ty (st, $call T.tval (xs.head.ty))))
+        ($call put_flds (st, $call T.fields.val (xs.tail))),
+  $case xs 0
 )
 
-$decl put_prps $func ($decl cs strs.node, $decl xs T.props.node) $match xs (
+$decl put_prps $func ($decl st proto_cst, $decl xs T.props.node) $match xs (
   $case {$prop tag "cons"}
-    $call put_prps ($call put_ty ($call put_cv ($call put_s (cs, xs.head.name), xs.head.value),
-            $call T.tval (xs.head.ty)),
-        $call T.props.val (xs.tail)),
-  $case xs cs
+    $do ($do ($call put_s (st, xs.head.name))
+             ($do ($call put_cv (st, xs.head.value))
+                  ($call put_ty (st, $call T.tval (xs.head.ty)))))
+        ($call put_prps (st, $call T.props.val (xs.tail))),
+  $case xs 0
 )
 
-$decl put_ty $func ($decl cs strs.node, $decl t T.proto_ty) $match t (
-  $case {$prop tag "int"}   ($call put (cs, "i")),
-  $case {$prop tag "float"} ($call put (cs, "f")),
-  $case {$prop tag "str"}   ($call put (cs, "s")),
-  $case {$prop tag "true"}  ($call put (cs, "T")),
-  $case {$prop tag "false"} ($call put (cs, "F")),
-  $case {$prop tag "unit"}  ($call put (cs, "u")),
-  $case {$prop tag "bot"}   ($call put (cs, "!")),
-  $case {$prop tag "var"}   ($call put_n ($call put (cs, "v"), t.id)),
-  $case {$prop tag "bnd"}   ($call put_n ($call put (cs, "b"), t.idx)),
-  $case {$prop tag "tmpl"}  ($call put_n ($call put (cs, "M"), t.id)),
+// The tag and children of a type that has not been written before. `put_ty` is the
+// half that decides whether to write it at all.
+$decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
+  $case {$prop tag "int"}   ($call put (st, "i")),
+  $case {$prop tag "float"} ($call put (st, "f")),
+  $case {$prop tag "str"}   ($call put (st, "s")),
+  $case {$prop tag "true"}  ($call put (st, "T")),
+  $case {$prop tag "false"} ($call put (st, "F")),
+  $case {$prop tag "unit"}  ($call put (st, "u")),
+  $case {$prop tag "bot"}   ($call put (st, "!")),
+  $case {$prop tag "var"}   ($do ($call put (st, "v")) ($call put_n (st, t.id))),
+  $case {$prop tag "bnd"}   ($do ($call put (st, "b")) ($call put_n (st, t.idx))),
+  $case {$prop tag "tmpl"}  ($do ($call put (st, "M")) ($call put_n (st, t.id))),
   $case {$prop tag "group"}
-    ($call put_tys ($call put_n ($call put (cs, "g"),
-         $call T.tys.length ($call T.tys.val (t.items), 0)), $call T.tys.val (t.items))),
+    { $decl xs $call T.tys.val (t.items)
+      $decl a  $do ($call put (st, "g")) ($call put_n (st, $call T.tys.length (xs, 0)))
+      $decl r  $call put_tys (st, xs) }.r,
   $case {$prop tag "union"}
-    ($call put_tys ($call put_n ($call put (cs, "U"),
-         $call T.tys.length ($call T.tys.val (t.members), 0)), $call T.tys.val (t.members))),
-  // **Sorted, because the written form has to be canonical.** §3.6 makes an
-  // intersection a set and, unlike a union, it is deliberately *not* canonicalised
-  // on construction — `t_inter` conses, so reading one back and writing it again
-  // gave a different byte string for the same type. `T.same` was satisfied either
-  // way; the *rendering* was not, and the rendering is what a cache key hashes, so
-  // a non-canonical form means the cache never hits. `T.sort_tys` is the same order
-  // `t_union` uses. A union arrives sorted already and an `$overload`'s candidates
-  // get the same treatment for the same reason.
+    { $decl xs $call T.tys.val (t.members)
+      $decl a  $do ($call put (st, "U")) ($call put_n (st, $call T.tys.length (xs, 0)))
+      $decl r  $call put_tys (st, xs) }.r,
+  // Sorted, because the written form has to be canonical: §3.6 makes an intersection a
+  // set and, unlike a union, it is not canonicalised on construction, so reading one
+  // back and writing it again gave different bytes for one type. `T.same` was content
+  // either way; the rendering is what a cache key hashes.
   $case {$prop tag "inter"}
-    { $decl ms $call T.sort_tys ($call T.tys.val (t.members))
-      $decl r  $call put_tys ($call put_n ($call put (cs, "I"),
-                   $call T.tys.length (ms, 0)), ms) }.r,
+    { $decl xs $call T.sort_tys ($call T.tys.val (t.members))
+      $decl a  $do ($call put (st, "I")) ($call put_n (st, $call T.tys.length (xs, 0)))
+      $decl r  $call put_tys (st, xs) }.r,
   $case {$prop tag "over"}
-    { $decl cds $call T.sort_tys ($call T.tys.val (t.cands))
-      $decl r   $call put_tys ($call put_n ($call put (cs, "O"),
-                    $call T.tys.length (cds, 0)), cds) }.r,
+    { $decl xs $call T.sort_tys ($call T.tys.val (t.cands))
+      $decl a  $do ($call put (st, "O")) ($call put_n (st, $call T.tys.length (xs, 0)))
+      $decl r  $call put_tys (st, xs) }.r,
   $case {$prop tag "ref"}
-    ($call put_ty ($call put_s ($call put_s ($call put (cs, "r"), t.qual), t.kind),
-         $call T.tval (t.inner))),
-  $case {$prop tag "array"} ($call put_ty ($call put (cs, "a"), $call T.tval (t.elem))),
-  $case {$prop tag "rec"}   ($call put_ty ($call put (cs, "m"), $call T.tval (t.body))),
+    { $decl a $do ($call put (st, "r")) ($do ($call put_s (st, t.qual)) ($call put_s (st, t.kind)))
+      $decl r $call put_ty (st, $call T.tval (t.inner)) }.r,
+  $case {$prop tag "array"}
+    { $decl a $call put (st, "a")
+      $decl r $call put_ty (st, $call T.tval (t.elem)) }.r,
+  $case {$prop tag "rec"}
+    { $decl a $call put (st, "m")
+      $decl r $call put_ty (st, $call T.tval (t.body)) }.r,
   $case {$prop tag "func"}
     { $decl ps $call T.tys.val (t.params)
-      $decl c0 $call put_n ($call put (cs, "w"), $call T.tys.length (ps, 0))
-      $decl c1 $call put_ty ($call put_tys (c0, ps), $call T.tval (t.result))
-      $decl r  $call put (c1, $if t.frame "y" "w") }.r,
+      $decl a  $do ($call put (st, "w")) ($call put_n (st, $call T.tys.length (ps, 0)))
+      $decl b  $do ($call put_tys (st, ps)) ($call put_ty (st, $call T.tval (t.result)))
+      $decl r  $call put (st, $if t.frame "y" "w") }.r,
   $case {$prop tag "block"}
     { $decl fs $call T.fields.val (t.fields)
       $decl ps $call T.props.val (t.props)
-      $decl c0 $call put_flds ($call put_n ($call put (cs, "B"),
-                    $call T.fields.length (fs, 0)), fs)
-      $decl r  $call put_prps ($call put_n (c0, $call T.props.length (ps, 0)), ps) }.r,
-  $case t ($call put (cs, "!"))
+      $decl a  $do ($call put (st, "B")) ($call put_n (st, $call T.fields.length (fs, 0)))
+      $decl b  $do ($call put_flds (st, fs)) ($call put_n (st, $call T.props.length (ps, 0)))
+      $decl r  $call put_prps (st, ps) }.r,
+  $case t ($call put (st, "!"))
 )
 
+// A type already written is one back-reference; otherwise its tag and children, and
+// then it is registered — **after**, so the reader can number identically.
+$decl put_ty $func ($decl st proto_cst, $decl t T.proto_ty)
+  { $decl at $call seen_at ($call eval_ents (st.ents), t)
+    $decl r  $if ($call lt (at, 0))
+        { $decl w $call put_body (st, t)
+          $decl z $call note_ty (st, t) }.z
+        ($do ($call put (st, "R")) ($call put_n (st, at))) }.r
+
 $decl show_ty $func ($decl t T.proto_ty)
-  $call out_of ($call put_ty (strs.nil, t))
+  { $decl st $call cst ()
+    $decl w  $call put_ty (st, t)
+    $decl r  $call out_of ($call strs.val (st.out)) }.r
 
 // ------------------------------------------------------------------ reading
 //
@@ -239,47 +309,53 @@ $decl read_cv $func ($decl s "", $decl i 0)
 $decl rt $func ($decl i 0, $decl v T.proto_ty) { $decl at i  $decl val v }
 $decl proto_rt $call rt (0, T.t_bot)
 
-// While `read_ty` is being solved its result is §5.5's placeholder, so projecting
-// `.at` off it fails. Passing it through an identity at the intended type defers
-// the check until the knot is tied — the idiom `T.tval` exists for.
+// While `read_at` is being solved its result is §5.5's placeholder, so projecting
+// `.at` off it fails. Passing it through an identity at the intended type defers the
+// check until the knot is tied — the idiom `T.tval` exists for.
 $decl rtval $func ($decl x proto_rt) x
 
-$fwd read_ty
+$fwd read_at
 
 $decl rl $func ($decl i 0, $decl v T.tys.node) { $decl at i  $decl val v }
 $decl proto_rl $call rl (0, T.tys.nil)
 
-$decl read_list $func ($decl s "", $decl i 0, $decl n 0, $decl acc T.tys.node)
+$decl read_list $func ($decl st proto_cst, $decl s "", $decl i 0, $decl n 0,
+                       $decl acc T.tys.node)
   $if ($call not ($call lt (0, n))) ($call rl (i, $call T.tys.reverse (acc, T.tys.nil)))
-      { $decl e $call rtval ($call read_ty (s, i))
-        $decl r $call read_list (s, e.at, $call isub (n, 1),
+      { $decl e $call rtval ($call read_at (st, s, i))
+        $decl r $call read_list (st, s, e.at, $call isub (n, 1),
                     $call T.tys.cons (e.val, acc)) }.r
 
 $decl rf $func ($decl i 0, $decl v T.fields.node) { $decl at i  $decl val v }
 $decl proto_rf $call rf (0, T.fields.nil)
 
-$decl read_flds $func ($decl s "", $decl i 0, $decl n 0, $decl acc T.fields.node)
+$decl read_flds $func ($decl st proto_cst, $decl s "", $decl i 0, $decl n 0,
+                       $decl acc T.fields.node)
   $if ($call not ($call lt (0, n))) ($call rf (i, $call T.fields.reverse (acc, T.fields.nil)))
       { $decl nm $call read_s (s, i)
-        $decl ty $call rtval ($call read_ty (s, nm.at))
-        $decl r  $call read_flds (s, ty.at, $call isub (n, 1),
+        $decl ty $call rtval ($call read_at (st, s, nm.at))
+        $decl r  $call read_flds (st, s, ty.at, $call isub (n, 1),
                      $call T.fields.cons ($call T.field (nm.val, ty.val), acc)) }.r
 
 $decl rp $func ($decl i 0, $decl v T.props.node) { $decl at i  $decl val v }
 $decl proto_rp $call rp (0, T.props.nil)
 
-$decl read_prps $func ($decl s "", $decl i 0, $decl n 0, $decl acc T.props.node)
+$decl read_prps $func ($decl st proto_cst, $decl s "", $decl i 0, $decl n 0,
+                       $decl acc T.props.node)
   $if ($call not ($call lt (0, n))) ($call rp (i, $call T.props.reverse (acc, T.props.nil)))
       { $decl nm $call read_s (s, i)
         $decl cv $call read_cv (s, nm.at)
-        $decl ty $call rtval ($call read_ty (s, cv.at))
-        $decl r  $call read_prps (s, ty.at, $call isub (n, 1),
+        $decl ty $call rtval ($call read_at (st, s, cv.at))
+        $decl r  $call read_prps (st, s, ty.at, $call isub (n, 1),
                      $call T.props.cons ($call T.prop_typed (nm.val, cv.val, ty.val), acc)) }.r
 
 $decl one $func ($decl s "", $decl i 0, $decl tag "")
   $call eq_int ($call byte (s, i), $call byte (tag, 0))
 
-$decl read_ty $func ($decl s "", $decl i 0)
+// Every branch registers what it built, except `R`, which is a reference to something
+// already registered. Registration is after the children for the same reason the
+// writer's is: the two numberings have to agree.
+$decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0)
   { $decl j $call add (i, 1)
     $decl r $if ($call one (s, i, "i")) ($call rt (j, T.t_int))
            ($if ($call one (s, i, "f")) ($call rt (j, T.t_float))
@@ -299,42 +375,54 @@ $decl read_ty $func ($decl s "", $decl i 0)
                   $decl z $call rt (n.at, $call T.t_tmpl (n.val)) }.z
            ($if ($call one (s, i, "g"))
                 { $decl n $call read_n (s, j)
-                  $decl l $call read_list (s, n.at, n.val, T.tys.nil)
+                  $decl l $call read_list (st, s, n.at, n.val, T.tys.nil)
                   $decl z $call rt (l.at, $call T.t_group (l.val)) }.z
            ($if ($call one (s, i, "U"))
                 { $decl n $call read_n (s, j)
-                  $decl l $call read_list (s, n.at, n.val, T.tys.nil)
+                  $decl l $call read_list (st, s, n.at, n.val, T.tys.nil)
                   $decl z $call rt (l.at, $call T.t_union (l.val)) }.z
            ($if ($call one (s, i, "I"))
                 { $decl n $call read_n (s, j)
-                  $decl l $call read_list (s, n.at, n.val, T.tys.nil)
+                  $decl l $call read_list (st, s, n.at, n.val, T.tys.nil)
                   $decl z $call rt (l.at, $call T.t_inter (l.val)) }.z
            ($if ($call one (s, i, "O"))
                 { $decl n $call read_n (s, j)
-                  $decl l $call read_list (s, n.at, n.val, T.tys.nil)
+                  $decl l $call read_list (st, s, n.at, n.val, T.tys.nil)
                   $decl z $call rt (l.at, $call T.t_over (l.val)) }.z
            ($if ($call one (s, i, "r"))
                 { $decl q $call read_s (s, j)
                   $decl k $call read_s (s, q.at)
-                  $decl e $call rtval ($call read_ty (s, k.at))
+                  $decl e $call rtval ($call read_at (st, s, k.at))
                   $decl z $call rt (e.at, $call T.t_ref_k (q.val, e.val, k.val)) }.z
            ($if ($call one (s, i, "a"))
-                { $decl e $call rtval ($call read_ty (s, j))
+                { $decl e $call rtval ($call read_at (st, s, j))
                   $decl z $call rt (e.at, $call T.t_array (e.val)) }.z
            ($if ($call one (s, i, "m"))
-                { $decl e $call rtval ($call read_ty (s, j))
+                { $decl e $call rtval ($call read_at (st, s, j))
                   $decl z $call rt (e.at, $call T.t_rec (e.val)) }.z
            ($if ($call one (s, i, "w"))
                 { $decl n  $call read_n (s, j)
-                  $decl ps $call read_list (s, n.at, n.val, T.tys.nil)
-                  $decl rr $call rtval ($call read_ty (s, ps.at))
+                  $decl ps $call read_list (st, s, n.at, n.val, T.tys.nil)
+                  $decl rr $call rtval ($call read_at (st, s, ps.at))
                   $decl fr $call one (s, rr.at, "y")
                   $decl z  $call rt ($call add (rr.at, 1),
                                $call T.t_func_fr (ps.val, rr.val, fr)) }.z
            ($if ($call one (s, i, "B"))
                 { $decl nf $call read_n (s, j)
-                  $decl fs $call read_flds (s, nf.at, nf.val, T.fields.nil)
+                  $decl fs $call read_flds (st, s, nf.at, nf.val, T.fields.nil)
                   $decl np $call read_n (s, fs.at)
-                  $decl ps $call read_prps (s, np.at, np.val, T.props.nil)
+                  $decl ps $call read_prps (st, s, np.at, np.val, T.props.nil)
                   $decl z  $call rt (ps.at, $call T.t_block (fs.val, ps.val)) }.z
                 ($call rt (j, T.t_bot)))))))))))))))))))) }.r
+
+$decl read_at $func ($decl st proto_cst, $decl s "", $decl i 0)
+  $if ($call one (s, i, "R"))
+      { $decl n $call read_n (s, $call add (i, 1))
+        $decl z $call rt (n.at, $call ent_at ($call eval_ents (st.ents), n.val)) }.z
+      { $decl e $call read_body (st, s, i)
+        $decl w $call note_ty (st, $call T.tval (e.val))
+        $decl z $call rt (e.at, $call T.tval (e.val)) }.z
+
+$decl read_ty $func ($decl s "", $decl i 0)
+  { $decl st $call cst ()
+    $decl r  $call rtval ($call read_at (st, s, i)) }.r

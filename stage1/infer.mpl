@@ -22,6 +22,7 @@
 
 $decl T  $import "types"
 $decl Pa $import "parser"
+$decl Y  $import "tyio"
 $decl P  $import "prelude"
 
 $decl not P.not
@@ -101,8 +102,17 @@ $decl memo_list $specialize P.list proto_memo
 // §4.14: "**Loaded once.** All imports of the same resolved file yield the same
 // block", and "**Cycles are an error.**" `state` is "loading" while a module is
 // being typed, which is what turns a cycle into a diagnostic instead of a hang.
+// `ifh` is the hash of this module's **serialised interface**, which is what an
+// importer's cache key is built from. Keying on an import's *source* instead was the
+// defect that made the cache worthless for a real build: `compiler.mpl` imports
+// everything, so a comment added to `emit.mpl` changed `emit`'s source hash, hence
+// `compiler`'s key, hence a miss on the most expensive module in the program — and
+// editing one leaf cost as much as compiling from scratch (24.06s against 24.53s).
+// An interface hash does not move for a comment, so the importer hits.
+$decl mod_ent_h $func ($decl k "", $decl st "", $decl t T.proto_ty, $decl h 0)
+  { $decl key k  $decl state st  $decl ty t  $decl ifh h }
 $decl mod_ent $func ($decl k "", $decl st "", $decl t T.proto_ty)
-  { $decl key k  $decl state st  $decl ty t }
+  $call mod_ent_h (k, st, t, 0)
 $decl proto_mod $call mod_ent ("", "", T.t_bot)
 $decl mod_list $specialize P.list proto_mod
 
@@ -181,6 +191,15 @@ $decl ctx $func ()
     // this the two specialisations would compare **equal**. Saved and restored around
     // the body exactly as `file` is.
     $decl sctx   $mut $alloc ""
+    // ------------------------------------------------- the interface cache (§9)
+    //
+    // Where a module's serialised interface is kept, or "" for **off** — which is the
+    // default, so the compiler behaves exactly as before unless a driver asks. §9 makes
+    // the build a program, so whether to cache is the build's decision and not the
+    // compiler's; what the compiler supplies is the hook.
+    $decl cdir   $mut $alloc ""
+    $decl nhit   $mut $alloc 0
+    $decl nmiss  $mut $alloc 0
     // §4.10's compile-time names: every `$prop` bound anywhere, and every
     // `$template` generic. A prop initializer may name one of these and nothing
     // else — a parameter or a `$decl` is an enclosing *runtime* binding, and
@@ -1101,6 +1120,85 @@ $decl mod_find $func ($decl xs mod_list.node, $decl k "") $match xs (
   $case xs ($call mod_ent ("", "", T.t_bot))
 )
 
+// ------------------------------------------------- the interface cache (§9)
+//
+// §3.3 makes a module's interface a **type** — `check_file` answers every top-level
+// name with its solved type — and `tyio` writes one down and reads it back. So an
+// unchanged module need not be inferred again: load its interface instead. Inference
+// is ~80% of a compile and is **additive** across modules (per-module marginals sum to
+// 26.8s against the whole closure's 26.85s), so this is where the time is.
+//
+// What makes it sound is that the interface is now a function of the module's source
+// alone: linkage comes from the function, naming from the source, and inference's
+// template and `cv_opaque` ids from where they are written. Before those, a stored
+// interface moved with load order and no key could hit.
+//
+// `prelude` is the one module deliberately *not* cacheable — §10.7 checks a
+// `$template`'s body at the specialization site, so a module exporting one exports its
+// body rather than a type. It is also the cheapest module there is (0.07s), so the
+// exception costs nothing.
+
+// The names a file imports, at its top level: `$decl X $import "y"`, or a bare
+// `$import` standing for effect. Found by scanning the parse, which is all that is
+// needed: the imports have to be loaded before the importer's key can be computed, and
+// loading one from its interface file is cheap.
+$decl import_of $func ($decl n Pa.proto_node)
+  $if ($call is_form (n, "import")) ($call str_of ($call op (n, 0)))
+      ($if ($call is_form (n, "decl"))
+           ($if ($call is_form ($call op (n, 1), "import"))
+                ($call str_of ($call op ($call op (n, 1), 0))) "")
+           "")
+
+$decl imports_of $func ($decl xs Pa.nodes.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl nm $call import_of (xs.head)
+      $decl a2 $if ($call eq_str (nm, "")) acc ($call strs.cons (nm, acc))
+      $decl r  $call imports_of ($call Pa.nodes.val (xs.tail), a2) }.r,
+  $case xs ($call strs.reverse (acc, strs.nil))
+)
+
+// One file per (module, fingerprint), so a changed module simply misses rather than
+// overwriting what another program still wants.
+$decl iface_file $func ($decl cx proto_ctx, $decl key "", $decl h 0)
+  $call concat ($call sval (cx.cdir), $call concat ("/",
+      $call concat ($call short_of (key), $call concat (".",
+      $call concat ($call int_to_str (h), ".iface")))))
+
+$decl iface_write $func ($decl cx proto_ctx, $decl key "", $decl h 0, $decl str "")
+  { $decl w $call write_file ($call iface_file (cx, key, h), str)
+    // A failed write is not an error: the cache is an optimisation, and a build that
+    // cannot write one must still compile.
+    $decl r $match w ($case {$prop tag "err"} 0, $case w 0) }.r
+
+// What a load produced: the type, the hash of its serialised interface, and whether it
+// came from disk. The hash travels with it so that **`show_ty` is never called twice** —
+// on a hit the string was just read, on a miss it was just written. Re-serialising to
+// get the hash instead cost a `show_ty` per module per run and took the warm whole-
+// closure run from 8.5s to 24.1s, which is the entire saving.
+$decl ires $func ($decl t T.proto_ty, $decl h 0, $decl ok P.boolean)
+  { $decl ty t  $decl ifh h  $decl hit ok }
+$decl proto_ires $call ires (T.t_bot, 0, false)
+
+$decl iface_read $func ($decl cx proto_ctx, $decl key "", $decl h 0)
+  { $decl rf $call read_file ($call iface_file (cx, key, h))
+    $decl out $match rf (
+        $case {$prop tag "some"}
+          ($call ires ($call T.tval (($call Y.read_ty (rf.v, 0)).val),
+               $call T.hash_str (rf.v, 0, 19), true)),
+        $case rf proto_ires
+      ) }.out
+
+// §10.7 makes a `$template`'s body part of its module's interface, and a type cannot
+// carry a body — so a module exporting one is never cached. `prelude` is the only such
+// module in stage 1 and checks in 0.07s, so the exception is free. Asked by short name
+// rather than by scanning for `$template`, because the scan would have to parse the
+// module to answer and the answer is needed before the parse is worth doing.
+$decl cacheable $func ($decl key "")
+  $call not ($call eq_str ($call short_of (key), "prelude"))
+
+$decl cache_on $func ($decl cx proto_ctx)
+  $call not ($call eq_str ($call sval (cx.cdir), ""))
+
 // A module's syntax errors are its own: they keep their line and column and
 // carry its path, rather than being folded into a message against the import.
 $decl note_mod_errs $func ($decl cx proto_ctx, $decl xs Pa.diags.node, $decl path "", $decl n Pa.proto_node) $match xs (
@@ -1111,13 +1209,29 @@ $decl note_mod_errs $func ($decl cx proto_ctx, $decl xs Pa.diags.node, $decl pat
   $case xs T.t_bot
 )
 
+$fwd need_module
+
+// Each import loaded, and its interface hash mixed in. This is what the importer's
+// cache key is made of, and the imports have to be loaded first for it to exist — which
+// costs nothing on a warm run, since loading one is reading a few KB.
+$decl key_imports $func ($decl cx proto_ctx, $decl ns strs.node, $decl n Pa.proto_node,
+                         $decl acc 0) $match ns (
+  $case {$prop tag "cons"}
+    { $decl k  $call resolve_path (cx.base, ns.head)
+      $decl ld $call need_module (cx, k, ns.head, n)
+      $decl h  ($call mod_find ($call eval_mods (cx.mods), k)).ifh
+      $decl r  $call key_imports (cx, $call strs.val (ns.tail), n, $call T.hmix (acc, h)) }.r,
+  $case ns acc
+)
+
 $decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node)
   { $decl marked $set cx.mods
         ($call mod_list.cons ($call mod_ent (key, "loading", T.t_bot), $call eval_mods (cx.mods)))
     $decl src $call read_module (key)
     $decl ty $if ($call eq_str (src, ""))
-        ($call err (cx, $call concat ("cannot read the file for $import \"",
-             $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n))
+        { $decl e $call err (cx, $call concat ("cannot read the file for $import \"",
+              $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n)
+          $decl z $call ires ($call T.tval (e), 0, false) }.z
         { $decl p $call Pa.parse (src)
           // A module's own syntax errors are reported against the import site,
           // tagged with the module's path: the diagnostic type carries a line
@@ -1126,26 +1240,62 @@ $decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n 
               // §4.14: "A file sees the root block plus what it imports,
               // nothing else" — so the module is typed in the root
               // environment, never in the importer's.
-              { $decl outer   $call sval (cx.file)
-                $decl entered $set cx.file key
-                $decl ty      $call infer_block (cx, root_env, p.exprs, P.proto_span)
-                $decl left    $set cx.file outer
-                $decl res     ty }.res
-              ($call note_mod_errs (cx, p.errs, key, n)) }.r
+              //
+              // Or not typed at all: with the cache on, a fingerprint that names an
+              // interface already on disk is loaded instead, and this module's body is
+              // never inferred. A miss infers it and writes the interface for next
+              // time. `cacheable` excludes `prelude`, whose `$template` makes its
+              // interface its body (§10.7).
+              { $decl ok  $call and ($call cache_on (cx), $call cacheable (key))
+                // The imports first, whether or not this module is cacheable: they are
+                // what the key is made of, and inferring this body would load them
+                // anyway.
+                $decl ih  $if ($call cache_on (cx))
+                              ($call key_imports (cx, $call imports_of (p.exprs, strs.nil), n,
+                                   $call T.hash_str (src, 0, 17)))
+                              0
+                $decl got $if ok ($call iface_read (cx, key, ih)) proto_ires
+                $decl cnt $if got.hit ($set cx.nhit ($call add ($call ival (cx.nhit), 1)))
+                              ($if ok ($set cx.nmiss ($call add ($call ival (cx.nmiss), 1))) 0)
+                $decl res $if got.hit got
+                    { $decl outer   $call sval (cx.file)
+                      $decl entered $set cx.file key
+                      $decl t       $call infer_block (cx, root_env, p.exprs, P.proto_span)
+                      $decl left    $set cx.file outer
+                      // Serialised once: written if this module is cacheable, and hashed
+                      // either way, because an importer's key needs the hash even for a
+                      // module whose interface is not stored. A module that is not
+                      // cacheable falls back to its *source* hash, which is
+                      // conservative — a comment in `prelude` invalidates everything —
+                      // and right, since §10.7 makes a prelude change whole-program.
+                      $decl str     $if ok ($call Y.show_ty (t)) ""
+                      $decl wrote   $if ok ($call iface_write (cx, key, ih, str)) 0
+                      $decl h       $if ok ($call T.hash_str (str, 0, 19))
+                                        ($call T.hash_str (src, 0, 23))
+                      $decl z       $call ires (t, h, false) }.z
+                $decl z res }.z
+              { $decl e $call note_mod_errs (cx, p.errs, key, n)
+                $decl z $call ires ($call T.tval (e), 0, false) }.z }.r
     $decl done $set cx.mods
-        ($call mod_list.cons ($call mod_ent (key, "done", ty), $call eval_mods (cx.mods)))
-    $decl out ty }.out
+        ($call mod_list.cons ($call mod_ent_h (key, "done", $call T.tval (ty.ty), ty.ifh),
+             $call eval_mods (cx.mods)))
+    $decl out $call T.tval (ty.ty) }.out
 
 // §4.14: "Loads a source file as a block ... the type is that block's type."
-$decl infer_import $func ($decl cx proto_ctx, $decl n proto_form)
-  { $decl nm  $call str_of ($call op (n, 0))
-    $decl key $call resolve_path (cx.base, nm)
-    $decl hit $call mod_find (cx.mods, key)
-    $decl out $if ($call eq_str (hit.state, "done")) hit.ty
+// Loaded once, keyed on the resolved path (§4.14). Shared by the import expression and
+// by `key_imports`, which needs an import's interface before the importer has a key.
+$decl need_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node)
+  { $decl hit $call mod_find ($call eval_mods (cx.mods), key)
+    $decl out $if ($call eq_str (hit.state, "done")) ($call T.tval (hit.ty))
              ($if ($call eq_str (hit.state, "loading"))
                   ($call err (cx, $call concat ("import cycle: \"", $call concat (nm,
                       "\" is already being loaded; make one module a $template over the other")), n))
                   ($call load_module (cx, key, nm, n))) }.out
+
+$decl infer_import $func ($decl cx proto_ctx, $decl n proto_form)
+  { $decl nm  $call str_of ($call op (n, 0))
+    $decl key $call resolve_path (cx.base, nm)
+    $decl out $call need_module (cx, key, nm, n) }.out
 
 // ------------------------------------------------------------------- blocks
 
@@ -1643,6 +1793,26 @@ $decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base
 
 // `base` is the directory `$import` resolves from; it defaults to the working
 // directory so that existing single-file callers are unaffected (§3.4).
+// `check_source` with the §9 interface cache on, answering the hit and miss counts
+// beside the type so a build can see whether its cache is working. A separate entry
+// point rather than a fourth parameter on `check_source`: §3.4 makes a short call an
+// arity error, so widening a function every caller uses is the expensive change this
+// codebase keeps a second constructor for.
+$decl cached_res $func ($decl t T.proto_ty, $decl ds Pa.diags.node, $decl h 0, $decl m 0)
+  { $decl ty t  $decl errs ds  $decl hits h  $decl misses m }
+
+$decl check_cached $func ($decl src "", $decl base "", $decl path "", $decl dir "")
+  { $decl p $call Pa.parse (src)
+    $decl out $if ($call Pa.diags.is_nil (p.errs))
+        { $decl cx     $call ctx ()
+          $decl rooted $set cx.base base
+          $decl named  $set cx.file path
+          $decl cached $set cx.cdir dir
+          $decl t      $call infer_block (cx, root_env, p.exprs, P.proto_span)
+          $decl z $call cached_res (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil),
+                      $call ival (cx.nhit), $call ival (cx.nmiss)) }.z
+        ($call cached_res (T.t_bot, $call stamp_file (p.errs, path, Pa.diags.nil), 0, 0)) }.out
+
 $decl check_source $func ($decl src "", $decl base "", $decl path "")
   { $decl p $call Pa.parse (src)
     $decl out $if ($call Pa.diags.is_nil (p.errs))
