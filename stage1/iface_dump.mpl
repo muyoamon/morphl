@@ -29,7 +29,7 @@ $decl path $call P.sval ($call at (argv, 0))
 $decl want $call P.sval ($call at (argv, 1))
 $decl rf   $call read_file (path)
 $decl src  $match rf ($case {$prop tag "some"} rf.v, $case rf ($call panic ("cannot read")))
-$decl r    $call I.check_source (src, path, $call P.dirname (path))
+$decl r    $call I.check_source (src, $call P.dirname (path), path)
 $decl rty  $call T.tval (r.ty)
 $decl fs   $match rty ($case {$prop tag "block"} ($call T.fields.val (rty.fields)), $case rty T.fields.nil)
 $decl ps   $match rty ($case {$prop tag "block"} ($call T.props.val (rty.props)), $case rty T.props.nil)
@@ -39,6 +39,9 @@ $decl pv   $call pick_prop (ps, want)
 // byte, so a stray diagnostic line would make two programs differ for a reason that
 // has nothing to do with the identity — which is exactly what a `fields:` line used
 // for debugging did on the first run.
-$decl out  $if ($call eq_str (pv, "")) ($call Y.show_ty ($call pick (fs, want)))
-               ($call concat ("prop ", pv))
+// `.` dumps the whole file's type, which is how an importer's view of a module can
+// be compared against the module's own interface.
+$decl out  $if ($call eq_str (want, ".")) ($call Y.show_ty (rty))
+          ($if ($call eq_str (pv, "")) ($call Y.show_ty ($call pick (fs, want)))
+               ($call concat ("prop ", pv)))
 $decl go   $do ($call print (out)) ($call print ("\n"))

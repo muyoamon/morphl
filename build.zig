@@ -356,18 +356,27 @@ pub fn build(b: *std.Build) void {
     // than of what the checker happened to reach first. `ct_id` makes them so; this
     // is the check.
     //
-    // The two fixtures declare the same `$prop` at the same line and column — the
-    // comment in `iface_c.mpl` is padding for exactly that — and differ only in that
-    // `iface_d.mpl` first imports a module carrying a `$template` and a non-scalar
-    // prop, which under the old counters consumed ids. It fails on them: `o6` against
-    // `o7`. `iface_dump.mpl` prints the prop's *value*, since that is where the
-    // identity sits and §4.10 keeps a prop out of the fields.
+    // **One module, two importing programs.** `ifm.mpl` carries both identities
+    // inference mints — a `$func`-valued prop's `cv_opaque` and a `$template`'s id —
+    // and both entry files import it; `iface_d.mpl` first imports `ifx.mpl`, which
+    // mints some of each. Its serialised interface must come out byte-identical.
+    //
+    // An earlier version compared a prop declared in *each* of the two fixtures, which
+    // cannot work: an identity derives from the file's short name, so two files differ
+    // by design. It passed only because `check_source`'s arguments were swapped, which
+    // made `cx.file` the shared directory — the guard was an artifact of the same bug
+    // it was meant to catch. Against the pre-fix compiler this one reads `listM16 o28`
+    // against `listM11 o33`; with the fix the two interfaces are equal.
+    //
+    // Reading it is possible at all because an `$import`'s field type *is* the
+    // module's interface — `iface_dump.mpl` prints that field and nothing else, since
+    // the output is compared byte for byte.
     const iface_step = b.step("test-iface", "A compile-time identity is independent of load order");
     {
         var ids: [2]std.Build.LazyPath = undefined;
         for ([_][]const u8{ "iface_c", "iface_d" }, 0..) |name, i| {
             const dump = b.addRunArtifact(exe);
-            dump.addArgs(&.{ "--run", "stage1/iface_dump.mpl", b.fmt("stage1/fixtures/{s}.mpl", .{name}), "box" });
+            dump.addArgs(&.{ "--run", "stage1/iface_dump.mpl", b.fmt("stage1/fixtures/{s}.mpl", .{name}), "M" });
             dump.setCwd(b.path("."));
             dump.has_side_effects = true;
             ids[i] = dump.captureStdOut(.{ .basename = b.fmt("{s}.id", .{name}) });

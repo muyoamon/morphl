@@ -1827,14 +1827,18 @@ Two things still stand in the way, and neither is a performance question:
   tree agree with the name is finishing that work rather than new machinery. The type table
   has the same shape of problem — an interned index is a whole-program position — so a
   cached fragment has to carry its types structurally and re-intern on load.
-- **A `$template` and a non-scalar `$prop` export their *body*, not a summarisable type.**
-  §10.7 checks a template's body at the specialization site, and lowering keeps a prop's
-  source (`lstate.mods`) because §4.10 makes it an identity rather than code. `P.list` is a
-  `$template`, so **prelude's interface includes prelude's body and everything imports
-  prelude** — a prelude change is genuinely a whole-program change. That is correct rather
-  than broken, but it sets the shape of the payoff: editing a leaf (`emit.mpl`, `lower.mpl`)
-  is one module, editing `types.mpl` re-checks its importers, editing `prelude.mpl` is
-  everything.
+- **A `$template` exports its *body*, not a type.** §10.7 checks it at the
+  specialization site. `P.list` is a `$template`, so **prelude's interface includes
+  prelude's body and everything imports prelude** — a prelude change is genuinely a
+  whole-program change. That is correct rather than broken, and it costs nothing in
+  practice: prelude checks in 0.07s, so it is the one module simply not cached. It sets
+  the shape of the payoff: editing a leaf (`emit.mpl`, `lower.mpl`) is one module,
+  editing `types.mpl` re-checks its importers, editing `prelude.mpl` is everything.
+
+  A non-scalar `$prop` was listed beside the template here and does not belong. Its
+  value is `cv_opaque` in the block's type, which is summarisable and which `tyio`
+  writes; lowering keeping the prop's *source* (`lstate.mods`) is a backend matter and
+  not part of the interface.
 
 ### Step one: linkage made local
 
@@ -1948,8 +1952,29 @@ module produces alone. The real combination premium is 463 → 636, **1.37x**; t
 That comparison is only possible because step two made struct names content hashes: type
 sets from *separate* compilations can now be compared by name.
 
-**And the registry a cache would need is small.** Across the ten modules: 32
-`$specialize`, 1 `$template` and 14 `$import` against **933** top-level `$decl`s. So an
-interface is the serialised type plus a per-member tag for about 5% of members — not the
-specialisations, which §4.9 instantiates at the *use* site and which the additivity
-above shows is where the per-module cost legitimately lives.
+**An interface needs nothing but the type, and the paragraph that used to stand here
+said otherwise because of a bug in my own probe.** `check_source` takes
+`(src, base, path)`; called `(src, path, …)` it resolves every `$import` against a *file*
+instead of a directory, `read_module` answers "", and the import's type comes back `⊥`
+with no diagnostic. From that one slip came three recorded conclusions — that an
+`$import`'s field type is `!`, that a `$specialize`'s is (`tys:!`), and therefore that
+the interface is not the type but inference's unexposed `cx.mods` registry plus a
+per-member tag for the ~5% of members that are a `$specialize`, `$template` or `$import`.
+
+All of it was false. Checked with the arguments the right way round, prelude's interface
+taken directly and taken through an `$import` serialise to the **same 280 bytes**, props
+and `copaque` identities included, and a `$specialize`'s type is the specialised block
+with its props. `tyio` already writes down what a cache needs.
+
+What survives is the §10.7 point, which is about a template's *body* rather than its
+type: a module exporting a `$template` exports the body, because the body is checked at
+the specialization site. There is one such module (`prelude`) and it checks in 0.07s, so
+not caching it costs nothing.
+
+The same slip had `tyio_test` round-tripping interfaces whose imports had all failed, so
+its type counts were understated — lexer 73 → **83**, parser 120 → **153**, types 161 →
+**219**, ir 90 → **136**, all still round-tripping clean. The larger input then found a
+real defect: the chunk joiner put its recursive call inside a `$decl` block, which §7.7
+makes a real frame, and `types.mpl` died with "call depth limit exceeded at 8799 nested
+calls". `emit.mpl`'s joiner is split into four functions to keep every call in tail
+position and carries a comment saying why; this one now is too.

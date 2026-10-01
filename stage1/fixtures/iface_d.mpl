@@ -1,3 +1,5 @@
+// The same module, reached after one that has already minted a template id and
+// several opaque ids. `M`'s interface must come out byte-identical to `iface_c`'s.
 $decl X $import "ifx"
-$prop box $func ($decl v 0) { $decl val v }
-$decl main $func () ($call add (($call box (6)).val, $call X.one ()))
+$decl M $import "ifm"
+$decl main $func () $call add ($call M.two (), $call X.one ())

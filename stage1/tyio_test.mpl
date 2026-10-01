@@ -50,7 +50,7 @@ $decl src  $match rf (
     $case rf ($call panic ($call concat ("cannot read ", path)))
   )
 
-$decl chk  $call I.check_source (src, path, "")
+$decl chk  $call I.check_source (src, $call P.dirname (path), path)
 $decl ast  $call Pa.parse (src)
 $decl st   $call L.lstate ()
 $decl prims $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil)
