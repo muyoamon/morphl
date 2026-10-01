@@ -300,10 +300,10 @@ pub fn build(b: *std.Build) void {
     //
     // Under stage 0, not `mplc`, because it is `stage1/` that is being checked and a
     // committed binary predates the change by construction.
-    const stable_step = b.step("test-stable", "One module, two programs, identical output");
+    const stable_step = b.step("test-stable", "One module, three programs, identical output");
     {
-        var outs: [2]std.Build.LazyPath = undefined;
-        for ([_][]const u8{ "stable_a", "stable_b" }, 0..) |name, i| {
+        var outs: [3]std.Build.LazyPath = undefined;
+        for ([_][]const u8{ "stable_a", "stable_b", "stable_c" }, 0..) |name, i| {
             const one = std.Build.Step.Run.create(b, b.fmt("emit prelude.c for {s}", .{name}));
             one.addFileArg(exe.getEmittedBin());
             one.addArgs(&.{ "--run", "stage1/emit_one.mpl", b.fmt("stage1/fixtures/{s}.mpl", .{name}), "prelude.c" });
@@ -311,11 +311,18 @@ pub fn build(b: *std.Build) void {
             one.has_side_effects = true;
             outs[i] = one.captureStdOut(.{ .basename = b.fmt("{s}.prelude.c", .{name}) });
         }
-        const same = b.addSystemCommand(&.{"cmp"});
-        same.addFileArg(outs[0]);
-        same.addFileArg(outs[1]);
-        stable_step.dependOn(&same.step);
-        test_step.dependOn(&same.step);
+        // `stable_b` differs from `stable_a` only in which prelude member the entry
+        // file calls, which is the **linkage** property. `stable_c` reaches the prelude
+        // *through another module* instead of directly, which is the **naming**
+        // property: every counter in lowering is at a different value by the time the
+        // prelude is lowered, so this fails for any identity still drawn from one.
+        for ([_]usize{ 1, 2 }) |i| {
+            const same = b.addSystemCommand(&.{"cmp"});
+            same.addFileArg(outs[0]);
+            same.addFileArg(outs[i]);
+            stable_step.dependOn(&same.step);
+            test_step.dependOn(&same.step);
+        }
     }
 
     const s2_step = b.step("test-stage2", "mplc against stage 0, and the committed C against itself");

@@ -58,6 +58,15 @@ $decl estate $func ()
   // `out_of` joins them in one balanced pass instead.
   { $decl out  $mut $alloc strs.node
     $decl ntmp $mut $alloc 0
+    // The name of the §6a group being emitted. A group function is `static`, so its
+    // name need only be unique within its output — but it used to be numbered by the
+    // group's **position in the whole program's** group list, so adding a group
+    // anywhere renamed it. Named from its first member instead, which is a stable
+    // identity (§4.14 keeps a tail-call cycle inside one module, so the member is
+    // this module's). Held here rather than passed, because the wrapper emitter is
+    // reached after the member list has been walked away — the same reason `grp`,
+    // `gen` and `retc` live here.
+    $decl grpn $mut $alloc ""
     // The result type of the function being emitted. §4.15 returns from it
     // from arbitrary depth, so the type has to be reachable from anywhere in
     // the body rather than threaded through every node.
@@ -201,9 +210,31 @@ $decl emit_return $func ($decl st proto_est)
 // A function's stable suffix: its module's short name and its rank within that
 // module, so an edit to another module leaves it alone. The entry file has no module
 // name and takes `e`.
+// A function's C name comes from `nmod`, not `mod`: the first is its stable identity
+// and the second is only which output it is emitted in. They differ for a
+// `$specialize`'s members and for a props-bearing block literal's, which are named
+// from themselves and emitted in the file whose source produced them.
+// **Two allocators share `rank`, so the key has to separate them.** A module member's
+// rank is its index among its module's props (source order, so it is stable); every
+// other function's is `next_rank`'s counter. Both start at 0, so `parser`'s member #15
+// (`n_err`) and `parser`'s 15th counter-allocated function — a §3.3 effect — came out
+// with one C name, two definitions and two different signatures.
+//
+// That was a **miscompile, not a link error**: the duplicate was accepted and calls
+// resolved to whichever definition won, which is how the emitted compiler lost
+// `emit_fn`'s temporary reset. It showed up as self-compilation oscillating with
+// period 2 instead of reaching BOOTSTRAP's stage-3 fixed point, and nothing smaller
+// than the whole-compiler closure reproduced it.
+//
+// `pub` is exactly the distinction, not a proxy for it: it is set at the two sites
+// that give a function a prop index (`lower_prop_body`, `lower_prop_thunk`) and
+// nowhere else. So `_m` on a member makes the two spaces disjoint by construction.
+// Within each, uniqueness is already guaranteed — §4.1 gives a module one binding per
+// name, hence one prop index each, and a counter repeats nothing.
 $decl fn_key $func ($decl f IR.proto_fn)
-  $call concat ($if ($call eq_str (f.mod, "") ) "e" f.mod,
-      $call concat ("_", $call int_to_str (f.rank)))
+  { $decl nd $call P.sval (f.nmod)
+    $decl r  $call concat ($if ($call eq_str (nd, "")) "e" nd,
+                 $call concat ($if f.pub "_m" "_", $call int_to_str (f.rank))) }.r
 
 $decl fn_keys $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
   $case {$prop tag "cons"}
@@ -2436,6 +2467,12 @@ $decl emit_slots $func ($decl st proto_est, $decl xs IR.ints.node, $decl ts T.ty
 
 $decl emit_fn $func ($decl st proto_est, $decl i 0, $decl f IR.proto_fn, $decl ts T.tys.node)
   { $decl np  $call IR.ints.length (f.params, 0)
+    // A temporary is a C **local**, so its number need only be unique inside this
+    // function — and resetting here is what makes a body's text depend on the body
+    // alone. It used to run from one counter across the whole program, so emitting
+    // a module later in the walk renamed every temporary in it: `prelude.c` differed
+    // between two programs in nothing but `t1955` against `t2115`.
+    $decl z0  $set st.ntmp 0
     // `static` unless the function is a module member. §4.14 makes a projection onto a
     // module the only way to name one across that edge, so `pub` is a property of the
     // function alone — which is what lets a module's text be cached on its own source.
@@ -2480,7 +2517,11 @@ $decl slot_args $func ($decl xs IR.ints.node, $decl i 0, $decl acc "") $match xs
         $call concat (acc, $call concat (", ", $call slot_name (i)))),
   $case xs acc
 )
-$decl grp_name $func ($decl i 0) $call concat ("mpl_grp", $call int_to_str (i))
+$decl grp_name $func ($decl st proto_est) $call concat ("mpl_grp", $call P.sval (st.grpn))
+
+// Set once at the top of each group emitter, from the group's first member's key.
+$decl set_grpn $func ($decl st proto_est, $decl g IR.ints.node)
+  $set st.grpn ($call key_at (st, $call IR.ints.nth (g, 0)))
 
 $decl fn_at $func ($decl fs IR.fns.node, $decl i 0) $call IR.fns.nth (fs, i)
 
@@ -2524,7 +2565,7 @@ $decl emit_wrappers $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.
                    $call concat (" ", $call concat ($call fn_name (st, g.head), "(void *env")))))
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
       $decl h2 $call say (st, $call concat (") {  /* ", $call concat (f.name, " */\n  return ")))
-      $decl h3 $call say (st, $call concat ($call grp_name (gi),
+      $decl h3 $call say (st, $call concat ($call grp_name (st),
                    $call concat ("(env, ", $call concat ($call int_to_str (i),
                    $call concat ($call slot_args ($call IR.ints.val (f.params), 0, ""),
                                  ");\n}\n")))))
@@ -2641,7 +2682,7 @@ $decl emit_wrappers_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g
       $decl h1 $call emit_params (st, $call IR.ints.val (f.params), ts, 0, false)
       $decl h2 $call say (st, $call concat (") {  /* ", $call concat (f.name,
                    $call concat (" */\n  ", $call concat (rc, " r;\n  ")))))
-      $decl h3 $call say (st, $call concat ($call grp_name (gi),
+      $decl h3 $call say (st, $call concat ($call grp_name (st),
                    $call concat ("(env, ", $call concat ($call int_to_str (si), ", &r"))))
       $decl h4 $call emit_fillers (st, fs, all, ts, 0, si)
       $decl h5 $call say (st, ");\n  return r;\n}\n")
@@ -2651,8 +2692,13 @@ $decl emit_wrappers_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g
 
 $decl emit_group_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
                             $decl gi 0, $decl ts T.tys.node)
-  { $decl h0  $call say (st, $call concat ("\nstatic void ",
-                  $call concat ($call grp_name (gi), "(void *env, int64_t state, void *retp")))
+  { // One C function for the whole group (§6a), so one reset at its top: the
+    // members share its scope, so their temporaries must be unique across the group
+    // and need be unique no further.
+    $decl z0  $set st.ntmp 0
+    $decl z1  $call set_grpn (st, g)
+    $decl h0  $call say (st, $call concat ("\nstatic void ",
+                  $call concat ($call grp_name (st), "(void *env, int64_t state, void *retp")))
     $decl h1  $call emit_gparams (st, fs, g, ts, 0)
     $decl h2  $call say (st, ") {\n  (void)env;\n")
     $decl g0  $set st.grp g
@@ -2667,11 +2713,16 @@ $decl emit_group_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR
 
 $decl emit_group $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.ints.node,
                         $decl gi 0, $decl ts T.tys.node)
-  { $decl f0  $call fn_at (fs, $call IR.ints.nth (g, 0))
+  { // One C function for the whole group (§6a), so one reset at its top: the
+    // members share its scope, so their temporaries must be unique across the group
+    // and need be unique no further.
+    $decl z0  $set st.ntmp 0
+    $decl z1  $call set_grpn (st, g)
+    $decl f0  $call fn_at (fs, $call IR.ints.nth (g, 0))
     $decl np  $call IR.ints.length ($call IR.ints.val (f0.params), 0)
     $decl h0  $call say (st, $call concat ("\nstatic ",
                   $call concat ($call c_type (st, ts, f0.result),
-                  $call concat (" ", $call concat ($call grp_name (gi), "(void *env, int64_t state")))))
+                  $call concat (" ", $call concat ($call grp_name (st), "(void *env, int64_t state")))))
     $decl h1  $call emit_params (st, $call IR.ints.val (f0.params), ts, 0, false)
     $decl h2  $call say (st, ") {\n  (void)env;\n")
     $decl r0  $call say (st, $call concat ("  ",

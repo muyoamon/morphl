@@ -1877,3 +1877,36 @@ The check that no codegen changed: emitting `types.mpl` with each binary gives 1
 either way, and all 102 differing lines are one `static`/non-`static` pair each plus the count
 comment. Three-pass regeneration reached its fixed point at pass 2 (`r2 == r3`), as a change
 that alters output rather than only naming must.
+
+### Step two: naming made local
+
+Step one made a function's **linkage** a property of the function; this makes its **name**
+a property of its source. Six identities were drawn from arrival order — the emitter's
+temporary counter, the group index, a `$specialize`'s module, a `$prop`'s `cv_opaque`, a
+props-bearing block literal's module, and a member's rank — and `CLAUDE.md` has the full
+table and the reasoning. The measurement side:
+
+- The decisive probe is **load order**, not contents: two programs sharing `lexer`,
+  `parser` and `prelude`, with the extra import placed *before* the shared ones so every
+  counter in lowering is at a different value. Placed *after*, the shared modules are
+  lowered first in both and match trivially — that version of the probe reported success
+  and meant nothing.
+- Residue over the six fixes, on `lexer.c` + `parser.c`: whole output → 88 lines → 58 →
+  6 → **0**. Each fix was located by classifying the diff rather than by reasoning about
+  it.
+- `prelude.c` still differs between the two programs, and that is correct: it owns the
+  `P.list` specialisations and the larger program needs more element types. 23 of 39
+  functions shared, **zero renamed** — the text grows by gaining instantiations, never by
+  relabelling. §4.9 makes the instantiation set a whole-program fact; only its *naming*
+  had to stop depending on the program.
+- Emitted whole-compiler C: 1,872,192 bytes without the member-rank change against
+  **1,876,011** with it, so content-derived member names cost ~0.2% here — far less than
+  the +24% the struct and function renames cost earlier, because a prop index is short.
+
+**Two process failures worth more than the numbers.** Reusing `r1`/`r2`/`r3` as artifact
+names across two regeneration runs mixed binaries from different trees into one
+comparison, and produced an elaborate and entirely false story about self-compilation
+oscillating with period 2. And `cc ... | head; echo $?` reported `head`'s status, so a
+compile that failed read as one that passed. A regeneration script now uses fresh names
+per run and tests `cc`'s status explicitly. Both traps are already in `CLAUDE.md`; both
+were walked into anyway.

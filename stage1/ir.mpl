@@ -309,17 +309,30 @@ $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
 // external linkage — which costs some `static` and buys a module's text being a
 // function of its own source. Coarser in the safe direction: too many exports is
 // bigger code, too few is a link error.
+// **`mod` is placement and `nmod` is the name, and conflating them was a mistake
+// worth recording.** `mod` is the **file** this function belongs in — its output —
+// and it is always a real source module, so the set of emitted files is exactly the
+// set of files compiled. `nmod` is what the function is *named* from, which may be
+// finer: a `$specialize`'s member or a props-bearing block literal's is named from
+// the specialisation or the block, because that is its stable identity, but it is
+// still emitted in the file whose source produced it.
+//
+// Making one field serve both put a block literal's module in an **output of its
+// own** — `import_util_boxed_59449518500154401_b22_14.c`, which nothing compiled, so
+// the program failed to link against its own code. `test-split`'s declared file list
+// is what said so; a glob would have compiled whatever was there and passed.
 $decl fn_p $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                   $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
-                  $decl ev ints.node, $decl md "", $decl rk 0, $decl pb P.boolean)
+                  $decl ev ints.node, $decl md "", $decl rk 0, $decl pb P.boolean,
+                  $decl nd "")
   { $decl name nm  $decl params ps  $decl result res  $decl slots ns
     $decl body $alloc bd  $decl self_tail st  $decl thunk th  $decl env ev
-    $decl mod md  $decl rank rk  $decl pub pb }
+    $decl mod md  $decl rank rk  $decl pub pb  $decl nmod nd }
 
 $decl fn_m $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                   $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
                   $decl ev ints.node, $decl md "", $decl rk 0)
-  $call fn_p (nm, ps, res, ns, bd, st, th, ev, md, rk, false)
+  $call fn_p (nm, ps, res, ns, bd, st, th, ev, md, rk, false, md)
 
 $decl fn $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                 $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
@@ -332,9 +345,14 @@ $decl fns $specialize P.list proto_fn
 // A copy marked `pub`. `lower_func` serves both a module member and an entry-file
 // global, so the member path marks what it gets back rather than the constructor
 // taking a flag it would have to thread through two more layers.
-$decl fn_export $func ($decl f proto_fn)
+// A copy marked `pub` and given its discriminator. `lower_func` serves both a module
+// member and an entry-file global, so the member path stamps what it gets back rather
+// than the constructor taking flags it would have to thread through two more layers.
+$decl fn_member $func ($decl f proto_fn, $decl rk 0)
   $call fn_p (f.name, f.params, f.result, f.slots, $call eval (f.body), f.self_tail,
-      f.thunk, f.env, f.mod, f.rank, true)
+      f.thunk, f.env, f.mod, rk, true, f.nmod)
+
+$decl fn_export $func ($decl f proto_fn) $call fn_member (f, f.rank)
 
 // ------------------------------------------------------------------ program
 //

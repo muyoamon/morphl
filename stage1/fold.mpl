@@ -144,7 +144,7 @@ $decl fold_fn $func ($decl f IR.proto_fn)
   // dropping them would give two functions one name — and `pub` is its linkage, so
   // dropping that makes a member `static` and the link fail.
   $call IR.fn_p (f.name, f.params, f.result, f.slots, $call fold_expr (f.body),
-      f.self_tail, f.thunk, f.env, f.mod, f.rank, f.pub)
+      f.self_tail, f.thunk, f.env, f.mod, f.rank, f.pub, f.nmod)
 
 $decl fold_fns $func ($decl xs IR.fns.node, $decl acc IR.fns.node) $match xs (
   $case {$prop tag "cons"}

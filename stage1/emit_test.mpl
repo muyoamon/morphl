@@ -385,9 +385,16 @@ $decl t44 $call check ("a mutually tail-recursive group emits cleanly",
   $call eq_int (mut_c.nerrs, 0))
 
 // §6a: one function, a state variable, one dispatch loop.
+//
+// The group function's *name* is not asserted, and must not be: it is derived from
+// the group's first member (`mpl_grp<key>`), so it moves whenever that member does.
+// Hard-coding `mpl_grp0` is what broke when the name stopped being the group's
+// position in the program's group list — the same trap `mpl_t1` and `mpl_f0` set
+// before it. The property is the signature and the loop.
 $decl t45 $call check ("the group is contified into one dispatch loop",
-  $if ($call has (mut_c.code, "mpl_grp0(void *env, int64_t state"))
-      ($call has (mut_c.code, "switch ((int)state) {")) false)
+  $if ($call has (mut_c.code, "mpl_grp"))
+      ($if ($call has (mut_c.code, "(void *env, int64_t state"))
+           ($call has (mut_c.code, "switch ((int)state) {")) false) false)
 
 // A tail call to another member changes the state and re-enters the loop,
 // rather than calling.
@@ -397,7 +404,8 @@ $decl t46 $call check ("a mutual tail call is a state change, not a call",
 // Calls from outside the group are unchanged: each member keeps its name as a
 // wrapper that enters at its own state.
 $decl t47 $call check ("each member keeps a wrapper entering at its state",
-  $call has (mut_c.code, "return mpl_grp0(env, 1, s0);"))
+  $if ($call has (mut_c.code, "return mpl_grp"))
+      ($call has (mut_c.code, "(env, 1, s0);")) false)
 
 // §6a's third case: a tail call through a function *value*. `apply`'s body is
 // `$call f (x)` in tail position, and the target is unknown until run time, so
