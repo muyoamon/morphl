@@ -171,6 +171,16 @@ $decl ctx $func ()
     // source raised it, which is not the file the checker was invoked on as
     // soon as anything is imported.
     $decl file   $mut $alloc ""
+    // Which `$specialize` body is being typed, as §4.9's memo key — "" at a file's
+    // top level. It exists so a compile-time identity can be a function of its
+    // *source* rather than of a counter: `specialize_with` retargets `cx.file` to the
+    // **template's** file while typing the body, so (file, span) is identical for
+    // every instantiation and could not tell `$specialize P.list Int` from
+    // `$specialize P.list Str`. Their props are `cv_opaque`, `same_props` compares
+    // values, and two props-only blocks with equal props are one type — so without
+    // this the two specialisations would compare **equal**. Saved and restored around
+    // the body exactly as `file` is.
+    $decl sctx   $mut $alloc ""
     // §4.10's compile-time names: every `$prop` bound anywhere, and every
     // `$template` generic. A prop initializer may name one of these and nothing
     // else — a parameter or a `$decl` is an enclosing *runtime* binding, and
@@ -939,6 +949,42 @@ $decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $ma
   $case xs ($call strs.reverse (acc, strs.nil))
 )
 
+// **A compile-time identity is a function of where it is written, not of a counter.**
+// `fresh (cx)` hands out positions in load order, so a template id and a prop's
+// `cv_opaque` id both moved when anything ahead of them changed — and both end up in
+// a module's *interface* (`list:Tmpl9`, `{box=o4,}`), which makes a serialised
+// interface unstable across programs and a per-module cache unable to hit. This is
+// the same correction lowering's `const_of` took; inference's was missed because the
+// two are separate functions of the same name.
+//
+// A tag per kind keeps the two spaces apart, and the hash is wide (§9.3's `hmod`), so
+// a collision between two distinct constructs is not a practical concern — and would
+// be loud rather than silent, since `find_tmpl` looks a template up by id.
+// The file's **short** name, not `cx.file`. §4.14 makes every import of one file the
+// same module, but the path a module is reached by is the importer's business —
+// `stage1/prelude.mpl` and `./stage1/prelude.mpl` are the same file, and hashing the
+// spelling gave them different ids, so an interface would have depended on where its
+// importer sat. The first cut of this did exactly that: the load-order dependency was
+// gone and a path-spelling one had replaced it.
+//
+// It collapses two modules that share a basename in different directories, which is
+// the trade lowering's `mod_short` already makes for the same reason.
+$decl short_of $func ($decl path "")
+  { $decl sl $call P.last_slash (path, 0, -1)
+    $decl b  $if ($call lt (sl, 0)) path
+                 ($call slice (path, $call add (sl, 1), $call len (path)))
+    $decl n  $call len (b)
+    $decl r  $if ($call lt (4, n))
+        ($if ($call eq_str ($call slice (b, $call sub (n, 4), n), ".mpl"))
+             ($call slice (b, 0, $call sub (n, 4))) b)
+        b }.r
+
+$decl ct_id $func ($decl cx proto_ctx, $decl tag 0, $decl n Pa.proto_node)
+  { $decl sp $call P.span_of (n)
+    $decl h0 $call T.hash_str ($call sval (cx.sctx), 0,
+                 $call T.hash_str ($call short_of ($call sval (cx.file)), 0, tag))
+    $decl r  $call T.hmix ($call T.hmix (h0, sp.line), sp.col) }.r
+
 // §4.9: the declaration itself checks nothing. It records what specialization
 // will need and hands back an identity.
 $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
@@ -946,7 +992,7 @@ $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
     // §4.9 monomorphises, so a generic is a compile-time value and a prop inside
     // the body may name it — `list T`'s `$prop cons $func ($decl h T, …)` does.
     $decl ctg   $set cx.ctnames ($call join_strs (gs, cx.ctnames))
-    $decl id    $call fresh (cx)
+    $decl id    $call ct_id (cx, 7, n)
     $decl rec   $call tmpl_rec (id, gs, $call op (n, 1), e, $call sval (cx.file))
     $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
     $decl out   $call T.t_tmpl (id) }.out
@@ -1009,6 +1055,9 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                 // The body's spans are the template's file, not this one.
                 $decl outer   $call sval (cx.file)
                 $decl entered $set cx.file r.file
+                // The body's compile-time identities belong to *this* instantiation.
+                $decl souter  $call sval (cx.sctx)
+                $decl sent    $set cx.sctx key
                 // Memoised *before* the body is typed, with a placeholder, so a
                 // template that reaches itself terminates — §4.9: "hitting an
                 // in-progress entry returns its `R`."
@@ -1018,6 +1067,7 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                 // §5.5 discharges the placeholder if the body reached back.
                 $decl ty  $call close_rec (cx, ty0, $call var_id (ph), n)
                 $decl left $set cx.file outer
+                $decl sleft $set cx.sctx souter
                 $decl m1  $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty), $call eval_memo (cx.memo)))
                 $decl res ty }.res }.rr }.out
 
@@ -1142,7 +1192,8 @@ $decl const_of $func ($decl cx proto_ctx, $decl n Pa.proto_node) $match n (
   $case {$prop tag "str"}  $call T.cv_str (n.text),
   $case {$prop tag "bool"} $call T.cv_bool (n.value),
   $case {$prop tag "unit"} T.cv_unit,
-  $case n ($call T.cv_opaque ($call fresh (cx)))
+  // Where it is written, and in which specialisation — see `ct_id`.
+  $case n ($call T.cv_opaque ($call ct_id (cx, 3, n)))
 )
 
 // §4.10: props are visible throughout their block regardless of order, so every

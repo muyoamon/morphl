@@ -1910,3 +1910,46 @@ oscillating with period 2. And `cc ... | head; echo $?` reported `head`'s status
 compile that failed read as one that passed. A regeneration script now uses fresh names
 per run and tests `cc`'s status explicitly. Both traps are already in `CLAUDE.md`; both
 were walked into anyway.
+
+### What a per-module interface cache is worth, measured before building one
+
+Inference is the phase a cached interface skips, so the decomposition that matters is
+`typecheck.mpl` (parse + infer, no lowering) per module against the whole closure, under
+stage 0. Each figure includes the module's imports, so the third column subtracts them:
+
+| module | closure | own body |
+|---|---|---|
+| prelude | 0.07s | 0.07 |
+| lexer | 0.26s | 0.19 |
+| parser | 0.99s | 0.73 |
+| types | 2.63s | 2.56 |
+| ir | 3.98s | 1.35 |
+| verify | 5.33s | 1.35 |
+| fold | 4.18s | 0.20 |
+| infer | 8.27s | ~4.7 |
+| emit | 9.45s | ~4.5 |
+| compiler | 23.78s | ~8.1 |
+| **mplc (whole)** | **26.85s** | 3.07 |
+
+The marginals sum to ~26.8s against the whole closure's 26.85s, so **inference is
+additive** — there is no superlinear cross-module blow-up, and skipping unchanged
+modules' bodies captures nearly all of it. Re-inferring the worst single leaf is 17% of
+the full run, about **6x**.
+
+**An earlier version of this measurement was wrong and nearly got built on.** Nine
+modules compiled independently summed to 6.25s against the whole closure's 36.05s, and
+the 5.8x gap was read as cross-module cost. It excluded `compiler.mpl`, which carries
+**634 of the whole program's 636 types** — the other two are `mplc.mpl`'s own. It is the
+aggregator, not a leaf, so that was the whole program compared against its parts. Adding
+it takes the union of leaves to 657 types and leaves **2** types in the closure that no
+module produces alone. The real combination premium is 463 → 636, **1.37x**; the
+"2.3x the sum" figure recorded earlier is dated, as that note says itself.
+
+That comparison is only possible because step two made struct names content hashes: type
+sets from *separate* compilations can now be compared by name.
+
+**And the registry a cache would need is small.** Across the ten modules: 32
+`$specialize`, 1 `$template` and 14 `$import` against **933** top-level `$decl`s. So an
+interface is the serialised type plus a per-member tag for about 5% of members — not the
+specialisations, which §4.9 instantiates at the *use* site and which the additivity
+above shows is where the per-module cost legitimately lives.

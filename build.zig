@@ -349,6 +349,36 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // ------------------------------------ a compile-time identity is its source
+    //
+    // §4.10's prop values and §4.9's template ids end up in a module's *interface*,
+    // so a per-module cache can only hit if they are a function of the source rather
+    // than of what the checker happened to reach first. `ct_id` makes them so; this
+    // is the check.
+    //
+    // The two fixtures declare the same `$prop` at the same line and column — the
+    // comment in `iface_c.mpl` is padding for exactly that — and differ only in that
+    // `iface_d.mpl` first imports a module carrying a `$template` and a non-scalar
+    // prop, which under the old counters consumed ids. It fails on them: `o6` against
+    // `o7`. `iface_dump.mpl` prints the prop's *value*, since that is where the
+    // identity sits and §4.10 keeps a prop out of the fields.
+    const iface_step = b.step("test-iface", "A compile-time identity is independent of load order");
+    {
+        var ids: [2]std.Build.LazyPath = undefined;
+        for ([_][]const u8{ "iface_c", "iface_d" }, 0..) |name, i| {
+            const dump = b.addRunArtifact(exe);
+            dump.addArgs(&.{ "--run", "stage1/iface_dump.mpl", b.fmt("stage1/fixtures/{s}.mpl", .{name}), "box" });
+            dump.setCwd(b.path("."));
+            dump.has_side_effects = true;
+            ids[i] = dump.captureStdOut(.{ .basename = b.fmt("{s}.id", .{name}) });
+        }
+        const same = b.addSystemCommand(&.{"cmp"});
+        same.addFileArg(ids[0]);
+        same.addFileArg(ids[1]);
+        iface_step.dependOn(&same.step);
+        test_step.dependOn(&same.step);
+    }
+
     const s2_step = b.step("test-stage2", "mplc against stage 0, and the committed C against itself");
 
     // **The guard against `bootstrap/mplc.c` rotting.** The committed C has to be
