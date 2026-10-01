@@ -1644,16 +1644,24 @@ $decl binder_of $func ($decl n Pa.proto_node)
   $if ($call is_form (n, "decl")) ($call name_of ($call op (n, 0)))
       ($if ($call is_form (n, "fwd")) ($call name_of ($call op (n, 0))) "")
 
+// A `$prop` is in **neither** of the two categories this walk sorts items into, and
+// treating it as the second was half of why a top-level prop did not lower. It binds
+// a name, so it is not a §3.3 bare expression — but the name goes in the block's
+// *props*, not its fields (§4.10: "a prop is in the block's namespace and type, not
+// its layout"), so counting it would desynchronise `k` from the field list that
+// `after` indexes. Skipped outright: `lower_file` registers the props as a module of
+// their own instead.
 $decl scan_effects $func ($decl xs Pa.nodes.node, $decl k 0, $decl seen strs.node,
                           $decl acc eff_items.node) $match xs (
   $case {$prop tag "cons"}
-    { $decl nm  $call binder_of (xs.head)
+    { $decl pr  $call is_form (xs.head, "prop")
+      $decl nm  $if pr "" ($call binder_of (xs.head))
       $decl new $call and ($call not ($call eq_str (nm, "")),
                     $call not ($call mem_str (seen, nm)))
       $decl r   $call scan_effects ($call Pa.nodes.val (xs.tail),
                     $if new ($call add (k, 1)) k,
                     $if new ($call strs.cons (nm, seen)) seen,
-                    $if ($call eq_str (nm, ""))
+                    $if ($call and ($call not (pr), $call eq_str (nm, "")))
                         ($call eff_items.cons ($call eff_item (k, xs.head), acc)) acc) }.r,
   $case xs ($call eff_items.reverse (acc, eff_items.nil))
 )
@@ -1698,6 +1706,21 @@ $decl file_props_at $func ($decl all Pa.nodes.node, $decl xs Pa.nodes.node,
 
 $decl file_props $func ($decl xs Pa.nodes.node, $decl acc mprops.node)
   $call file_props_at (xs, xs, acc)
+
+// The entry file's `$prop` items, and **only** those. `file_props` takes every member
+// because §4.14 answers a projection onto a module for all of them; the entry file is
+// not projected onto, and its `$decl`s must stay globals — they have layout slots,
+// §4.10's statics and an initialisation order that `lower_top` is what implements.
+// So the props alone are registered, and everything else is untouched.
+$decl top_props $func ($decl xs Pa.nodes.node, $decl acc mprops.node) $match xs (
+  $case {$prop tag "cons"}
+    $call top_props ($call Pa.nodes.val (xs.tail),
+        $if ($call is_form (xs.head, "prop"))
+            ($call mprops.cons ($call mprop ($call name_of ($call op (xs.head, 0)),
+                 $call op (xs.head, 1), "prop"), acc))
+            acc),
+  $case xs ($call mprops.reverse (acc, mprops.nil))
+)
 
 // §4.10's source order, which for a module is what `force_props` *is*: each
 // member's thunk takes the next lifted index, so index order is source order.
@@ -2753,12 +2776,31 @@ $decl mark_self $func ($decl xs IR.fns.node, $decl i 0, $decl acc IR.fns.node) $
 $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty T.proto_ty,
                         $decl prims benv.node, $decl base "")
   { $decl flds $match fty ($case {$prop tag "block"} ($call T.fields.val (fty.fields)), $case fty T.fields.nil)
-    $decl env  $call globals_from (flds, 0, prims)
+    $decl env0 $call globals_from (flds, 0, prims)
     // §4.14: an import resolves relative to the entry file, and a module is
     // lowered against the root block alone — so both are recorded before any
     // item is lowered.
     $decl based $set st.base base
     $decl rooted $set st.rootenv prims
+    // **§3.3's top-level `$prop`s, which used to be dropped.** A file is a block, so
+    // its top level may carry props — inference puts them in the file's type and they
+    // resolve normally — but `lower_top` walks the type's *fields*, and a prop is in
+    // its props. So the item was never visited, a body naming one got "unknown name",
+    // and `scan_effects` took it for a bare expression and reported "$prop is not
+    // lowered yet". Exactly the shape §3.3's top-level *expressions* had before `effs`
+    // existed, in the one category that fix did not cover: an item that binds a name
+    // but takes no field.
+    //
+    // The machinery already existed on the §4.14 side. The props become a module of
+    // their own, bound through `with_props` so naming one reaches `lower_prop`, which
+    // lowers its value the way a module member's is lowered. Its `path` and `file` are
+    // both "" — the entry file's own — so a prop-valued function is named and placed
+    // exactly where the entry file's other functions are, and `fn_key`'s `_m` keeps
+    // its prop index clear of `next_rank`'s counter.
+    $decl tprops $call top_props (items, mprops.nil)
+    $decl pmid $if ($call mprops.is_nil (tprops)) -1
+                   ($call fresh_mod_in (st, tprops, env0, base, "", ""))
+    $decl env  $if ($call eq_int (pmid, -1)) env0 ($call with_props (env0, tprops, pmid))
     // A global's index is its position among the top-level `$decl`s, so the
     // lifted functions take the indices after them.
     $decl fnbased $set st.fnbase ($call T.fields.length (flds, 0))

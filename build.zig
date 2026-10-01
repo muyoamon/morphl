@@ -117,6 +117,25 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&suite_run.step);
     }
 
+    // `tyio` writes a type down and reads it back, which is what a per-module
+    // interface cache rests on. The property is checked against *real* type tables
+    // rather than hand-written cases: a lowered module interns the μ types, the big
+    // unions, the de Bruijn binders and the prop-bearing blocks that only arise from
+    // real source, and `T.same` is the right equality because `intern` keys on it.
+    //
+    // Two modules, chosen for coverage rather than size: `types.mpl` has the
+    // recursive type language and `emit.mpl` the widest tables (230 types) of
+    // anything that lowers quickly under stage 0.
+    for ([_][]const u8{ "stage1/types.mpl", "stage1/emit.mpl" }) |tyio_target| {
+        const rt = b.addRunArtifact(exe);
+        rt.addArgs(&.{ "--run", "stage1/tyio_test.mpl", tyio_target });
+        rt.setCwd(b.path("."));
+        rt.expectExitCode(0);
+        rt.has_side_effects = true;
+        stage1_step.dependOn(&rt.step);
+        test_step.dependOn(&rt.step);
+    }
+
     // The round trip stage 2 will need: morphl → C → binary → the right answer.
     // Compiled at -O0 on purpose, so that a tail call surviving as a call would
     // overflow rather than be optimised into a loop behind our backs — the loop
@@ -147,6 +166,11 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/option.mpl", .want = "52\n" },
         .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n" },
         .{ .src = "stage1/fixtures/prop_union.mpl", .want = "9\n" },
+        // §3.3's top-level `$prop`s. All four shapes §1.1 allows, because each takes a
+        // different route through `lower_prop_*`: a scalar is read off the type, a
+        // prop-only block and a `$func` keep their source, and a `$template` is what
+        // `$specialize` consumes. 58, and before the fix this did not lower at all.
+        .{ .src = "stage1/fixtures/topprop.mpl", .want = "58\n" },
         .{ .src = "stage1/fixtures/effect.mpl", .want = "46\n" },
         .{ .src = "stage1/fixtures/init_order.mpl", .want = "106\n" },
         .{ .src = "stage1/fixtures/alias.mpl", .want = "42\n" },
