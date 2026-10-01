@@ -2079,3 +2079,20 @@ dependency's. The order has to be recorded, not inferred from indices.
 
 `fold.mpl` carries the new field, which is the fourth rebuild site this stretch has
 needed threading — after `pub`, `nmod` and `file`.
+
+### A premise worth checking: the missing-module diagnostic
+
+The plan listed "make a missing module report a diagnostic" as a small fix with
+disproportionate value, on the grounds that `read_module` returning `""` produced a
+silently empty module and that silence was what let four false claims survive four probes.
+
+**The premise was wrong.** A missing module reports with a span and the resolved path, and
+always did. The silence was the *drivers* throwing `r.errs` away — printing `T.show` of a
+type or a round-trip count and never looking at the diagnostics. The lesson belongs to the
+probe discipline already recorded here, not to the compiler.
+
+Checking it found a real adjacent bug, though. `read_file` answers an option and both
+passes flattened it to a string, so an unreadable file and an **empty** one were the same
+case — and §3.3 makes an empty file a valid empty block, so importing one reported
+"cannot read" for a file read perfectly well. Fixed in both passes;
+`fixtures/empty_import.mpl` pins it.

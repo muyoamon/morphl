@@ -1764,11 +1764,15 @@ $decl mod_value $func ($decl st proto_lst, $decl mid 0)
 
 $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n Pa.proto_node)
   { $decl rf  $call read_file (key)
-    $decl src $match rf ($case {$prop tag "some"} rf.v, $case rf "")
-    $decl out $if ($call eq_str (src, ""))
-        ($call lres ($call IR.e_unit ($call err (st, $call concat ("cannot read the file for $import \"",
-             $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n)), T.t_bot))
-        { $decl p   $call Pa.parse (src)
+    // On the option, not on the text. Flattening it to a string made a file that could
+    // not be read and a file that is *empty* the same case, so importing an empty
+    // module reported "cannot read" for a file that was read perfectly well — and §3.3
+    // makes an empty file a valid empty block. Matched on `some` rather than through a
+    // catch-all, since §4.7's catch-all pattern is a name and does not narrow.
+    $decl out $match rf (
+        $case {$prop tag "some"}
+        { $decl src rf.v
+          $decl p   $call Pa.parse (src)
           // §4.14: "A file sees the root block plus what it imports, nothing
           // else" — so a module is lowered in the root environment, never in
           // the importer's.
@@ -1778,7 +1782,12 @@ $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n 
           // Complete now, so it is appended after everything it imported.
           $decl ord $set st.morder ($call strs.cons ($call mod_short (key),
                         $call strs.val (st.morder)))
-          $decl r   $call mod_value (st, mid) }.r }.out
+          $decl r   $call mod_value (st, mid) }.r,
+        $case rf
+          ($call lres ($call IR.e_unit ($call err (st,
+               $call concat ("cannot read the file for $import \"",
+               $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n)), T.t_bot))
+      ) }.out
 
 $decl lower_import $func ($decl st proto_lst, $decl n proto_form)
   { $decl nm  $call str_of ($call op (n, 0))

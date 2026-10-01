@@ -171,6 +171,10 @@ pub fn build(b: *std.Build) void {
         // prop-only block and a `$func` keep their source, and a `$template` is what
         // `$specialize` consumes. 58, and before the fix this did not lower at all.
         .{ .src = "stage1/fixtures/topprop.mpl", .want = "58\n" },
+        // An **empty** module is a valid empty block (§3.3, §2.1), not an error. Both
+        // passes flattened §8's `read_file` option to a string, so a file that could not
+        // be read and a file that is empty were one case. 9.
+        .{ .src = "stage1/fixtures/empty_import.mpl", .want = "9\n" },
         .{ .src = "stage1/fixtures/effect.mpl", .want = "46\n" },
         .{ .src = "stage1/fixtures/init_order.mpl", .want = "106\n" },
         .{ .src = "stage1/fixtures/alias.mpl", .want = "42\n" },

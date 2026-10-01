@@ -1107,6 +1107,14 @@ $decl resolve_path $func ($decl base "", $decl nm "")
   $if ($call eq_str (base, "")) ($call concat (nm, ".mpl"))
       ($call concat (base, $call concat ("/", $call concat (nm, ".mpl"))))
 
+// §8's `read_file` answers an option, and **flattening it to a string loses the one
+// distinction that matters**: a file that could not be read and a file that is empty
+// both became `""`, so importing an empty module reported "cannot read" for a file that
+// was read perfectly well. §3.3 makes a file a block and §2.1 makes `{}` and `()` the
+// same value, so an empty file is a valid empty module — not an error.
+//
+// Kept for the callers that only want the text and have already established the file is
+// there; `load_module` matches the option itself.
 $decl read_module $func ($decl path "")
   { $decl r $call read_file (path)
     $decl out $match r (
@@ -1227,12 +1235,15 @@ $decl key_imports $func ($decl cx proto_ctx, $decl ns strs.node, $decl n Pa.prot
 $decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node)
   { $decl marked $set cx.mods
         ($call mod_list.cons ($call mod_ent (key, "loading", T.t_bot), $call eval_mods (cx.mods)))
-    $decl src $call read_module (key)
-    $decl ty $if ($call eq_str (src, ""))
-        { $decl e $call err (cx, $call concat ("cannot read the file for $import \"",
-              $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n)
-          $decl z $call ires ($call T.tval (e), 0, false) }.z
-        { $decl p $call Pa.parse (src)
+    $decl rf $call read_file (key)
+    // On the option, not on the text: an empty file is a valid empty module (§3.3).
+    // Matched on `some` rather than on a catch-all, because §4.7's catch-all pattern is
+    // a *name* and so denotes the whole scrutinee — it does not narrow, and `rf.v` is
+    // not reachable through it.
+    $decl ty $match rf (
+        $case {$prop tag "some"}
+        { $decl src rf.v
+          $decl p $call Pa.parse (src)
           // A module's own syntax errors are reported against the import site,
           // tagged with the module's path: the diagnostic type carries a line
           // and column but not a file.
@@ -1275,7 +1286,13 @@ $decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n 
                       $decl z       $call ires (t, h, false) }.z
                 $decl z res }.z
               { $decl e $call note_mod_errs (cx, p.errs, key, n)
-                $decl z $call ires ($call T.tval (e), 0, false) }.z }.r
+                $decl z $call ires ($call T.tval (e), 0, false) }.z
+          $decl q r }.q,
+        $case rf
+          { $decl e $call err (cx, $call concat ("cannot read the file for $import \"",
+                $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n)
+            $decl z $call ires ($call T.tval (e), 0, false) }.z
+      )
     $decl done $set cx.mods
         ($call mod_list.cons ($call mod_ent_h (key, "done", $call T.tval (ty.ty), ty.ifh),
              $call eval_mods (cx.mods)))
