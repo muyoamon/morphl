@@ -2147,3 +2147,57 @@ arithmetic treated it as if it were. Reading the source found the second caller:
 every structural question about a type asks it first. That is the next opportunity and
 the same shape as this one. It needs its own structure or the trie made generic over a
 `$template`, because `types.mpl` cannot import `ir.mpl`.
+
+### Hash-consing the comparison: built, measured, rejected
+
+After the trie, `find_ty_at` is gone from the profile and the `same` family is still
+**65%** of lowering — `same` 24.0%, `same_fields` 15.9%, `same_props` 11.3%, `same_tys`
+7.5%, `hash_of` 6.8%. So `same` was never only the table scan, which is what the 2.5x
+prediction for the trie assumed.
+
+**The remaining cost is one deep comparison per successful lookup, and it is large.**
+Bounded by an unsound A/B — `same` answering on the hash alone, against a fixed binary:
+
+| | time |
+|---|---|
+| sound: hash guard + deep compare | 25.07s |
+| hash equality only (UNSOUND) | **7.88s** |
+
+**68% of lowering is `same_deep` verifying that two equal types really are equal.** Each
+level is already hash-guarded, so the descent happens only when hashes match all the way
+down — which for two equal types is the whole tree. Trusting the hash is not an option: a
+collision would silently merge two distinct types, with no `cc` error, which is a
+miscompile rather than the loud duplicate-definition the *naming* hash produces. The
+7.88s is a ceiling, not a candidate.
+
+**Hash-consing was the obvious fix and it does not work.** The whole mechanism was built:
+a `tid` cell on the nine compound shapes, a trust floor obeying §5.5's rollback rule
+(`tid_ok`, lowered in `put_snap` — the `tsafe` rule below), `set_tid` from `append_ty`, and
+a fast path in all nine arms of `same_deep` where `a` and `b` are already narrowed so
+`tid` costs no extra dispatch. It typechecks, and it preserves every index: emitting
+`lexer` and `parser` stayed byte-identical.
+
+It measured **slower**: 25.20s to **26.79s**. The cell costs ~1.6s — the same order as the
+~2.2s the earlier node-index cache cost — and the fast path buys nothing, so it never
+fires.
+
+**The reason is a misreading of this file's own neighbour, and it is worth naming.** The
+design rested on "lowering interns a field's type before the block containing it". That
+sentence is about **struct emission order**: *when* a field's type is interned it gets a
+lower index than its block, which is why emitting structs in index order is dependency
+order. It does **not** say every subterm is interned, and in general none is — `intern` is
+called on a node's type, not on each subterm. So a freshly derived parent's children carry
+no id, both sides of a child comparison need one, and the guard fails every time.
+
+That is the *same* failure as the node-index cache rejected at a 4.4% hit rate. The
+distinction argued for this attempt — that it reads the **children's** indices rather than
+the parent's, which are always set — is real and irrelevant, because the children are not
+interned either. **Both attempts failed because interning asks about something freshly
+built.** That is now the second entry of this shape; the four above it are the mirror
+image, attacking a scan's *length* when the cost was per-comparison.
+
+**What it would actually take: recursive interning** — interning every subterm as it is
+built. That makes the fast path fire, and it changes what §9.3's table *is*: `all_types`
+feeds `IR.program` and emit writes a struct per entry, so every intermediate type becomes
+an emitted struct. A much larger change with real costs, not a tuning tweak. The 3.3x is
+still there for whoever wants it.
