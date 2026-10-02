@@ -2254,3 +2254,118 @@ block from inference to lowering with one converter. Adding a field to `T.field`
 that in the *wrong* direction — a two-field record is not a subtype of a three-field one —
 so `binding` has to grow the same fields. It surfaced only on a whole-closure typecheck,
 not on the two files that were edited.
+
+### Monotonic `ntypes`: 1.63x, and unsound — reverted
+
+The two entries above failed to build a validity *guard* that tolerated index reuse. This
+one removed the reuse instead: `put_snap` restores the table's lists and the trie, so the
+garbage a discarded pass interned is unreachable, but does **not** reset `ntypes`. An
+index is then never handed out twice, a cached one is valid for the whole run, and
+`both_tyid` is just "neither is -1".
+
+It works, and it is fast:
+
+| | time |
+|---|---|
+| HEAD (trie only) | 26.50s |
+| monotonic `ntypes` + field `tyid` | **16.24s** |
+| the unguarded probe, for reference | 15.74s |
+
+**1.63x**, landing within 0.5s of the unguarded probe — the cache fires at full rate.
+223/223 behavioural steps pass, including `test-emit`'s 23 fixtures compiled and run, and
+the rollback change *in isolation* (before the cache) is byte-identical on `types`, `ir`
+and `infer`, the three modules whose recursive members exercise rollback.
+
+**And it is unsound.** Regenerating, pass 2 fails to compile:
+
+    error: redefinition of struct or union 'struct mpl_t89297057521717570'
+      struct mpl_t89297057521717570 { mpl_t4579778294262423 f0; mpl_str f1; ... };
+      struct mpl_t89297057521717570 { int64_t f0;               mpl_str f1; ... };
+
+Twelve struct names are defined twice, and the two bodies **differ** — `f0` is a block in
+one and `int64_t` in the other. So these are two *different* types under one
+content-hash name, which means some type's `h` no longer matches its structure. That is a
+break in interning itself, not a bookkeeping slip: a parent's hash is built from its
+children's, so a child must have been interned under the wrong identity.
+
+The mechanism is **not identified**. Two candidates, neither confirmed: a field's cached
+`tyid` naming an index that a rollback has since padded to `⊥`, so two fields compare
+equal on indices that no longer describe them; or `seal_rec`'s re-interning of a `μ`'s
+unrolling interacting with the restored trie. Both are about a cached index outliving the
+entry it names, which is the same hazard the guards were for — removing index *reuse* did
+not remove index *invalidation*.
+
+**What this cost, and what it bought.** The suite did not catch it: 223 steps green,
+23 fixtures compiled and run. `cc` on the whole compiler did, on the second pass — the
+fourth time in this file that a C compiler re-deriving every type found what the morphl
+suite could not, and the second time that a *bigger* program was the stronger test rather
+than more tests. Anyone resuming this should start by finding the mechanism on the
+smallest input that reproduces it, which is somewhere between the fixtures and
+`mplc.mpl`; the 1.63x is real and the approach is close.
+
+### Lowering is super-additive, so there is nothing per-module to cache
+
+The interface cache works because **inference is additive**: per-module marginals sum to
+~26.8s against the whole closure's 26.85s, so skipping an unchanged module skips its whole
+contribution. That property is what a per-module cache *is*. Lowering was assumed to share
+it and does not.
+
+Measured compiled, one `mplc` run per module — each row is that module's whole closure, so
+the rows are cumulative, not disjoint:
+
+| closure | structs | emitted lines | time |
+|---|---|---|---|
+| `prelude` | — | — | 0.010s |
+| `lexer` | — | — | 0.022s |
+| `parser` | — | — | 0.110s |
+| `types` | 78 | 10,448 | 0.212s |
+| `ir` | 143 | 13,263 | 0.494s |
+| `verify` | 248 | 24,518 | 0.926s |
+| `emit` | 357 | 40,219 | 1.773s |
+| `lower` | 404 | 40,046 | 2.387s |
+| **`compiler`** | **687** | **79,077** | **25.963s** |
+
+**Per-module marginals sum to ~5.3s; the union costs 26.0s — 4.9x super-additive.**
+Subtracting each module's dependency closure from its own: prelude 0.010, lexer 0.012,
+parser 0.088, types 0.202, ir 0.282, verify 0.332, emit 1.179, infer 1.404, lower 1.793.
+The arithmetic is coarse, because the dependency sets overlap and the subtraction
+double-counts what they share — but it errs *high*, and no reading of it approaches 26.0s.
+
+The same fact from the other direction: **`compiler.mpl` is 1.97x `lower.mpl`'s closure in
+emitted lines and 1.70x in interned types, and costs 10.9x the time.** Two points on a
+curve, so the exponent (~3.5 in program size) is not a law — but the direction is not in
+doubt, and it is the opposite of additive.
+
+**The mechanism is already recorded here, applied to counts rather than to time.** §4.9
+monomorphises per argument type, so the combined closure has far more distinct list element
+types than any part of it — the front end interns 1,382 and `lower`'s closure 1,244 against
+6,062 for the union, 2.3x their sum. §9.3 then makes interning the dominant cost, and
+`same_deep` is 68% of it on types that get *deeper* as the closure grows. So the cost
+compounds in two directions at once: more lookups, each comparing bigger types.
+
+**What that rules out.** Lowering's cost does not belong to any module; it belongs to the
+combination. A module keyed on its own source cannot predict what it lowers *to*, because
+which specialisations it needs is a property of the whole program (§4.9) — which is the
+same fact recorded above as "a template-holding module stays program-dependent, and that is
+correct". So the thing step one and step two were built toward — a module's output as a
+function of its own source — is true of the **text** and false of the **work**.
+
+**And it rules out the obvious next step specifically.** Caching a module's *emitted C* is
+worth emit's share of a compiled build, which is **1.8%**, and it does not avoid lowering
+that module, because its importers need the type table and specialisations that lowering it
+produces. The stage-0 measurement that made it look worthwhile ("emit is at most 22% of a
+compile") is one of the shares this file has already corrected: it was 22% of an
+*interpreted* compile.
+
+**What is not ruled out is caching the lowered IR**, which is a different proposition and a
+much larger one. The load cost is favourable by construction — 687 types read structurally
+and re-interned is 687 interns against the ~1.2M a derivation performs — so the super-linear
+part is exactly what a cache would skip. It needs the IR serialised (`tyio` does types
+only, and the tree is several times that), function indices relocated on load, and shared
+specialisations resolved against whatever the importing program needs.
+
+**Where this leaves the ordering.** `same_deep` comes first regardless: it is 68% of
+lowering with a measured 3.3x ceiling, it pays on the first build as well as every later
+one, it invalidates nothing, and it attacks the very super-linearity that makes
+incrementality worth having. An IR cache built on top of today's interning would be caching
+a cost that should not exist.
