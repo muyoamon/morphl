@@ -2201,3 +2201,56 @@ built. That makes the fast path fire, and it changes what §9.3's table *is*: `a
 feeds `IR.program` and emit writes a struct per entry, so every intermediate type becomes
 an emitted struct. A much larger change with real costs, not a tuning tweak. The 3.3x is
 still there for whoever wants it.
+
+### Caching a field's interned index: two sound guards, both defeated by rollback
+
+The hash-consing entry above put the index on the type **node** and the fast path never
+fired, because structurally equal types are distinct objects and a freshly derived
+child never carries one. Putting it on the **field record** fixes that completely: a
+field is built by the code that interned its type, so the index is there exactly when it
+is useful — and it is free to produce, since `lower_item` already computes
+`intern (st, v.ty)` for the slot two lines above where it builds the field, and throws it
+away.
+
+The prize, bounded by unsound probes against a fixed binary:
+
+| | time |
+|---|---|
+| current (sound) | 25.5s |
+| field comparison O(1), **no validity guard** | **16.5s** |
+| child comparison O(1) everywhere | 9.6s |
+| `same` on the hash alone (floor) | 7.5s |
+
+So **1.55x** is available from this one cache, and the mechanism demonstrably works: with
+no guard, the fast path fires and the time falls.
+
+**It is defeated by how often §5.5 rolls the table back, and both sound guards were
+measured.**
+
+- **The global floor** — trust only indices below the least rollback target ever used,
+  which is the `tsafe` rule recorded above when a node cache was first tried. **No gain
+  at all.** `put_snap` runs on every recursive-member retry, so one early rollback at a
+  low `ntypes` pins the floor near zero and nothing is ever trusted again.
+- **Generation-keyed** — bump a counter on each rollback, trust only entries written in
+  the current generation. **Negative: 27.0s against 25.5s.** Rollbacks are frequent
+  enough that a cache is invalidated before it is used, and the two extra fields cost
+  ~1.5s.
+
+The blocker is therefore not the cache's design but that **rollbacks are frequent and
+they reuse indices**. Any validity stamp written at cache time loses to that, because
+whether an index is still good depends on rollbacks that have not happened yet.
+
+**What would work: stop reusing indices.** Keep `ntypes` monotonic across a rollback while
+still discarding the garbage entries. Then no index is ever stale, no guard is needed, and
+the full 1.55x is available. The cost is that the table gains holes, so positional `ty_at`
+breaks and needs an index-to-type map — a change to §9.3's representation, not a tuning
+tweak. Note that keeping the *entries* as well was the old behaviour and was rejected for
+making the table track the number of derivations rather than the program; keeping only the
+*counter* monotonic is a different proposition and has not been tried.
+
+**One coupling worth knowing before touching `T.field`.** Inference's `binding` is
+`{name, ty}` and §5.1 makes it a `T.field`, which is how `prims_from` hands §2's root
+block from inference to lowering with one converter. Adding a field to `T.field` breaks
+that in the *wrong* direction — a two-field record is not a subtype of a three-field one —
+so `binding` has to grow the same fields. It surfaced only on a whole-closure typecheck,
+not on the two files that were edited.
