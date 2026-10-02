@@ -432,13 +432,103 @@ $decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0, effects.ni
 
 // ------------------------------------------------------------------ interning
 //
-// Linear, which is right for the size of program stage 1 is: the table holds
-// one entry per *distinct* type, and a compiler's type count is small even when
-// its node count is not. A hash would need `T.show`, which allocates a string
-// proportional to the whole type.
+// **The table is indexed by a hash trie, because the linear scan was ~74% of a
+// compiled build.** `perf` on the compiled compiler: lowering is 94.6% of the
+// pipeline (parse+infer 2.0%, verify 1.5%, emit 1.8%), and inside lowering
+// `same` 28.9% + `find_ty_at` 14.8% + `hash_of` 12.3% + `same_fields` 10.1% +
+// `same_props` 7.0% + `same_tys` 4.8% = **77.9%**, all of it interning —
+// `find_ty_at`'s callers are `find_ty` <- `ty_find` <- `intern`. An instrumented
+// count agrees: 1,199,073 lookups over an average scan of 229 of 6,348 entries
+// is 275M comparisons, which is the whole of lowering.
+//
+// `CLAUDE.md` named the fix and called it unreachable — "what interning actually
+// wants is a content-addressed map, hash to bucket, which needs integer arrays,
+// and BOOTSTRAP §2 keeps the root block's arrays monomorphic at `Str`". True of
+// an *array*; a **trie** needs no arrays, only blocks. Ten levels give 1,024
+// buckets, so ~6 entries a bucket against a 229-entry scan.
+//
+// It is an *index*, not a replacement: §9.3 makes a type's identity its position,
+// so the banker's queue still answers `ty_at` and `all_types`. The trie answers
+// only "which index is this type", which is what the scan was for.
+//
+// Persistent, so §5.5's `take_snap`/`put_snap` save and restore it by saving one
+// reference — the same reason the queue is snapshotted rather than undone.
 
 $decl found $func ($decl ok P.boolean, $decl i 0) { $decl hit ok  $decl id i }
 
+// An interned type and the index it was given.
+$decl tyent $func ($decl i 0, $decl t T.proto_ty) { $decl idx i  $decl ty t }
+$decl proto_tyent $call tyent (0, T.t_bot)
+$decl tyents $specialize P.list proto_tyent
+
+// §5.5: the recursion passes through storage, which is what gives it a layout.
+// §4.8a makes this evaluate to the first member, an empty leaf — the empty trie.
+$decl proto_trie $union (
+  { $prop tag "leaf"   $decl items $alloc tyents.node },
+  { $prop tag "branch" $decl lo $alloc proto_trie  $decl hi $alloc proto_trie }
+)
+
+$decl trie_leaf $func ($decl b tyents.node) { $prop tag "leaf" $decl items $alloc b }
+$decl trie_branch $func ($decl l proto_trie, $decl h proto_trie)
+  { $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h }
+$decl trie_empty $call trie_leaf (tyents.nil)
+
+// §5.4 keeps a boxed field a reference where nothing expects a value, and a
+// *result* position expects none — so a child read out of `lo`/`hi` goes through
+// an identity at the intended type.
+$decl tval_trie $func ($decl x proto_trie) x
+
+// 1,021 is prime, which spreads the low bits: `hash_of` answers a small per-tag
+// constant for each of the nineteen leaf types, and those would otherwise all
+// land in one bucket.
+$decl trie_depth 10
+$decl bucket_of $func ($decl h 0) $call mod (h, 1021)
+
+// §4.7's catch-all pattern is a *name*, so it denotes the whole scrutinee and does
+// not narrow — a leaf's `items` is not reachable through one. Each member that is
+// projected gets its own explicit tag.
+$decl trie_items $func ($decl tr proto_trie) $match tr (
+  $case {$prop tag "leaf"} ($call tyents.val (tr.items)),
+  $case tr tyents.nil
+)
+
+$decl trie_scan $func ($decl xs tyents.node, $decl t T.proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call T.same ($call T.tval (xs.head.ty), t)) ($call found (true, xs.head.idx))
+        ($call trie_scan ($call tyents.val (xs.tail), t)),
+  $case xs ($call found (false, 0))
+)
+
+// No depth counter: items live only at the bottom, so every node above it is a
+// branch and a leaf met early is an empty subtree — which answers "absent", which
+// is correct.
+$decl trie_find $func ($decl tr proto_trie, $decl b 0, $decl t T.proto_ty) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (b, 2), 0))
+        ($call trie_find ($call tval_trie (tr.lo), $call div (b, 2), t))
+        ($call trie_find ($call tval_trie (tr.hi), $call div (b, 2), t)),
+  $case tr ($call trie_scan ($call trie_items (tr), t))
+)
+
+$decl trie_kid $func ($decl tr proto_trie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call tval_trie ($if hi tr.hi tr.lo)),
+  $case tr trie_empty
+)
+
+// Rebuilds one path of `trie_depth` nodes, which for 6,348 types is ~60k blocks
+// over the whole run — against the 275M comparisons it removes.
+$decl trie_add $func ($decl tr proto_trie, $decl b 0, $decl d 0, $decl e proto_tyent)
+  $if ($call not ($call lt (d, trie_depth)))
+      ($call trie_leaf ($call tyents.cons (e, $call trie_items (tr))))
+      { $decl lo $call trie_kid (tr, false)
+        $decl hi $call trie_kid (tr, true)
+        $decl up $call eq_int ($call mod (b, 2), 0)
+        $decl b2 $call div (b, 2)
+        $decl d2 $call add (d, 1)
+        $decl r  $if up ($call trie_branch ($call trie_add (lo, b2, d2, e), hi))
+                        ($call trie_branch (lo, $call trie_add (hi, b2, d2, e))) }.r
+
+// Kept for `lower_dump` and for the one place a bare list is still searched.
 $decl find_ty_at $func ($decl xs T.tys.node, $decl t T.proto_ty, $decl i 0) $match xs (
   $case {$prop tag "cons"}
     $if ($call T.same (xs.head, t)) ($call found (true, i))

@@ -272,6 +272,10 @@ $decl lstate $func ()
     // index and a scan meets the oldest entries first. See `add_ty`.
     $decl tsettled $mut $alloc T.tys.node
     $decl nsettled $mut $alloc 0
+    // §9.3's table indexed by hash. The queue above still answers `ty_at` and
+    // `all_types`, because an index *is* a type's identity; this answers "which index
+    // is this type", which the linear scan was doing at ~74% of a compiled build.
+    $decl tytrie   $mut $alloc IR.proto_trie
     $decl mods   $mut $alloc mods_list.node
     $decl nmods  $mut $alloc 0
     // Which module's code is being lowered right now, or -1 for the entry file.
@@ -467,22 +471,24 @@ $decl merge_tys $func ($decl st proto_lst)
       0
 
 $decl add_ty $func ($decl st proto_lst, $decl t T.proto_ty)
-  { $decl p $set st.tpend ($call T.tys.cons (t, $call T.tys.val (st.tpend)))
-    $decl n $set st.ntypes ($call add ($call P.ival (st.ntypes), 1))
+  { $decl i $call P.ival (st.ntypes)
+    $decl p $set st.tpend ($call T.tys.cons (t, $call T.tys.val (st.tpend)))
+    // Indexed under the same key `ty_find` will ask with, and with the index this
+    // type is being given — which is `ntypes` *before* the bump.
+    $decl x $set st.tytrie ($call IR.trie_add ($call IR.tval_trie (st.tytrie),
+                $call IR.bucket_of ($call T.hash_of (t)), 0, $call IR.tyent (i, t)))
+    $decl n $set st.ntypes ($call add (i, 1))
     $decl m $call merge_tys (st)
     $decl r 0 }.r
 
-// Settled first — oldest-first, so `Int` and friends are met immediately. A
-// hit in the pending half is counted from its other end, as before.
+// One descent and a short bucket scan, where this used to walk the settled half and
+// then the pending one — oldest-first so `Int` and friends were met immediately, which
+// helped and was still 229 entries on average. The trie carries each type's index with
+// it, so the two-half arithmetic that mapped a position in `tpend` back to an index is
+// gone as well.
 $decl ty_find $func ($decl st proto_lst, $decl t T.proto_ty)
-  { $decl s $call IR.find_ty ($call T.tys.val (st.tsettled), t)
-    $decl out $if s.hit s
-        { $decl ns $call P.ival (st.nsettled)
-          $decl p  $call IR.find_ty ($call T.tys.val (st.tpend), t)
-          $decl r  $if p.hit
-              ($call IR.found (true, $call add (ns,
-                   $call isub ($call isub ($call npend (st), 1), p.id))))
-              ($call IR.found (false, 0)) }.r }.out
+  $call IR.trie_find ($call IR.tval_trie (st.tytrie),
+      $call IR.bucket_of ($call T.hash_of (t)), t)
 
 // Interning is exact because de Bruijn binders make alpha-equivalent types
 // identical (§5.5), so `T.same` is the right key and one index names one C
@@ -642,7 +648,8 @@ $decl fresh_var $func ($decl st proto_lst)
 // it lifted for them would be dead code carrying a type that is not a layout.
 $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $decl nm 0,
                    $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0,
-                   $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0)
+                   $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
+                   $decl tr IR.proto_trie)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
     $decl specs sp   $decl tmpls tm    $decl ntmpls nt
     // §9.3's table, both halves of the banker's queue and both counters. Every
@@ -650,10 +657,15 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
     // derived against a placeholder, the tree that named it is thrown away, and
     // nothing outside the pass holds its index. Leaving them behind is what made
     // the table track the *number of derivations* rather than the program.
-    $decl tsettled ts  $decl tpend tp  $decl nsettled ns  $decl ntypes ny }
+    $decl tsettled ts  $decl tpend tp  $decl nsettled ns  $decl ntypes ny
+    // The trie is persistent, so rolling it back is restoring one reference — the
+    // same reason the queue is snapshotted rather than undone. Leaving it out would
+    // leave the index naming types the rollback discarded, and `ty_find` would hand
+    // back an index past the end of the table.
+    $decl tytrie tr }
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
-                      tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0)
+                      tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -663,7 +675,8 @@ $decl take_snap $func ($decl st proto_lst)
       $call eval_mods (st.mods), $call P.ival (st.nmods),
       $call eval_specs (st.specs), $call eval_tmpls (st.tmpls), $call P.ival (st.ntmpls),
       $call T.tys.val (st.tsettled), $call T.tys.val (st.tpend),
-      $call P.ival (st.nsettled), $call P.ival (st.ntypes))
+      $call P.ival (st.nsettled), $call P.ival (st.ntypes),
+      $call IR.tval_trie (st.tytrie))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -677,6 +690,7 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl i $set st.tpend    ($call T.tys.val (sn.tpend))
     $decl j $set st.nsettled sn.nsettled
     $decl k $set st.ntypes   sn.ntypes
+    $decl l $set st.tytrie   ($call IR.tval_trie (sn.tytrie))
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,

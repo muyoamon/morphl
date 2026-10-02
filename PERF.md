@@ -2096,3 +2096,54 @@ passes flattened it to a string, so an unreadable file and an **empty** one were
 case — and §3.3 makes an empty file a valid empty block, so importing one reported
 "cannot read" for a file read perfectly well. Fixed in both passes;
 `fixtures/empty_import.mpl` pins it.
+
+### Where a compiled build actually spends its time, and the type table's trie
+
+**Every phase share recorded above this point came from stage 0, and they do not
+transfer.** Measured compiled, on the whole closure:
+
+| phase | time | share |
+|---|---|---|
+| parse + infer | 0.82s | 2.0% |
+| **lower** | **38.33s** | **94.6%** |
+| verify | 0.62s | 1.5% |
+| emit | 0.74s | 1.8% |
+
+So "inference is ~80%" and "emit is at most 22%" are stage-0 facts. Under the
+interpreter, `lookup`/`eval`/`bindParams` dominate and inference really is most of
+parse+infer+lower; compiled, that overhead vanishes and **lowering is essentially the
+whole compile**. This also re-reads the entries above correctly: "emitting the whole
+compiler 159.5s -> 37.4s" was always parse+infer+lower+emit, and `T.same`'s hash guard,
+the SCC fix and interning were all *lowering* costs. The file had been measuring
+lowering and calling it emit.
+
+It also means the interface cache's 5.9x is 5.9x of 2.0% — a full warm rebuild goes
+38.69s to ~37.99s, **1.8%**. The cache works as measured; applying its speedup to a whole
+build was wrong.
+
+**`perf` on the compiled binary put 77.9% of lowering in interning**: `same` 28.9%,
+`find_ty_at` 14.8%, `hash_of` 12.3%, `same_fields` 10.1%, `same_props` 7.0%, `same_tys`
+4.8% — and `find_ty_at`'s callers are `find_ty` <- `ty_find` <- `intern`. With 1,199,073
+lookups over an average scan of 229 of 6,348 entries, the scan alone is 275M comparisons.
+
+**A hash trie over the table took lowering 41.4s -> 27.4s (1.51x) and the pipeline
+40.5s -> 28.5s (1.42x)**, with the emitted C **byte-identical** on `lexer`, `types`,
+`parser` and `ir` — the only check that counts, since §9.3 makes an index a type's
+identity and one disagreement renames every `mpl_tN` after it. `find_ty_at` is gone from
+the profile.
+
+Three things about it. It is an *index*, not a replacement: the banker's queue still
+answers `ty_at` and `all_types`. It is persistent, so §5.5's `put_snap` restores it by
+restoring one reference — and omitting that restore would leave the index naming types a
+rollback discarded, handing back an index past the end of the table. And the buckets are
+**1,021**, not 1,024: `hash_of` answers a small per-tag constant for each of the nineteen
+leaf types, which bucketing on the low bits directly would pile into one bucket.
+
+**The prediction was 2.5x and the result was 1.42x, and the post-trie profile says why.**
+The `same` family is still 65% — `same` 24.0%, `same_fields` 15.9%, `same_props` 11.3%,
+`same_tys` 7.5%, `hash_of` 6.8%. `same` was never only the table scan; the step-count
+arithmetic treated it as if it were. Reading the source found the second caller:
+`unroll_find` is another linear scan keyed on `same`, and `unroll` is asked constantly —
+every structural question about a type asks it first. That is the next opportunity and
+the same shape as this one. It needs its own structure or the trie made generic over a
+`$template`, because `types.mpl` cannot import `ir.mpl`.
