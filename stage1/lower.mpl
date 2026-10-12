@@ -127,13 +127,29 @@ $decl mdones $specialize P.list proto_mdone
 // `$specialize` it is where the **template** is written; for a props-bearing block
 // literal it is the file the literal sits in. `path` is the naming identity and may
 // be none of those — see `IR.fn`'s `mod` against `nmod`.
-$decl mod_ent_f $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
+// The module's record once built (§4.14, see `mod_value`): its type, that type's
+// interned index, and each `$decl` member's type index in layout order. Kept on the
+// entry rather than beside it because §5.5's `put_snap` restores the module list and
+// the type table together — so an index here can never outlive the table entry it
+// names, which is the hazard every other cached index in this file ran into.
+$decl mrec $func ($decl ok P.boolean, $decl t T.proto_ty, $decl i 0, $decl fs IR.ints.node)
+  { $decl has ok  $decl ty t  $decl id i  $decl fids fs }
+$decl no_mrec $call mrec (false, T.t_unit, 0, IR.ints.nil)
+$decl mrec_val $func ($decl r no_mrec) r
+
+$decl mod_ent_g $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                        $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node,
-                       $decl fl "")
+                       $decl fl "", $decl rc no_mrec)
   { $decl id i  $decl props $alloc ps  $decl done $alloc ds  $decl env $alloc en
     $decl base bs  $decl path pt  $decl file fl
     // `with_props (en, ps, i)`, built once at registration. See `with_props`.
-    $decl penv $alloc pe }
+    $decl penv $alloc pe
+    $decl rec $alloc rc }
+
+$decl mod_ent_f $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
+                       $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node,
+                       $decl fl "")
+  $call mod_ent_g (i, ps, ds, en, bs, pt, pe, fl, no_mrec)
 
 $decl mod_ent $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                      $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node)
@@ -172,12 +188,15 @@ $decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $m
 // `file` is where the template is **written**, which is where its specialisations are
 // emitted: §4.9 makes an instantiation the template's code, so putting it in whichever
 // module happened to reach it first would make that file's text depend on the program.
+// `iid` is the id *inference* gave the same template (`infer.mpl`'s `ct_id`, tag 7),
+// which is the head of its memo key and so of every identity minted in a
+// specialisation's body — see `opaque_at` and `spec_build`.
 $decl tmpl_rec_k $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node,
-                        $decl en benv.node, $decl ky "", $decl fl "")
+                        $decl en benv.node, $decl ky "", $decl fl "", $decl ii 0)
   { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl key ky
-    $decl file fl }
+    $decl file fl  $decl iid ii }
 $decl tmpl_rec $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en benv.node)
-  $call tmpl_rec_k (i, gs, bd, en, "", "")
+  $call tmpl_rec_k (i, gs, bd, en, "", "", 0)
 $decl proto_tmpl $call tmpl_rec (0, strs.nil, Pa.proto_node, benv.nil)
 $decl tmpls_list $specialize P.list proto_tmpl
 
@@ -257,6 +276,12 @@ $decl mrank $func ($decl m "", $decl n 0) { $decl mod m  $decl next n }
 $decl proto_mrank $call mrank ("", 0)
 $decl mranks_list $specialize P.list proto_mrank
 
+// §4.10: a function-valued prop's identity — the `cv_opaque` id its block's *type*
+// carries — and the module whose source holds it. See `prop_by_id`.
+$decl opq_ent $func ($decl i 0, $decl m 0, $decl nm "") { $decl id i  $decl mod m  $decl name nm }
+$decl proto_opq $call opq_ent (0, 0, "")
+$decl opq_list $specialize P.list proto_opq
+
 $decl lstate $func ()
   { // §9.3's table, pending half: **newest first**, so an append is one cell.
     $decl tpend  $mut $alloc T.tys.node
@@ -294,6 +319,13 @@ $decl lstate $func ()
     // whose source produced it. One field serving both put a block literal in an
     // output nothing compiled.
     $decl curfile $mut $alloc ""
+    // The entry file's short name, and which `$specialize` body is being lowered in
+    // *inference's* spelling — both only so `opaque_at` can mint the identity inference
+    // minted for the same prop. See `opaque_at`.
+    $decl entry   $mut $alloc ""
+    $decl isctx   $mut $alloc ""
+    // Every function-valued prop lowering has seen, by identity. See `prop_by_id`.
+    $decl opaqs   $mut $alloc opq_list.node
     // Imported modules in the order their loading **completed** — a dependency first,
     // since §4.14 finishes a module before the importer's next member. It is what
     // `mpl_init` has to call them in, and it cannot be recovered from the function
@@ -354,14 +386,28 @@ $decl mod_short $func ($decl path "")
              ($call slice (b, 0, $call sub (n, 4))) b)
         b }.r
 
+// A compile-time identity as inference mints it (`infer.mpl`'s `ct_id`): the
+// specialisation context, the short name of the file it is written in, a per-kind
+// tag, and the span. See `opaque_at`.
+$decl fshort $func ($decl st proto_lst, $decl fl "")
+  $if ($call eq_str (fl, "")) ($call P.sval (st.entry)) ($call mod_short (fl))
+
+$decl ct_hash $func ($decl ic "", $decl fs "", $decl tag 0, $decl n Pa.proto_node)
+  { $decl sp $call P.span_of (n)
+    $decl h0 $call T.hash_str (ic, 0, $call T.hash_str (fs, 0, tag))
+    $decl r  $call T.hmix ($call T.hmix (h0, sp.line), sp.col) }.r
+
 // What `enter_mod` saves: the naming module **and** the file. Two fields because the
 // two part company — a `$specialize` body and a props-bearing block literal are named
 // from themselves and emitted in the file that produced them.
-$decl msave_rec $func ($decl nm "", $decl fl "") { $decl name nm  $decl file fl }
-$decl proto_msave $call msave_rec ("", "")
+//
+// And the specialisation context, which a module's code is never inside: §4.14 types a
+// module at its own top level, so entering one clears it, and `spec_build` sets it.
+$decl msave_rec $func ($decl nm "", $decl fl "", $decl ic "") { $decl name nm  $decl file fl  $decl isctx ic }
+$decl proto_msave $call msave_rec ("", "", "")
 
 $decl cur_msave $func ($decl st proto_lst)
-  $call msave_rec ($call P.sval (st.curmod), $call P.sval (st.curfile))
+  $call msave_rec ($call P.sval (st.curmod), $call P.sval (st.curfile), $call P.sval (st.isctx))
 
 // A real source module: it is both the name and the file.
 $decl enter_mod $func ($decl st proto_lst, $decl mid "")
@@ -376,11 +422,13 @@ $decl enter_mod_in $func ($decl st proto_lst, $decl mid "", $decl fl "")
   { $decl prev $call cur_msave (st)
     $decl s0   $set st.curmod mid
     $decl s1   $set st.curfile fl
+    $decl s2   $set st.isctx ""
     $decl r    prev }.r
 
 $decl leave_mod $func ($decl st proto_lst, $decl prev proto_msave)
   { $decl s0 $set st.curmod prev.name
     $decl s1 $set st.curfile prev.file
+    $decl s2 $set st.isctx prev.isctx
     $decl r  0 }.r
 
 $decl find_mrank $func ($decl xs mranks_list.node, $decl m "") $match xs (
@@ -544,6 +592,27 @@ $decl intern $func ($decl st proto_lst, $decl t T.proto_ty)
           $decl sealed $if ($call is_rec (t)) ($call seal_rec (st, t)) 0
           $decl r     cnt }.r }.out
 
+// The index of a module-valued name's type. A module's value is its record
+// (`mod_value`), whose type is enormous — and *naming* a module is the commonest thing
+// a program does, since `T.foo` lowers `T` first. Interning that type at every
+// projection was a full structural comparison per member access, which is what made
+// the compiler emit itself in 4m11s rather than 26s even with the record memoised.
+// The memo already holds the index, so a module with a record answers from it; the
+// type of a module-valued global is that record by construction. Anything without one
+// — a props-bearing block literal, a specialisation, a record not yet settled — is
+// interned as before.
+$decl mod_rec_of $func ($decl st proto_lst, $decl mid 0)
+  $if ($call lt (mid, 0)) no_mrec
+      { $decl ms $call find_mod (st.mods, mid)
+        $decl r  $match ms (
+            $case {$prop tag "cons"} ($call mrec_val (ms.head.rec)),
+            $case ms no_mrec
+          ) }.r
+
+$decl mod_ty_id $func ($decl st proto_lst, $decl mid 0, $decl t T.proto_ty)
+  { $decl mr $call mod_rec_of (st, mid)
+    $decl r  $if mr.has mr.id ($call intern (st, t)) }.r
+
 // Seeding the top-level environment.
 //
 // §3.3 makes a file a block, so inference's result type *is* the list of
@@ -649,8 +718,10 @@ $decl fresh_var $func ($decl st proto_lst)
 $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $decl nm 0,
                    $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0,
                    $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
-                   $decl tr IR.proto_trie)
+                   $decl tr IR.proto_trie, $decl oq opq_list.node)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
+    // The prop registry names modules by id, and a rollback hands ids out again.
+    $decl opaqs oq
     $decl specs sp   $decl tmpls tm    $decl ntmpls nt
     // §9.3's table, both halves of the banker's queue and both counters. Every
     // type the discarded pass interned is garbage by construction: it was
@@ -665,7 +736,7 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
     $decl tytrie tr }
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
-                      tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie)
+                      tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -676,7 +747,7 @@ $decl take_snap $func ($decl st proto_lst)
       $call eval_specs (st.specs), $call eval_tmpls (st.tmpls), $call P.ival (st.ntmpls),
       $call T.tys.val (st.tsettled), $call T.tys.val (st.tpend),
       $call P.ival (st.nsettled), $call P.ival (st.ntypes),
-      $call IR.tval_trie (st.tytrie))
+      $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -691,13 +762,16 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl j $set st.nsettled sn.nsettled
     $decl k $set st.ntypes   sn.ntypes
     $decl l $set st.tytrie   ($call IR.tval_trie (sn.tytrie))
+    $decl o $set st.opaqs    ($call opq_list.val (sn.opaqs))
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
-                        $decl en benv.node, $decl ky "", $decl fl "")
+                        $decl en benv.node, $decl ky "", $decl fl "", $decl ic "",
+                        $decl fm Pa.proto_node)
   { $decl i $call P.ival (st.ntmpls)
     $decl n $set st.ntmpls ($call add (i, 1))
-    $decl t $set st.tmpls ($call tmpls_list.cons ($call tmpl_rec_k (i, gs, bd, en, ky, fl),
+    $decl ii $call ct_hash (ic, $call fshort (st, fl), 7, fm)
+    $decl t $set st.tmpls ($call tmpls_list.cons ($call tmpl_rec_k (i, gs, bd, en, ky, fl, ii),
                                $call eval_tmpls (st.tmpls)))
     $decl r i }.r
 
@@ -1018,7 +1092,7 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
         // it is asking the module what that prop's value lowered to.
         ($call lower_prop (st, f.bnd.mod, nm, n))
         { $decl bt $call T.tval (f.bnd.ty)
-          $decl id $call intern (st, bt)
+          $decl id $call mod_ty_id (st, f.bnd.mod, bt)
           $decl ir $if ($call eq_str (f.bnd.kind, "local"))   ($call IR.e_local (id, f.bnd.slot))
               ($if ($call eq_str (f.bnd.kind, "capture")) ($call IR.e_capture (id, f.bnd.slot))
               ($if ($call eq_str (f.bnd.kind, "global"))  ($call IR.e_global (id, f.bnd.slot))
@@ -1038,6 +1112,73 @@ $decl find_prop $func ($decl xs T.props.node, $decl nm "") $match xs (
   $case xs T.props.nil
 )
 
+// A prop whose value is not a scalar is `cv_opaque` — an identity, not code (§4.10)
+// — and that identity is **where it is written**: the module in scope and the
+// initializer's own span. `P.span_of` reaches both off any node, since §5.1 makes
+// `{line, col}` a prefix of every one.
+//
+// It used to be a counter (`st.nopaque`), which made it an artifact of the order
+// things were reached: `cv_eq` compares opaque ids and §9.3's hash is *faithful* to
+// them, so a prop's type — and therefore its C struct's name — moved when anything
+// ahead of it in the program changed. That is the same defect a struct's name and a
+// function's name each had, in the one place that still derived an identity from
+// arrival order.
+//
+// It distinguishes exactly what it must. Two props in one module differ by span. Two
+// instantiations of one template body share a span and differ by module, because
+// `spec_build` enters the specialisation's own key before lowering it — which is why
+// that `enter_mod` is load-bearing and not tidying. And a member lowered **twice**
+// (§5.5's knot, where the first pass only finds the type) now gets the *same* id both
+// times, where a counter gave it two.
+//
+// **And it is inference's identity exactly, which is what lets a prop be found from a
+// type.** A parameter's type comes from inference and a block literal's from here, so
+// the two met with different numbers for the same prop: `hash (curmod, line, col)`
+// here against `infer.mpl`'s `ct_id` — the specialisation context, the file's short
+// name, a per-kind tag (3 for a prop) and the span. Different numbers meant two types
+// for one block, and no way to get from a parameter's prop back to its source, so
+// `$call m.pf (…)` on a parameter was refused (`prop_by_id`). Same formula now, from
+// the same inputs: the file the prop is written in (`curfile`, or the entry's own name),
+// and `isctx`, which `spec_build` sets to inference's memo key.
+$decl opaque_at $func ($decl st proto_lst, $decl n Pa.proto_node)
+  $call ct_hash ($call P.sval (st.isctx), $call fshort (st, $call P.sval (st.curfile)), 3, n)
+
+$decl const_of $func ($decl st proto_lst, $decl n Pa.proto_node) $match n (
+  $case {$prop tag "int"}  ($call T.cv_int (n.value)),
+  $case {$prop tag "str"}  ($call T.cv_str (n.text)),
+  $case {$prop tag "bool"} ($call T.cv_bool (n.value)),
+  $case {$prop tag "unit"} T.cv_unit,
+  $case n ($call T.cv_opaque ($call opaque_at (st, n)))
+)
+
+// Record where each function-valued prop of a module lives, by the identity its type
+// carries. Called wherever a block's props are given their identities, in the same
+// context, so the number recorded is the number in the type.
+$decl note_opaqs $func ($decl st proto_lst, $decl mid 0, $decl xs mprops.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl c  $if ($call eq_str (xs.head.kind, "prop")) ($call const_of (st, xs.head.node)) T.cv_unit
+      $decl d  $match c (
+          $case {$prop tag "copaque"}
+            ($set st.opaqs ($call opq_list.cons ($call opq_ent (c.id, mid, xs.head.name), st.opaqs))),
+          $case c ($call opq_list.val (st.opaqs))
+        )
+      $decl r  $call note_opaqs (st, mid, $call mprops.val (xs.tail)) }.r,
+  $case xs 0
+)
+
+// §4.10 puts a prop's value in its block's **type**, so every value of a type agrees on
+// it — which is what makes reading a function-valued prop off a *parameter* sound: the
+// parameter's type names the one definition, and nothing at run time can change which.
+// The type carries only the identity (`cv_opaque`), so this maps it back to the module
+// holding the source, and `lower_prop` lowers it as for any other projection. The name
+// must match too: an identity is per prop, and asking for another name is a miss.
+$decl prop_by_id $func ($decl xs opq_list.node, $decl id 0, $decl nm "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_int (xs.head.id, id), $call eq_str (xs.head.name, nm))) xs.head.mod
+        ($call prop_by_id ($call opq_list.val (xs.tail), id, nm)),
+  $case xs -1
+)
+
 $decl cv_lower $func ($decl st proto_lst, $decl c T.proto_cv, $decl nm "",
                       $decl n Pa.proto_node) $match c (
   $case {$prop tag "cint"}  ($call lres ($call IR.e_int ($call intern (st, T.t_int), c.v), T.t_int)),
@@ -1046,6 +1187,12 @@ $decl cv_lower $func ($decl st proto_lst, $decl c T.proto_cv, $decl nm "",
     ($call lres ($call IR.e_bool ($call intern (st, T.t_bool), c.v),
                  $if c.v T.t_true T.t_false)),
   $case {$prop tag "cunit"} ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit)),
+  $case {$prop tag "copaque"}
+    { $decl mid $call prop_by_id ($call opq_list.val (st.opaqs), c.id, nm)
+      $decl r   $if ($call lt (mid, 0))
+          ($call lres ($call IR.e_unit ($call err (st, $call concat ("the value of prop '",
+              $call concat (nm, "' is not reachable from here: no block lowered in this program carries it")), n)), T.t_bot))
+          ($call lval ($call lower_prop (st, mid, nm, n))) }.r,
   $case c ($call lres ($call IR.e_unit ($call err (st, $call concat ("the value of prop '",
       $call concat (nm, "' is not reachable from here: it is not a scalar, and this block's source was not lowered in this file")), n)), T.t_bot))
 )
@@ -1102,6 +1249,16 @@ $decl common_fld $func ($decl ms T.tys.node, $decl nm "", $decl best fld_found_p
     $case ms best
   )
 
+// Read out of storage. `as_value` keeps the module across the deref, which is
+// right for a `$prop` — §4.10 puts its value in the type, so every value of the
+// type agrees — and wrong for a `$decl`: storage holding a module can be `$set` to
+// another block of the same type, so which member a field holds is a run-time fact.
+// Reading the field is possible because a module's value has its layout (`mod_value`).
+$decl is_deref $func ($decl x IR.proto_expr) $match x (
+  $case {$prop tag "deref"} true,
+  $case x false
+)
+
 $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn)
   { $decl tgt $call as_value (st, $call lower (st, e, n.target, false))
     $decl tt  $call T.unroll (tgt.ty)
@@ -1109,7 +1266,8 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
     $decl out $match tt (
         $case {$prop tag "block"}
           { $decl f $call find_fld ($call T.fields.val (tt.fields), n.field, 0)
-            $decl r $if own ($call lower_prop (st, tgt.mod, n.field, n))
+            $decl ask $if own ($call not ($call and (f.hit, $call is_deref (tgt.ir)))) false
+            $decl r $if ask ($call lower_prop (st, tgt.mod, n.field, n))
                 ($if f.hit
                 ($call lres ($call IR.e_field ($call intern (st, f.ty), tgt.ir, f.idx), f.ty))
                 ($if ($call lt (tgt.mod, 0))
@@ -1162,37 +1320,6 @@ $decl lower_group $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
   { $decl a  $call lower_items_g (st, e, xs, IR.exprs.nil, T.tys.nil)
     $decl ty $call T.t_group ($call T.tys.val (a.tys))
     $decl r  $call lres ($call IR.e_group ($call intern (st, ty), $call IR.exprs.val (a.irs)), ty) }.r
-
-// A prop whose value is not a scalar is `cv_opaque` — an identity, not code (§4.10)
-// — and that identity is **where it is written**: the module in scope and the
-// initializer's own span. `P.span_of` reaches both off any node, since §5.1 makes
-// `{line, col}` a prefix of every one.
-//
-// It used to be a counter (`st.nopaque`), which made it an artifact of the order
-// things were reached: `cv_eq` compares opaque ids and §9.3's hash is *faithful* to
-// them, so a prop's type — and therefore its C struct's name — moved when anything
-// ahead of it in the program changed. That is the same defect a struct's name and a
-// function's name each had, in the one place that still derived an identity from
-// arrival order.
-//
-// It distinguishes exactly what it must. Two props in one module differ by span. Two
-// instantiations of one template body share a span and differ by module, because
-// `spec_build` enters the specialisation's own key before lowering it — which is why
-// that `enter_mod` is load-bearing and not tidying. And a member lowered **twice**
-// (§5.5's knot, where the first pass only finds the type) now gets the *same* id both
-// times, where a counter gave it two.
-$decl opaque_at $func ($decl st proto_lst, $decl n Pa.proto_node)
-  { $decl sp $call P.span_of (n)
-    $decl h0 $call T.hash_str ($call P.sval (st.curmod), 0, 0)
-    $decl r  $call T.hmix ($call T.hmix (h0, sp.line), sp.col) }.r
-
-$decl const_of $func ($decl st proto_lst, $decl n Pa.proto_node) $match n (
-  $case {$prop tag "int"}  ($call T.cv_int (n.value)),
-  $case {$prop tag "str"}  ($call T.cv_str (n.text)),
-  $case {$prop tag "bool"} ($call T.cv_bool (n.value)),
-  $case {$prop tag "unit"} T.cv_unit,
-  $case n ($call T.cv_opaque ($call opaque_at (st, n)))
-)
 
 $decl mem_int $func ($decl xs IR.ints.node, $decl i 0) $match xs (
   $case {$prop tag "cons"} $if ($call eq_int (xs.head, i)) true ($call mem_int (xs.tail, i)),
@@ -1525,6 +1652,13 @@ $decl spec_key $func ($decl st proto_lst, $decl r proto_tmpl, $decl ks IR.ints.n
   $call concat (r.key, $call concat ("_",
       $call int_to_str ($call spec_hash (st, ks, $call T.hash_str (r.key, 0, 0)))))
 
+$decl infer_key $func ($decl st proto_lst, $decl i 0, $decl ks IR.ints.node, $decl acc "") $match ks (
+  $case {$prop tag "cons"}
+    $call infer_key (st, i, $call IR.ints.val (ks.tail),
+        $call concat (acc, $call concat ("|", $call T.show ($call ty_at (st, ks.head))))),
+  $case ks ($call concat ($call int_to_str (i), acc))
+)
+
 $decl spec_build $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                         $decl args Pa.nodes.node, $decl keys IR.ints.node,
                         $decl n Pa.proto_node)
@@ -1540,6 +1674,10 @@ $decl spec_build $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmp
     // in scope. Without this the props of `P.list Int` and `P.list Str` would be
     // identified by whoever happened to be lowering when they were first reached.
     $decl ms $call enter_mod_in (st, sk, r.file)
+    // Inference's memo key for the same specialisation (`infer.mpl`'s `memo_key`):
+    // the template's id, then each argument type rendered. Every identity minted in
+    // the body hashes it, exactly as inference's `sctx` does.
+    $decl ic $set st.isctx ($call infer_key (st, r.iid, keys, ""))
     $decl v0 $call lval ($call lower (st, be, r.body, false))
     $decl mr $call leave_mod (st, ms)
     $decl v  v0
@@ -1772,9 +1910,140 @@ $decl force_props $func ($decl st proto_lst, $decl mid 0, $decl xs mprops.node,
   $case xs 0
 )
 
+// §4.14 makes `$import` evaluate to the file's block, and §4.5 makes that block a
+// record like any other — so a module's value has the layout its type says: its
+// `$decl` members in source order (§7.2), each slot initialised from the global the
+// member was lifted to, and its `$prop`s in the type (§4.10).
+//
+// It used to be the empty block. A projection never noticed, because `lower_proj`
+// asks the module before the type and resolves `M.f` to the member's global without
+// reading the value — which is still how a projection works, so naming a member costs
+// what it did. But inference types the import with every member as a field, so
+// anything else that received the value disagreed with it: a module passed to a
+// function emitted a field read of a struct with no fields, which `cc` rejected, and
+// `$new M` was refused here with "no field" for a program inference had accepted.
+// Stage 0 ran both.
+//
+// **Memoised per module, and the first version shows why.** Building the record at
+// every `$import` made the compiler emit itself in 3m50s against 26s: interning a
+// record compares it structurally (`T.same` was 70% of the profile), a member's type
+// that mentions `proto_ty` is enormous, and there is no pointer equality to stop a
+// comparison of a type with itself. So the first build interns, and the rest reuse the
+// record's type and its members' indices from `mrec`. Building it only where the value
+// is *used* as one was tried too, and cost more than it saved: it needs the decision in
+// `lower_name`/`lower`'s dispatch, and any edge from there put more of this file inside
+// the first passes §5.5 rolls back — importing `lower` as a module went from 24s to out
+// of memory.
+//
+// Every member is read off `done`, which `force_props` filled when the module was
+// loaded — not through `lower_prop`, for the same reason. A member that is a module is
+// already its record, since that member's own `$import` built it.
+$decl racc $func ($decl sl IR.bslots.node, $decl fl T.fields.node, $decl pr T.props.node,
+                  $decl fs IR.ints.node, $decl ok P.boolean)
+  { $decl slots sl  $decl flds fl  $decl prps pr  $decl fids fs  $decl settled ok }
+$decl proto_racc $call racc (IR.bslots.nil, T.fields.nil, T.props.nil, IR.ints.nil, true)
+
+// A `$decl` member's node at the type index `ti`. A `$template` member has no runtime
+// value (§4.9), so its slot holds the empty block.
+$decl member_ir $func ($decl ds mdones.node, $decl nm "", $decl ti 0)
+  { $decl d $call find_mdone (ds, nm)
+    $decl r $match d (
+        $case {$prop tag "cons"}
+          $if ($call eq_str (d.head.kind, "global")) ($call IR.e_global (ti, d.head.idx))
+              ($call IR.e_block (ti, IR.bslots.nil)),
+        $case d ($call IR.e_block (ti, IR.bslots.nil))
+      ) }.r
+
+$decl member_ty $func ($decl ds mdones.node, $decl nm "")
+  { $decl d $call find_mdone (ds, nm)
+    $decl r $match d (
+        $case {$prop tag "cons"}
+          $if ($call eq_str (d.head.kind, "global")) ($call T.tval (d.head.ty)) T.t_unit,
+        $case d T.t_unit
+      ) }.r
+
+// The first build: everything interned, and whether every member had settled — a
+// member still holding §5.5's placeholder (a cycle, which inference reports) is not
+// a layout, so that build is used once and not remembered.
+$decl rec_build $func ($decl st proto_lst, $decl ds mdones.node, $decl xs mprops.node,
+                       $decl a proto_racc) $match xs (
+  $case {$prop tag "cons"}
+    { $decl m  xs.head
+      $decl a2 $if ($call eq_str (m.kind, "decl"))
+          { $decl t  $call member_ty (ds, m.name)
+            $decl ok $call not ($call T.has_var (t, 0))
+            $decl ti $if ok ($call intern (st, t)) ($call intern (st, T.t_unit))
+            $decl sl $call fresh_slot (st, ti)
+            $decl q  $call racc ($call IR.bslots.cons ($call IR.bslot (sl, $call member_ir (ds, m.name, ti)),
+                                                       $call IR.bslots.val (a.slots)),
+                         $call T.fields.cons ($call T.field (m.name, t), $call T.fields.val (a.flds)),
+                         $call T.props.val (a.prps),
+                         $call IR.ints.cons (ti, $call IR.ints.val (a.fids)),
+                         $if ok a.settled false) }.q
+          // A §3.3 effect binds nothing and has run; it has no place in the value.
+          ($if ($call eq_str (m.kind, "prop"))
+               ($call racc ($call IR.bslots.val (a.slots), $call T.fields.val (a.flds),
+                    $call T.props.cons ($call T.prop_entry (m.name, $call const_of (st, m.node)),
+                                        $call T.props.val (a.prps)),
+                    $call IR.ints.val (a.fids), a.settled))
+               a)
+      $decl r  $call rec_build (st, ds, $call mprops.val (xs.tail), a2) }.r,
+  $case xs a
+)
+
+$decl ps_int $func ($decl xs IR.ints.node) $match xs ($case {$prop tag "cons"} xs.head, $case xs 0)
+$decl ints_tail $func ($decl xs IR.ints.node) $match xs (
+  $case {$prop tag "cons"} ($call IR.ints.val (xs.tail)),
+  $case xs IR.ints.nil
+)
+
+// Every later build: the slots alone, at the indices the first one found.
+$decl rec_slots $func ($decl st proto_lst, $decl ds mdones.node, $decl xs mprops.node,
+                       $decl fs IR.ints.node, $decl acc IR.bslots.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.kind, "decl"))
+        { $decl ti $call ps_int (fs)
+          $decl sl $call fresh_slot (st, ti)
+          $decl r  $call rec_slots (st, ds, $call mprops.val (xs.tail), $call ints_tail (fs),
+                       $call IR.bslots.cons ($call IR.bslot (sl, $call member_ir (ds, xs.head.name, ti)), acc)) }.r
+        ($call rec_slots (st, ds, $call mprops.val (xs.tail), fs, acc)),
+  $case xs ($call IR.bslots.reverse (acc, IR.bslots.nil))
+)
+
 $decl mod_value $func ($decl st proto_lst, $decl mid 0)
-  { $decl t $call T.t_block (T.fields.nil, T.props.nil)
-    $decl r $call lres3 ($call IR.e_block ($call intern (st, t), IR.bslots.nil), t, mid) }.r
+  { $decl ms $call find_mod (st.mods, mid)
+    $decl r $match ms (
+        $case {$prop tag "cons"}
+          { $decl m  ms.head
+            $decl mr $call mrec_val (m.rec)
+            $decl ps $call mprops.val (m.props)
+            $decl ds $call mdones.val (m.done)
+            $decl v  $if mr.has
+                ($call lres3 ($call IR.e_block (mr.id, $call rec_slots (st, ds, ps, mr.fids, IR.bslots.nil)),
+                             mr.ty, mid))
+                // The module is entered while its props' identities are minted, so
+                // every value of one module has one type — `const_of` names an
+                // opaque prop by `curmod`.
+                { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file)
+                  $decl a     $call rec_build (st, ds, ps, proto_racc)
+                  $decl reg   $call note_opaqs (st, mid, ps)
+                  $decl back  $call leave_mod (st, msave)
+                  // Fields in layout order; props as `lower_block` leaves them.
+                  $decl t  $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil),
+                                            $call T.props.val (a.prps))
+                  $decl id $call intern (st, t)
+                  $decl fs $call IR.ints.reverse ($call IR.ints.val (a.fids), IR.ints.nil)
+                  $decl kept $if a.settled
+                      ($call save_mod (st, $call mod_ent_g (m.id, ps, ds, $call benv.val (m.env),
+                           m.base, m.path, $call benv.val (m.penv), m.file,
+                           $call mrec (true, t, id, fs))))
+                      0
+                  $decl w  $call lres3 ($call IR.e_block (id,
+                               $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)), t, mid) }.w }.v,
+        $case ms
+          { $decl t $call T.t_block (T.fields.nil, T.props.nil)
+            $decl v $call lres3 ($call IR.e_block ($call intern (st, t), IR.bslots.nil), t, mid) }.v
+      ) }.r
 
 $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n Pa.proto_node)
   { $decl rf  $call read_file (key)
@@ -1940,7 +2209,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                         $call concat ($call P.sval (st.curmod),
                         $call concat ("_t", $call concat ($call int_to_str (sp.line),
                         $call concat ("_", $call int_to_str (sp.col))))),
-                        $call P.sval (st.curfile))
+                        $call P.sval (st.curfile), $call P.sval (st.isctx), n)
           $decl r   $call lres4 ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit,
                         -1, tid) }.r
       ($if ($call eq_str (k, "specialize")) ($call lower_specialize (st, e, n))
@@ -2104,10 +2373,10 @@ $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone)
           // emitted, and rebuilding without it sent every module's members into the
           // entry file's output. The same hazard `mark_self` and `fold` carry `mod`
           // and `rank` for.
-          ($call save_mod (st, $call mod_ent_f (mid, ms.head.props,
+          ($call save_mod (st, $call mod_ent_g (mid, ms.head.props,
               $call mdones.cons (d, ms.head.done),
               $call benv.val (ms.head.env), ms.head.base, ms.head.path,
-              $call benv.val (ms.head.penv), ms.head.file))),
+              $call benv.val (ms.head.penv), ms.head.file, $call mrec_val (ms.head.rec)))),
         $case ms 0
       ) }.r
 
@@ -2126,11 +2395,16 @@ $decl unsettled $func ($decl t T.proto_ty)
 
 $decl prop_global $func ($decl st proto_lst, $decl d proto_mdone)
   { $decl t $call T.tval (d.ty)
-    $decl bp $if ($call unsettled (t)) ($call bump_place (st)) 0
+    // A module with a record is settled — only a settled record is kept — so its
+    // type needs neither walk below, and walking it is `T.has_var` over the whole
+    // record at every member access.
+    $decl mr $call mod_rec_of (st, d.mod)
+    $decl bp $if mr.has 0 ($if ($call unsettled (t)) ($call bump_place (st)) 0)
     // While the member's own body is being lowered its type is §5.5's
     // placeholder. That is the right *type* — it is what the knot is tied on —
     // but not a layout, so the node's type index is a harmless stand-in.
-    $decl ti $if ($call T.has_var (t, 0)) ($call intern (st, T.t_unit)) ($call intern (st, t))
+    $decl ti $if mr.has mr.id
+                 ($if ($call T.has_var (t, 0)) ($call intern (st, T.t_unit)) ($call intern (st, t)))
     $decl r $call lres4 ($call IR.e_global (ti, d.idx), t, d.mod, d.tmpl) }.r
 
 $fwd lower_prop_new
@@ -2269,7 +2543,7 @@ $decl lower_prop_tmpl $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
     $decl gs  $call generic_names ($call op (pn, 0), strs.nil)
     // The template's stable key: the module it is written in, and its member name.
     $decl tid $call fresh_tmpl (st, gs, $call op (pn, 1), pe,
-                  $call concat ($call mod_short (m.path), $call concat ("_", nm)), m.file)
+                  $call concat ($call mod_short (m.path), $call concat ("_", nm)), m.file, "", pn)
     $decl p1  $call note_prop (st, m.id, $call mdone (nm, "tmpl", 0, T.t_unit, -1, tid))
     $decl r   $call lres4 ($call IR.e_block ($call intern (st, T.t_unit), IR.bslots.nil),
                   T.t_unit, -1, tid) }.r
@@ -2541,6 +2815,7 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
     $decl ps $call block_props (xs, mprops.nil)
     $decl md $if ($call mprops.is_nil (ps)) -1
                  ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps), $call P.sval (st.curfile)))
+    $decl reg $if ($call lt (md, 0)) 0 ($call note_opaqs (st, md, ps))
     $decl r  $call lres3 (ir, ty, md) }.r
 
 // ----------------------------------------------------------------- the file
@@ -2758,15 +3033,15 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
       // forward reference still sees the plain global.
       //
       // It is re-bound with the type lowering *gave* it, not the one inference
-      // solved. §4.14 makes a module a namespace with **no layout**, so its
-      // value is the empty block — while inference's type for it still lists
-      // every member as a field, which is right for checking and is not a
-      // layout. Binding the latter made §9's own re-exports (`$decl ir IR`,
-      // `$decl types T`) emit a thunk declared to return the member block and
-      // returning the empty one: `incompatible types when assigning to type
-      // 'mpl_t6319' from type 'mpl_t18'`, the only two `cc` errors in 63,609
-      // lines of the compiler's own C. Members still resolve, because
-      // `lower_proj` asks the module before the type and `mod` is carried here.
+      // solved. The two used to differ outright — a module's value was the empty
+      // block while inference listed every member as a field — and binding
+      // inference's made §9's own re-exports (`$decl ir IR`, `$decl types T`)
+      // emit a thunk declared to return the member block and returning the empty
+      // one. A module's value is its record now (`mod_value`), so they agree in
+      // shape; lowering's is still the one to bind, because it is the type the
+      // thunk's body actually has. Members resolve through `mod` either way:
+      // `lower_proj` asks the module before the type, so naming a member never
+      // reads the record.
       $decl e2   $if ($call and ($call lt (fm.mod, 0), $call lt (fm.tmpl, 0))) e
                      ($call benv.cons ($call bind_ent6 (nm, "global", idx,
                           $call ty_at (st, f.result), fm.mod, fm.tmpl), e))

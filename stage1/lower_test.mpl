@@ -233,14 +233,15 @@ $decl t18 $call check_str ("a prop's value may not capture",
       "{ $decl m { $prop f $func ($decl x 0) $call add (x, n) } $decl r $call m.f (1) }.r "))),
   "a $prop's value may not capture 'n': a prop is compile-time (§4.10), so there is nowhere to evaluate the capture")
 
-// The block came from a function's result, so lowering never saw its source
-// and the type only kept an identity for the prop. Said plainly rather than
-// answered wrongly.
-$decl t19 $call check_str ("an unreachable prop value is reported, not guessed",
+// The block came from a function's result, so the value carries no module — only
+// its type, which keeps an identity for the prop. That used to be refused as
+// unreachable; §4.10 puts the prop in the type, so the identity names the one
+// definition, and `prop_by_id` finds its source (`fixtures/prop_param.mpl` runs it).
+$decl t19 $call check_str ("a prop read off a function's result is found by its identity",
   $call first_err ($call lower_errs ($call concat (
       "$decl mk $func () { $prop f $func ($decl x 0) x } ",
       "$decl main $func () $call ($call mk ()).f (1) "))),
-  "the value of prop 'f' is not reachable from here: it is not a scalar, and this block's source was not lowered in this file")
+  "")
 
 // -------------------------------------------------- templates (§4.9)
 //

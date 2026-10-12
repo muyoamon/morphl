@@ -123,8 +123,12 @@ $decl infer $func ($decl p proto_parsed)
       ($call typed (T.t_bot, $call Pa.diags.val (p.diagnostics)))
 
 
-$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "")
+$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "", $decl path "")
   { $decl st    $call L.lstate ()
+    // The entry file's name, so lowering identifies the entry file's function-valued
+    // props exactly as inference does (`opaque_at`) — inference has the path, and a
+    // parameter's type is inference's.
+    $decl named $set st.entry ($call L.mod_short (path))
     // §2's root block, straight from inference: a `binding` is `{name, ty}`,
     // which is a `T.field`, so one converter reads both (§5.1).
     $decl prims $call L.prims_from (I.root_env, L.benv.nil)
@@ -134,7 +138,7 @@ $decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl bas
 $decl check_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "")
   { $decl r   $call infer_ok (items, base, path)
     $decl out $if ($call Pa.diags.is_nil ($call Pa.diags.val (r.diagnostics)))
-        ($call lower_ok (items, r.ty, base))
+        ($call lower_ok (items, r.ty, base, path))
         ($call checked (empty_program, $call Pa.diags.val (r.diagnostics))) }.out
 
 $decl check $func ($decl p proto_parsed)

@@ -184,6 +184,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
         .{ .src = "stage1/fixtures/write.mpl", .want = "161\n" },
         .{ .src = "stage1/fixtures/fwd_init.mpl", .want = "126\n" },
+        .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n" },
+        .{ .src = "stage1/fixtures/prop_param.mpl", .want = "52\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -318,6 +320,12 @@ pub fn build(b: *std.Build) void {
             // A cycle between two module members (§5.5), so each is named from the
             // other's output.
             .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n", .mods = &.{"mutual_util"} },
+            // A module's record is a static in the importer's output initialised from
+            // globals in the module's, so this is the fixture where that has to link.
+            .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n", .mods = &.{ "modval_inner", "modval_util" } },
+            // A prop read off a parameter is lowered where it is written and called from
+            // the reader's output, so this is where that has to link.
+            .{ .src = "stage1/fixtures/prop_param.mpl", .want = "52\n", .mods = &.{ "prelude", "prop_param_util" } },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);
