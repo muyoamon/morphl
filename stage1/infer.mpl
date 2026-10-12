@@ -732,6 +732,189 @@ $decl check_unique $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
   $case items ()
 )
 
+// §4.11: "References to `name` before its completing `$decl` are allowed only
+// inside a `$func` or `$template` body." A `$fwd` reserves a slot and nothing
+// fills it until the completing `$decl` runs (§4.10's source order), so this is
+// a rule about *evaluation*, and the syntactic reading of it is not enough: the
+// read can be inside a `$func` body that an initializer between the two *calls*.
+//
+//   $fwd f
+//   $decl g $func () $call f ()
+//   $decl x $call g ()        // runs g, which reads f's empty slot
+//   $decl f $func () 7
+//
+// Stage 0 refuses that at run time ("'f' is not initialized yet"). Nothing here
+// did, and the compiled backend answered 7 — it emits a `$decl` of a `$func` as a
+// plain C function, so there is no empty slot to read — while the value case
+// read a static assigned at the `$fwd`'s position. One program, two meanings.
+//
+// So each item between a `$fwd` and its completing `$decl`, the completing one
+// included, is walked for what *evaluating* it reads: everything but the bodies
+// of the forms that defer (`fwd_lazy`), and through every direct call to a
+// `$func` literal this block binds by name, transitively. A read of a pending
+// name anywhere on that walk is reported at the item.
+//
+// It errs permissive, the direction `ctnames` and §5.3a's `bound_names` already
+// take: a call through anything but a name bound in this block — a parameter, a
+// projection, a function in storage — is not followed, and a name bound anywhere
+// inside the walked expression is not counted, without regard to nesting. A
+// missed report, never a rejected valid program. Control flow is *not* modelled:
+// an `$if` arm that would read the slot is reported whether or not it is taken,
+// which is exactly how the syntactic half of the rule already treats a direct
+// reference, so the two halves agree.
+$decl fwd_hit $func ($decl n "", $decl v "") { $decl name n  $decl via v }
+$decl no_hit $call fwd_hit ("", "")
+// One walk's visited set, so a call graph with a cycle or a diamond is walked
+// once per function rather than once per path.
+$decl fwd_st $func () { $decl seen $mut $alloc Pa.pstrs.node }
+$decl proto_fwd_st $call fwd_st ()
+
+// Forms whose operands do not run when the form is evaluated: a `$func` body
+// runs when called, a `$template` when specialized, and the rest are
+// compile-time or type-only (§5.7). `$import` is here because §4.14 lowers a
+// module against the root block alone, so it cannot name an importer's slot.
+$decl fwd_lazy $func ($decl k "")
+  $if ($call eq_str (k, "func")) true
+  ($if ($call eq_str (k, "template")) true
+  ($if ($call eq_str (k, "specialize")) true
+  ($if ($call eq_str (k, "prop")) true
+  ($if ($call eq_str (k, "fwd")) true
+  ($if ($call eq_str (k, "impl")) true
+  ($if ($call eq_str (k, "traitsof")) true
+  ($if ($call eq_str (k, "extern")) true
+  ($call eq_str (k, "import")))))))))
+
+// §4.8a evaluates a `$union` to its first member; the rest are type-only (§5.7)
+// and may name a declaration in progress.
+$decl union_first $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "group"}
+    $if ($call eq_int ($call Pa.nodes.length (n.items, 0), 0)) ($call Pa.n_err ("", 0, 0))
+        ($call Pa.nodes.nth (n.items, 0)),
+  $case n n
+)
+
+// While the walk's group is solved its results are §5.5 placeholders, and
+// projecting `.name` off one fails; an identity at the intended type defers it.
+$decl hit_val $func ($decl h no_hit) h
+
+$fwd fwd_reach
+
+$decl fwd_reach_list $func ($decl xs Pa.nodes.node, $decl pend Pa.pstrs.node, $decl fns fnlit_list.node,
+                            $decl bound Pa.pstrs.node, $decl st proto_fwd_st, $decl via "") $match xs (
+  $case {$prop tag "cons"}
+    { $decl h   $call hit_val ($call fwd_reach (xs.head, pend, fns, bound, st, via))
+      $decl out $if ($call eq_str (h.name, ""))
+          ($call fwd_reach_list (xs.tail, pend, fns, bound, st, via)) h }.out,
+  $case xs no_hit
+)
+
+// The callee of a `$call` runs its body now. A `$func` literal in callee
+// position is followed as it stands; a name is followed when this block binds
+// it to a literal and nothing inside the walk rebinds it.
+$decl fwd_follow $func ($decl c Pa.proto_node, $decl pend Pa.pstrs.node, $decl fns fnlit_list.node,
+                        $decl bound Pa.pstrs.node, $decl st proto_fwd_st, $decl via "")
+  $if ($call is_form (c, "func"))
+      ($call fwd_reach ($call op (c, 1), pend, fns, $call Pa.bound_names (c, bound), st, via))
+      { $decl nm $call name_of (c)
+        $decl f  $call find_fnlit (fns, nm)
+        $decl go $call and ($call not ($call eq_str (f.name, "")),
+                 $call and ($call not ($call Pa.mem_pstr (bound, nm)),
+                            $call not ($call Pa.mem_pstr (st.seen, nm))))
+        $decl out $if go
+            ($do ($set st.seen ($call Pa.pstrs.cons (nm, st.seen)))
+                 ($call fwd_reach ($call op (f.lit, 1), pend, fns,
+                                   $call Pa.bound_names (f.lit, Pa.pstrs.nil), st, nm)))
+            no_hit }.out
+
+$decl fwd_reach_call $func ($decl c Pa.proto_node, $decl ops Pa.nodes.node, $decl pend Pa.pstrs.node,
+                            $decl fns fnlit_list.node, $decl bound Pa.pstrs.node,
+                            $decl st proto_fwd_st, $decl via "")
+  { $decl h   $call hit_val ($call fwd_reach_list (ops, pend, fns, bound, st, via))
+    $decl out $if ($call eq_str (h.name, "")) ($call fwd_follow (c, pend, fns, bound, st, via)) h }.out
+
+$decl fwd_reach $func ($decl n Pa.proto_node, $decl pend Pa.pstrs.node, $decl fns fnlit_list.node,
+                       $decl bound Pa.pstrs.node, $decl st proto_fwd_st, $decl via "") $match n (
+  $case {$prop tag "name"}
+    $if ($call and ($call Pa.mem_pstr (pend, n.text), $call not ($call Pa.mem_pstr (bound, n.text))))
+        ($call fwd_hit (n.text, via)) no_hit,
+  $case {$prop tag "group"}      ($call fwd_reach_list (n.items, pend, fns, bound, st, via)),
+  $case {$prop tag "block"}      ($call fwd_reach_list (n.items, pend, fns, bound, st, via)),
+  $case {$prop tag "proj_name"}  ($call fwd_reach (n.target, pend, fns, bound, st, via)),
+  $case {$prop tag "proj_index"} ($call fwd_reach (n.target, pend, fns, bound, st, via)),
+  $case {$prop tag "form"}
+    $if ($call fwd_lazy (n.keyword)) no_hit
+    // A `$case` pattern is type-only (§5.7); only the arm runs.
+    ($if ($call eq_str (n.keyword, "case"))
+         ($call fwd_reach ($call Pa.nodes.nth (n.operands, 1), pend, fns, bound, st, via))
+    ($if ($call eq_str (n.keyword, "union"))
+         ($call fwd_reach ($call union_first ($call Pa.nodes.nth (n.operands, 0)), pend, fns, bound, st, via))
+    ($if ($call eq_str (n.keyword, "call"))
+         ($call fwd_reach_call ($call Pa.nodes.nth (n.operands, 0), n.operands, pend, fns, bound, st, via))
+         ($call fwd_reach_list (n.operands, pend, fns, bound, st, via))))),
+  $case n no_hit
+)
+
+$decl fwd_msg $func ($decl h no_hit)
+  $if ($call eq_str (h.via, ""))
+      ($call concat ("'", $call concat (h.name,
+          "' is read before the $decl completing its $fwd has run (§4.11); until then only a $func or $template body may name it")))
+      ($call concat ("'", $call concat (h.name,
+          $call concat ("' is read before the $decl completing its $fwd has run (§4.11): this runs first and reaches a call to '",
+          $call concat (h.via, "', whose body reads it")))))
+
+// Every `$decl name $func …` in the block: the bodies a call by name can reach.
+$decl decl_fns $func ($decl items Pa.nodes.node, $decl acc fnlit_list.node) $match items (
+  $case {$prop tag "cons"}
+    $call decl_fns (items.tail,
+      // Nested, not `and`: `and` is strict and `op` on a `$fwd` has no operand 1.
+      $if ($call is_form (items.head, "decl"))
+          ($if ($call is_form ($call op (items.head, 1), "func"))
+               ($call fnlit_list.cons ($call fnlit_ent ($call name_of ($call op (items.head, 0)),
+                                                        $call op (items.head, 1)), acc))
+               acc)
+          acc),
+  $case items acc
+)
+
+$decl fwd_drop $func ($decl xs Pa.pstrs.node, $decl nm "", $decl acc Pa.pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call fwd_drop (xs.tail, nm, $if ($call eq_str (xs.head, nm)) acc ($call Pa.pstrs.cons (xs.head, acc))),
+  $case xs acc
+)
+
+$decl has_fwd $func ($decl items Pa.nodes.node) $match items (
+  $case {$prop tag "cons"} $if ($call is_form (items.head, "fwd")) true ($call has_fwd (items.tail)),
+  $case items false
+)
+
+// `pend` is the `$fwd` names seen and not yet completed. A `$prop` is skipped:
+// it is compile-time and sees only props (§4.10), never an ordered slot.
+$decl check_fwd_go $func ($decl cx proto_ctx, $decl items Pa.nodes.node, $decl fns fnlit_list.node,
+                          $decl pend Pa.pstrs.node) $match items (
+  $case {$prop tag "cons"}
+    { $decl it   items.head
+      $decl nm   $call binder_name (it)
+      $decl k    $call binder_kind (it)
+      $decl live $call and ($call not ($call eq_str (k, "fwd")),
+                 $call and ($call not ($call eq_str (k, "prop")),
+                            $call lt (0, $call Pa.pstrs.length (pend, 0))))
+      $decl e    $if ($call eq_str (k, "decl")) ($call op (it, 1)) it
+      $decl h    $if live
+          ($call fwd_reach (e, pend, fns, $call Pa.bound_names (e, Pa.pstrs.nil), $call fwd_st (), ""))
+          no_hit
+      $decl said $if ($call eq_str (h.name, "")) T.t_bot ($call err (cx, $call fwd_msg (h), it))
+      $decl p2   $if ($call eq_str (k, "fwd")) ($call Pa.pstrs.cons (nm, pend))
+                     ($if ($call eq_str (k, "decl")) ($call fwd_drop (pend, nm, Pa.pstrs.nil)) pend)
+      $decl out  $call check_fwd_go (cx, items.tail, fns, p2) }.out,
+  $case items ()
+)
+
+// Most blocks have no `$fwd`, and those cost one scan.
+$decl check_fwd_reads $func ($decl cx proto_ctx, $decl items Pa.nodes.node)
+  $if ($call has_fwd (items))
+      ($call check_fwd_go (cx, items, $call decl_fns (items, fnlit_list.nil), Pa.pstrs.nil))
+      ()
+
 $decl infer_params_go $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
                              $decl acc T.tys.node, $decl inner env.node) $match ps (
   $case {$prop tag "cons"}
@@ -1691,6 +1874,7 @@ $decl recheck_defers $func ($decl cx proto_ctx, $decl rs res_list.node)
 $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.nodes.node,
                          $decl x P.proto_span)
   { $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
+    $decl fwdr   $call check_fwd_reads (cx, items)
     $decl pe0    $call prebind_props (cx, items, e0)
     $decl hushed $set cx.quiet true
     $decl peA    $call prop_pass (cx, pe0, items, pe0)

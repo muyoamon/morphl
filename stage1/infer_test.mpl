@@ -596,3 +596,65 @@ $decl t87 $call check_str ("an ordinary higher-order call is unaffected",
   "")
 
 $decl done4 $call nl ("all C-callback tests passed")
+
+// ------------------------------------------- §4.11: reads before a $fwd completes
+//
+// "References to `name` before its completing `$decl` are allowed only inside a
+// `$func` or `$template` body" — and a body an initializer *calls* runs before
+// the `$decl` too. Stage 0 refuses each of these at run time; the checker
+// accepted all of them, and the compiled backend gave them a value.
+$decl fwmsg $func ($decl nm "", $decl via "")
+  $call concat ("'", $call concat (nm,
+      $call concat ("' is read before the $decl completing its $fwd has run (§4.11): this runs first and reaches a call to '",
+      $call concat (via, "', whose body reads it"))))
+
+$decl t88 $call check_str ("a $fwd name read directly before its $decl",
+  $call errs_of ("$fwd y  $decl x y  $decl y 7"),
+  "'y' is read before the $decl completing its $fwd has run (§4.11); until then only a $func or $template body may name it")
+
+$decl t88b $call check_str ("...and through a call made before it",
+  $call errs_of ("$fwd f  $decl g $func () $call f ()  $decl x $call g ()  $decl f $func () 7"),
+  $call fwmsg ("f", "g"))
+
+// The reader is named, not the first callee: that is the body to look at.
+$decl t88c $call check_str ("...and through a chain of calls",
+  $call errs_of ("$fwd v  $decl k $func () v  $decl h $func () $call k ()  $decl y $call h ()  $decl v 5"),
+  $call fwmsg ("v", "k"))
+
+// The completing `$decl`'s own initializer runs before its slot is filled.
+$decl t88d $call check_str ("...and from the completing $decl's own initializer",
+  $call errs_of ("$fwd v  $decl k $func () v  $decl v $call k ()"),
+  $call fwmsg ("v", "k"))
+
+$decl t88e $call check_str ("...and inside a nested block",
+  $call errs_of ("$decl b { $fwd f  $decl g $func () $call f ()  $decl x $call g ()  $decl f $func () 7 }"),
+  $call fwmsg ("f", "g"))
+
+// A `$func` literal called where it stands runs where it stands.
+$decl t88f $call check_str ("...and through a $func literal in callee position",
+  $call errs_of ("$fwd v  $decl x $call ($func () v) ()  $decl v 5"),
+  "'v' is read before the $decl completing its $fwd has run (§4.11); until then only a $func or $template body may name it")
+
+// What must stay legal — the ordinary use of `$fwd` is exactly a body naming it.
+$decl t88g $call check_str ("mutual recursion through $fwd is unaffected",
+  $call errs_of ("$fwd ev  $decl od $func ($decl n 0) $call ev (n)  $decl ev $func ($decl n 0) n  $decl r $call od (3)"),
+  "")
+
+$decl t88h $call check_str ("a call between that does not reach the name is fine",
+  $call errs_of ("$fwd f  $decl g $func () 1  $decl x $call g ()  $decl h $func () $call f ()  $decl f $func () 7"),
+  "")
+
+$decl t88i $call check_str ("building a closure that names it runs nothing",
+  $call errs_of ("$fwd f  $decl mk $func () $func () $call f ()  $decl c $call mk ()  $decl f $func () 7"),
+  "")
+
+$decl t88j $call check_str ("a parameter sharing the name is not the slot",
+  $call errs_of ("$fwd v  $decl s $func ($decl v 0) v  $decl x $call s (1)  $decl v 5"),
+  "")
+
+// §4.8a evaluates a `$union` to its first member; the rest are type-only (§5.7).
+$decl t88k $call check_str ("a later $union member is not a read",
+  $call errs_of ("$fwd v  $decl x $union (0, v)  $decl v 5"),
+  "")
+
+$decl done5 $call nl ("all $fwd-initialisation tests passed")

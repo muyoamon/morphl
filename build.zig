@@ -183,6 +183,7 @@ pub fn build(b: *std.Build) void {
            .host = "stage1/fixtures/extern_host.c" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
         .{ .src = "stage1/fixtures/write.mpl", .want = "161\n" },
+        .{ .src = "stage1/fixtures/fwd_init.mpl", .want = "126\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -212,6 +213,46 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&run_bin.step);
         }
     }
+    // ------------------------------------------------- programs that must fail
+    //
+    // Every other fixture is a program that must *work*; these must be refused,
+    // by both implementations. Stage 1 must report each listed diagnostic, line
+    // and column included, and exactly that many; stage 0 must refuse to run the
+    // program. Both halves matter, for the reason `fwd_uninit.mpl` exists: a
+    // program stage 0 refuses and the checker accepts is one the compiled backend
+    // gives a meaning stage 0 never would.
+    const reject_step = b.step("test-reject", "Check that programs which must fail are refused by both stages");
+    for ([_]struct { src: []const u8, stage1: []const []const u8, count: []const u8, stage0: []const u8 }{
+        .{
+            .src = "stage1/fixtures/fwd_uninit.mpl",
+            .stage1 = &.{
+                "fwd_uninit.mpl:14:1: 'f' is read before the $decl completing its $fwd has run",
+                "fwd_uninit.mpl:20:1: 'v' is read before the $decl completing its $fwd has run",
+                "fwd_uninit.mpl:23:1: 'v' is read before the $decl completing its $fwd has run",
+            },
+            .count = "errors: 3\n",
+            .stage0 = "is not initialized yet",
+        },
+    }) |bad| {
+        const s1 = b.addRunArtifact(exe);
+        s1.addArgs(&.{ "--run", "stage1/typecheck.mpl", bad.src });
+        s1.setCwd(b.path("."));
+        s1.has_side_effects = true;
+        for (bad.stage1) |m| s1.expectStdOutMatch(m);
+        s1.expectStdOutMatch(bad.count);
+        reject_step.dependOn(&s1.step);
+        test_step.dependOn(&s1.step);
+
+        const s0 = b.addRunArtifact(exe);
+        s0.addArgs(&.{ "--run", bad.src });
+        s0.setCwd(b.path("."));
+        s0.has_side_effects = true;
+        s0.expectStdErrMatch(bad.stage0);
+        s0.expectExitCode(1);
+        reject_step.dependOn(&s0.step);
+        test_step.dependOn(&s0.step);
+    }
+
     // ---------------------------------------------------------------- stage 2
     //
     // `bootstrap/mplc.c` is stage 1 emitted by stage 1 — BOOTSTRAP's stage 2 —
