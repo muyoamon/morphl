@@ -1,4 +1,4 @@
-// A function-valued `$prop` read off a *parameter*. Prints 52.
+// A function-valued `$prop` read off a *parameter*. Prints 98.
 //
 // §4.10 puts a prop's value in its block's type, so a parameter's type names the one
 // definition and nothing at run time can change which — reading the prop is sound
@@ -25,10 +25,26 @@ $decl sz $func ($decl l L) $call l.length ($call l.cons (4, $call l.cons (5, l.n
 $decl t { $prop inner { $prop f $func () 30 } }
 $decl n $func ($decl v t) $call v.inner.f ()
 
+// A block built inside a prop's *body*. Lowering reaches a prop body only when
+// something first projects it — here `main`, below the reader — so when the reader is
+// lowered nothing has registered `g` yet, and the read is resolved at the end of the
+// file instead (`resolve_pends`).
+$decl holder { $prop mk $func () { $prop g $func ($decl x 0) $call mul (x, 10) } }
+$decl late $func ($decl b ($call holder.mk ())) $call b.g (4)
+
+// The same inside a template, where the identity also carries the specialisation:
+// inference typed `mk`'s body inside `$specialize tm 0`, and lowering enters it later,
+// from wherever `S.mk` is first projected — so a module remembers the specialisation
+// it was written in (`mod_ent_g`'s `isctx`).
+$decl tm $template T { $prop mk $func () { $prop g $func ($decl x T) $call add (x, 1) } }
+$decl S  $specialize tm 0
+$decl inspec $func ($decl b ($call S.mk ())) $call b.g (5)
+
 $decl main $func ()
   { // A `$func` literal's parameter is typed by lowering, from its default, rather
     // than by inference — the same identity has to come out either way.
     $decl f $func ($decl m b, $decl y 0) $call m.pf (y)
-    // 3 + 10 + 2 + 30 + 7 = 52.
+    // 3 + 10 + 2 + 30 + 7 + 40 + 6 = 98.
     $decl r $call add ($call g (b), $call add ($call h (U), $call add ($call sz (L),
-                $call add ($call n (t), $call f (b, 6))))) }.r
+                $call add ($call n (t), $call add ($call f (b, 6),
+                $call add ($call late ($call holder.mk ()), $call inspec ($call S.mk ()))))))) }.r

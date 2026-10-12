@@ -137,11 +137,16 @@ $decl mrec $func ($decl ok P.boolean, $decl t T.proto_ty, $decl i 0, $decl fs IR
 $decl no_mrec $call mrec (false, T.t_unit, 0, IR.ints.nil)
 $decl mrec_val $func ($decl r no_mrec) r
 
+// `isctx` is the specialisation context the module's code was written in, in
+// inference's spelling (see `opaque_at`): empty for a file, which §4.14 types at its
+// own top level, and the enclosing `$specialize`'s key for a block literal in a
+// template body — whose prop bodies inference typed inside that specialisation, and
+// which lowering only reaches later, from wherever the first projection happens.
 $decl mod_ent_g $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                        $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node,
-                       $decl fl "", $decl rc no_mrec)
+                       $decl fl "", $decl rc no_mrec, $decl ic "")
   { $decl id i  $decl props $alloc ps  $decl done $alloc ds  $decl env $alloc en
-    $decl base bs  $decl path pt  $decl file fl
+    $decl base bs  $decl path pt  $decl file fl  $decl isctx ic
     // `with_props (en, ps, i)`, built once at registration. See `with_props`.
     $decl penv $alloc pe
     $decl rec $alloc rc }
@@ -149,7 +154,7 @@ $decl mod_ent_g $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
 $decl mod_ent_f $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                        $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node,
                        $decl fl "")
-  $call mod_ent_g (i, ps, ds, en, bs, pt, pe, fl, no_mrec)
+  $call mod_ent_g (i, ps, ds, en, bs, pt, pe, fl, no_mrec, "")
 
 $decl mod_ent $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                      $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node)
@@ -282,6 +287,13 @@ $decl opq_ent $func ($decl i 0, $decl m 0, $decl nm "") { $decl id i  $decl mod 
 $decl proto_opq $call opq_ent (0, 0, "")
 $decl opq_list $specialize P.list proto_opq
 
+// A read of a function-valued prop whose source had not been lowered yet when the read
+// was, kept until the end of the file. See `prop_pending`.
+$decl pend_ent $func ($decl i 0, $decl nm "", $decl k 0, $decl t T.proto_ty, $decl n Pa.proto_node)
+  { $decl id i  $decl name nm  $decl idx k  $decl ty t  $decl node n }
+$decl proto_pend $call pend_ent (0, "", 0, T.t_bot, Pa.proto_node)
+$decl pend_list $specialize P.list proto_pend
+
 $decl lstate $func ()
   { // §9.3's table, pending half: **newest first**, so an append is one cell.
     $decl tpend  $mut $alloc T.tys.node
@@ -326,6 +338,7 @@ $decl lstate $func ()
     $decl isctx   $mut $alloc ""
     // Every function-valued prop lowering has seen, by identity. See `prop_by_id`.
     $decl opaqs   $mut $alloc opq_list.node
+    $decl pends   $mut $alloc pend_list.node
     // Imported modules in the order their loading **completed** — a dependency first,
     // since §4.14 finishes a module before the importer's next member. It is what
     // `mpl_init` has to call them in, and it cannot be recovered from the function
@@ -401,8 +414,8 @@ $decl ct_hash $func ($decl ic "", $decl fs "", $decl tag 0, $decl n Pa.proto_nod
 // two part company — a `$specialize` body and a props-bearing block literal are named
 // from themselves and emitted in the file that produced them.
 //
-// And the specialisation context, which a module's code is never inside: §4.14 types a
-// module at its own top level, so entering one clears it, and `spec_build` sets it.
+// And the specialisation context: entering a module restores the one it was written in
+// (`mod_ent_g`'s `isctx`), and `spec_build` enters its own.
 $decl msave_rec $func ($decl nm "", $decl fl "", $decl ic "") { $decl name nm  $decl file fl  $decl isctx ic }
 $decl proto_msave $call msave_rec ("", "", "")
 
@@ -418,11 +431,11 @@ $decl enter_mod $func ($decl st proto_lst, $decl mid "")
 
 // A module whose code belongs to a *different* file than its name: `fl` is where it is
 // emitted, `mid` is what it is named from.
-$decl enter_mod_in $func ($decl st proto_lst, $decl mid "", $decl fl "")
+$decl enter_mod_in $func ($decl st proto_lst, $decl mid "", $decl fl "", $decl ic "")
   { $decl prev $call cur_msave (st)
     $decl s0   $set st.curmod mid
     $decl s1   $set st.curfile fl
-    $decl s2   $set st.isctx ""
+    $decl s2   $set st.isctx ic
     $decl r    prev }.r
 
 $decl leave_mod $func ($decl st proto_lst, $decl prev proto_msave)
@@ -718,10 +731,11 @@ $decl fresh_var $func ($decl st proto_lst)
 $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $decl nm 0,
                    $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0,
                    $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
-                   $decl tr IR.proto_trie, $decl oq opq_list.node)
+                   $decl tr IR.proto_trie, $decl oq opq_list.node, $decl pq pend_list.node)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
-    // The prop registry names modules by id, and a rollback hands ids out again.
-    $decl opaqs oq
+    // The prop registry names modules by id, and a rollback hands ids out again; a
+    // pending read names a lifted index, which a rollback hands out again too.
+    $decl opaqs oq  $decl pends pq
     $decl specs sp   $decl tmpls tm    $decl ntmpls nt
     // §9.3's table, both halves of the banker's queue and both counters. Every
     // type the discarded pass interned is garbage by construction: it was
@@ -736,7 +750,8 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
     $decl tytrie tr }
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
-                      tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil)
+                      tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil,
+                      pend_list.nil)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -747,7 +762,8 @@ $decl take_snap $func ($decl st proto_lst)
       $call eval_specs (st.specs), $call eval_tmpls (st.tmpls), $call P.ival (st.ntmpls),
       $call T.tys.val (st.tsettled), $call T.tys.val (st.tpend),
       $call P.ival (st.nsettled), $call P.ival (st.ntypes),
-      $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs))
+      $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs),
+      $call pend_list.val (st.pends))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -763,6 +779,7 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl k $set st.ntypes   sn.ntypes
     $decl l $set st.tytrie   ($call IR.tval_trie (sn.tytrie))
     $decl o $set st.opaqs    ($call opq_list.val (sn.opaqs))
+    $decl q $set st.pends    ($call pend_list.val (sn.pends))
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
@@ -781,22 +798,28 @@ $decl add_spec $func ($decl st proto_lst, $decl sp proto_spec)
 
 $decl eval_benv $func ($decl x benv.node) x
 
-$decl fresh_mod_in $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
-                          $decl bs "", $decl pt "", $decl fl "")
+$decl fresh_mod_ic $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
+                          $decl bs "", $decl pt "", $decl fl "", $decl ic "")
   { $decl i $call P.ival (st.nmods)
     $decl n $set st.nmods ($call add (i, 1))
     // The prop environment is a function of the module alone, so it is built
     // here and never again.
     $decl pe $call with_props (en, ps, i)
     $decl m $set st.mods ($call mods_list.cons (
-                              $call mod_ent_f (i, ps, mdones.nil, en, bs, pt, pe, fl),
+                              $call mod_ent_g (i, ps, mdones.nil, en, bs, pt, pe, fl, no_mrec, ic),
                               $call eval_mods (st.mods)))
     $decl r i }.r
 
-// A real `$import`: the module is its own file, so `mod_short (pt)` is both.
+// Written where it stands, so in whatever specialisation is being lowered.
+$decl fresh_mod_in $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
+                          $decl bs "", $decl pt "", $decl fl "")
+  $call fresh_mod_ic (st, ps, en, bs, pt, fl, $call P.sval (st.isctx))
+
+// A real `$import`: the module is its own file, so `mod_short (pt)` is both. Never in a
+// specialisation, even when the first `$import` of it is reached from inside one.
 $decl fresh_mod_at $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
                           $decl bs "", $decl pt "")
-  $call fresh_mod_in (st, ps, en, bs, pt, $call mod_short (pt))
+  $call fresh_mod_ic (st, ps, en, bs, pt, $call mod_short (pt), "")
 
 $decl fresh_mod $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node)
   $call fresh_mod_at (st, ps, en, "", "")
@@ -1179,8 +1202,23 @@ $decl prop_by_id $func ($decl xs opq_list.node, $decl id 0, $decl nm "") $match 
   $case xs -1
 )
 
+// A function-valued prop whose block has not been lowered *yet*. Lowering reaches code
+// on demand, so a reader written above the code that builds the block — `use` before
+// `main`, or a member above its sibling, or anything inside a prop body that only a
+// later projection lowers — finds nothing registered. But a value of the type exists
+// at run time, so the code building it is lowered by the end of the file. So the read
+// reserves a lifted index now, at the prop's type (inference's, which a parameter
+// carries), and `resolve_pends` fills it once everything is lowered: a thunk whose body
+// is the prop's value, which for a function is one `global` — an alias, so emit calls
+// the real function directly.
+$decl prop_pending $func ($decl st proto_lst, $decl c 0, $decl nm "", $decl t T.proto_ty,
+                          $decl n Pa.proto_node)
+  { $decl k $call reserve_lifted (st)
+    $decl p $set st.pends ($call pend_list.cons ($call pend_ent (c, nm, k, t, n), st.pends))
+    $decl r $call lres ($call IR.e_global ($call intern (st, t), k), t) }.r
+
 $decl cv_lower $func ($decl st proto_lst, $decl c T.proto_cv, $decl nm "",
-                      $decl n Pa.proto_node) $match c (
+                      $decl n Pa.proto_node, $decl pty T.proto_ty) $match c (
   $case {$prop tag "cint"}  ($call lres ($call IR.e_int ($call intern (st, T.t_int), c.v), T.t_int)),
   $case {$prop tag "cstr"}  ($call lres ($call IR.e_str ($call intern (st, T.t_str), c.v), T.t_str)),
   $case {$prop tag "cbool"}
@@ -1189,9 +1227,13 @@ $decl cv_lower $func ($decl st proto_lst, $decl c T.proto_cv, $decl nm "",
   $case {$prop tag "cunit"} ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit)),
   $case {$prop tag "copaque"}
     { $decl mid $call prop_by_id ($call opq_list.val (st.opaqs), c.id, nm)
+      // A type that is not settled has no layout to reserve at; that is a type-only
+      // position, never evaluated, and reported rather than guessed.
       $decl r   $if ($call lt (mid, 0))
-          ($call lres ($call IR.e_unit ($call err (st, $call concat ("the value of prop '",
-              $call concat (nm, "' is not reachable from here: no block lowered in this program carries it")), n)), T.t_bot))
+          ($if ($call T.has_var (pty, 0))
+               ($call lres ($call IR.e_unit ($call err (st, $call concat ("the value of prop '",
+                   $call concat (nm, "' is not reachable from here: its type is not settled")), n)), T.t_bot))
+               ($call prop_pending (st, c.id, nm, pty, n)))
           ($call lval ($call lower_prop (st, mid, nm, n))) }.r,
   $case c ($call lres ($call IR.e_unit ($call err (st, $call concat ("the value of prop '",
       $call concat (nm, "' is not reachable from here: it is not a scalar, and this block's source was not lowered in this file")), n)), T.t_bot))
@@ -1204,7 +1246,7 @@ $decl prop_from_ty $func ($decl st proto_lst, $decl ps T.props.node, $decl nm ""
                           $decl n Pa.proto_node)
   { $decl f $call find_prop (ps, nm)
     $decl r $match f (
-        $case {$prop tag "cons"} ($call cv_lower (st, f.head.value, nm, n)),
+        $case {$prop tag "cons"} ($call cv_lower (st, f.head.value, nm, n, $call T.tval (f.head.ty))),
         $case f ($call lres ($call IR.e_unit ($call err (st, $call concat ("no field '",
             $call concat (nm, "'")), n)), T.t_bot))
       ) }.r
@@ -1673,11 +1715,10 @@ $decl spec_build $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmp
     // props, and `const_of` gives each one its compile-time identity from the module
     // in scope. Without this the props of `P.list Int` and `P.list Str` would be
     // identified by whoever happened to be lowering when they were first reached.
-    $decl ms $call enter_mod_in (st, sk, r.file)
     // Inference's memo key for the same specialisation (`infer.mpl`'s `memo_key`):
     // the template's id, then each argument type rendered. Every identity minted in
     // the body hashes it, exactly as inference's `sctx` does.
-    $decl ic $set st.isctx ($call infer_key (st, r.iid, keys, ""))
+    $decl ms $call enter_mod_in (st, sk, r.file, $call infer_key (st, r.iid, keys, ""))
     $decl v0 $call lval ($call lower (st, be, r.body, false))
     $decl mr $call leave_mod (st, ms)
     $decl v  v0
@@ -1894,7 +1935,7 @@ $decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node)
           // `stage1/fixtures/effect.mpl` answers 4 instead of 46, which is exactly what
           // "dropped" looks like.
           { $decl pe $call benv.val (ms.head.penv)
-            $decl msave $call enter_mod_in (st, $call mod_short (ms.head.path), ms.head.file)
+            $decl msave $call enter_mod_in (st, $call mod_short (ms.head.path), ms.head.file, ms.head.isctx)
             $decl z  $call lower_effect (st, pe, pn, -1)
             $decl mrest $call leave_mod (st, msave) }.z,
         $case ms 0
@@ -2024,7 +2065,7 @@ $decl mod_value $func ($decl st proto_lst, $decl mid 0)
                 // The module is entered while its props' identities are minted, so
                 // every value of one module has one type — `const_of` names an
                 // opaque prop by `curmod`.
-                { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file)
+                { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
                   $decl a     $call rec_build (st, ds, ps, proto_racc)
                   $decl reg   $call note_opaqs (st, mid, ps)
                   $decl back  $call leave_mod (st, msave)
@@ -2036,7 +2077,7 @@ $decl mod_value $func ($decl st proto_lst, $decl mid 0)
                   $decl kept $if a.settled
                       ($call save_mod (st, $call mod_ent_g (m.id, ps, ds, $call benv.val (m.env),
                            m.base, m.path, $call benv.val (m.penv), m.file,
-                           $call mrec (true, t, id, fs))))
+                           $call mrec (true, t, id, fs), m.isctx)))
                       0
                   $decl w  $call lres3 ($call IR.e_block (id,
                                $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)), t, mid) }.w }.v,
@@ -2376,7 +2417,8 @@ $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone)
           ($call save_mod (st, $call mod_ent_g (mid, ms.head.props,
               $call mdones.cons (d, ms.head.done),
               $call benv.val (ms.head.env), ms.head.base, ms.head.path,
-              $call benv.val (ms.head.penv), ms.head.file, $call mrec_val (ms.head.rec)))),
+              $call benv.val (ms.head.penv), ms.head.file, $call mrec_val (ms.head.rec),
+              ms.head.isctx))),
         $case ms 0
       ) }.r
 
@@ -2443,7 +2485,7 @@ $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm ""
 
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file)
+  { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
     $decl pe    $call benv.val (m.penv)
     $decl chk   $call no_caps (st, pe, pn)
     // The index is reserved before the body exists, because the body may name
@@ -2507,7 +2549,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 // `B(R)`, and the result is `μR. B(R)` — or simply `B`, when `R` did not occur.
 $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file)
+  { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
     $decl pe $call benv.val (m.penv)
     $decl self $call mem_str ($call free_names (pn, strs.nil), nm)
     $decl pv $call fresh_var (st)
@@ -2565,7 +2607,7 @@ $decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.prot
 
 $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file)
+  { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
     $decl pe   $call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
                    ($union (false, true)))
     $decl chk  $call no_caps (st, pe, pn)
@@ -3080,6 +3122,40 @@ $decl mark_self $func ($decl xs IR.fns.node, $decl i 0, $decl acc IR.fns.node) $
 // `fty` is what `check_file` returned for this file (§3.3). Only `$decl` items
 // are lowered; a top-level `$prop` or a bare expression is out of the subset
 // for a program's top level and reported rather than guessed at.
+// The end of the file, where every pending read can be answered: §4.10 makes a prop's
+// value part of its block's type, so the identity the read was given names one prop,
+// and by now the block holding it has been lowered — something in the program builds
+// the value the read is of. Resolving can lower more code and so defer more reads,
+// hence the loop; it is bounded because every round lowers something new or stops.
+$decl resolve_one $func ($decl st proto_lst, $decl p proto_pend)
+  { $decl mid $call prop_by_id ($call opq_list.val (st.opaqs), p.id, p.name)
+    $decl r $if ($call lt (mid, 0))
+        ($call err (st, $call concat ("the value of prop '",
+            $call concat (p.name, "' is not reachable: no block in this program carries it")), p.node))
+        { $decl reset $call take_slots (st)
+          $decl v     $call lval ($call lower_prop (st, mid, p.name, p.node))
+          // Not `pub` by accident: the read may be in any module's output, and this
+          // function lives in the entry file's.
+          $decl f     $call IR.fn_p (p.name, IR.ints.nil, $call intern (st, p.ty),
+                          $call take_slots (st), v.ir, false, true, IR.ints.nil,
+                          "", $call next_rank (st), true, "")
+          $decl put   $call put_lifted (st, p.idx, f)
+          $decl back  $call restore_slots (st, reset)
+          $decl z     0 }.z }.r
+
+$decl resolve_list $func ($decl st proto_lst, $decl ps pend_list.node) $match ps (
+  $case {$prop tag "cons"}
+    $do ($call resolve_one (st, ps.head)) ($call resolve_list (st, $call pend_list.val (ps.tail))),
+  $case ps 0
+)
+
+$decl resolve_pends $func ($decl st proto_lst, $decl rounds 0)
+  { $decl ps $call pend_list.val (st.pends)
+    $decl r  $if ($call pend_list.is_nil (ps)) 0
+        { $decl cleared $set st.pends pend_list.nil
+          $decl d $call resolve_list (st, ps)
+          $decl q $if ($call lt (rounds, 64)) ($call resolve_pends (st, $call add (rounds, 1))) 0 }.q }.r
+
 $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty T.proto_ty,
                         $decl prims benv.node, $decl base "")
   { $decl flds $match fty ($case {$prop tag "block"} ($call T.fields.val (fty.fields)), $case fty T.fields.nil)
@@ -3113,6 +3189,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl fnbased $set st.fnbase ($call T.fields.length (flds, 0))
     $decl effi $call scan_effects (items, 0, strs.nil, eff_items.nil)
     $decl done $call lower_top (st, env, items, flds, IR.fns.nil, effi, 0)
+    $decl pend $call resolve_pends (st, 0)
     $decl all0 $call append_fns ($call IR.fns.val (done.funcs),
                    $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil))
     $decl all  $call mark_self (all0, 0, IR.fns.nil)
