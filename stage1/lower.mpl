@@ -1866,8 +1866,14 @@ $decl lower_effect $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.prot
                   $call P.sval (st.curmod))
     $decl put $call put_lifted (st, idx, f)
     $decl b   $call restore_slots (st, o)
+    // A module's effect is placed by its **source position**, encoded as `-1 - pos`
+    // so a negative still says "module": the same numbering a member's rank uses,
+    // which is what lets a module's initialiser interleave the two (`emit_mod_init`).
+    // It was the effect's lifted index, which is source order only while members are
+    // lowered in source order — and a `$fwd`'d function lowered early pulls later
+    // members forward, so it is not.
     $decl inm $call lt (after, 0)
-    $decl at  $if inm idx after
+    $decl at  $if inm ($call isub (-1, after)) after
     $decl s   $set st.effs ($call IR.effects.cons ($call IR.effect (at, idx, inm),
                    $call IR.effects.val (st.effs)))
     $decl r   0 }.r
@@ -1965,7 +1971,7 @@ $decl top_props $func ($decl xs Pa.nodes.node, $decl acc mprops.node) $match xs 
 // member's thunk takes the next lifted index, so index order is source order.
 // An effect takes one of those indices too and `mpl_init` runs it there, which
 // is how it lands between the member before it and the member after.
-$decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node)
+$decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node, $decl pos 0)
   { $decl ms $call find_mod (st.mods, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
@@ -1976,18 +1982,20 @@ $decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node)
           // "dropped" looks like.
           { $decl pe $call benv.val (ms.head.penv)
             $decl msave $call enter_mod_in (st, $call mod_short (ms.head.path), ms.head.file, ms.head.isctx)
-            $decl z  $call lower_effect (st, pe, pn, -1)
+            $decl z  $call lower_effect (st, pe, pn, $call isub (-1, pos))
             $decl mrest $call leave_mod (st, msave) }.z,
         $case ms 0
       ) }.r
 
+// `pos` is the item's position in the module, which is the rank a member is named by
+// (`prop_rank`) and so the order its initialiser runs in.
 $decl force_props $func ($decl st proto_lst, $decl mid 0, $decl xs mprops.node,
-                         $decl n Pa.proto_node) $match xs (
+                         $decl n Pa.proto_node, $decl pos 0) $match xs (
   $case {$prop tag "cons"}
     $do ($if ($call eq_str (xs.head.kind, "effect"))
-             ($call mod_effect (st, mid, xs.head.node))
+             ($call mod_effect (st, mid, xs.head.node, pos))
              ($do ($call lower_prop (st, mid, xs.head.name, n)) 0))
-        ($call force_props (st, mid, xs.tail, n)),
+        ($call force_props (st, mid, xs.tail, n, $call add (pos, 1))),
   $case xs 0
 )
 
@@ -2142,7 +2150,7 @@ $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n 
           // the importer's.
           $decl mid $call fresh_mod_at (st, $call file_props ($call Pa.nodes.val (p.exprs), mprops.nil),
                         $call benv.val (st.rootenv), $call P.dirname (key), key)
-          $decl f   $call force_props (st, mid, $call mod_props (st, mid), n)
+          $decl f   $call force_props (st, mid, $call mod_props (st, mid), n, 0)
           // Complete now, so it is appended after everything it imported.
           $decl ord $set st.morder ($call strs.cons ($call mod_short (key),
                         $call strs.val (st.morder)))

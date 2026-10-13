@@ -187,6 +187,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n" },
         .{ .src = "stage1/fixtures/prop_param.mpl", .want = "98\n" },
         .{ .src = "stage1/fixtures/defaults.mpl", .want = "247\n" },
+        .{ .src = "stage1/fixtures/init_fwd.mpl", .want = "22\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -329,6 +330,8 @@ pub fn build(b: *std.Build) void {
             .{ .src = "stage1/fixtures/prop_param.mpl", .want = "98\n", .mods = &.{ "prelude", "prop_param_util" } },
             // A wrapper lives in its callee's output and is called from the caller's.
             .{ .src = "stage1/fixtures/defaults.mpl", .want = "247\n", .mods = &.{ "prelude", "defaults_util" } },
+            // A module's initialiser is its own output's, so source order has to hold there.
+            .{ .src = "stage1/fixtures/init_fwd.mpl", .want = "22\n", .mods = &.{"init_fwd_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);

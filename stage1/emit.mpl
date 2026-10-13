@@ -2868,6 +2868,70 @@ $decl emit_inits $func ($decl st proto_est, $decl all IR.fns.node, $decl fs IR.f
 
 
 
+// A module's initialiser, in **source order**: §4.10 initialises a `$decl` once, in the
+// order it is written, and an effect runs between the members around it.
+//
+// This used to be `emit_inits` over the table in index order, on the claim that a
+// module's members are lifted in source order so index order already is source order.
+// Lowering does lift them eagerly in source order — but a `$fwd`'d function is lowered
+// at the `$fwd`'s position, and its body may name members written later, so lowering it
+// lifts those first, and whatever *their* initialisers name after them:
+//
+//   $fwd f
+//   $decl a 5
+//   $decl b $call add (a, 1)   // assigned before `a`, so it read 0
+//   $decl f $func () b
+//
+// answered 1 where stage 0 answers 6, with no diagnostic. A member's `rank` is its
+// position among the module's items (`prop_rank`) and a module effect's `after` is its
+// position too (`lower_effect`), so sorting on those is source order however the table
+// came to be numbered. Only a member is ranked that way, which `pub` says; any other
+// thunk placed in a module follows in index order, as before.
+$decl ient $func ($decl k 0, $decl e P.boolean, $decl i 0) { $decl key k  $decl eff e  $decl idx i }
+$decl proto_ient $call ient (0, false, 0)
+$decl ients $specialize P.list proto_ient
+
+$decl ient_insert $func ($decl x proto_ient, $decl xs ients.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (x.key, xs.head.key)) ($call ients.cons (x, xs))
+        ($call ients.cons (xs.head, $call ient_insert (x, $call ients.val (xs.tail)))),
+  $case xs ($call ients.cons (x, ients.nil))
+)
+
+$decl init_thunks $func ($decl fs IR.fns.node, $decl i 0, $decl md "", $decl ranked P.boolean,
+                         $decl acc ients.node) $match fs (
+  $case {$prop tag "cons"}
+    { $decl f  fs.head
+      $decl ok $if ($call and (f.thunk, $call eq_str (f.mod, md))) ($if ranked f.pub ($call not (f.pub))) false
+      $decl a  $if ok ($call ient_insert ($call ient ($if ranked f.rank i, false, i), acc)) acc
+      $decl r  $call init_thunks ($call IR.fns.val (fs.tail), $call add (i, 1), md, ranked, a) }.r,
+  $case fs acc
+)
+
+$decl init_effects $func ($decl all IR.fns.node, $decl es IR.effects.node, $decl md "",
+                          $decl acc ients.node) $match es (
+  $case {$prop tag "cons"}
+    { $decl ok $if es.head.inmod ($call eq_str (($call fn_at (all, es.head.fn)).mod, md)) false
+      $decl a  $if ok ($call ient_insert ($call ient (es.head.after, true, es.head.fn), acc)) acc
+      $decl r  $call init_effects (all, $call IR.effects.val (es.tail), md, a) }.r,
+  $case es acc
+)
+
+$decl emit_ients $func ($decl st proto_est, $decl xs ients.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($if xs.head.eff
+             ($call say (st, $call concat ("  (void)", $call concat ($call fn_name (st, xs.head.idx), "(NULL);\n"))))
+             ($call assign (st, $call gbl_name (st, xs.head.idx),
+                 $call concat ($call fn_name (st, xs.head.idx), "(NULL)"))))
+        ($call emit_ients (st, $call ients.val (xs.tail))),
+  $case xs ()
+)
+
+$decl emit_mod_init $func ($decl st proto_est, $decl all IR.fns.node, $decl es IR.effects.node, $decl md "")
+  { $decl ranked $call init_effects (all, es, md, $call init_thunks (all, 0, md, true, ients.nil))
+    $decl a $call emit_ients (st, ranked)
+    $decl b $call emit_ients (st, $call init_thunks (all, 0, md, false, ients.nil)) }.b
+
 // `md` is the module whose bodies this pass emits — §9.1's list of outputs means one
 // file per module, and a function's `mod` is what says which. The *index* stays global,
 // because a name comes from `st.fnames` by index and every file must agree on it.
@@ -2953,7 +3017,7 @@ $decl emit_mod_files $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T
       // which is what forced 269 extra exports.
       $decl j0 $call say (st, $call concat ("\nvoid mpl_init_", $call concat (ms.head,
                     "(void) {\n")))
-      $decl j1 $call emit_inits (st, fs, fs, $call IR.effects.val (efs), 0, fb, nf, true, ms.head)
+      $decl j1 $call emit_mod_init (st, fs, $call IR.effects.val (efs), ms.head)
       $decl j2 $call say (st, "}\n")
       $decl f  $call IR.ofile ($call concat (ms.head, ".c"), $call cut_out (st))
       $decl r  $call emit_mod_files (st, fs, ts, gs, ms.tail, efs, fb, nf,
