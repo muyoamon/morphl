@@ -176,4 +176,26 @@ $decl t17 $call check_str ("verify rejects a call with the wrong argument count"
   $call first_msg ($call C.verify (bad_arity)),
   $call at_node (noargs, "arguments: 0 where the function takes 1"))
 
+// §4.10: the lifted region is initialised before the entry file's statics, so a lifted
+// thunk may not read one — and calling a function that does is reading it too. `base`
+// is an entry-file static, `rd` an entry-file function, `early` a lifted thunk (index 2,
+// at `fnbase` 2) that never names `base` itself. Lowering cannot build this — every
+// lifted thunk is a module's, and §4.14 keeps module code off the entry file — but a
+// pass can (§9.2), which is why it is built here.
+$decl ord_prog $func ($decl rb IR.proto_expr)
+  $call IR.program (tys1,
+      $call IR.fns.cons ($call IR.fn ("base", IR.ints.nil, 0, IR.ints.nil, $call IR.e_int (0, 41), false, true, IR.ints.nil),
+      $call IR.fns.cons ($call IR.fn ("rd", IR.ints.nil, 0, IR.ints.nil, rb, false, false, IR.ints.nil),
+      $call IR.fns.cons ($call IR.fn ("early", IR.ints.nil, 0, IR.ints.nil,
+                             $call IR.e_call (0, $call IR.e_global (0, 1), IR.exprs.nil, true), false, true, IR.ints.nil),
+      IR.fns.nil))),
+      IR.groups.nil, 0, IR.effects.nil, 2)
+
+$decl t18 $call check_str ("verify follows a lifted thunk's calls to an entry-file static",
+  $call first_msg ($call C.verify ($call ord_prog ($call IR.e_global (0, 0)))),
+  "early: a lifted thunk calls 'rd', which reads a static of the entry file, directly or through further calls; §4.10 initialises the lifted region first, so it runs before that static is assigned")
+
+$decl t19 $call check ("...and is quiet when the function it calls reads none",
+  $call Pa.diags.is_nil ($call C.verify ($call ord_prog ($call IR.e_int (0, 1)))))
+
 $decl done $call nl ("all pipeline tests passed")
