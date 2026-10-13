@@ -2303,6 +2303,83 @@ than more tests. Anyone resuming this should start by finding the mechanism on t
 smallest input that reproduces it, which is somewhere between the fixtures and
 `mplc.mpl`; the 1.63x is real and the approach is close.
 
+**Retracted — see the next entry.** The mechanism was found, and the 1.63x was not real:
+almost all of it came from the comparisons the attempt answered wrongly.
+
+### Monotonic `ntypes`, the mechanism: an index proves equality, not inequality
+
+The patch above was never saved, so it was rebuilt from the description — monotonic
+`ntypes` (`put_snap` restores the lists and the trie, keeps the counter, and pads the
+discarded entries with `⊥`), a `tyid` on `T.field` (and on inference's `binding`, for the
+coupling recorded two entries up), set where `lower_item` already interns the field's
+type, and `same_fields` comparing two fields by `tyid` when both have one. The rebuild is
+faithful: pass 2 fails `cc` on **the same struct**, `mpl_t89297057521717570`.
+
+**The smallest input is one line**, `$decl M $import "infer"`:
+
+| input | redefinitions |
+|---|---|
+| every stage-1 module and fixture, as the entry file | 0 (`compiler.mpl` aside) |
+| every subset of `{infer, lower, emit, verify}`, imported | 2 exactly when `infer` is in it |
+| each of `infer`'s own imports (`prelude`, `lexer`, `parser`, `types`, `tyio`), imported | 0 |
+
+`infer.mpl` as the *entry* does not reproduce it and `infer` as a *module* does. That is
+the whole clue: a module's members are **derived**, so §5.5 lowers recursive members
+twice and rolls the first pass back — and rollback is what the patch changed.
+
+**The mechanism.** Monotonic `ntypes` makes an index never be handed out twice, so two
+fields with **equal** `tyid`s really do have one type. It does **not** make **unequal**
+`tyid`s mean unequal types, and the patch assumed it did. A type is a structural value,
+so one built in a pass that is then rolled back survives the rollback — `lower_prop_func`
+keeps the first pass's `fty` on purpose — and its fields still carry `tyid`s naming
+entries that are now `⊥` padding. When such a node is interned again, it meets a
+structurally identical type whose fields carry the *live* indices, and `same_fields`
+answers "different". Interning then breaks twice over:
+
+1. **Duplicate entries.** `ty_find` misses the existing entry, `add_ty` adds a second with
+   the same structure — so the same content hash, so the same C name, defined twice.
+2. **`int64_t` fields.** `emit_fields` finds each field's type by a structural `find_ty`
+   and writes `int64_t` when the search misses. That is why the two bodies differ: in the
+   failing copy `f0` and two union members are `int64_t` where the other has blocks.
+
+Both PERF.md candidates were close and neither was it: a cached index outliving its entry
+is right, but what made it wrong was not that the entry was padded — it was that a
+*different* index for the same structure was read as a different type.
+
+**The sound version trusts the index for equality only** — equal `tyid`s answer `true`,
+anything else falls through to the structural `same`. On the one-liner it removes the
+redefinitions; on the whole compiler it reaches a fixed point, and it emits C
+**byte-identical** to the unpatched lowering's on the same source, which says it changes
+nothing but work. Interleaved, on the same box:
+
+| self-emit of `mplc.mpl` | time |
+|---|---|
+| committed | 42.2 / 43.5 / 43.3s |
+| sound (equality only) | 41.5 / 41.9 / 42.2s |
+| the attempt as recorded (unsound) | 34.3 / 35.0 / 35.0s |
+
+**2–3%, against 1.24x for the unsound version** (1.63x when this file first measured it,
+on an older tree). So the speed was the wrong answers: the comparisons the unsound
+version skipped are the stale-against-live ones, which are structurally *equal* — and an
+equal comparison is a full `same_deep` walk, the expensive case, while an unequal one is
+already cheap because the hash guard rejects it. Skipping them saved exactly the work
+that had to be done. Reverted: 2–3% does not pay for a field on `T.field`, the matching
+one on `binding`, and padding in `put_snap`.
+
+**What this closes.** "Stop reusing indices" was this file's answer to why every cached
+index lost to rollback. It removes reuse, and reuse was not the only hazard: **a type
+value outlives the rollback that invalidated the indices inside it.** Any cache of
+interned indices on type nodes or fields has to survive that, which none of the four
+attempts does. The remaining routes are the ones already named — recursive interning
+(every subterm interned as it is built, so no fresh node is ever compared deeply) or a
+cheaper `same_deep` — and neither is a tuning change.
+
+**Two habits that found it, worth keeping.** The reconstruction was confirmed by
+reproducing the *exact* recorded failure, down to the struct name, before anything was
+concluded from it. And the subset table — every combination of the top modules — turned
+"somewhere between the fixtures and `mplc.mpl`" into one line in sixteen runs of a few
+seconds each, because the compiled compiler makes each probe cheap.
+
 ### Lowering is super-additive, so there is nothing per-module to cache
 
 The interface cache works because **inference is additive**: per-module marginals sum to
