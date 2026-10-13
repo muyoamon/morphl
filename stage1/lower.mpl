@@ -294,6 +294,23 @@ $decl pend_ent $func ($decl i 0, $decl nm "", $decl k 0, $decl t T.proto_ty, $de
 $decl proto_pend $call pend_ent (0, "", 0, T.t_bot, Pa.proto_node)
 $decl pend_list $specialize P.list proto_pend
 
+// §3.4's defaults, which a short call needs. A known function's definition context —
+// its parameters' source and the scope they are evaluated in — and the wrappers built
+// from it. See `short_callee`.
+$decl fdef_ent $func ($decl i 0, $decl ps Pa.nodes.node, $decl en benv.node,
+                      $decl md "", $decl fl "", $decl ic "", $decl nm "")
+  { $decl idx i  $decl params $alloc ps  $decl env $alloc en  $decl mod md  $decl file fl  $decl isctx ic
+    $decl name nm }
+$decl proto_fdef $call fdef_ent (0, Pa.nodes.nil, benv.nil, "", "", "", "")
+$decl fdef_list $specialize P.list proto_fdef
+
+// A wrapper `w` for calls to `g` that supply `k` arguments; `ty` and `node` are kept
+// while it is pending, for building it and for reporting.
+$decl wrap_ent $func ($decl g 0, $decl k 0, $decl w 0, $decl t T.proto_ty, $decl n Pa.proto_node)
+  { $decl fn g  $decl nargs k  $decl idx w  $decl ty t  $decl node n }
+$decl proto_wrap $call wrap_ent (0, 0, 0, T.t_bot, Pa.proto_node)
+$decl wrap_list $specialize P.list proto_wrap
+
 $decl lstate $func ()
   { // §9.3's table, pending half: **newest first**, so an append is one cell.
     $decl tpend  $mut $alloc T.tys.node
@@ -339,6 +356,9 @@ $decl lstate $func ()
     // Every function-valued prop lowering has seen, by identity. See `prop_by_id`.
     $decl opaqs   $mut $alloc opq_list.node
     $decl pends   $mut $alloc pend_list.node
+    $decl fdefs   $mut $alloc fdef_list.node
+    $decl wraps   $mut $alloc wrap_list.node
+    $decl wpends  $mut $alloc wrap_list.node
     // Imported modules in the order their loading **completed** — a dependency first,
     // since §4.14 finishes a module before the importer's next member. It is what
     // `mpl_init` has to call them in, and it cannot be recovered from the function
@@ -731,11 +751,14 @@ $decl fresh_var $func ($decl st proto_lst)
 $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $decl nm 0,
                    $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0,
                    $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
-                   $decl tr IR.proto_trie, $decl oq opq_list.node, $decl pq pend_list.node)
+                   $decl tr IR.proto_trie, $decl oq opq_list.node, $decl pq pend_list.node,
+                   $decl fd fdef_list.node, $decl wr wrap_list.node, $decl wp wrap_list.node)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
     // The prop registry names modules by id, and a rollback hands ids out again; a
     // pending read names a lifted index, which a rollback hands out again too.
     $decl opaqs oq  $decl pends pq
+    // Function definitions and wrappers name lifted indices too.
+    $decl fdefs fd  $decl wraps wr  $decl wpends wp
     $decl specs sp   $decl tmpls tm    $decl ntmpls nt
     // §9.3's table, both halves of the banker's queue and both counters. Every
     // type the discarded pass interned is garbage by construction: it was
@@ -751,7 +774,7 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
                       tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil,
-                      pend_list.nil)
+                      pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -763,7 +786,8 @@ $decl take_snap $func ($decl st proto_lst)
       $call T.tys.val (st.tsettled), $call T.tys.val (st.tpend),
       $call P.ival (st.nsettled), $call P.ival (st.ntypes),
       $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs),
-      $call pend_list.val (st.pends))
+      $call pend_list.val (st.pends), $call fdef_list.val (st.fdefs),
+      $call wrap_list.val (st.wraps), $call wrap_list.val (st.wpends))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -780,6 +804,9 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl l $set st.tytrie   ($call IR.tval_trie (sn.tytrie))
     $decl o $set st.opaqs    ($call opq_list.val (sn.opaqs))
     $decl q $set st.pends    ($call pend_list.val (sn.pends))
+    $decl u $set st.fdefs    ($call fdef_list.val (sn.fdefs))
+    $decl v $set st.wraps    ($call wrap_list.val (sn.wraps))
+    $decl w $set st.wpends   ($call wrap_list.val (sn.wpends))
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
@@ -1211,10 +1238,23 @@ $decl prop_by_id $func ($decl xs opq_list.node, $decl id 0, $decl nm "") $match 
 // carries), and `resolve_pends` fills it once everything is lowered: a thunk whose body
 // is the prop's value, which for a function is one `global` — an alias, so emit calls
 // the real function directly.
+$decl find_pend $func ($decl xs pend_list.node, $decl c 0, $decl nm "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_int (xs.head.id, c), $call eq_str (xs.head.name, nm))) xs.head.idx
+        ($call find_pend ($call pend_list.val (xs.tail), c, nm)),
+  $case xs -1
+)
+
+// One thunk per prop, however many reads are deferred: it is named from the identity,
+// so two would be one name twice.
 $decl prop_pending $func ($decl st proto_lst, $decl c 0, $decl nm "", $decl t T.proto_ty,
                           $decl n Pa.proto_node)
-  { $decl k $call reserve_lifted (st)
-    $decl p $set st.pends ($call pend_list.cons ($call pend_ent (c, nm, k, t, n), st.pends))
+  { $decl had $call find_pend ($call pend_list.val (st.pends), c, nm)
+    $decl k   $if ($call lt (had, 0))
+        { $decl k0 $call reserve_lifted (st)
+          $decl p  $set st.pends ($call pend_list.cons ($call pend_ent (c, nm, k0, t, n), st.pends))
+          $decl z  k0 }.z
+        had
     $decl r $call lres ($call IR.e_global ($call intern (st, t), k), t) }.r
 
 $decl cv_lower $func ($decl st proto_lst, $decl c T.proto_cv, $decl nm "",
@@ -2149,6 +2189,159 @@ $decl lower_match $func ($decl st proto_lst, $decl e benv.node, $decl n proto_fo
               $call IR.e_switch ($call intern (st, a.ty), scrut.ir, a.arms, a.default), a.ty) }.r }.out
 
 
+// ---------------------------------------------- §3.4's defaults at a short call
+//
+// "Defaults are evaluated at call time when the argument is omitted" — and stage 0
+// evaluates them in the *callee's* lexical scope, with no parameter bound yet. Only the
+// callee's definition has that scope, so a call site cannot simply lower the default
+// where it stands: its names would resolve to the caller's bindings. So a short call to
+// a known function `f` calls a generated wrapper instead, lowered in `f`'s recorded
+// definition context (`fdef_ent`): it takes the arguments supplied, evaluates the
+// omitted defaults there, and tail-calls `f` with all of them. One wrapper per function
+// and argument count, built when first wanted; `f` itself is untouched, so a full call
+// costs what it did.
+//
+// This used to be lowered as written, and `verify` refused the arity mismatch — so a
+// program inference accepted and stage 0 ran could not be compiled, which is why five
+// of the stage-1 test suites never built under `mplc`.
+//
+// A short call through a function *value* has no knowable callee and is reported. A
+// call reached before its callee's definition is recorded — a `$fwd`, or a member a
+// later projection lowers — reserves the wrapper's index and is built at the end of the
+// file (`resolve_wraps`), as a deferred prop read is.
+$decl find_fdef $func ($decl xs fdef_list.node, $decl g 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.idx, g)) ($call fdef_list.cons (xs.head, fdef_list.nil))
+        ($call find_fdef ($call fdef_list.val (xs.tail), g)),
+  $case xs fdef_list.nil
+)
+
+$decl find_wrap $func ($decl xs wrap_list.node, $decl g 0, $decl k 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_int (xs.head.fn, g), $call eq_int (xs.head.nargs, k))) xs.head.idx
+        ($call find_wrap ($call wrap_list.val (xs.tail), g, k)),
+  $case xs -1
+)
+
+$decl note_fdef $func ($decl st proto_lst, $decl d proto_fdef)
+  { $decl s $set st.fdefs ($call fdef_list.cons (d, st.fdefs))
+    $decl r 0 }.r
+
+$decl ts_take $func ($decl xs T.tys.node, $decl k 0, $decl acc T.tys.node)
+  $if ($call eq_int (k, 0)) ($call T.tys.reverse (acc, T.tys.nil))
+      ($match xs (
+        $case {$prop tag "cons"} ($call ts_take ($call T.tys.val (xs.tail), $call isub (k, 1),
+                                     $call T.tys.cons (xs.head, acc))),
+        $case xs ($call T.tys.reverse (acc, T.tys.nil))
+      ))
+
+// The wrapper's frame: its parameters first (§7.2), then whatever the defaults need.
+$decl wrap_params $func ($decl st proto_lst, $decl ts T.tys.node, $decl i 0, $decl tys IR.ints.node,
+                         $decl args IR.exprs.node) $match ts (
+  $case {$prop tag "cons"}
+    { $decl ti $call intern (st, $call T.tval (ts.head))
+      $decl sl $call fresh_slot (st, ti)
+      $decl r  $call wrap_params (st, $call T.tys.val (ts.tail), $call add (i, 1),
+                   $call IR.ints.cons (ti, tys), $call IR.exprs.cons ($call IR.e_local (ti, sl), args)) }.r,
+  $case ts ($call args_res ($call IR.exprs.reverse (args, IR.exprs.nil), T.tys.nil))
+)
+
+// The omitted defaults, in the callee's scope: a value position (§5.4) unless the
+// parameter is storage, as for any argument (`lower_args`).
+$decl wrap_defaults $func ($decl st proto_lst, $decl en benv.node, $decl ds Pa.nodes.node,
+                           $decl ts T.tys.node, $decl acc IR.exprs.node) $match ds (
+  $case {$prop tag "cons"}
+    { $decl raw $call lval ($call lower (st, en, $call op (ds.head, 1), false))
+      $decl v   $if ($call wants_ref ($call ps_head (ts))) raw ($call as_value (st, raw))
+      $decl r   $call wrap_defaults (st, en, $call Pa.nodes.val (ds.tail), $call ps_tail (ts),
+                    $call IR.exprs.cons (v.ir, acc)) }.r,
+  $case ds ($call IR.exprs.reverse (acc, IR.exprs.nil))
+)
+
+$decl nodes_drop $func ($decl xs Pa.nodes.node, $decl k 0)
+  $if ($call eq_int (k, 0)) xs
+      ($match xs ($case {$prop tag "cons"} ($call nodes_drop ($call Pa.nodes.val (xs.tail), $call isub (k, 1))),
+                  $case xs xs))
+
+$decl ts_drop $func ($decl xs T.tys.node, $decl k 0)
+  $if ($call eq_int (k, 0)) xs ($call ts_drop ($call ps_tail (xs), $call isub (k, 1)))
+
+$decl append_exprs $func ($decl xs IR.exprs.node, $decl ys IR.exprs.node)
+  $call IR.exprs.reverse ($call IR.exprs.reverse (xs, IR.exprs.nil), ys)
+
+$decl ints_of_tys $func ($decl st proto_lst, $decl ts T.tys.node, $decl acc IR.ints.node) $match ts (
+  $case {$prop tag "cons"}
+    $call ints_of_tys (st, $call T.tys.val (ts.tail), $call IR.ints.cons ($call intern (st, $call T.tval (ts.head)), acc)),
+  $case ts ($call IR.ints.reverse (acc, IR.ints.nil))
+)
+
+// Build the wrapper for `g` taking `k` arguments, at type `fty` (the callee's). It is
+// named from the callee *as written* (`wm`, `wn`): through an alias that is the alias,
+// so `$call f (2)` and `$call al (3)` with `$decl al f` get two wrappers of two names
+// rather than one name twice.
+$decl build_wrap $func ($decl st proto_lst, $decl d proto_fdef, $decl g 0, $decl k 0, $decl fty T.proto_ty,
+                        $decl wm "", $decl wn "")
+  { $decl msave $call enter_mod_in (st, d.mod, d.file, d.isctx)
+    $decl outer $call take_slots (st)
+    $decl ps    $call params_of (fty)
+    $decl rty   $call result_of (fty)
+    $decl pv    $call wrap_params (st, $call ts_take (ps, k, T.tys.nil), 0, IR.ints.nil, IR.exprs.nil)
+    $decl dv    $call wrap_defaults (st, $call benv.val (d.env), $call nodes_drop ($call Pa.nodes.val (d.params), k),
+                    $call ts_drop (ps, k), IR.exprs.nil)
+    $decl pty   $call ints_of_tys (st, $call ts_take (ps, k, T.tys.nil), IR.ints.nil)
+    $decl body  $call IR.e_call ($call intern (st, rty), $call IR.e_global ($call intern (st, fty), g),
+                    $call append_exprs (pv.irs, dv), true)
+    // Exported, since a call in any module's output may want it, and placed in the
+    // callee's file. Named from the callee and the argument count — `pub` puts a name
+    // in the module-member space (`fn_key`'s `_m`), so ranking it off the module's
+    // counter collided with a member, which `cc` rejected as conflicting types.
+    $decl f     $call IR.fn_p ("defaults", pty, $call intern (st, rty), $call take_slots (st), body,
+                    false, false, IR.ints.nil, $call P.sval (st.curfile), k, true,
+                    $call concat ($if ($call eq_str (wm, "")) "e" wm,
+                        $call concat ("_", $call concat (wn, "_dflt"))))
+    $decl back  $call restore_slots (st, outer)
+    $decl mrest $call leave_mod (st, msave)
+    $decl r f }.r
+
+// The wrapper's index for `g` with `k` arguments: memoised, built now when `g`'s
+// definition is known, and otherwise reserved and built at the end of the file.
+$decl wrapper_for $func ($decl st proto_lst, $decl g 0, $decl k 0, $decl fty T.proto_ty, $decl n Pa.proto_node)
+  { $decl hit $call find_wrap ($call wrap_list.val (st.wraps), g, k)
+    $decl r $if ($call not ($call lt (hit, 0))) hit
+        { $decl ds $call find_fdef ($call fdef_list.val (st.fdefs), g)
+          $decl w  $match ds (
+              $case {$prop tag "cons"} ($call add_lifted (st, $call build_wrap (st, ds.head, g, k, fty,
+                                           ds.head.mod, ds.head.name))),
+              $case ds
+                { $decl rw $call reserve_lifted (st)
+                  $decl pq $set st.wpends ($call wrap_list.cons ($call wrap_ent (g, k, rw, fty, n), st.wpends))
+                  $decl z  rw }.z
+            )
+          $decl m $set st.wraps ($call wrap_list.cons ($call wrap_ent (g, k, w, fty, n), st.wraps))
+          $decl z w }.z }.r
+
+// The callee of a `$call` with `k` arguments: itself, or the wrapper that supplies the
+// rest. Only a direct call to a settled function type qualifies — a placeholder means a
+// first pass that §5.5 will redo.
+$decl short_callee $func ($decl st proto_lst, $decl f proto_lres, $decl k 0, $decl n Pa.proto_node)
+  { $decl np  $call T.tys.length ($call params_of (f.ty), 0)
+    $decl ok  $if ($call lt (k, np)) ($call not ($call T.has_var (f.ty, 0))) false
+    // Bound first: §4.7 narrows a scrutinee by its name.
+    $decl fi  f.ir
+    $decl r $if ok
+        ($match fi (
+            $case {$prop tag "global"}
+              { $decl w  $call wrapper_for (st, fi.fn, k, f.ty, n)
+                $decl wt $call T.t_func ($call ts_take ($call params_of (f.ty), k, T.tys.nil), $call result_of (f.ty))
+                $decl q  $call IR.e_global ($call intern (st, wt), w) }.q,
+            // A function *value* — a parameter, a field, a closure — has no definition
+            // to take defaults from. Lowered as written this was a call with an argument
+            // missing: wrong answers, not a refusal.
+            $case fi ($call IR.e_unit ($call err (st,
+                "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument", n)))
+          ))
+        f.ir }.r
+
 $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean)
   { $decl k n.keyword
@@ -2270,7 +2463,8 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
           $decl as $call lower_args (st, e, $call group_items ($call op (n, 1)),
                                      IR.exprs.nil, T.tys.nil, $call params_of (f.ty))
           $decl ty $call result_of (f.ty)
-          $decl r  $call lres ($call IR.e_call ($call intern (st, ty), f.ir, as.irs, tail), ty) }.r
+          $decl cf $call short_callee (st, f, $call IR.exprs.length (as.irs, 0), n)
+          $decl r  $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty) }.r
         ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
              " is not lowered yet")), n)), T.t_unit))))))))))))))))  }.out
 
@@ -2492,6 +2686,10 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
     // this prop — §4.9 memoises before typing for exactly the same reason.
     $decl idx   $call reserve_lifted (st)
     $decl p0    $call note_prop (st, m.id, $call mdone (nm, "global", idx, T.t_bot, -1, -1))
+    // §3.4: where a short call's omitted defaults are evaluated. Before the snapshot,
+    // so a first pass that §5.5 rolls back does not take it with it.
+    $decl fd    $call note_fdef (st, $call fdef_ent (idx, $call group_items ($call op (pn, 0)), pe,
+                    $call mod_short (m.path), m.file, m.isctx, nm))
     // A prop that names itself has to be lowered twice, and the reason is the
     // one place lowering feels the absence of §5.5's knot: it *derives* types,
     // so while the body is being lowered its own result is not known yet and a
@@ -3053,6 +3251,10 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
       $decl fty  fts.head.ty
       $decl it   $call find_completing (items, nm)
       $decl init $call op (it, 1)
+      // §3.4: an entry-file function's defaults are evaluated in the file's scope.
+      $decl fd   $if ($call is_form (init, "func"))
+          ($call note_fdef (st, $call fdef_ent ($call IR.fns.length (acc, 0),
+               $call group_items ($call op (init, 0)), e, "", "", "", nm))) 0
       $decl fm   $if ($call is_form (init, "func"))
           ($call topfn ($call lower_func (st, e, nm, init, fty, IR.ints.nil), -1, -1))
           // A thunk: no parameters, the value as its body (§7.2's frame is
@@ -3135,10 +3337,12 @@ $decl resolve_one $func ($decl st proto_lst, $decl p proto_pend)
         { $decl reset $call take_slots (st)
           $decl v     $call lval ($call lower_prop (st, mid, p.name, p.node))
           // Not `pub` by accident: the read may be in any module's output, and this
-          // function lives in the entry file's.
+          // function lives in the entry file's. Named from the prop's identity rather
+          // than ranked off a counter: `pub` puts a name in the member space, where a
+          // counter's rank collides with a member's.
           $decl f     $call IR.fn_p (p.name, IR.ints.nil, $call intern (st, p.ty),
                           $call take_slots (st), v.ir, false, true, IR.ints.nil,
-                          "", $call next_rank (st), true, "")
+                          "", p.id, true, $call concat ("e_", $call concat (p.name, "_prop")))
           $decl put   $call put_lifted (st, p.idx, f)
           $decl back  $call restore_slots (st, reset)
           $decl z     0 }.z }.r
@@ -3307,6 +3511,52 @@ $decl drop_records $func ($decl st proto_lst, $decl all IR.fns.node)
           $decl eid   $call intern (st, $call T.t_block (T.fields.nil, T.props.nil))
           $decl r     $call rec_drop (all, 0, dead, eid, IR.fns.nil) }.r }.out
 
+// A function by global index, while the file is still being assembled: the entry
+// file's own below `fnbase`, the lifted ones newest first after it.
+$decl fn_at $func ($decl st proto_lst, $decl top IR.fns.node, $decl g 0)
+  $if ($call lt (g, st.fnbase)) ($call IR.fns.nth (top, g))
+      ($call IR.fns.nth ($call IR.fns.val (st.lifted),
+          $call isub ($call isub ($call P.ival (st.nlifted), 1), $call isub (g, st.fnbase))))
+
+// What a callee really is. A thunk whose body is one `global` is an alias —
+// `$decl and P.and` — and §4.10 makes it later than its target, so following it ends;
+// the bound is only against a malformed table.
+$decl chase $func ($decl st proto_lst, $decl top IR.fns.node, $decl g 0, $decl n 0)
+  { $decl f $call fn_at (st, top, g)
+    $decl b $call IR.eval (f.body)
+    $decl r $if ($call and (f.thunk, $call lt (n, 64)))
+        ($match b ($case {$prop tag "global"} ($call chase (st, top, b.fn, $call add (n, 1))),
+                   $case b g))
+        g }.r
+
+$decl resolve_wrap $func ($decl st proto_lst, $decl top IR.fns.node, $decl p proto_wrap)
+  { $decl t  $call chase (st, top, p.fn, 0)
+    $decl ds $call find_fdef ($call fdef_list.val (st.fdefs), t)
+    $decl wf $call fn_at (st, top, p.fn)
+    $decl r  $match ds (
+        $case {$prop tag "cons"} ($call put_lifted (st, p.idx, $call build_wrap (st, ds.head, t, p.nargs, p.ty,
+                                     $call P.sval (wf.nmod), wf.name))),
+        $case ds ($call err (st,
+            "an omitted argument needs its default, and this callee's definition is not known (§3.4): pass every argument",
+            p.node))
+      ) }.r
+
+$decl resolve_wlist $func ($decl st proto_lst, $decl top IR.fns.node, $decl ps wrap_list.node) $match ps (
+  $case {$prop tag "cons"}
+    $do ($call resolve_wrap (st, top, ps.head)) ($call resolve_wlist (st, top, $call wrap_list.val (ps.tail))),
+  $case ps 0
+)
+
+// Deferred prop reads and deferred wrappers, until neither is left: building either can
+// lower code that defers more of the other.
+$decl resolve_late $func ($decl st proto_lst, $decl top IR.fns.node, $decl rounds 0)
+  { $decl a $call resolve_pends (st, 0)
+    $decl ws $call wrap_list.val (st.wpends)
+    $decl r $if ($call wrap_list.is_nil (ws)) 0
+        { $decl cleared $set st.wpends wrap_list.nil
+          $decl d $call resolve_wlist (st, top, ws)
+          $decl q $if ($call lt (rounds, 64)) ($call resolve_late (st, top, $call add (rounds, 1))) 0 }.q }.r
+
 $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty T.proto_ty,
                         $decl prims benv.node, $decl base "")
   { $decl flds $match fty ($case {$prop tag "block"} ($call T.fields.val (fty.fields)), $case fty T.fields.nil)
@@ -3340,7 +3590,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl fnbased $set st.fnbase ($call T.fields.length (flds, 0))
     $decl effi $call scan_effects (items, 0, strs.nil, eff_items.nil)
     $decl done $call lower_top (st, env, items, flds, IR.fns.nil, effi, 0)
-    $decl pend $call resolve_pends (st, 0)
+    $decl pend $call resolve_late (st, $call IR.fns.val (done.funcs), 0)
     $decl all0 $call append_fns ($call IR.fns.val (done.funcs),
                    $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil))
     $decl all  $call mark_self ($call drop_records (st, all0), 0, IR.fns.nil)

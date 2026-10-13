@@ -380,4 +380,17 @@ $decl t31 $call check ("a module used as a value keeps its record",
   $call not ($call eq_str ($call body0 ("$decl M $import \"modval_util\"  $decl get $func () M  $decl main $func () 0 "),
                            "(block)")))
 
+// §3.4's defaults come from the callee's definition, so a short call through a
+// function *value* has nowhere to take them from. Lowered as written it was a call with
+// an argument missing — a wrong answer, not a refusal — so it is reported.
+$decl t32 $call check_str ("a short call through a function value is refused",
+  $call first_err ($call lower_errs ($call concat (
+      "$decl ap $func ($decl g ($func ($decl a 0, $decl b 3) a)) $call g (1) ",
+      "$decl main $func () $call ap ($func ($decl a 0, $decl b 3) $call add (a, b)) "))),
+  "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument")
+
+$decl t33 $call check_str ("a short call to a known function lowers clean",
+  $call first_err ($call lower_errs ("$decl f $func ($decl a 0, $decl b 10) $call add (a, b)  $decl main $func () $call f (1) ")),
+  "")
+
 $decl done $call nl ("all lowering tests passed")
