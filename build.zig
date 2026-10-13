@@ -515,4 +515,73 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&agree.step);
     }
 
+    // ---------------------------------------------- the suites, compiled
+    //
+    // `test-stage1` runs the morphl suites under the interpreter. This runs the same
+    // suites *compiled*: `mplc` emits each one, `cc` builds it, and it runs. That
+    // exercises what the interpreter cannot — the compiled front end, which is what
+    // `mplc` actually is — on 400-odd checks written for something else, the way
+    // `cc` on the whole compiler has repeatedly found what the morphl suites missed.
+    // Five of the eight could not even be emitted until §3.4's defaults were supplied
+    // at a short call; they were rejected by `verify`.
+    //
+    // A suite has no `main`: its checks are top-level effects (§3.3), which run from
+    // `mpl_init`. So the driver includes the emitted C and supplies a `main` that runs
+    // the initialiser — `mpl_init` is `static`, which is why it is an `#include`
+    // rather than a second translation unit — and defines `mpl_argc`/`mpl_argv`, which
+    // the runtime declares `extern` and the backend defines only beside a real `main`.
+    //
+    // A failing check panics, so the exit status is the verdict. The last line is
+    // matched too, because a suite that stopped early would also exit 0 and nothing
+    // else would say so. It is the suite's final section's line, so a new section at
+    // the end of a suite means updating it here.
+    const compiled_step = b.step("test-compiled-suites", "Compile each stage-1 suite with mplc and run it");
+    for ([_]struct { src: []const u8, last: []const u8 }{
+        .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
+        .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
+        .{ .src = "stage1/types_test.mpl", .last = "all hash-invariant tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all $fwd-initialisation tests passed\n" },
+        .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
+        .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
+        .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },
+        .{ .src = "stage1/compiler_test.mpl", .last = "all pipeline tests passed\n" },
+    }) |suite| {
+        const emit = std.Build.Step.Run.create(b, "mplc emits the suite");
+        emit.addFileArg(mplc_bin);
+        emit.addArg(suite.src);
+        emit.setCwd(b.path("."));
+        emit.has_side_effects = true;
+        const c_file = emit.captureStdOut(.{ .basename = "suite.c" });
+
+        const wf = b.addWriteFiles();
+        _ = wf.addCopyFile(c_file, "suite.c");
+        const driver = wf.add("main.c",
+            \\#include "suite.c"
+            \\int mpl_argc = 0;
+            \\char **mpl_argv = 0;
+            \\int main(int argc, char **argv) {
+            \\  mpl_argc = argc;
+            \\  mpl_argv = argv;
+            \\  mpl_init();
+            \\  return 0;
+            \\}
+            \\
+        );
+
+        // -O0: these are big translation units (a suite imports the module it tests
+        // and that module's whole closure), and the run is seconds either way.
+        const cc = b.addSystemCommand(&.{ "cc", "-O0", "-w", "-o" });
+        const bin = cc.addOutputFileArg("suite");
+        cc.addFileArg(driver);
+
+        const run_suite = std.Build.Step.Run.create(b, "run the compiled suite");
+        run_suite.addFileArg(bin);
+        run_suite.setCwd(b.path("."));
+        run_suite.has_side_effects = true;
+        run_suite.expectExitCode(0);
+        run_suite.expectStdOutMatch(suite.last);
+        compiled_step.dependOn(&run_suite.step);
+        test_step.dependOn(&run_suite.step);
+    }
+
 }
