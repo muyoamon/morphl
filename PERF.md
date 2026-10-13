@@ -2438,6 +2438,51 @@ Fixed by ordering a module's initialiser by rank (`emit_mod_init`);
 `stage1/fixtures/init_fwd.mpl` is the regression test. The measurement was rerun with the
 recorder's state moved above its first use.
 
+### What recursive interning would save: ~3.2x, because 70% of the time confirms equal types
+
+The entry above bounds what recursive interning would *cost* in table size. This bounds what
+it would *save*. Under recursive interning `T.same (a, b)` is an index comparison, so the
+saving is at most what `same` and its helpers cost today. Measured two ways on the compiled
+compiler emitting `mplc.mpl`:
+
+| | result |
+|---|---|
+| `same` inclusive (`perf`, frame pointers) | **70.4%** — the contified `same`/`same_deep` group is 69.8% |
+| committed compiler, self-emit | 40.5 / 41.4 / 42.1s |
+| probe: `same` answers from the hash alone | **12.1 / 13.2 / 13.4s** |
+| pairs with equal hashes that `same` was asked to confirm | 320,417,043 |
+| …of which `same_deep` said were *not* the same type | 1 |
+
+The two agree: the profile says ~70% of the run is comparing types, and making that O(1)
+leaves ~30%. The last two rows say where it goes — confirming types that are almost always
+equal, with a full structural walk each, since a hash mismatch already rejects the unequal
+ones cheaply. That is exactly what an index comparison replaces, and it is the same lesson as
+the monotonic-`ntypes` entry from the other side: the expensive comparisons are the equal
+ones.
+
+**Not counted, so 3.2x is a ceiling:** the lookup recursive interning adds at each of the
+92,542 constructions, making the table reachable from `types.mpl`, and inference's
+constructions if it shares the table. None looks large beside 320M deep walks, but none is
+measured.
+
+**The probe found that the structural hash is linear, so its collisions are structured.**
+The one disagreement:
+
+    (Str) -> <{tag=s"none",},{v:Int,tag=s"some",}>
+    (Int) -> <{tag=s"none",},{v:Str,tag=s"some",}>
+
+`hmix (a, b)` is `a * 31 + b` mod `hmod`, so a type's hash is a polynomial in its leaves'
+hashes, and swapping `Int` (1) and `Str` (3) between two positions of equal weight leaves it
+unchanged. The argument recorded with the wider `hmod` — that a birthday collision over the
+table is near 1e-10 — assumes a random hash, and this is not one. For comparison it is
+harmless: `same` falls back to `same_deep` on equal hashes, which is why the real compiler's
+output was right and the probe's was not (it warned `cannot coerce Int to Str` and emitted
+different C). For **naming** it is a latent hazard: a struct's C name comes from this hash, so
+two distinct *block* types that collide would share one — loud, a `cc` redefinition, not
+silent. Today's collision is between function types, which emit no struct. Recursive interning
+would not depend on the hash at all, comparing children by index; a non-linear mix in `hmix`
+removes the naming hazard independently, at the price of renaming every struct.
+
 ### Lowering is super-additive, so there is nothing per-module to cache
 
 The interface cache works because **inference is additive**: per-module marginals sum to
