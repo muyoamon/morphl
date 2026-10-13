@@ -183,8 +183,28 @@ $decl t_bot   { $prop tag "bottom" }
 // conflicting definitions of one struct name, which `cc` rejects rather than
 // miscompiles.
 $decl hmod 100000000000000003
+// **Non-linear, and it has to be.** This used to be `a * 31 + b` alone, which makes a
+// type's hash a linear polynomial in its leaves' hashes — so swapping two leaves between
+// positions of equal weight cancels exactly. `(Str) -> option Int` and `(Int) -> option
+// Str` shared a hash that way (PERF.md, "What recursive interning would save"), in one of
+// 320M hash-equal comparisons over a self-emit. Harmless to `same`, which walks on equal
+// hashes; not to a struct's C *name*, which is this hash — two distinct blocks colliding
+// would be one name for two layouts. The width of `hmod` makes a *random* collision
+// negligible; it says nothing about a structured one.
+//
+// So every combination step is scrambled by a square, which no swap survives. §8 gives the
+// bootstrap no bitwise operators and makes `mul` panic on overflow, which rules out the
+// usual xor-shift mixers: the value is split at 10⁹ instead, so `lo * lo` stays below 10¹⁸.
+// Scrambling at every step, rather than once at the end, is what breaks the cancellation —
+// a linear inner sum scrambled afterwards would still collide wherever the sums do.
+$decl hsplit 1000000000
+$decl hscramble $func ($decl x 0)
+  { $decl lo $call mod (x, hsplit)
+    $decl hi $call div (x, hsplit)
+    $decl r  $call mod ($call add ($call add ($call mul (lo, lo), lo), $call mul (hi, 1000003)), hmod) }.r
+
 $decl hmix $func ($decl a 0, $decl b 0)
-  $call mod ($call add ($call mul (a, 31), $call mod (b, hmod)), hmod)
+  $call hscramble ($call mod ($call add ($call mul (a, 31), $call mod (b, hmod)), hmod))
 
 // Every byte of a string, because the hash has to be **faithful** and not merely a
 // filter. Hashing a name's *length* is enough to settle a comparison — a mismatch

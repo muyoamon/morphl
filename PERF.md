@@ -2483,6 +2483,13 @@ silent. Today's collision is between function types, which emit no struct. Recur
 would not depend on the hash at all, comparing children by index; a non-linear mix in `hmix`
 removes the naming hazard independently, at the price of renaming every struct.
 
+**Done: `hmix` is non-linear** — `a * 31 + b` and then a scramble by a square (`hscramble`), split
+at 10⁹ so it cannot overflow, since §8's bootstrap has no bitwise operators and `mul` panics. The
+pair above went from sharing 281,841,995 to 72,416,274,090,152,254 and 35,318,159,790,175,216 —
+the old values also show how little of `hmod`'s range a linear fold of small leaf constants used.
+Rerunning the count over a self-emit: **0 of 320,417,995** hash-equal pairs are not the same type.
+Every struct is renamed and nothing else changes; the self-emit is 40.0s, the same as before.
+
 ### Lowering is super-additive, so there is nothing per-module to cache
 
 The interface cache works because **inference is additive**: per-module marginals sum to
