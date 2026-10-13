@@ -2380,6 +2380,64 @@ concluded from it. And the subset table — every combination of the top modules
 "somewhere between the fixtures and `mplc.mpl`" into one line in sixteen runs of a few
 seconds each, because the compiled compiler makes each probe cheap.
 
+### Recursive interning: the table would not grow much, and that is not the obstacle
+
+The entry above closes the cached-index route and leaves two: recursive interning (intern
+every subterm as it is built, so no fresh type ever needs a deep comparison — children
+compare by index) or a cheaper `same_deep`. The worry about the first, recorded two entries
+up, was size: "every intermediate type becomes an emitted struct". So it was measured
+before anything was designed.
+
+**Method.** Two numbers bound the table recursive interning would build, both on the whole
+compiler (`mplc.mpl`):
+
+- **The floor** — today's final table closed under subterms. A throwaway driver ran `check`
+  and walked every entry's subterms (fields, props' types, params and results, members,
+  `μ` bodies, references, arrays), deduplicating with the same trie interning uses.
+- **The ceiling** — every compound type *constructed* while lowering. `types.mpl`'s nine
+  compound constructors (`raw_block`, `raw_union`, `raw_inter`, `t_group`, `t_func_fr`,
+  `t_ref_k`, `t_array`, `t_rec`, `t_over`) were wrapped to record each node into a global
+  set (hash bucket, then `T.same`), switched on at the top of `lower_file` so inference's
+  types are not counted.
+
+| on `mplc.mpl` | entries |
+|---|---|
+| §9.3's table today | 1,836 |
+| closed under subterms — **floor** | **1,982** (+8%) |
+| compound types constructed while lowering, distinct — **ceiling** | **4,345** (~2.4x) |
+| compound constructions while lowering, total | 92,542 |
+
+(1,836 is with the instrumentation's own few types in the closure; uninstrumented the table is
+1,811 and its closure 1,956 — the same +8%.) The closure splits blocks 779, unions 139, `μ` 53,
+groups 1, arrays 1, functions 907, references 94, leaves 8.
+
+**Reading it.** Almost every subterm of a final type is already interned — the closure adds
+8%. The ceiling counts temporaries *and* everything built in passes §5.5 rolls back, which a
+rollback truncates out of the table, so a real recursive-interning table lands between the
+two. Emit writes a struct per block, union, group, `μ` or array — about 53% of entries — and
+struct definitions are ~98 KB of the 2.19 MB the compiler emits. Even at the ceiling with the
+same mix that is ~+140 KB, **about 6% more C**. And 92.5k constructions is 92.5k interning
+lookups, each comparing children by index rather than walking them.
+
+**So size is not what stands in the way; architecture is.** `types.mpl`'s constructors are
+pure functions with no access to lowering's table, and inference builds types too, so
+recursive interning means a table every type operation can reach — global, or threaded
+through `T` — and a decision about whether inference shares it. That is the redesign to
+scope next, together with how much of `same_deep`'s time it would actually remove, which
+this does not measure: it bounds the cost of the table, not the saving.
+
+**It found a miscompile on the way**, which is why the instrumentation is worth describing.
+The recorder was `$fwd`'d beside the constructors, and its body names the global set written
+further down. A `$fwd`'d function is lowered at the `$fwd`'s position, so the set's thunk —
+and the trie type its initialiser names — were lifted early and out of source order, and a
+module's initialiser ran in index order: the set was assigned before the value it copies,
+and the first lookup dereferenced NULL. That is not an instrumentation bug. A four-line
+module reproduces it — `$fwd f  $decl a 5  $decl b $call add (a, 1)  $decl f $func () b`
+answered 1 where stage 0 says 6 — and the compiler's own C had three members out of order.
+Fixed by ordering a module's initialiser by rank (`emit_mod_init`);
+`stage1/fixtures/init_fwd.mpl` is the regression test. The measurement was rerun with the
+recorder's state moved above its first use.
+
 ### Lowering is super-additive, so there is nothing per-module to cache
 
 The interface cache works because **inference is additive**: per-module marginals sum to
