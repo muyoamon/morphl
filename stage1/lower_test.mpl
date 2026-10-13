@@ -363,4 +363,21 @@ $decl t29 $call check_str ("a file that does not exist is reported, not guessed"
   $call first_err ($call lower_errs_at ("$decl U $import \"no_such_module\"  $decl main $func () 0 ", fx)),
   "cannot read the file for $import \"no_such_module\" (stage1/fixtures/no_such_module.mpl)")
 
+// A module's value is its record, but a record nothing reads is emptied after
+// lowering (`drop_records`): `M.k` resolves at compile time and never reads `M`'s
+// static. Whether a module binding still builds its record is invisible in every
+// answer, so these are what notice if the pass stops dropping — or drops too much.
+$decl body0 $func ($decl src "")
+  { $decl p  $call lowered_at (src, fx)
+    $decl f0 $call IR.fns.nth (p.funcs, 0)
+    $decl out $call IR.show (f0.body) }.out
+
+$decl t30 $call check_str ("a module only projected builds no record",
+  $call body0 ("$decl M $import \"modval_util\"  $decl main $func () M.k "),
+  "(block)")
+
+$decl t31 $call check ("a module used as a value keeps its record",
+  $call not ($call eq_str ($call body0 ("$decl M $import \"modval_util\"  $decl get $func () M  $decl main $func () 0 "),
+                           "(block)")))
+
 $decl done $call nl ("all lowering tests passed")

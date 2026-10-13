@@ -3156,6 +3156,157 @@ $decl resolve_pends $func ($decl st proto_lst, $decl rounds 0)
           $decl d $call resolve_list (st, ps)
           $decl q $if ($call lt (rounds, 64)) ($call resolve_pends (st, $call add (rounds, 1))) 0 }.q }.r
 
+// ------------------------------------------------- records nothing reads
+//
+// A module's value is its record (`mod_value`), so every `$decl M $import …` thunk
+// builds one — and almost nothing reads it, since `M.f` resolves at compile time
+// without touching the value. A record is a block of global reads, so computing it
+// has no effect; if no node in the program reads the static it is assigned to, the
+// value is unobservable and the thunk can compute the empty block instead. That took
+// the emitted compiler's size back down, where every module binding had made it ~14%
+// bigger for records nothing used.
+//
+// This is a pass over the finished table on purpose. Deciding it *during* lowering —
+// building a record only where a module is used as a value — needs the decision in
+// `lower_name` or `lower`'s dispatch, and every arrangement of that tried made lowering
+// `lower.mpl` itself as a module run out of memory (see `mod_value`). Here nothing in
+// lowering's knot changes.
+//
+// Kept is a fixed point, not one scan: `$decl ir IR` is a thunk that reads `IR`'s
+// static, so `IR`'s record is used exactly when `ir`'s is.
+$fwd pure_slots
+
+$decl pure_rec $func ($decl x IR.proto_expr) $match x (
+  $case {$prop tag "block"} ($call pure_slots ($call IR.bslots.val (x.slots))),
+  $case x false
+)
+
+$decl pure_slots $func ($decl xs IR.bslots.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl v  $call IR.eval (xs.head.init)
+      $decl ok $match v (
+          $case {$prop tag "global"} true,
+          $case {$prop tag "block"} ($call pure_rec (v)),
+          $case v false
+        )
+      $decl r $if ok ($call pure_slots ($call IR.bslots.val (xs.tail))) false }.r,
+  $case xs true
+)
+
+// Thunks whose whole body is a non-empty pure record.
+$decl rec_cands $func ($decl fs IR.fns.node, $decl i 0, $decl acc IR.ints.node) $match fs (
+  $case {$prop tag "cons"}
+    { $decl f  fs.head
+      $decl b  $call IR.eval (f.body)
+      $decl ok $if f.thunk
+          ($match b (
+              $case {$prop tag "block"}
+                ($if ($call IR.bslots.is_nil ($call IR.bslots.val (b.slots))) false ($call pure_rec (b))),
+              $case b false
+            ))
+          false
+      $decl r  $call rec_cands ($call IR.fns.val (fs.tail), $call add (i, 1),
+                   $if ok ($call IR.ints.cons (i, acc)) acc) }.r,
+  $case fs acc
+)
+
+$fwd grefs
+
+$decl grefs_list $func ($decl xs IR.exprs.node, $decl cs IR.ints.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"} $call grefs_list ($call IR.exprs.val (xs.tail), cs, $call grefs (xs.head, cs, acc)),
+  $case xs acc
+)
+
+$decl grefs_slots $func ($decl xs IR.bslots.node, $decl cs IR.ints.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"} $call grefs_slots ($call IR.bslots.val (xs.tail), cs, $call grefs (xs.head.init, cs, acc)),
+  $case xs acc
+)
+
+$decl grefs_arms $func ($decl xs IR.arms.node, $decl cs IR.ints.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"} $call grefs_arms (xs.tail, cs, $call grefs (xs.head.body, cs, acc)),
+  $case xs acc
+)
+
+// The candidates `x` names. Only candidates are collected, so the set stays small.
+$decl gref_add $func ($decl i 0, $decl cs IR.ints.node, $decl acc IR.ints.node)
+  $if ($call mem_int (cs, i)) ($if ($call mem_int (acc, i)) acc ($call IR.ints.cons (i, acc))) acc
+
+$decl grefs $func ($decl x IR.proto_expr, $decl cs IR.ints.node, $decl acc IR.ints.node) $match x (
+  $case {$prop tag "global"}  ($call gref_add (x.fn, cs, acc)),
+  $case {$prop tag "closure"} ($call grefs_list ($call IR.exprs.val (x.captures), cs, $call gref_add (x.fn, cs, acc))),
+  $case {$prop tag "field"}   ($call grefs ($call IR.eval (x.target), cs, acc)),
+  $case {$prop tag "new"}     ($call grefs ($call IR.eval (x.init), cs, acc)),
+  $case {$prop tag "deref"}   ($call grefs ($call IR.eval (x.src), cs, acc)),
+  $case {$prop tag "copy"}    ($call grefs ($call IR.eval (x.src), cs, acc)),
+  $case {$prop tag "set"}     ($call grefs ($call IR.eval (x.value), cs, $call grefs ($call IR.eval (x.target), cs, acc))),
+  $case {$prop tag "block"}   ($call grefs_slots ($call IR.bslots.val (x.slots), cs, acc)),
+  $case {$prop tag "group"}   ($call grefs_list ($call IR.exprs.val (x.items), cs, acc)),
+  $case {$prop tag "call"}    ($call grefs_list ($call IR.exprs.val (x.args), cs, $call grefs ($call IR.eval (x.callee), cs, acc))),
+  $case {$prop tag "if"}      ($call grefs ($call IR.eval (x.els), cs, $call grefs ($call IR.eval (x.then), cs,
+                                  $call grefs ($call IR.eval (x.cond), cs, acc)))),
+  $case {$prop tag "switch"}  ($call grefs ($call IR.eval (x.default), cs, $call grefs_arms ($call IR.arms.val (x.arms), cs,
+                                  $call grefs ($call IR.eval (x.scrut), cs, acc)))),
+  $case {$prop tag "do"}      ($call grefs ($call IR.eval (x.then), cs, $call grefs ($call IR.eval (x.first), cs, acc))),
+  $case {$prop tag "try"}     ($call grefs ($call IR.eval (x.value), cs, acc)),
+  $case x acc
+)
+
+// The roots: what every function that is not a candidate names.
+$decl rec_roots $func ($decl fs IR.fns.node, $decl i 0, $decl cs IR.ints.node, $decl acc IR.ints.node) $match fs (
+  $case {$prop tag "cons"}
+    $call rec_roots ($call IR.fns.val (fs.tail), $call add (i, 1), cs,
+        $if ($call mem_int (cs, i)) acc ($call grefs ($call IR.eval (fs.head.body), cs, acc))),
+  $case fs acc
+)
+
+// `xs` not already in `seen`, consed onto `acc`.
+$decl new_ints $func ($decl xs IR.ints.node, $decl seen IR.ints.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call new_ints ($call IR.ints.val (xs.tail), seen,
+        $if ($call mem_int (seen, xs.head)) acc ($call IR.ints.cons (xs.head, acc))),
+  $case xs acc
+)
+
+// What the kept records name, until nothing new is kept.
+$decl rec_close $func ($decl all IR.fns.node, $decl cs IR.ints.node, $decl todo IR.ints.node,
+                       $decl kept IR.ints.node) $match todo (
+  $case {$prop tag "cons"}
+    { $decl more $call grefs ($call IR.eval (($call IR.fns.nth (all, todo.head)).body), cs, IR.ints.nil)
+      $decl r    $call rec_close (all, cs, $call new_ints (more, kept, $call IR.ints.val (todo.tail)),
+                     $call new_ints (more, kept, kept)) }.r,
+  $case todo kept
+)
+
+// Every field carried across — `mod`, `rank`, `pub` and `nmod` included, which a pass
+// that rebuilds a function has been caught dropping twice (`mark_self`, `fold`).
+$decl empty_thunk $func ($decl f IR.proto_fn, $decl eid 0)
+  $call IR.fn_p (f.name, f.params, eid, IR.ints.nil, $call IR.e_block (eid, IR.bslots.nil),
+      f.self_tail, f.thunk, f.env, f.mod, f.rank, f.pub, f.nmod)
+
+$decl rec_drop $func ($decl fs IR.fns.node, $decl i 0, $decl dead IR.ints.node, $decl eid 0,
+                      $decl acc IR.fns.node) $match fs (
+  $case {$prop tag "cons"}
+    $call rec_drop ($call IR.fns.val (fs.tail), $call add (i, 1), dead, eid,
+        $call IR.fns.cons ($if ($call mem_int (dead, i)) ($call empty_thunk (fs.head, eid)) fs.head, acc)),
+  $case fs ($call IR.fns.reverse (acc, IR.fns.nil))
+)
+
+$decl minus_ints $func ($decl xs IR.ints.node, $decl ys IR.ints.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call minus_ints ($call IR.ints.val (xs.tail), ys,
+        $if ($call mem_int (ys, xs.head)) acc ($call IR.ints.cons (xs.head, acc))),
+  $case xs acc
+)
+
+$decl drop_records $func ($decl st proto_lst, $decl all IR.fns.node)
+  { $decl cs   $call rec_cands (all, 0, IR.ints.nil)
+    $decl out  $if ($call IR.ints.is_nil (cs)) all
+        { $decl roots $call rec_roots (all, 0, cs, IR.ints.nil)
+          $decl kept  $call rec_close (all, cs, roots, roots)
+          $decl dead  $call minus_ints (cs, kept, IR.ints.nil)
+          $decl eid   $call intern (st, $call T.t_block (T.fields.nil, T.props.nil))
+          $decl r     $call rec_drop (all, 0, dead, eid, IR.fns.nil) }.r }.out
+
 $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty T.proto_ty,
                         $decl prims benv.node, $decl base "")
   { $decl flds $match fty ($case {$prop tag "block"} ($call T.fields.val (fty.fields)), $case fty T.fields.nil)
@@ -3192,7 +3343,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl pend $call resolve_pends (st, 0)
     $decl all0 $call append_fns ($call IR.fns.val (done.funcs),
                    $call IR.fns.reverse ($call IR.fns.val (st.lifted), IR.fns.nil))
-    $decl all  $call mark_self (all0, 0, IR.fns.nil)
+    $decl all  $call mark_self ($call drop_records (st, all0), 0, IR.fns.nil)
     $decl es   $call collect_edges (all, 0, edges.nil)
     $decl gs   $call find_groups (es, $call rev_edges (es, edges.nil), 0,
                     $call IR.fns.length (all, 0), IR.groups.nil)
