@@ -506,10 +506,36 @@ $decl cid_count $func () $call cival (cnext)
 
 $decl cbucket $func ($decl hv 0) $call mod ($call add ($call mod (hv, 16381), 16381), 16381)
 
+// A key's own hash, and the bucket is chosen by it rather than by the type's `h`. That
+// is what makes the key — and only the key — decide a class: bucketing by `h`, which
+// also covers everything `same` compares, meant a key with a gap could merge two types
+// only when their `h`s collided mod the bucket count, so a broken key almost never
+// showed and paranoid mode could not see it. Dropping field names from the key merged
+// nothing over a whole self-emit; bucketed by the key, it merges at once.
+$decl ci_hash $func ($decl xs cints.node, $decl acc 0) $match xs (
+  $case {$prop tag "cons"} $call ci_hash ($call cints.val (xs.tail), $call hmix (acc, xs.head)),
+  $case xs acc
+)
+$decl cs_hash $func ($decl xs strs.node, $decl acc 0) $match xs (
+  $case {$prop tag "cons"} $call cs_hash ($call strs.val (xs.tail), $call hash_str (xs.head, 0, acc)),
+  $case xs acc
+)
+$decl cv_hash $func ($decl xs cvals.node, $decl acc 0) $match xs (
+  $case {$prop tag "cons"} $call cv_hash ($call cvals.val (xs.tail), $call hmix (acc, $call cv_tag_h (xs.head))),
+  $case xs acc
+)
+$decl ckey_hash $func ($decl k proto_ckey)
+  $call cv_hash ($call cvals.val (k.pvals),
+      $call cs_hash ($call strs.val (k.pnames),
+          $call cs_hash ($call strs.val (k.names),
+              $call ci_hash ($call cints.val (k.kids),
+                  $call hash_str (k.s2, 0, $call hash_str (k.s1, 0, $call hmix (k.tag, k.num)))))))
+
 // The class of a key, made if it is new. `ok` false — a child was not interned — gives -1.
+// `hv` is unused now; it is kept so each constructor's call stays a one-line change.
 $decl cid_for $func ($decl ok P.boolean, $decl hv 0, $decl k proto_ckey)
   $if ($call not (ok)) -1
-      { $decl b $call cbucket (hv)
+      { $decl b $call cbucket ($call ckey_hash (k))
         $decl f $call ct_find ($call ct_val (ctable), b, k)
         $decl r $if ($call lt (-1, f)) f
             { $decl c $call mul ($call cival (cnext), 4)
@@ -907,11 +933,50 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
 // or anything built from one) falls back to the hash guard and `same_deep`, which stays
 // as the reference the class key mirrors. Its children compare through here too, so
 // even the fallback is shallow wherever the children are interned.
+//
+// **Paranoid mode** (`set_paranoid`) is the check that the key still mirrors `same_deep`:
+// every comparison computes both answers and counts where they part, and returns the
+// *reference* answer, so one disagreement cannot cascade into others and the counts stay
+// honest. Off, it costs one read of a cell per comparison. `stage1/paranoid.mpl` runs a
+// whole compile with it on, and `zig build test-paranoid` runs that over the compiler.
+// Rerun it after touching a constructor's key or adding a type kind.
+$decl paranoid  $mut $alloc ($union (false, true))
+$decl pz_class  $mut $alloc 0
+$decl pz_fall   $mut $alloc 0
+$decl pz_merge  $mut $alloc 0
+$decl pz_split  $mut $alloc 0
+$decl pz_val $func ($decl x 0) x
+$decl pz_bump $func ($decl c $mut $alloc 0) $set c ($call add ($call pz_val (c), 1))
+
+$decl set_paranoid $func ($decl on ($union (false, true))) $set paranoid on
+
+// The counts so far: comparisons answered by class, fallbacks (a side had no class),
+// class-equal pairs `same_deep` calls different — a **merge**, the direction that would
+// miscompile — and `same` pairs in different classes — a **split**, slow but harmless.
+$decl pz_counts $func ()
+  { $decl class $call pz_val (pz_class)  $decl fallbacks $call pz_val (pz_fall)
+    $decl merges $call pz_val (pz_merge)  $decl splits $call pz_val (pz_split) }
+
+$decl same_ref $func ($decl a proto_ty, $decl b proto_ty)
+  $if ($call eq_int ($call hash_of (a), $call hash_of (b))) ($call same_deep (a, b)) false
+
+$decl same_checked $func ($decl ca 0, $decl cb 0, $decl a proto_ty, $decl b proto_ty)
+  { $decl ref  $call same_ref (a, b)
+    $decl both $call and ($call lt (-1, ca), $call lt (-1, cb))
+    $decl k    $if both
+        { $decl n  $call pz_bump (pz_class)
+          $decl eq $call eq_int (ca, cb)
+          $decl d  $if eq ($if ref 0 ($call pz_bump (pz_merge))) ($if ref ($call pz_bump (pz_split)) 0)
+          $decl z  0 }.z
+        ($call pz_bump (pz_fall))
+    $decl r ref }.r
+
 $decl same $func ($decl a proto_ty, $decl b proto_ty)
   { $decl ca $call cid_of (a)
     $decl cb $call cid_of (b)
-    $decl r  $if ($call and ($call lt (-1, ca), $call lt (-1, cb))) ($call eq_int (ca, cb))
-                 ($if ($call eq_int ($call hash_of (a), $call hash_of (b))) ($call same_deep (a, b)) false) }.r
+    $decl r  $if ($call P.bval (paranoid)) ($call same_checked (ca, cb, a, b))
+        ($if ($call and ($call lt (-1, ca), $call lt (-1, cb))) ($call eq_int (ca, cb))
+             ($call same_ref (a, b))) }.r
 
 $decl ty_eq $func ($decl a proto_ty, $decl b proto_ty) $call same (a, b)
 

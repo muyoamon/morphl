@@ -85,9 +85,15 @@ A key is the node's tag, its scalars, and its children's `cid`s:
 otherwise harmless. A field `same` compares and the key omits merges two types into one
 class, which is a miscompile. *Validation* below tests the second direction.
 
-Lookup is a bucket by a hash of the key, then a comparison of keys that is all integers,
-plus `eq_str` on names and `cv_eq` on prop values. It never walks a child. The table only
-grows: no rollback, no removal.
+Lookup is a bucket by a hash **of the key itself**, then a comparison of keys that is all
+integers, plus `eq_str` on names and `cv_eq` on prop values. It never walks a child. The table
+only grows: no rollback, no removal.
+
+The bucket must be chosen by the key and not by the type's `h`, though `h` is right there and
+equal classes share it. Bucketing by `h` lets everything `h` covers decide a class too, so a
+key with a gap merges two types only when their `h`s collide mod the bucket count. A broken key
+then almost never shows, and nothing can see it. That was step 1 as first built, and paranoid
+mode reported 0 merges with field names deleted from the block key.
 
 ## 5. Equality, and the fallback
 
@@ -163,8 +169,8 @@ does not materialise.
 2. **`same_deep` stays as the fallback permanently**, rather than being removed once every
    path has a `cid`. Recommended: the prototypes need it, and it is the reference that
    paranoid mode checks against.
-3. **Paranoid mode as a committed build option** rather than a throwaway patch. Recommended,
-   since the key has to keep mirroring `same_deep` as the type language grows.
+3. **Paranoid mode as a committed build option** rather than a throwaway patch. **Done:** see
+   *Paranoid mode* below.
 
 ## Step 1, measured
 
@@ -225,4 +231,26 @@ from scratch, and it is roughly even there.
 **Step 3** — lowering's `intern` and `unroll_cache` keyed by `cid` — is now a smaller prize than
 it looked: both already go through `same`, which is now O(1), so what is left in them is the trie
 descent and bucket scan, not comparison.
+
+## Paranoid mode
+
+`T.set_paranoid (true)` makes `same` compute both answers, the class comparison and the
+structural reference (`same_ref`), count where they part, and return the reference. A merge
+therefore cannot cascade into further merges, and the counts stay honest. Off, it costs one
+cell read per comparison, which measures as nothing. `stage1/paranoid.mpl` compiles a file
+with it on and stops non-zero on any merge, and `zig build test-paranoid` runs it over the
+whole compiler. It is part of `zig build test` and takes about 80s.
+
+| over a self-emit | merges |
+|---|---|
+| correct key | **0** of 368,433,605 (0 fallbacks, 0 splits) |
+| block field names dropped from the key, bucketed by `h` | **0**: the gap was invisible |
+| the same, bucketed by the key's own hash | **46,903**, exit 134 |
+
+The middle row is why the bucketing changed. The bottom row is the step shown to bite. A gap is
+only *counted* when two merged types are actually compared. Dropping a reference's qualifier
+merged nothing on this input, because the compiler never compares `&T` with `&mut T` of one
+pointee; there the answer was never wrong either. So the step proves the key right for
+everything the compiler compares, which is the property that matters for its own output. A key
+row exercised by no input still wants a test of its own.
 

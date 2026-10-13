@@ -535,6 +535,40 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&warn.step);
     }
 
+    // ---------------------------------------------------------------- paranoid
+    //
+    // `T.same` answers by interned class (INTERNING.md), and a class is only right while
+    // each constructor's key mirrors `same_deep` exactly. Nothing else notices if one
+    // stops: the answers are wrong only for the pairs a gap merges, and the emitted C stays
+    // plausible. So the whole compiler is compiled with every comparison checked against
+    // the structural reference, and any **merge** — two types `same_deep` calls different
+    // in one class — fails the step. It was shown to bite: with field names dropped from
+    // the block key it reported 46,903 merges and exited 134. About a minute, most of it
+    // the reference walks that class comparison exists to avoid.
+    const paranoid_step = b.step("test-paranoid", "Check every class comparison against same_deep over the whole compiler");
+    {
+        const emit = std.Build.Step.Run.create(b, "mplc emits the paranoid driver");
+        emit.addFileArg(mplc_bin);
+        emit.addArg("stage1/paranoid.mpl");
+        emit.setCwd(b.path("."));
+        emit.has_side_effects = true;
+        const c_file = emit.captureStdOut(.{ .basename = "paranoid.c" });
+
+        const cc = b.addSystemCommand(&.{ "cc", "-O2", "-w", "-o" });
+        const bin = cc.addOutputFileArg("paranoid");
+        cc.addFileArg(c_file);
+
+        const pz_run = std.Build.Step.Run.create(b, "paranoid over the compiler");
+        pz_run.addFileArg(bin);
+        pz_run.addArg("stage1/mplc.mpl");
+        pz_run.setCwd(b.path("."));
+        pz_run.has_side_effects = true;
+        pz_run.expectStdOutMatch(" 0 merges, ");
+        pz_run.expectExitCode(0);
+        paranoid_step.dependOn(&pz_run.step);
+        test_step.dependOn(&pz_run.step);
+    }
+
     // ---------------------------------------------- the suites, compiled
     //
     // `test-stage1` runs the morphl suites under the interpreter. This runs the same
