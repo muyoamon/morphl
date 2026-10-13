@@ -464,6 +464,7 @@ pub const Interp = struct {
     pub const Options = struct {
         /// Where `print` goes.
         out: ?*std.Io.Writer = null,
+        err_out: ?*std.Io.Writer = null,
         /// Resolves `$import` (§4.14).
         loader: ?Loader = null,
         /// Backs the platform intrinsics (§4.16's role, minus `$extern`).
@@ -498,6 +499,7 @@ pub const Interp = struct {
                 .arena = arena,
                 .diags = diags,
                 .out = opts.out,
+                .err_out = opts.err_out,
                 .platform = opts.platform,
                 .pool = pool,
             },

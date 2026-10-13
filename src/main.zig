@@ -347,6 +347,7 @@ pub fn main(init: process.Init.Minimal) !void {
                     .file = parsed,
                     .opts = .{
                         .out = out,
+                        .err_out = err,
                         .pool = &pool,
                         .loader = fl.loader(),
                         .platform = host.platform(),
@@ -397,6 +398,9 @@ pub fn main(init: process.Init.Minimal) !void {
         }
     }
     try out.flush();
+    // `eprint` writes here on a run that succeeds, and only the error path
+    // flushed it.
+    try err.flush();
 
     if (diags.any()) {
         diags.sort();

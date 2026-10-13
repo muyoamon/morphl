@@ -110,10 +110,11 @@ Stage 0's root block is **not** the root block of §8, and it does not pretend t
 | Arrays | `array at alen` — as §8; `at` returns a base+index handle |
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
-| Platform | `print read_file write_file args` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
+| Platform | `print eprint read_file write_file args` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
 
 **Platform shapes.** §8 requires failing operations to return `option`/`result` rather than panic, which fixes these signatures:
 
+- `eprint (s)` is `print` to stderr. It exists because `panic` was the only way there and it aborts, so a compiled compiler — whose stdout *is* the C it emits — had no way to report a warning. §8 lists the platform's "files" without naming streams; this is the stand-in for one.
 - `read_file (path)` → `none | {$prop tag "some" $decl v Str}`. A missing file *and* non-UTF-8 contents both give `none`. That is not defensiveness: §3.1 makes `Str` always valid UTF-8, and §4.16 says bytes arriving from outside "become a `Str` only through a validating library function returning `option Str`".
 - `write_file (path, contents)` → `() | err`, so a caller writes `$try ($call write_file (p, s)) err` and the error set is inferred (§4.15).
 - `args ()` → an array of `Str`: the arguments after the input file, i.e. the *program's* arguments rather than the compiler's. A zero-arity function, so a program that never asks pays nothing, and a fresh array per call since §8's arrays are `&mut [T]`.

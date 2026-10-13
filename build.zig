@@ -515,6 +515,23 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&agree.step);
     }
 
+    // `mplc` reports a non-fatal diagnostic on stderr and keeps stdout the C. It could
+    // not before — §8 gave a program stdout and `panic`, and a warning on stdout would
+    // corrupt the artifact — so emit's diagnostics were computed and dropped. A library
+    // is the case every build hits: "no top-level `$decl` named `main`" is not an error
+    // for one, and must arrive as a warning with exit 0.
+    {
+        const warn = std.Build.Step.Run.create(b, "mplc warns on stderr");
+        warn.addFileArg(mplc_bin);
+        warn.addArg("stage1/fixtures/import_util.mpl");
+        warn.setCwd(b.path("."));
+        warn.has_side_effects = true;
+        warn.expectStdErrMatch("stage1/fixtures/import_util.mpl: warning: no top-level $decl named 'main'\n");
+        warn.expectExitCode(0);
+        s2_step.dependOn(&warn.step);
+        test_step.dependOn(&warn.step);
+    }
+
     // ---------------------------------------------- the suites, compiled
     //
     // `test-stage1` runs the morphl suites under the interpreter. This runs the same

@@ -439,6 +439,7 @@ $decl at_t     $call T.t_func ($call T.tys.cons (arr_str, $call T.tys.cons (T.t_
 $decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 
 $decl root_env
+  $call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
@@ -449,7 +450,7 @@ $decl root_env
     "slice", sii_s), "byte", si_i), "int_to_str", i_s),
     "str_to_int", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_int)),
     "from_code", $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), opt_str)),
-    "panic", s_bot), "print", s_u),
+    "panic", s_bot), "print", s_u), "eprint", s_u),
     "read_file", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_str)),
     "write_file", $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
                                   $call T.union2 (T.t_unit, t_err))),

@@ -282,6 +282,18 @@ fn printFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return .unit;
 }
 
+/// `eprint (s)`: `print` to stderr. §8 puts both in the per-target platform
+/// ("files"), and BOOTSTRAP §2 stands them in as builtins. It exists because
+/// `panic` was the only way to stderr and it aborts, so a compiled compiler
+/// could not report a warning without putting it in the C on stdout.
+fn eprintFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const s = try wantStr(rt, args, 0, "eprint", span);
+    if (rt.err_out) |w| {
+        w.writeAll(s) catch return rt.fail(span, "eprint failed to write", .{});
+    }
+    return .unit;
+}
+
 /// `read_file (path)` → `none | {$prop tag "some" $decl v Str}`.
 ///
 /// The UTF-8 check is not defensive coding, it is §3.1's invariant: `Str` is
@@ -366,6 +378,7 @@ const table = [_]value.Builtin{
     .{ .name = "alen", .arity = 1, .func = alenFn },
     .{ .name = "panic", .arity = 1, .func = panicFn },
     .{ .name = "print", .arity = 1, .func = printFn },
+    .{ .name = "eprint", .arity = 1, .func = eprintFn },
     .{ .name = "read_file", .arity = 1, .func = readFileFn },
     .{ .name = "write_file", .arity = 2, .func = writeFileFn },
     .{ .name = "args", .arity = 0, .func = argsFn },
@@ -387,7 +400,7 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
         "eq_int",     "eq_str",     "concat", "len", "slice", "byte",
         "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.
-        "err",        "none",       "print", "read_file", "write_file", "args",
+        "err",        "none",       "print", "eprint", "read_file", "write_file", "args",
     }) |name| {
         if (scope.findLocalText(name) == null) {
             std.debug.print("root block is missing '{s}'\n", .{name});

@@ -44,6 +44,21 @@ $decl first_msg $func ($decl ds Pa.diags.node, $decl what "", $decl n 0)
 // Emit diagnostics are deliberately *not* fatal: the three §6a groups are a
 // documented refusal and "no top-level `$decl` named `main`" is not an error for
 // a library, which is most of what this compiles.
+// One line per diagnostic, on stderr. The file comes off the diagnostic, as
+// `first_msg`'s does, and an emit diagnostic has no position (the typed tree carries
+// no spans), so it has none here either.
+$decl warn_all $func ($decl ds Pa.diags.node) $match ds (
+  $case {$prop tag "cons"}
+    $do ($call eprint ($call concat ($if ($call eq_str (ds.head.file, "")) path ds.head.file,
+          $call concat ($if ($call lt (0, ds.head.line))
+                            ($call concat (":", $call concat ($call int_to_str (ds.head.line),
+                             $call concat (":", $call int_to_str (ds.head.col)))))
+                            "",
+          $call concat (": warning: ", $call concat (ds.head.msg, "\n"))))))
+        ($call warn_all ($call Pa.diags.val (ds.tail))),
+  $case ds ()
+)
+
 $decl main $func ()
   { $decl ckd $call C.check ($call C.parse (src, path))
     $decl cd  $call Pa.diags.val (ckd.diagnostics)
@@ -53,4 +68,9 @@ $decl main $func ()
     $decl nv  $call Pa.diags.length (bad, 0)
     $decl g2  $if ($call lt (0, nv)) ($call panic ($call first_msg (bad, "verify", nv))) ""
     $decl out $call C.emit (ckd.program)
+    // Emit's diagnostics are not fatal — "no top-level $decl named 'main'" is not an
+    // error for a library, which is most of what this compiles — and they used to be
+    // invisible here, because §8 gave a program stdout (the C) and `panic` (fatal)
+    // and nothing between. BOOTSTRAP §2's `eprint` is the between.
+    $decl w   $call warn_all ($call Pa.diags.val (out.diagnostics))
     $decl r   $call C.sole_text (out) }.r

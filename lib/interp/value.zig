@@ -430,6 +430,10 @@ pub const Runtime = struct {
     /// identity instead of bytes.
     pool: *@import("lexer").StringPool,
     out: ?*std.Io.Writer = null,
+    /// BOOTSTRAP §2's `eprint`: where a program writes without stopping. Only
+    /// `panic` reached stderr before, and it aborts — so a compiler driver had no
+    /// way to report a warning without corrupting the C it prints on `out`.
+    err_out: ?*std.Io.Writer = null,
     /// Supplied by the driver; absent when nothing injected one, in which case
     /// the platform intrinsics decline rather than inventing an answer.
     platform: ?Platform = null,
