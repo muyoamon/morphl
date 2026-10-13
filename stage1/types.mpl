@@ -249,21 +249,21 @@ $decl proto_ty $union (
     // function renders as `copaque`, and writing `cv_unit` here said no block
     // with such a prop was a type at all.
     $decl props $alloc ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node
-    $decl h 0 },
-  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0 },
+    $decl h 0  $decl cid -1 },
+  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
   { $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node  $decl result $alloc proto_ty
-    $decl frame P.boolean  $decl h 0 },
+    $decl frame P.boolean  $decl h 0  $decl cid -1 },
   // §3.5: storage has a **kind** as well as a qualifier, and the two are
   // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
   // `""` and allocated is `"alloc"`, so a reference built without saying is
   // frame, which is what `$new` makes.
-  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0 },
-  { $prop tag "array" $decl elem $alloc proto_ty  $decl h 0 },
-  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0 },
-  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0 },
-  { $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0 },
-  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0 },
-  { $prop tag "tmpl"  $decl id 0  $decl h 0 }
+  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0  $decl cid -1 },
+  { $prop tag "array" $decl elem $alloc proto_ty  $decl h 0  $decl cid -1 },
+  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
+  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
+  { $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0  $decl cid -1 },
+  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
+  { $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1 }
 )
 
 $decl tval $func ($decl t proto_ty) t
@@ -382,28 +382,221 @@ $decl hash_props $func ($decl xs props.node, $decl acc 0) $match xs (
   $case xs acc
 )
 
+// ------------------------------------------------------------- identity
+//
+// INTERNING.md, step 1. Every compound node carries a `cid`: its class under `same`,
+// assigned by the constructor from one global, append-only table and never rolled back
+// — which is the difference from every cached index this file and lowering have tried,
+// all of which named a position in §9.3's table, the table §5.5's rollback rewrites. A
+// type value that survives a rollback carries `cid`s that are still exactly right.
+// Step 1 only *assigns* them; `same` does not read them yet.
+//
+// A `cid` is one of four classes by its value mod 4, so the kinds that need no table
+// need no field: a compound node's comes from the table (0), a leaf's is fixed (1), a
+// `var`'s is its id (2), a `bnd`'s its index (3). -1 is "not interned" — a prototype
+// in `proto_ty`, written as a literal, or anything built from one — and a node with a
+// -1 child is not interned either, so two unrelated -1s can never make a class.
+$decl cid_of $func ($decl t proto_ty) $match t (
+  $case {$prop tag "int"}    1,
+  $case {$prop tag "float"}  5,
+  $case {$prop tag "str"}    9,
+  $case {$prop tag "true"}   13,
+  $case {$prop tag "false"}  17,
+  $case {$prop tag "unit"}   21,
+  $case {$prop tag "bottom"} 25,
+  $case {$prop tag "var"}    ($call add ($call mul (t.id, 4), 2)),
+  $case {$prop tag "bnd"}    ($call add ($call mul (t.idx, 4), 3)),
+  $case {$prop tag "block"}  t.cid,
+  $case {$prop tag "group"}  t.cid,
+  $case {$prop tag "func"}   t.cid,
+  $case {$prop tag "ref"}    t.cid,
+  $case {$prop tag "array"}  t.cid,
+  $case {$prop tag "union"}  t.cid,
+  $case {$prop tag "inter"}  t.cid,
+  $case {$prop tag "rec"}    t.cid,
+  $case {$prop tag "over"}   t.cid,
+  $case {$prop tag "tmpl"}   t.cid,
+  $case t -1
+)
+
+// A class's key: what `same_deep` compares for that tag and nothing else. `kids` are the
+// children's `cid`s; `names` a block's field names; `pnames` and `pvals` its props' names
+// and values — never their `ty`, which `same_props` ignores. A function's `frame` is
+// absent for the same reason. INTERNING.md's key table is this, row by row.
+$decl cints $specialize P.list 0
+$decl cvals $specialize P.list proto_cv
+$decl ckey $func ($decl t 0, $decl a "", $decl b "", $decl ks cints.node, $decl ns strs.node,
+                  $decl pn strs.node, $decl pv cvals.node, $decl n 0)
+  { $decl tag t  $decl s1 a  $decl s2 b  $decl kids $alloc ks  $decl names $alloc ns
+    $decl pnames $alloc pn  $decl pvals $alloc pv  $decl num n }
+$decl proto_ckey $call ckey (0, "", "", cints.nil, strs.nil, strs.nil, cvals.nil, 0)
+$decl cent $func ($decl k proto_ckey, $decl c 0) { $decl key k  $decl cid c }
+$decl proto_cent $call cent (proto_ckey, 0)
+$decl cents $specialize P.list proto_cent
+
+$decl ci_eq $func ($decl xs cints.node, $decl ys cints.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"} $if ($call eq_int (xs.head, ys.head)) ($call ci_eq ($call cints.val (xs.tail), $call cints.val (ys.tail))) false,
+      $case ys false),
+  $case xs ($call cints.is_nil (ys))
+)
+$decl cs_eq $func ($decl xs strs.node, $decl ys strs.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"} $if ($call eq_str (xs.head, ys.head)) ($call cs_eq ($call strs.val (xs.tail), $call strs.val (ys.tail))) false,
+      $case ys false),
+  $case xs ($call strs.is_nil (ys))
+)
+$decl cv_list_eq $func ($decl xs cvals.node, $decl ys cvals.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"} $if ($call cv_eq (xs.head, ys.head)) ($call cv_list_eq ($call cvals.val (xs.tail), $call cvals.val (ys.tail))) false,
+      $case ys false),
+  $case xs ($call cvals.is_nil (ys))
+)
+$decl ckey_eq $func ($decl a proto_ckey, $decl b proto_ckey)
+  $if ($call not ($call eq_int (a.tag, b.tag))) false
+  ($if ($call not ($call eq_int (a.num, b.num))) false
+  ($if ($call not ($call eq_str (a.s1, b.s1))) false
+  ($if ($call not ($call eq_str (a.s2, b.s2))) false
+  ($if ($call not ($call ci_eq ($call cints.val (a.kids), $call cints.val (b.kids)))) false
+  ($if ($call not ($call cs_eq ($call strs.val (a.names), $call strs.val (b.names)))) false
+  ($if ($call not ($call cs_eq ($call strs.val (a.pnames), $call strs.val (b.pnames)))) false
+       ($call cv_list_eq ($call cvals.val (a.pvals), $call cvals.val (b.pvals)))))))))
+
+// The table: buckets by the structural hash `h`, which equal classes share because the
+// hash is a sound coarsening of `same` (see `hash_of`). A persistent binary trie of
+// depth 14, the shape §9.3's index already uses.
+$decl ctrie $union (
+  { $prop tag "leaf"   $decl items $alloc cents.node },
+  { $prop tag "branch" $decl lo $alloc ctrie  $decl hi $alloc ctrie }
+)
+$decl ct_leaf $func ($decl xs cents.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl ct_branch $func ($decl l ctrie, $decl h ctrie) { $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h }
+$decl ct_val $func ($decl x ctrie) x
+$decl ct_items $func ($decl tr ctrie) $match tr ($case {$prop tag "leaf"} ($call cents.val (tr.items)), $case tr cents.nil)
+$decl ct_scan $func ($decl xs cents.node, $decl k proto_ckey) $match xs (
+  $case {$prop tag "cons"} $if ($call ckey_eq (xs.head.key, k)) xs.head.cid ($call ct_scan ($call cents.val (xs.tail), k)),
+  $case xs -1
+)
+$decl ct_find $func ($decl tr ctrie, $decl b 0, $decl k proto_ckey) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (b, 2), 0)) ($call ct_find ($call ct_val (tr.lo), $call div (b, 2), k))
+        ($call ct_find ($call ct_val (tr.hi), $call div (b, 2), k)),
+  $case tr ($call ct_scan ($call ct_items (tr), k))
+)
+$decl ct_kid $func ($decl tr ctrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call ct_val ($if hi tr.hi tr.lo)),
+  $case tr ($call ct_leaf (cents.nil))
+)
+$decl ct_add $func ($decl tr ctrie, $decl b 0, $decl d 0, $decl e proto_cent)
+  $if ($call not ($call lt (d, 14))) ($call ct_leaf ($call cents.cons (e, $call ct_items (tr))))
+      { $decl lo $call ct_kid (tr, false)
+        $decl hi $call ct_kid (tr, true)
+        $decl up $call eq_int ($call mod (b, 2), 0)
+        $decl r  $if up ($call ct_branch ($call ct_add (lo, $call div (b, 2), $call add (d, 1), e), hi))
+                        ($call ct_branch (lo, $call ct_add (hi, $call div (b, 2), $call add (d, 1), e))) }.r
+
+// Declared above every constructor on purpose: a module initialises in source order and
+// the constructors run during `types`' own initialisation.
+$decl ctable $mut $alloc ctrie
+$decl cnext  $mut $alloc 0
+$decl cival $func ($decl x 0) x
+
+// How many classes exist, for measuring (INTERNING.md, step 1).
+$decl cid_count $func () $call cival (cnext)
+
+$decl cbucket $func ($decl hv 0) $call mod ($call add ($call mod (hv, 16381), 16381), 16381)
+
+// The class of a key, made if it is new. `ok` false — a child was not interned — gives -1.
+$decl cid_for $func ($decl ok P.boolean, $decl hv 0, $decl k proto_ckey)
+  $if ($call not (ok)) -1
+      { $decl b $call cbucket (hv)
+        $decl f $call ct_find ($call ct_val (ctable), b, k)
+        $decl r $if ($call lt (-1, f)) f
+            { $decl c $call mul ($call cival (cnext), 4)
+              $decl n $set cnext ($call add ($call cival (cnext), 1))
+              $decl a $set ctable ($call ct_add ($call ct_val (ctable), b, 0, $call cent (k, c)))
+              $decl z c }.z }.r
+
+$decl kids_of $func ($decl xs tys.node, $decl acc cints.node) $match xs (
+  $case {$prop tag "cons"} $call kids_of ($call tys.val (xs.tail), $call cints.cons ($call cid_of ($call tval (xs.head)), acc)),
+  $case xs ($call cints.reverse (acc, cints.nil))
+)
+$decl kids_ok $func ($decl xs cints.node) $match xs (
+  $case {$prop tag "cons"} $if ($call lt (xs.head, 0)) false ($call kids_ok ($call cints.val (xs.tail))),
+  $case xs true
+)
+$decl fkids_of $func ($decl xs fields.node, $decl acc cints.node) $match xs (
+  $case {$prop tag "cons"} $call fkids_of ($call fields.val (xs.tail), $call cints.cons ($call cid_of ($call tval (xs.head.ty)), acc)),
+  $case xs ($call cints.reverse (acc, cints.nil))
+)
+$decl fnames_of $func ($decl xs fields.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} $call fnames_of ($call fields.val (xs.tail), $call strs.cons (xs.head.name, acc)),
+  $case xs ($call strs.reverse (acc, strs.nil))
+)
+$decl pnames_of $func ($decl xs props.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} $call pnames_of ($call props.val (xs.tail), $call strs.cons (xs.head.name, acc)),
+  $case xs ($call strs.reverse (acc, strs.nil))
+)
+$decl pvals_of $func ($decl xs props.node, $decl acc cvals.node) $match xs (
+  $case {$prop tag "cons"} $call pvals_of ($call props.val (xs.tail), $call cvals.cons (xs.head.value, acc)),
+  $case xs ($call cvals.reverse (acc, cvals.nil))
+)
+// An intersection is a set (`same_set`), so its key is its members' `cid`s sorted.
+$decl ci_insert $func ($decl x 0, $decl xs cints.node) $match xs (
+  $case {$prop tag "cons"} $if ($call lt (x, xs.head)) ($call cints.cons (x, xs))
+      ($call cints.cons (xs.head, $call ci_insert (x, $call cints.val (xs.tail)))),
+  $case xs ($call cints.cons (x, cints.nil))
+)
+$decl ci_sort $func ($decl xs cints.node, $decl acc cints.node) $match xs (
+  $case {$prop tag "cons"} $call ci_sort ($call cints.val (xs.tail), $call ci_insert (xs.head, acc)),
+  $case xs acc
+)
+
+$decl kid1 $func ($decl t proto_ty) $call cints.cons ($call cid_of (t), cints.nil)
+
 // Raw constructors. `raw_union`/`raw_inter` are not for general use — build
 // unions with `t_union`, which normalises.
 $decl raw_block $func ($decl fs fields.node, $decl ps props.node)
-  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps
-    $decl h $call hmix ($call hmix (13, $call hash_fields (fs, 0)), $call hash_props (ps, 0)) }
+  { $decl hv $call hmix ($call hmix (13, $call hash_fields (fs, 0)), $call hash_props (ps, 0))
+    $decl ks $call fkids_of (fs, cints.nil)
+    $decl c  $call cid_for ($call kids_ok (ks), hv,
+                 $call ckey (1, "", "", ks, $call fnames_of (fs, strs.nil), $call pnames_of (ps, strs.nil),
+                             $call pvals_of (ps, cvals.nil), 0))
+    $decl n  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c }
+    $decl r  n }.r
 
 $decl raw_union $func ($decl ms tys.node)
-  { $prop tag "union" $decl members $alloc ms  $decl h $call hmix (18, $call hash_tys (ms, 0)) }
+  { $decl hv $call hmix (18, $call hash_tys (ms, 0))
+    $decl ks $call kids_of (ms, cints.nil)
+    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (6, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "union" $decl members $alloc ms  $decl h hv  $decl cid c }
+    $decl r  n }.r
 $decl raw_inter $func ($decl ms tys.node)
-  { $prop tag "inter" $decl members $alloc ms
-    $decl h $call hmix (19, $call hash_tys_comm (ms, 0)) }
+  { $decl hv $call hmix (19, $call hash_tys_comm (ms, 0))
+    $decl ks $call kids_of (ms, cints.nil)
+    $decl c  $call cid_for ($call kids_ok (ks), hv,
+                 $call ckey (7, "", "", $call ci_sort (ks, cints.nil), strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c }
+    $decl r  n }.r
 
 $decl t_group $func ($decl xs tys.node)
-  { $prop tag "group" $decl items $alloc xs  $decl h $call hmix (14, $call hash_tys (xs, 0)) }
+  { $decl hv $call hmix (14, $call hash_tys (xs, 0))
+    $decl ks $call kids_of (xs, cints.nil)
+    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (2, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "group" $decl items $alloc xs  $decl h hv  $decl cid c }
+    $decl r  n }.r
 // `frame` is §5.3a's closure clause. §7.3 keeps a closure's captures out of its
 // *type* — that is what makes every function value two words — so a `$func`
 // literal that captured a frame reference has to record that it did somewhere,
 // and this is it. It is not about the parameters or the result: those are
 // frame-bound or not on their own.
 $decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean)
-  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr
-    $decl h $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r)) }
+  { $decl hv $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r))
+    // The result first, then the parameters; `frame` is not in the key (see `ckey`).
+    $decl ks $call cints.cons ($call cid_of (r), $call kids_of (ps, cints.nil))
+    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (3, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl h hv  $decl cid c }
+    $decl out n }.out
 
 $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r, false)
 
@@ -414,9 +607,11 @@ $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r
 // written and `verify` rejects the mismatch. So the common case keeps its
 // arity and the kinded case gets a name.
 $decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "")
-  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k
-    $decl h $call hmix ($call hash_str (k, 0, $call hash_str (q, 0, 16)),
-                        $call hash_of (t)) }
+  { $decl hv $call hmix ($call hash_str (k, 0, $call hash_str (q, 0, 16)), $call hash_of (t))
+    $decl ks $call kid1 (t)
+    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (4, q, k, ks, strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k  $decl h hv  $decl cid c }
+    $decl r  n }.r
 
 $decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
 
@@ -425,18 +620,33 @@ $decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
 $decl k_alloc "alloc"
 $decl is_alloc $func ($decl k "") $call eq_str (k, k_alloc)
 $decl t_array $func ($decl e proto_ty)
-  { $prop tag "array" $decl elem $alloc e  $decl h $call hmix (17, $call hash_of (e)) }
+  { $decl hv $call hmix (17, $call hash_of (e))
+    $decl ks $call kid1 (e)
+    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (5, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "array" $decl elem $alloc e  $decl h hv  $decl cid c }
+    $decl r  n }.r
 $decl t_rec   $func ($decl b proto_ty)
-  { $prop tag "rec" $decl body $alloc b  $decl h $call hmix (20, $call hash_of (b)) }
+  { $decl hv $call hmix (20, $call hash_of (b))
+    $decl ks $call kid1 (b)
+    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (8, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c }
+    $decl r  n }.r
 $decl t_over  $func ($decl cs tys.node)
-  { $prop tag "over" $decl cands $alloc cs  $decl h $call hmix (21, $call hash_tys (cs, 0)) }
+  { $decl hv $call hmix (21, $call hash_tys (cs, 0))
+    $decl ks $call kids_of (cs, cints.nil)
+    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (9, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
+    $decl n  { $prop tag "over" $decl cands $alloc cs  $decl h hv  $decl cid c }
+    $decl r  n }.r
 
 // A template (§4.9). Its body is *not* type-checked at declaration, so there is
 // nothing structural to record here: the type is an identity, and whoever built
 // it keeps the body and the environment it was written in. Two templates are
 // the same type when they are the same template.
 $decl t_tmpl  $func ($decl i 0)
-  { $prop tag "tmpl" $decl id i  $decl h $call hmix (12, i) }
+  { $decl hv $call hmix (12, i)
+    $decl c  $call cid_for (true, hv, $call ckey (10, "", "", cints.nil, strs.nil, strs.nil, cvals.nil, i))
+    $decl n  { $prop tag "tmpl" $decl id i  $decl h hv  $decl cid c }
+    $decl r  n }.r
 
 // Props have no layout (§4.10), so their order is not part of the type.
 // Sorting them at construction is what makes the rendering below canonical.
@@ -691,8 +901,17 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
 // coarsening of what `same` compares, equal types always agree and the answer is
 // unchanged; unequal types that happen to agree simply fall through, which is why
 // a weak hash is sound and only a hash that separates equal types is not.
+// INTERNING.md, step 2: two interned types are the same exactly when their classes are,
+// so the answer is one integer comparison — where it used to confirm an equal pair with
+// a full structural walk, 320M times a self-emit. A type without a class (a prototype,
+// or anything built from one) falls back to the hash guard and `same_deep`, which stays
+// as the reference the class key mirrors. Its children compare through here too, so
+// even the fallback is shallow wherever the children are interned.
 $decl same $func ($decl a proto_ty, $decl b proto_ty)
-  $if ($call eq_int ($call hash_of (a), $call hash_of (b))) ($call same_deep (a, b)) false
+  { $decl ca $call cid_of (a)
+    $decl cb $call cid_of (b)
+    $decl r  $if ($call and ($call lt (-1, ca), $call lt (-1, cb))) ($call eq_int (ca, cb))
+                 ($if ($call eq_int ($call hash_of (a), $call hash_of (b))) ($call same_deep (a, b)) false) }.r
 
 $decl ty_eq $func ($decl a proto_ty, $decl b proto_ty) $call same (a, b)
 
