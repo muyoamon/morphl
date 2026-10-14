@@ -2547,6 +2547,29 @@ deep recursion does not distort; the inclusive figures do undercount here, becau
 recursion exceeds perf's 127-frame stack limit and a truncated stack never reaches `main`. The
 phases were timed directly instead — parse+infer ~1.9s, lowering ~3.8s, emit ~1.6s.
 
+### The type and function tables, indexed by position: 10%
+
+The same profile's second group was positional indexing: `P.list.nth` over the **type table**
+(7.8% of self time — lowering's `ty_at`, emit's `type_at`) and over the **function table** (3.1% —
+emit's `fn_at`, and `key_at`'s parallel name list). Each lookup walked from the head to entry *i*.
+
+- `IR.ix_put`/`ix_get` reuse the type index's own trie as an index-keyed map: entry *i* filed
+  under `i mod 1021`, a leaf scanned by index, so it is right at any table size.
+- **Lowering** keeps it as `lstate.tyix`, added to in `add_ty` (the table's only append) and
+  saved and restored by the snapshot beside the trie interning already uses.
+- **Emit** builds both indexes at the top of every `emit_program` — the types, and one trie
+  holding each function with its C name — in module storage, because `type_at` and `fn_at`
+  take the table rather than the state at ~40 call sites. Nothing outside `emit_program` calls
+  them, and each call rebuilds both first, so one program's index never answers for another's;
+  `emit_test` and `compiler_test`, which emit several programs per process, pass.
+
+| self-emit | committed | indexed |
+|---|---|---|
+| interleaved | 6.81 / 6.83 / 6.91s | **6.23 / 6.30 / 6.03s** |
+
+**~10%**, against an ~11% share; output byte-identical. The self-emit is now ~6.2s, from ~45s
+before the interning work: **~7.3x**.
+
 ### Lowering is super-additive, so there is nothing per-module to cache
 
 The interface cache works because **inference is additive**: per-module marginals sum to

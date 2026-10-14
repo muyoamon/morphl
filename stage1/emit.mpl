@@ -242,8 +242,59 @@ $decl fn_keys $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
   $case fs ($call strs.reverse (acc, strs.nil))
 )
 
-$decl key_at $func ($decl st proto_est, $decl i 0)
-  $call strs.nth ($call strs.val (st.fnames), i)
+// **The program being emitted, by index.** `fn_at`, `key_at` and `type_at` walked the
+// function table, the name list and the type table from the head with `nth` — ~11% of a
+// self-emit between them. `emit_program` indexes all three at its start, and they read
+// these. Module storage rather than a field of `est` because `type_at` and `fn_at` take
+// the table, not the state, at some forty call sites; nothing outside `emit_program`
+// calls them, and each `emit_program` rebuilds both before emitting anything, so one
+// program's index can never answer for another's.
+$decl fent $func ($decl i 0, $decl f IR.proto_fn, $decl k "") { $decl idx i  $decl fn f  $decl key k }
+$decl proto_fent $call fent (-1, IR.proto_fn, "")
+$decl fents $specialize P.list proto_fent
+$decl ftrie $union (
+  { $prop tag "leaf"   $decl items $alloc fents.node },
+  { $prop tag "branch" $decl lo $alloc ftrie  $decl hi $alloc ftrie }
+)
+$decl ft_leaf $func ($decl xs fents.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl ft_branch $func ($decl l ftrie, $decl h ftrie) { $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h }
+$decl ft_val $func ($decl x ftrie) x
+$decl ft_items $func ($decl tr ftrie) $match tr ($case {$prop tag "leaf"} ($call fents.val (tr.items)), $case tr fents.nil)
+$decl ft_kid $func ($decl tr ftrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call ft_val ($if hi tr.hi tr.lo)),
+  $case tr ($call ft_leaf (fents.nil))
+)
+$decl ft_add $func ($decl tr ftrie, $decl b 0, $decl d 0, $decl e proto_fent)
+  $if ($call not ($call lt (d, 10))) ($call ft_leaf ($call fents.cons (e, $call ft_items (tr))))
+      { $decl lo $call ft_kid (tr, false)
+        $decl hi $call ft_kid (tr, true)
+        $decl up $call eq_int ($call mod (b, 2), 0)
+        $decl r  $if up ($call ft_branch ($call ft_add (lo, $call div (b, 2), $call add (d, 1), e), hi))
+                        ($call ft_branch (lo, $call ft_add (hi, $call div (b, 2), $call add (d, 1), e))) }.r
+$decl ft_scan $func ($decl xs fents.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx, i)) xs.head ($call ft_scan ($call fents.val (xs.tail), i)),
+  $case xs proto_fent
+)
+$decl ft_find $func ($decl tr ftrie, $decl b 0, $decl i 0) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (b, 2), 0)) ($call ft_find ($call ft_val (tr.lo), $call div (b, 2), i))
+        ($call ft_find ($call ft_val (tr.hi), $call div (b, 2), i)),
+  $case tr ($call ft_scan ($call ft_items (tr), i))
+)
+$decl ft_fill $func ($decl tr ftrie, $decl fs IR.fns.node, $decl ks strs.node, $decl i 0) $match fs (
+  $case {$prop tag "cons"} $match ks (
+      $case {$prop tag "cons"}
+        $call ft_fill ($call ft_add (tr, $call mod (i, 1021), 0, $call fent (i, fs.head, ks.head)),
+                       $call IR.fns.val (fs.tail), ks.tail, $call add (i, 1)),
+      $case ks tr),
+  $case fs tr
+)
+
+$decl em_fnix $mut $alloc ftrie
+$decl em_tyix $mut $alloc IR.proto_trie
+$decl em_at $func ($decl i 0) $call ft_find ($call ft_val (em_fnix), $call mod (i, 1021), i)
+
+$decl key_at $func ($decl st proto_est, $decl i 0) ($call em_at (i)).key
 
 $decl gbl_name  $func ($decl st proto_est, $decl i 0)
   $call concat ("mpl_g", $call key_at (st, i))
@@ -272,7 +323,7 @@ $decl runtime_c "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#
 // declared `extern` in the runtime and defined exactly once, beside `main`.
 $decl runtime_state "int mpl_argc = 0;\nchar **mpl_argv = 0;\n"
 
-$decl type_at $func ($decl ts T.tys.node, $decl i 0) $call T.tys.nth (ts, i)
+$decl type_at $func ($decl ts T.tys.node, $decl i 0) $call IR.ix_get ($call IR.tval_trie (em_tyix), i)
 
 // A struct's name is derived from the type's **content**, not from its position in
 // §9.3's table. The index would do for one whole-program emit — one index per
@@ -2524,7 +2575,7 @@ $decl grp_name $func ($decl st proto_est) $call concat ("mpl_grp", $call P.sval 
 $decl set_grpn $func ($decl st proto_est, $decl g IR.ints.node)
   $set st.grpn ($call key_at (st, $call IR.ints.nth (g, 0)))
 
-$decl fn_at $func ($decl fs IR.fns.node, $decl i 0) $call IR.fns.nth (fs, i)
+$decl fn_at $func ($decl fs IR.fns.node, $decl i 0) ($call em_at (i)).fn
 
 $decl same_sig $func ($decl fs IR.fns.node, $decl g IR.ints.node, $decl p IR.ints.node,
                       $decl res 0) $match g (
@@ -3045,6 +3096,9 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program)
     $decl fs $call IR.fns.val (p.funcs)
     // Before anything is emitted: every name comes from here.
     $decl nms $set st.fnames ($call fn_keys (fs, strs.nil))
+    // And every lookup by index — `fn_at`, `key_at`, `type_at` — from these.
+    $decl fx  $set em_fnix ($call ft_fill ($call ft_leaf (fents.nil), fs, $call strs.val (st.fnames), 0))
+    $decl tx  $set em_tyix ($call IR.ix_of (ts))
     $decl tk $set st.thunks ($call thunk_ids (fs, 0, IR.ints.nil))
     // Before anything is emitted: `res_fn` is asked at every global callee.
     $decl al $set st.aliases ($call collect_aliases (fs, 0, fnals.nil))

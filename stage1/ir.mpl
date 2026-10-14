@@ -528,6 +528,39 @@ $decl trie_add $func ($decl tr proto_trie, $decl b 0, $decl d 0, $decl e proto_t
         $decl r  $if up ($call trie_branch ($call trie_add (lo, b2, d2, e), hi))
                         ($call trie_branch (lo, $call trie_add (hi, b2, d2, e))) }.r
 
+// The same trie as an **index**: entry `i` of a table, filed under `i mod 1021`, the
+// bucket count the type index already uses. A table walked by position — `ty_at`,
+// emit's `type_at` — took `nth` from the head every time, ~8% of a self-emit with
+// the type table alone. A leaf is scanned by index, so this is right at any size.
+$decl ix_bucket $func ($decl i 0) $call mod (i, 1021)
+$decl ix_put $func ($decl tr proto_trie, $decl i 0, $decl t T.proto_ty)
+  $call trie_add (tr, $call ix_bucket (i), 0, $call tyent (i, t))
+$decl ix_scan $func ($decl xs tyents.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx, i)) ($call found (true, i)) ($call ix_scan ($call tyents.val (xs.tail), i)),
+  $case xs ($call found (false, i))
+)
+$decl ix_ty $func ($decl xs tyents.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx, i)) ($call T.tval (xs.head.ty)) ($call ix_ty ($call tyents.val (xs.tail), i)),
+  $case xs T.t_bot
+)
+$decl ix_leaf $func ($decl tr proto_trie, $decl b 0) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (b, 2), 0)) ($call ix_leaf ($call tval_trie (tr.lo), $call div (b, 2)))
+        ($call ix_leaf ($call tval_trie (tr.hi), $call div (b, 2))),
+  $case tr ($call trie_items (tr))
+)
+// Whether entry `i` is present, and the type at it (⊥ when absent — ask `ix_has` first
+// where absence is possible).
+$decl ix_has $func ($decl tr proto_trie, $decl i 0) ($call ix_scan ($call ix_leaf (tr, $call ix_bucket (i)), i)).hit
+$decl ix_get $func ($decl tr proto_trie, $decl i 0) $call ix_ty ($call ix_leaf (tr, $call ix_bucket (i)), i)
+
+$decl ix_fill $func ($decl tr proto_trie, $decl xs T.tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $call ix_fill ($call ix_put (tr, i, $call T.tval (xs.head)), $call T.tys.val (xs.tail), $call add (i, 1)),
+  $case xs tr
+)
+// A whole table, indexed: for emit, which is handed the table complete.
+$decl ix_of $func ($decl xs T.tys.node) $call ix_fill (trie_empty, xs, 0)
+
 // Kept for `lower_dump` and for the one place a bare list is still searched.
 $decl find_ty_at $func ($decl xs T.tys.node, $decl t T.proto_ty, $decl i 0) $match xs (
   $case {$prop tag "cons"}

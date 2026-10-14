@@ -494,6 +494,8 @@ $decl lstate $func ()
     // `all_types`, because an index *is* a type's identity; this answers "which index
     // is this type", which the linear scan was doing at ~74% of a compiled build.
     $decl tytrie   $mut $alloc IR.proto_trie
+    // The same table by **index**, for `ty_at` (see `IR.ix_put`).
+    $decl tyix     $mut $alloc IR.proto_trie
     $decl mods   $mut $alloc mods_list.node
     $decl nmods  $mut $alloc 0
     $decl modix  $mut $alloc mxtrie
@@ -726,6 +728,7 @@ $decl add_ty $func ($decl st proto_lst, $decl t T.proto_ty)
     // type is being given — which is `ntypes` *before* the bump.
     $decl x $set st.tytrie ($call IR.trie_add ($call IR.tval_trie (st.tytrie),
                 $call IR.bucket_of ($call T.hash_of (t)), 0, $call IR.tyent (i, t)))
+    $decl xi $set st.tyix ($call IR.ix_put ($call IR.tval_trie (st.tyix), i, t))
     $decl n $set st.ntypes ($call add (i, 1))
     $decl m $call merge_tys (st)
     $decl r 0 }.r
@@ -922,7 +925,7 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
                    $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
                    $decl tr IR.proto_trie, $decl oq opq_list.node, $decl pq pend_list.node,
                    $decl fd fdef_list.node, $decl wr wrap_list.node, $decl wp wrap_list.node,
-                   $decl mx mxtrie)
+                   $decl mx mxtrie, $decl ti IR.proto_trie)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
     // The prop registry names modules by id, and a rollback hands ids out again; a
     // pending read names a lifted index, which a rollback hands out again too.
@@ -931,6 +934,8 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
     $decl fdefs fd  $decl wraps wr  $decl wpends wp
     // The module index, which a rollback has to restore with the list it indexes.
     $decl modix mx
+    // The type table by index, likewise: a rollback truncates the table.
+    $decl tyix ti
     $decl specs sp   $decl tmpls tm    $decl ntmpls nt
     // §9.3's table, both halves of the banker's queue and both counters. Every
     // type the discarded pass interned is garbage by construction: it was
@@ -946,7 +951,7 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
                       tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil,
-                      pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil, mxtrie)
+                      pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil, mxtrie, IR.proto_trie)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -960,7 +965,7 @@ $decl take_snap $func ($decl st proto_lst)
       $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs),
       $call pend_list.val (st.pends), $call fdef_list.val (st.fdefs),
       $call wrap_list.val (st.wraps), $call wrap_list.val (st.wpends),
-      $call mx_val (st.modix))
+      $call mx_val (st.modix), $call IR.tval_trie (st.tyix))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -981,6 +986,7 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl v $set st.wraps    ($call wrap_list.val (sn.wraps))
     $decl w $set st.wpends   ($call wrap_list.val (sn.wpends))
     $decl x $set st.modix    ($call mx_val (sn.modix))
+    $decl y $set st.tyix     ($call IR.tval_trie (sn.tyix))
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
@@ -1649,12 +1655,9 @@ $decl disc_of $func ($decl ms T.tys.node, $decl pat T.proto_ty, $decl i 0,
 // which member is which.
 // Entry `i` of the banker's queue: a position in the settled half, or counted
 // from the other end of the pending one.
-$decl ty_at $func ($decl st proto_lst, $decl i 0)
-  { $decl ns $call P.ival (st.nsettled)
-    $decl r $if ($call lt (i, ns))
-        ($call T.tys.nth ($call T.tys.val (st.tsettled), i))
-        ($call T.tys.nth ($call T.tys.val (st.tpend),
-             $call isub ($call isub ($call npend (st), 1), $call isub (i, ns)))) }.r
+// By index, through `tyix`: the queue below gave a position in one of its two halves,
+// and `nth` walked to it from the head.
+$decl ty_at $func ($decl st proto_lst, $decl i 0) $call IR.ix_get ($call IR.tval_trie (st.tyix), i)
 
 $decl canon_ty $func ($decl st proto_lst, $decl t T.proto_ty)
   $call ty_at (st, $call intern (st, t))
