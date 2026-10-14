@@ -90,6 +90,26 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&mod_run.step);
     }
 
+    // STYLE.md's mechanical rules over stage 1's morphl source: no tabs, no trailing
+    // whitespace, 100 columns with a string literal's contents exempt. Side effects,
+    // because the `.mpl` files are not declared inputs and a cached pass would outlive
+    // an edit — the same reason every stage-1 step has them.
+    const style_exe = b.addExecutable(.{
+        .name = "stylecheck",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/stylecheck.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const style_run = b.addRunArtifact(style_exe);
+    style_run.setCwd(b.path("."));
+    style_run.addArgs(&.{ "stage1", "stage1/fixtures" });
+    style_run.has_side_effects = true;
+    const style_step = b.step("test-style", "Check stage 1's morphl source against STYLE.md");
+    style_step.dependOn(&style_run.step);
+    test_step.dependOn(&style_run.step);
+
     // Stage 1's own tests, written in morphl and run by stage 0. They read
     // their own source by path, so the run has to happen from the build root.
     // Debug is ~9x slower than ReleaseFast here; for real stage-1 work build

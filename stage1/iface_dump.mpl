@@ -31,9 +31,10 @@ $decl rf   $call read_file (path)
 $decl src  $match rf ($case {$prop tag "some"} rf.v, $case rf ($call panic ("cannot read")))
 $decl r    $call I.check_source (src, $call P.dirname (path), path)
 $decl rty  $call T.tval (r.ty)
-$decl fs   $match rty ($case {$prop tag "block"} ($call T.fields.val (rty.fields)), $case rty T.fields.nil)
-$decl ps   $match rty ($case {$prop tag "block"} ($call T.props.val (rty.props)), $case rty T.props.nil)
-$decl pv   $call pick_prop (ps, want)
+$decl fs   $match rty ($case {$prop tag "block"} ($call T.fields.val (rty.fields)),
+    $case rty T.fields.nil)
+$decl ps $match rty ($case {$prop tag "block"} ($call T.props.val (rty.props)), $case rty T.props.nil)
+$decl pv $call pick_prop (ps, want)
 // A field renders as its serialised type; a prop as its *value*, which is where a
 // `cv_opaque`'s identity sits. Nothing else is printed: this is compared byte for
 // byte, so a stray diagnostic line would make two programs differ for a reason that

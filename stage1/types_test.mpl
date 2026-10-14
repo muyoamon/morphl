@@ -75,7 +75,8 @@ $decl t03c $call check ("...and they are the same type either way (§3.6)",
   $call T.same (u_fwd, u_rev))
 
 $decl t04 $call check_str ("a block renders fields then props",
-  $call T.show ($call T.t_block ($call fld2 ("a", int, "b", str), $call T.p1 ("k", $call T.cv_str ("c")))),
+  $call T.show ($call T.t_block ($call fld2 ("a", int, "b", str), $call T.p1 ("k",
+      $call T.cv_str ("c")))),
   "{a:Int,b:Str,k=s\"c\",}")
 $decl t05 $call check_str ("a function type renders",
   $call T.show ($call T.t_func ($call two (int, str), bool)),
@@ -258,7 +259,8 @@ $decl t59 $call check ("meet of unrelated base types is bottom (§5.1)",
 $decl t60 $call check ("meet of two blocks keeps both fields",
   $call and ($call T.sub ($call T.meet (just_a, $call T.t_block ($call T.f1 ("b", str),
       T.props.nil)), just_a),
-             $call T.sub ($call T.meet (just_a, $call T.t_block ($call T.f1 ("b", str), T.props.nil)),
+             $call T.sub ($call T.meet (just_a, $call T.t_block ($call T.f1 ("b", str),
+                 T.props.nil)),
                           $call T.t_block ($call T.f1 ("b", str), T.props.nil))))
 
 $decl done $call nl ("all type tests passed")
@@ -358,7 +360,8 @@ $decl k2     $func ($decl a T.proto_ty, $decl b T.proto_ty) $call T.tys.cons (a,
     $call T.tys.cons (b, T.tys.nil))
 $decl kfield $func ($decl n "", $decl t T.proto_ty) $call T.fields.cons ($call T.field (n, t),
     T.fields.nil)
-$decl kblk   $func ($decl n "", $decl t T.proto_ty) $call T.t_block ($call kfield (n, t), T.props.nil)
+$decl kblk   $func ($decl n "", $decl t T.proto_ty) $call T.t_block ($call kfield (n, t),
+    T.props.nil)
 $decl kblk2 $func ($decl n "", $decl t T.proto_ty, $decl m "", $decl u T.proto_ty)
   $call T.t_block ($call T.fields.cons ($call T.field (n, t), $call kfield (m, u)), T.props.nil)
 $decl kprop $func ($decl n "", $decl c T.proto_cv, $decl t T.proto_ty)
@@ -385,13 +388,17 @@ $decl kb04 $call check ("block: field order is in the key (§5.1)",
 $decl kb05 $call check ("block: the number of fields is in the key",
   $call differ ($call kblk ("a", kint), $call kblk2 ("a", kint, "b", kint)))
 $decl kb06 $call check ("block: a prop's name is in the key",
-  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("q", $call T.cv_int (1), kint)))
+  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("q", $call T.cv_int (1),
+      kint)))
 $decl kb07 $call check ("block: a prop's value is in the key (§4.10)",
-  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_int (2), kint)))
+  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_int (2),
+      kint)))
 $decl kb08 $call check ("block: a prop value's kind is in the key",
-  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_str ("1"), kint)))
+  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_str ("1"),
+      kint)))
 $decl kb09 $call check ("block: a prop's ty is NOT in the key (same_props ignores it)",
-  $call agree ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_int (1), kstr)))
+  $call agree ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_int (1),
+      kstr)))
 
 $decl kg01 $call check ("group: members are in the key, in order",
   $call differ ($call T.t_group ($call k2 (kint, kstr)), $call T.t_group ($call k2 (kstr, kint))))

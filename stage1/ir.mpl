@@ -133,61 +133,63 @@ $decl proto_expr $union (
   { $prop tag "new"     $decl ty 0  $decl id 0  $decl init $alloc proto_expr },
   // §5.4's implicit read, made explicit.
   { $prop tag "deref"   $decl ty 0  $decl id 0  $decl src $alloc proto_expr },
- {  // §4.4: writes *through* storage.
-   $prop tag "set"     $decl ty 0  $decl id 0  $decl target $alloc proto_expr
-   $decl value $alloc proto_expr
- },
+  {  // §4.4: writes *through* storage.
+    $prop tag "set"     $decl ty 0  $decl id 0  $decl target $alloc proto_expr
+    $decl value $alloc proto_expr
+  },
 
   // §7.4: a value coerced to a prefix supertype. A prefix copy, no scatter.
   // A reference coercion costs nothing and produces no node.
   { $prop tag "copy"    $decl ty 0  $decl id 0  $decl src $alloc proto_expr },
- {
-   // §4.5: a block's value is its `$decl` slots, in layout order. Non-`$decl`
-   // expressions ran for effect during lowering and are `do` chains by now.
-   //
-   // Each entry is evaluated in order and assigned to its slot before the next
-   // runs, because a later `$decl` may name an earlier one (§4.10, source
-   // order); the block's value is the struct of those slots afterwards. The
-   // slot number is carried rather than implied by position: a nested block
-   // inside an initializer takes slots of its own, so a block's are not
-   // contiguous.
-   $prop tag "block"   $decl ty 0  $decl id 0
-   $decl slots $alloc ($specialize P.list { $decl slot 0  $decl init proto_expr }).node
- },
-  { $prop tag "group"   $decl ty 0  $decl id 0  $decl items $alloc ($specialize P.list proto_expr).node },
- {
-   // §7.3: a function value is a code pointer and an environment, two words
-   // whatever its signature — which is what lets a function type be a valid
-   // recursion guard and a function-typed slot have a size.
-   $prop tag "closure" $decl ty 0  $decl id 0  $decl fn 0
-   $decl captures $alloc ($specialize P.list proto_expr).node
- },
- {
-   // §7.7 decides `tail`, §6a decides what the backend does with it.
-   $prop tag "call"    $decl ty 0  $decl id 0  $decl callee $alloc proto_expr
-   $decl args $alloc ($specialize P.list proto_expr).node  $decl tail P.boolean
- },
- {
-   $prop tag "if"      $decl ty 0  $decl id 0  $decl cond $alloc proto_expr
-   $decl then $alloc proto_expr  $decl els $alloc proto_expr
- },
- {
-   // §4.7 lowered: §7.5 gives a union value a discriminator, and §1.3 keeps
-   // patterns to tag blocks and literals, so an arm is a discriminator test.
-   // Exhaustiveness was checked (§5.6), so `default` is the catch-all every
-   // `$match` must end in.
-   $prop tag "switch"  $decl ty 0  $decl id 0  $decl scrut $alloc proto_expr
-   $decl arms $alloc ($specialize P.list {
-     $decl discs ($specialize P.list 0).node  $decl slot 0  $decl body proto_expr
-   }).node
-   $decl default $alloc proto_expr
- },
- {
-   // §4.8b. The reason this form exists at all is that a call inside a block is
-   // never in tail position, so it is the only way to sequence and keep §7.7.
-   $prop tag "do"      $decl ty 0  $decl id 0  $decl first $alloc proto_expr
-   $decl then $alloc proto_expr
- },
+  {
+    // §4.5: a block's value is its `$decl` slots, in layout order. Non-`$decl`
+    // expressions ran for effect during lowering and are `do` chains by now.
+    //
+    // Each entry is evaluated in order and assigned to its slot before the next
+    // runs, because a later `$decl` may name an earlier one (§4.10, source
+    // order); the block's value is the struct of those slots afterwards. The
+    // slot number is carried rather than implied by position: a nested block
+    // inside an initializer takes slots of its own, so a block's are not
+    // contiguous.
+    $prop tag "block"   $decl ty 0  $decl id 0
+    $decl slots $alloc ($specialize P.list { $decl slot 0  $decl init proto_expr }).node
+  },
+  {
+    $prop tag "group"   $decl ty 0  $decl id 0  $decl items $alloc ($specialize P.list proto_expr).node
+  },
+  {
+    // §7.3: a function value is a code pointer and an environment, two words
+    // whatever its signature — which is what lets a function type be a valid
+    // recursion guard and a function-typed slot have a size.
+    $prop tag "closure" $decl ty 0  $decl id 0  $decl fn 0
+    $decl captures $alloc ($specialize P.list proto_expr).node
+  },
+  {
+    // §7.7 decides `tail`, §6a decides what the backend does with it.
+    $prop tag "call"    $decl ty 0  $decl id 0  $decl callee $alloc proto_expr
+    $decl args $alloc ($specialize P.list proto_expr).node  $decl tail P.boolean
+  },
+  {
+    $prop tag "if"      $decl ty 0  $decl id 0  $decl cond $alloc proto_expr
+    $decl then $alloc proto_expr  $decl els $alloc proto_expr
+  },
+  {
+    // §4.7 lowered: §7.5 gives a union value a discriminator, and §1.3 keeps
+    // patterns to tag blocks and literals, so an arm is a discriminator test.
+    // Exhaustiveness was checked (§5.6), so `default` is the catch-all every
+    // `$match` must end in.
+    $prop tag "switch"  $decl ty 0  $decl id 0  $decl scrut $alloc proto_expr
+    $decl arms $alloc ($specialize P.list {
+      $decl discs ($specialize P.list 0).node  $decl slot 0  $decl body proto_expr
+    }).node
+    $decl default $alloc proto_expr
+  },
+  {
+    // §4.8b. The reason this form exists at all is that a call inside a block is
+    // never in tail position, so it is the only way to sequence and keep §7.7.
+    $prop tag "do"      $decl ty 0  $decl id 0  $decl first $alloc proto_expr
+    $decl then $alloc proto_expr
+  },
 
   // §4.15, the only non-local exit: if the value matches, return it from the
   // enclosing function. `disc` is the discriminator the pattern selects.
@@ -263,7 +265,8 @@ $decl e_copy  $func ($decl t 0, $decl e proto_expr) {
 }
 
 $decl e_set $func ($decl t 0, $decl dst proto_expr, $decl v proto_expr) {
-  $prop tag "set" $decl ty t  $decl id ($call fresh_id ())  $decl target $alloc dst  $decl value $alloc v
+  $prop tag "set" $decl ty t  $decl id ($call fresh_id ())  $decl target $alloc dst
+  $decl value $alloc v
 }
 
 $decl e_block $func ($decl t 0, $decl xs bslots.node) {
@@ -291,8 +294,9 @@ $decl e_switch $func ($decl t 0, $decl s proto_expr, $decl xs arms.node, $decl d
   $decl arms $alloc xs  $decl default $alloc d
 }
 
-$decl e_do $func ($decl t 0, $decl a proto_expr, $decl b proto_expr)
-  { $prop tag "do" $decl ty t  $decl id ($call fresh_id ())  $decl first $alloc a  $decl then $alloc b }
+$decl e_do $func ($decl t 0, $decl a proto_expr, $decl b proto_expr) {
+  $prop tag "do" $decl ty t  $decl id ($call fresh_id ())  $decl first $alloc a  $decl then $alloc b
+}
 
 $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
   { $prop tag "try" $decl ty t  $decl id ($call fresh_id ())  $decl value $alloc v  $decl disc d }

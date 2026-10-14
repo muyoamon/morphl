@@ -956,7 +956,8 @@ $decl check_fwd_go $func ($decl cx proto_ctx, $decl items Pa.nodes.node, $decl f
                           $call lt (0, $call Pa.pstrs.length (pend, 0))))
     $decl e    $if ($call eq_str (k, "decl")) ($call op (it, 1)) it
     $decl h    $if live
-        ($call fwd_reach (e, pend, fns, $call Pa.bound_names (e, Pa.pstrs.nil), $call fwd_st (), ""))
+        ($call fwd_reach (e, pend, fns, $call Pa.bound_names (e, Pa.pstrs.nil), $call fwd_st (),
+            ""))
         no_hit
     $decl said $if ($call eq_str (h.name, "")) T.t_bot ($call err (cx, $call fwd_msg (h), it))
     $decl p2   $if ($call eq_str (k, "fwd")) ($call Pa.pstrs.cons (nm, pend))
@@ -1896,7 +1897,8 @@ $fwd ct_why
 $decl ct_why_list $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"} {
     $decl w   $call ct_why (cx, pe, xs.head)
-    $decl ret $if ($call eq_str (w, "")) ($call ct_why_list (cx, pe, $call Pa.nodes.val (xs.tail))) w
+    $decl ret $if ($call eq_str (w, "")) ($call ct_why_list (cx, pe,
+        $call Pa.nodes.val (xs.tail))) w
   }.ret,
   $case xs ""
 )
@@ -1907,9 +1909,10 @@ $decl ct_why_list $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.node
 // compile-time — and then that `$specialize`'s own check holds it to a constant.
 $decl ct_args_why $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"} {
-    $decl x   xs.head
-    $decl w   $match x ($case {$prop tag "name"} "", $case x ($call ct_why (cx, pe, x)))
-    $decl ret $if ($call eq_str (w, "")) ($call ct_args_why (cx, pe, $call Pa.nodes.val (xs.tail))) w
+    $decl x xs.head
+    $decl w $match x ($case {$prop tag "name"} "", $case x ($call ct_why (cx, pe, x)))
+    $decl ret $if ($call eq_str (w, "")) ($call ct_args_why (cx, pe,
+        $call Pa.nodes.val (xs.tail))) w
   }.ret,
   $case xs ""
 )
@@ -2303,7 +2306,8 @@ $decl stamp_file $func ($decl xs Pa.diags.node, $decl path "", $decl acc Pa.diag
 )
 
 // §3.3: "A source file is a block."
-$decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base "", $decl path "") {
+$decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base "",
+    $decl path "") {
   $decl cx     $call ctx ()
   $decl rooted $set cx.base base
   $decl named  $set cx.file path

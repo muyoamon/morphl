@@ -376,7 +376,8 @@ $decl tmpls_list $specialize P.list proto_tmpl
 // emit its own `cons`. The key is the interned index of each argument's type,
 // which is exact: interning is by `T.same`, and de Bruijn binders make
 // alpha-equivalent types identical (§5.5).
-$decl spec_ent_v $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty, $decl v "")
+$decl spec_ent_v $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty,
+    $decl v "")
   { $decl tmpl t  $decl keys ks  $decl mod m  $decl bty bt  $decl vk v }
 $decl spec_ent $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty)
   $call spec_ent_v (t, ks, m, bt, "")
@@ -2097,7 +2098,8 @@ $decl spec_key $func ($decl st proto_lst, $decl r proto_tmpl, $decl ks IR.ints.n
       $call int_to_str ($call spec_hash (st, ks,
           $call T.hash_str (r.vk, 0, $call T.hash_str (r.key, 0, 0))))))
 
-$decl infer_key $func ($decl st proto_lst, $decl i 0, $decl ks IR.ints.node, $decl acc "") $match ks (
+$decl infer_key $func ($decl st proto_lst, $decl i 0, $decl ks IR.ints.node,
+    $decl acc "") $match ks (
   $case {$prop tag "cons"}
     $call infer_key (st, i, $call IR.ints.val (ks.tail),
         $call concat (acc, $call concat ("|", $call T.show ($call ty_at (st, ks.head))))),
@@ -2296,9 +2298,11 @@ $decl ctg_fix_l $func ($decl st proto_lst, $decl r proto_tmpl, $decl cur Pa.ctgs
 $decl tmpl_ctg $func ($decl st proto_lst, $decl r proto_tmpl)
   $if r.ctok r {
     $decl busy $set st.tmpls ($call tmpls_list.cons ($call tmpl_rec_x (r.id, r.generics, r.body,
-                   r.env, r.key, r.file, r.iid, Pa.ctgs.nil, true, ""), $call eval_tmpls (st.tmpls)))
+                   r.env, r.key, r.file, r.iid, Pa.ctgs.nil, true, ""),
+                       $call eval_tmpls (st.tmpls)))
     $decl cg   $call ctg_fix_l (st, r, Pa.ctgs.nil, $call strs.length (r.generics, 0))
-    $decl done $call tmpl_rec_x (r.id, r.generics, r.body, r.env, r.key, r.file, r.iid, cg, true, "")
+    $decl done $call tmpl_rec_x (r.id, r.generics, r.body, r.env, r.key, r.file, r.iid, cg, true,
+        "")
     $decl kept $set st.tmpls ($call tmpls_list.cons (done, $call eval_tmpls (st.tmpls)))
     $decl ret  done
   }.ret
@@ -3131,8 +3135,10 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
                    $decl tail P.boolean) $match n (
-  $case {$prop tag "int"}   ($call lres ($call IR.e_int ($call intern (st, T.t_int), n.value), T.t_int)),
-  $case {$prop tag "str"}   ($call lres ($call IR.e_str ($call intern (st, T.t_str), n.text), T.t_str)),
+  $case {$prop tag "int"}   ($call lres ($call IR.e_int ($call intern (st, T.t_int), n.value),
+      T.t_int)),
+  $case {$prop tag "str"}   ($call lres ($call IR.e_str ($call intern (st, T.t_str), n.text),
+      T.t_str)),
   $case {$prop tag "float"} ($call lres ($call IR.e_float ($call intern (st, T.t_float), n.text),
       T.t_float)),
   $case {$prop tag "bool"}

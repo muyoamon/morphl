@@ -125,7 +125,8 @@ $decl infer $func ($decl p proto_parsed)
       ($call typed (T.t_bot, $call Pa.diags.val (p.diagnostics)))
 
 
-$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "", $decl path "") {
+$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "",
+    $decl path "") {
   $decl st    $call L.lstate ()
   // The entry file's name, so lowering identifies the entry file's function-valued
   // props exactly as inference does (`opaque_at`) — inference has the path, and a

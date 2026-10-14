@@ -199,8 +199,8 @@ $decl hmod 100000000000000003
 // a linear inner sum scrambled afterwards would still collide wherever the sums do.
 $decl hsplit 1000000000
 $decl hscramble $func ($decl x 0) {
-  $decl lo  $call mod (x, hsplit)
-  $decl hi  $call div (x, hsplit)
+  $decl lo $call mod (x, hsplit)
+  $decl hi $call div (x, hsplit)
   $decl ret $call mod ($call add ($call add ($call mul (lo, lo), lo), $call mul (hi, 1000003)),
       hmod)
 }.ret
@@ -260,8 +260,9 @@ $decl proto_ty $union (
     $decl cid -1  $decl pv P.boolean
   },
   {
-    $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node  $decl result $alloc proto_ty
-    $decl frame P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
+    $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node
+    $decl result $alloc proto_ty
+    $decl frame  P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
   },
  {  // §3.5: storage has a **kind** as well as a qualifier, and the two are
    // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
@@ -620,7 +621,8 @@ $decl kids_of $func ($decl xs tys.node, $decl acc cints.node) $match xs (
   $case xs ($call cints.reverse (acc, cints.nil))
 )
 $decl kids_ok $func ($decl xs cints.node) $match xs (
-  $case {$prop tag "cons"} $if ($call lt (xs.head, 0)) false ($call kids_ok ($call cints.val (xs.tail))),
+  $case {$prop tag "cons"} $if ($call lt (xs.head,
+      0)) false ($call kids_ok ($call cints.val (xs.tail))),
   $case xs true
 )
 $decl fkids_of $func ($decl xs fields.node, $decl acc cints.node) $match xs (
@@ -667,7 +669,8 @@ $decl raw_block $func ($decl fs fields.node, $decl ps props.node) {
                            $call pvals_of (ps, cvals.nil), 0))
   $decl pvv $if ($call has_var_fields (fs, 0)) true false
   $decl n  {
-    $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c  $decl pv pvv
+    $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c
+    $decl pv pvv
   }
   $decl ret  n
 }.ret
@@ -685,7 +688,8 @@ $decl raw_inter $func ($decl ms tys.node) {
   $decl hv $call hmix (19, $call hash_tys_comm (ms, 0))
   $decl ks $call kids_of (ms, cints.nil)
   $decl c  $call cid_for ($call kids_ok (ks), hv,
-               $call ckey (7, "", "", $call ci_sort (ks, cints.nil), strs.nil, strs.nil, cvals.nil, 0))
+               $call ckey (7, "", "", $call ci_sort (ks, cints.nil), strs.nil, strs.nil, cvals.nil,
+                   0))
   $decl pvv $if ($call has_var_tys (ms, 0)) true false
   $decl n   { $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
   $decl ret n
@@ -829,7 +833,8 @@ $decl strs_insert $func ($decl x "", $decl xs strs.node) $match xs (
 )
 
 $decl show_sorted_add $func ($decl xs tys.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call show_sorted_add (xs.tail, $call strs_insert ($call show (xs.head), acc)),
+  $case {$prop tag "cons"} $call show_sorted_add (xs.tail, $call strs_insert ($call show (xs.head),
+      acc)),
   $case xs acc
 )
 

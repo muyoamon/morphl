@@ -60,7 +60,8 @@ $decl n_bool  $func ($decl v P.boolean, $decl l 0, $decl c 0) {
 $decl n_name  $func ($decl t "",    $decl l 0, $decl c 0) {
   $prop tag "name"  $decl line l  $decl col c  $decl text t
 }
-$decl n_unit  $func ($decl l 0,     $decl c 0)            { $prop tag "unit"  $decl line l  $decl col c }
+$decl n_unit  $func ($decl l 0,
+    $decl c 0)            { $prop tag "unit"  $decl line l  $decl col c }
 $decl n_err   $func ($decl m "",    $decl l 0, $decl c 0) {
   $prop tag "error" $decl line l  $decl col c  $decl msg m
 }
@@ -368,7 +369,8 @@ $decl parse_names_operand $func ($decl ps proto_parser, $decl kwt L.proto_token,
   }.ret
       ($call parse_name_operand (ps, kwt, idx))
 
-$decl parse_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl kind "", $decl idx 0)
+$decl parse_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl kind "",
+    $decl idx 0)
   $if ($call eq_str (kind, "name"))  ($call parse_name_operand (ps, kwt, idx))
   ($if ($call eq_str (kind, "str"))   ($call parse_str_operand (ps, kwt, idx))
   ($if ($call eq_str (kind, "names")) ($call parse_names_operand (ps, kwt, idx))
@@ -407,8 +409,10 @@ $decl parse_primary $func ($decl ps proto_parser) {
                t.col)))
            ($if ($call eq_str (k, "str"))     ($do ($call bump (ps)) ($call n_str (t.text, t.line,
                t.col)))
-           ($if ($call eq_str (k, "true"))    ($do ($call bump (ps)) ($call n_bool (true, t.line, t.col)))
-           ($if ($call eq_str (k, "false"))   ($do ($call bump (ps)) ($call n_bool (false, t.line, t.col)))
+           ($if ($call eq_str (k, "true"))    ($do ($call bump (ps)) ($call n_bool (true, t.line,
+               t.col)))
+           ($if ($call eq_str (k, "false"))   ($do ($call bump (ps)) ($call n_bool (false, t.line,
+               t.col)))
            ($if ($call eq_str (k, "name"))    ($do ($call bump (ps)) ($call n_name (t.text, t.line,
                t.col)))
            ($if ($call eq_str (k, "lparen"))  ($call parse_group (ps))
@@ -687,7 +691,8 @@ $decl proto_ctg $call ctg_ent ("", "")
 $decl ctgs      $specialize P.list proto_ctg
 
 $decl ctg_prop $func ($decl xs ctgs.node, $decl g "") $match xs (
-  $case {$prop tag "cons"} $if ($call eq_str (xs.head.gen, g)) xs.head.prop ($call ctg_prop (xs.tail, g)),
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head.gen,
+      g)) xs.head.prop ($call ctg_prop (xs.tail, g)),
   $case xs ""
 )
 

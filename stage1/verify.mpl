@@ -603,7 +603,8 @@ $decl order_report $func ($decl st proto_vst, $decl cx proto_vcx, $decl os ofos.
         cx.fnbase)))) ($call first_in (o.calls, r)) -1
     $decl fx $call vcx (cx.ntypes, cx.nfuncs, 0, 0, o.idx, f.name, cx.funcs, cx.fnbase, bfalse)
     $decl e  $if ($call lt (c, 0)) 0
-        ($call err (st, fx, -1, $call concat ("a lifted thunk calls '", $call concat (($call IR.fns.nth (cx.funcs, c)).name,
+        ($call err (st, fx, -1, $call concat ("a lifted thunk calls '",
+            $call concat (($call IR.fns.nth (cx.funcs, c)).name,
             "', which reads a static of the entry file, directly or through further calls; §4.10 initialises the lifted region first, so it runs before that static is assigned"))))
     $decl ret $call order_report (st, cx, $call ofos.val (os.tail), r)
   }.ret,
