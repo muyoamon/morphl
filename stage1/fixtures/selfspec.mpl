@@ -6,12 +6,12 @@
 // `$specialize box T` said "expects a template, found v1" — and lowering refused
 // them for the same reason one pass later.
 //
-// 5 + 9 + 4 = 18.
+// 5 + 3 + 9 + 4 = 21.
 //
-// Not here: a prop whose value *is* the specialisation (`$prop self $specialize
-// wrap T`). The compiler types and lowers it, but stage 0 forces every prop when a
-// block is built, so it recurses to its instantiation depth limit there — and a
-// fixture has to mean the same thing to both.
+// `wrap` is a prop whose value *is* its own specialisation. Stage 0 used to force
+// every prop when a block was built, so it recursed to its instantiation depth
+// limit there while the compiler accepted it; props are forced on first read now,
+// and `w.self.k` makes one nested instance and stops.
 
 $decl U $import "selfspec_util"
 
@@ -22,10 +22,17 @@ $decl box $template T {
   $prop again $func ($decl v T) $call ($specialize box T).mk (v)
 }
 
+// A prop whose value is the specialisation itself.
+$decl wrap $template T {
+  $prop self $specialize wrap T
+  $prop k 3
+}
+
 $decl b $specialize box 0
+$decl w $specialize wrap 0
 $decl p $specialize U.pair 0
 
 $decl main $func ()
   { $decl x $call b.again (5)
     $decl q $call p.swap ($call p.mk (4, 9))
-    $decl r $call add (x.val, $call add (q.fst, q.snd)) }.r
+    $decl r $call add ($call add (x.val, w.self.k), $call add (q.fst, q.snd)) }.r

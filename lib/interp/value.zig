@@ -97,6 +97,11 @@ pub const Value = union(enum) {
     ref: *Cell,
     array: *Array,
     builtin: *const Builtin,
+    /// A block's prop that nothing has read yet (§4.10). Props are evaluated on
+    /// first read, and a block value is built before that, so its shape holds the
+    /// slot rather than a value. It never reaches evaluation: everything that hands
+    /// a prop to a caller forces it first (`Interp.propValue`).
+    lazy: *Scope.PropSlot,
 
     pub fn typeName(self: Value) []const u8 {
         return switch (self) {
@@ -112,6 +117,7 @@ pub const Value = union(enum) {
             .ref => "reference",
             .array => "array",
             .builtin => "intrinsic",
+            .lazy => "prop",
         };
     }
 
@@ -493,11 +499,22 @@ pub fn makeBlock(arena: Allocator, decls: []const Field, props: []const Field) A
     return .{ .block = b };
 }
 
+fn settled(v: Value) Value {
+    return switch (v) {
+        .lazy => |p| if (p.state == .done) p.value else v,
+        else => v,
+    };
+}
+
 /// Structural equality, used for comparing prop *values* when testing a tag
 /// pattern (§5.1: "for every prop of `T`, `S` has the same prop with the
 /// **same value**").
-pub fn equal(a: Value, b: Value, depth: u32) bool {
+pub fn equal(a0: Value, b0: Value, depth: u32) bool {
     if (depth == 0) return false;
+    // A prop nothing has read is compared by its slot unless it has been forced
+    // since; the interpreter forces both sides of a tag test before asking.
+    const a = settled(a0);
+    const b = settled(b0);
     return switch (a) {
         .unit => b == .unit,
         .int => |x| b == .int and b.int == x,
@@ -530,6 +547,8 @@ pub fn equal(a: Value, b: Value, depth: u32) bool {
         .func => |x| b == .func and b.func == x,
         .template => |x| b == .template and b.template == x,
         .builtin => |x| b == .builtin and b.builtin == x,
+        // Still unread after `settled`: the same slot is the same value.
+        .lazy => |x| b == .lazy and b.lazy == x,
     };
 }
 

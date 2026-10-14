@@ -596,13 +596,15 @@ pub const Interp = struct {
     fn mayCapture(n: *const Node) bool {
         switch (n.data) {
             .form => |f| switch (f.keyword) {
-                // `$prop` is not here: `evalBlockExprs` forces every prop and
-                // copies its *value* into the block before returning, so the
-                // slots do not outlive the scope. Only a `$func` or `$template`
-                // literal keeps the chain alive (§7.3). Counting `$prop` meant
-                // no constructor in stage 1 — every one of which builds a
-                // `{$prop tag "…" …}` — could ever recycle its scope.
+                // A `$func` or `$template` literal keeps the chain alive (§7.3).
                 .func, .template => return true,
+                // So does a prop that is not a literal: props are forced on
+                // first read (§4.10), which can be after this scope has gone,
+                // and its initializer reads names through the chain. A literal
+                // reads nothing and is forced when its block finishes, so the
+                // `{$prop tag "…" …}` every stage-1 constructor builds still
+                // recycles its scope.
+                .prop => if (!isLiteral(&f.operands[1])) return true,
                 // §5.7: a `$case` pattern is a *type-only position*, never
                 // evaluated, so nothing written in it can build a closure. A
                 // pattern matching a tag is a block full of `$prop`, and
@@ -713,10 +715,18 @@ pub const Interp = struct {
 
         for (exprs) |*e| try self.evalBlockItem(e, scope);
 
-        // §4.10 makes props compile-time constants "typed together as one
-        // system", so force any that nothing read. An unused prop with a bad
-        // initializer is still an error.
-        for (scope.props) |*p| _ = try self.forceProp(p);
+        // Only *literal* props are forced here: they read nothing, cost nothing,
+        // and keep a shared constant shape fully forced. Every other prop waits for
+        // its first read. §4.10 makes them constant expressions, which have no
+        // effects, so when one is evaluated — or whether it is — cannot be
+        // observed; and forcing every one at the end of its block is what made a
+        // prop whose value is its own specialisation recurse without bound. An
+        // unused prop with a bad initializer is therefore not reported by stage 0;
+        // stage 1's checker reports it, read or not. `mayCapture` keeps the scopes
+        // such a prop reads alive until then.
+        for (scope.props) |*p| if (isLiteral(p.expr)) {
+            _ = try self.forceProp(p);
+        };
 
         // §4.11: "A `$fwd` not completed by the end of its block is an error."
         for (scope.decls.items) |slot| {
@@ -857,7 +867,12 @@ pub const Interp = struct {
         defer self.unbkt(b);
         if (scope.props.len == 0) return &.{};
         const props = try self.arena.alloc(Field, scope.props.len);
-        for (scope.props, props) |p, *f| f.* = .{ .name = p.name, .value = p.value };
+        // §4.10: a prop is evaluated on first read, which may be after the block
+        // value exists — so a slot not yet forced goes into the shape as itself.
+        for (scope.props, props) |*p, *f| f.* = .{
+            .name = p.name,
+            .value = if (p.state == .done) p.value else .{ .lazy = p },
+        };
         if (self.stats) |st| st.blk_bytes += props.len * @sizeOf(Field);
         return props;
     }
@@ -1190,11 +1205,19 @@ pub const Interp = struct {
         return v;
     }
 
+    /// A prop read out of a block value, forced if nothing has read it yet.
+    fn propValue(self: *Interp, v: Value) Error!Value {
+        return switch (v) {
+            .lazy => |p| self.forceProp(p),
+            else => v,
+        };
+    }
+
     fn projectName(self: *Interp, target: Value, field: []const u8, span: Span) Error!Value {
         return switch (target) {
             // §4.10: access is uniform over `$decl` fields and props.
-            .block => |b| b.find(field) orelse
-                self.rt.fail(span, "block has no field '{s}'", .{field}),
+            .block => |b| self.propValue(b.find(field) orelse
+                return self.rt.fail(span, "block has no field '{s}'", .{field})),
             else => self.rt.fail(span, "cannot project '.{s}' from {s}", .{ field, target.typeName() }),
         };
     }
@@ -1642,13 +1665,13 @@ pub const Interp = struct {
                     const blk = scrutinee.block;
                     for (exprs) |*e| {
                         const f = e.data.form;
-                        const got = blk.findProp(f.operands[0].data.name) orelse return false;
+                        const got = try self.propValue(blk.findProp(f.operands[0].data.name) orelse return false);
                         if (!literalEquals(&f.operands[1], got)) return false;
                     }
                     return true;
                 }
                 const pv = try self.evalBlockExprs(exprs, scope, pat.span);
-                return shapeMatches(pv, scrutinee, max_shape_depth);
+                return try self.shapeMatches(pv, scrutinee, max_shape_depth);
             },
 
             // A name. §4.7's catch-all `$match x ($case x …)` needs no special
@@ -1656,7 +1679,7 @@ pub const Interp = struct {
             // when it names the scrutinee it matches by construction.
             .name => |n| {
                 const pv = try self.lookup(scope, n, pat.span);
-                return shapeMatches(pv, scrutinee, max_shape_depth);
+                return try self.shapeMatches(pv, scrutinee, max_shape_depth);
             },
 
             else => return self.rt.fail(pat.span, "this pattern is outside the bootstrap subset (BOOTSTRAP.md §1.3): patterns must be a prop-only block, a name, or an Int/Str/Bool literal", .{}),
@@ -1733,7 +1756,7 @@ pub const Interp = struct {
     /// This is §5.1 structural subtyping, restricted to what a dynamic value
     /// can answer: an ordered field prefix with depth, prop values compared
     /// exactly, elementwise on groups.
-    fn shapeMatches(pat: Value, val: Value, depth: u32) bool {
+    fn shapeMatches(self: *Interp, pat: Value, val: Value, depth: u32) Error!bool {
         if (depth == 0) return false;
         // §4.7's catch-all arm — `$match x ($case x …)` — tests a value against
         // itself. Recognising that by identity makes it O(1) and, more
@@ -1757,8 +1780,8 @@ pub const Interp = struct {
                 // §5.1: "for every prop of `T`, `S` has the same prop with the
                 // **same value**". This is the tag test.
                 for (p.props()) |pf| {
-                    const sf = s.findProp(pf.name) orelse break :blk false;
-                    if (!value.equal(pf.value, sf, depth - 1)) break :blk false;
+                    const sf = try self.propValue(s.findProp(pf.name) orelse break :blk false);
+                    if (!value.equal(try self.propValue(pf.value), sf, depth - 1)) break :blk false;
                 }
                 // §5.1: the pattern's fields must be an ordered *prefix* of the
                 // value's — same names at the same positions. Layout is the
@@ -1767,22 +1790,25 @@ pub const Interp = struct {
                 const n = p.names().len;
                 for (p.names(), p.fields(), s.names()[0..n], s.fields()[0..n]) |pn, pv, sn, sv| {
                     if (!value.Scope.nameEql(pn, sn)) break :blk false;
-                    if (!shapeMatches(pv, sv, depth - 1)) break :blk false;
+                    if (!try self.shapeMatches(pv, sv, depth - 1)) break :blk false;
                 }
                 break :blk true;
             },
             .group => |p| blk: {
                 if (val != .group or val.group.elems.len != p.elems.len) break :blk false;
                 for (p.elems, val.group.elems) |pe, se| {
-                    if (!shapeMatches(pe, se, depth - 1)) break :blk false;
+                    if (!try self.shapeMatches(pe, se, depth - 1)) break :blk false;
                 }
                 break :blk true;
             },
-            .ref => |p| val == .ref and shapeMatches(p.value, val.ref.value, depth - 1),
+            .ref => |p| val == .ref and try self.shapeMatches(p.value, val.ref.value, depth - 1),
             .array => val == .array,
             // Signatures are not comparable without types.
             .func, .builtin => val == .func or val == .builtin,
             .template => val == .template,
+            // A pattern is a value something evaluated, and a prop handed out of a
+            // block is forced first, so an unread prop never stands here.
+            .lazy => false,
         };
     }
 
@@ -2108,7 +2134,7 @@ test "recursive data types cost the evaluator nothing (4.8a)" {
 
 test "props are visible throughout their block regardless of order (4.10)" {
     try expectInt("$decl b { $prop a c  $prop c 7 } $decl r b.a", "r", 7);
-    try expectFails("$decl b { $prop a c  $prop c a }", "depends on itself");
+    try expectFails("$decl b { $prop a c  $prop c a }  $decl r b.a", "depends on itself");
 }
 
 test "props have no layout but are still projectable (4.10)" {
@@ -2121,7 +2147,7 @@ test "props have no layout but are still projectable (4.10)" {
 }
 
 test "a prop initializer may not read an ordered sibling (4.10)" {
-    try expectFails("$decl b { $decl d 1  $prop p d }", "unknown name 'd'");
+    try expectFails("$decl b { $decl d 1  $prop p d }  $decl r b.p", "unknown name 'd'");
 }
 
 test "self-reference: a $func may name itself (4.1)" {
