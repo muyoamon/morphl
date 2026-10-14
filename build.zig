@@ -593,7 +593,7 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { src: []const u8, last: []const u8 }{
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
-        .{ .src = "stage1/types_test.mpl", .last = "all hash-invariant tests passed\n" },
+        .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
         .{ .src = "stage1/infer_test.mpl", .last = "all $fwd-initialisation tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },

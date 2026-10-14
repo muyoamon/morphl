@@ -336,3 +336,107 @@ $decl t69 $call check ("the closure flag is not part of type identity, nor of th
                 $call T.t_func_fr (T.tys.nil, int, true)))
 
 $decl done_h $call nl ("all hash-invariant tests passed")
+
+// ------------------------------------------------ the class key, row by row
+//
+// INTERNING.md's key table, one test per row. Two types differing in exactly one
+// component the key covers must be in different classes; two differing only in one it
+// deliberately ignores — a function's `frame`, a prop's `ty` — must share one. Paranoid
+// mode (`zig build test-paranoid`) checks the key against `same_deep` too, but only for
+// pairs the compiler happens to compare, and dropping a reference's qualifier from its key
+// merged nothing it compared. These cover every row whatever any input exercises.
+//
+// Each asserts both `cid`s are real, and that the class and `same` say the same thing —
+// so a test cannot pass by both sides falling back to the structural walk.
+$decl kint T.t_int
+$decl kstr T.t_str
+$decl k1 $func ($decl a T.proto_ty) $call T.tys.cons (a, T.tys.nil)
+$decl k2 $func ($decl a T.proto_ty, $decl b T.proto_ty) $call T.tys.cons (a, $call T.tys.cons (b, T.tys.nil))
+$decl kfield $func ($decl n "", $decl t T.proto_ty) $call T.fields.cons ($call T.field (n, t), T.fields.nil)
+$decl kblk $func ($decl n "", $decl t T.proto_ty) $call T.t_block ($call kfield (n, t), T.props.nil)
+$decl kblk2 $func ($decl n "", $decl t T.proto_ty, $decl m "", $decl u T.proto_ty)
+  $call T.t_block ($call T.fields.cons ($call T.field (n, t), $call kfield (m, u)), T.props.nil)
+$decl kprop $func ($decl n "", $decl c T.proto_cv, $decl t T.proto_ty)
+  $call T.t_block (T.fields.nil, $call T.props.cons ($call T.prop_typed (n, c, t), T.props.nil))
+
+$decl interned $func ($decl a T.proto_ty, $decl b T.proto_ty)
+  $call P.and ($call lt (-1, $call T.cid_of (a)), $call lt (-1, $call T.cid_of (b)))
+$decl differ $func ($decl a T.proto_ty, $decl b T.proto_ty)
+  $call P.and ($call interned (a, b),
+      $call P.and ($call P.not ($call eq_int ($call T.cid_of (a), $call T.cid_of (b))),
+                   $call P.not ($call T.same (a, b))))
+$decl agree $func ($decl a T.proto_ty, $decl b T.proto_ty)
+  $call P.and ($call interned (a, b),
+      $call P.and ($call eq_int ($call T.cid_of (a), $call T.cid_of (b)), $call T.same (a, b)))
+
+$decl kb01 $call check ("one block built twice is one class",
+  $call agree ($call kblk ("a", kint), $call kblk ("a", kint)))
+$decl kb02 $call check ("block: a field's name is in the key",
+  $call differ ($call kblk ("a", kint), $call kblk ("b", kint)))
+$decl kb03 $call check ("block: a field's type is in the key",
+  $call differ ($call kblk ("a", kint), $call kblk ("a", kstr)))
+$decl kb04 $call check ("block: field order is in the key (§5.1)",
+  $call differ ($call kblk2 ("a", kint, "b", kstr), $call kblk2 ("b", kstr, "a", kint)))
+$decl kb05 $call check ("block: the number of fields is in the key",
+  $call differ ($call kblk ("a", kint), $call kblk2 ("a", kint, "b", kint)))
+$decl kb06 $call check ("block: a prop's name is in the key",
+  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("q", $call T.cv_int (1), kint)))
+$decl kb07 $call check ("block: a prop's value is in the key (§4.10)",
+  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_int (2), kint)))
+$decl kb08 $call check ("block: a prop value's kind is in the key",
+  $call differ ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_str ("1"), kint)))
+$decl kb09 $call check ("block: a prop's ty is NOT in the key (same_props ignores it)",
+  $call agree ($call kprop ("p", $call T.cv_int (1), kint), $call kprop ("p", $call T.cv_int (1), kstr)))
+
+$decl kg01 $call check ("group: members are in the key, in order",
+  $call differ ($call T.t_group ($call k2 (kint, kstr)), $call T.t_group ($call k2 (kstr, kint))))
+$decl kg02 $call check ("group: the number of members is in the key",
+  $call differ ($call T.t_group ($call k2 (kint, kstr)), $call T.t_group ($call k1 (kint))))
+$decl ku01 $call check ("union: members are in the key",
+  $call differ ($call T.union2 (kint, kstr), $call T.union2 (kint, T.t_unit)))
+$decl ki01 $call check ("intersection: members are a set, so order is NOT in the key",
+  $call agree ($call T.t_inter ($call k2 ($call kblk ("a", kint), $call kblk ("b", kint))),
+               $call T.t_inter ($call k2 ($call kblk ("b", kint), $call kblk ("a", kint)))))
+$decl ki02 $call check ("intersection: which members is in the key",
+  $call differ ($call T.t_inter ($call k2 ($call kblk ("a", kint), $call kblk ("b", kint))),
+                $call T.t_inter ($call k2 ($call kblk ("a", kint), $call kblk ("c", kint)))))
+
+$decl kf01 $call check ("func: a parameter's type is in the key",
+  $call differ ($call T.t_func ($call k1 (kint), kint), $call T.t_func ($call k1 (kstr), kint)))
+$decl kf02 $call check ("func: the result is in the key",
+  $call differ ($call T.t_func ($call k1 (kint), kint), $call T.t_func ($call k1 (kint), kstr)))
+$decl kf03 $call check ("func: the number of parameters is in the key",
+  $call differ ($call T.t_func (T.tys.nil, kint), $call T.t_func ($call k1 (kint), kint)))
+$decl kf04 $call check ("func: a parameter is not confused with the result",
+  $call differ ($call T.t_func ($call k1 (kint), kstr), $call T.t_func ($call k1 (kstr), kint)))
+$decl kf05 $call check ("func: frame is NOT in the key (§5.3a's flag is not type identity)",
+  $call agree ($call T.t_func ($call k1 (kint), kint), $call T.t_func_fr ($call k1 (kint), kint, true)))
+
+$decl kr01 $call check ("ref: the qualifier is in the key",
+  $call differ ($call T.t_ref_k ("", kint, ""), $call T.t_ref_k ("mut", kint, "")))
+$decl kr02 $call check ("ref: the kind is in the key (§3.5)",
+  $call differ ($call T.t_ref_k ("", kint, ""), $call T.t_ref_k ("", kint, T.k_alloc)))
+$decl kr03 $call check ("ref: the pointee is in the key",
+  $call differ ($call T.t_ref_k ("", kint, ""), $call T.t_ref_k ("", kstr, "")))
+$decl ka01 $call check ("array: the element is in the key",
+  $call differ ($call T.t_array (kint), $call T.t_array (kstr)))
+$decl kc01 $call check ("rec: the body is in the key",
+  $call differ ($call T.t_rec ($call kblk ("a", $call T.t_bnd (0))), $call T.t_rec ($call kblk ("b", $call T.t_bnd (0)))))
+$decl ko01 $call check ("over: candidates are in the key",
+  $call differ ($call T.t_over ($call k1 ($call T.t_func ($call k1 (kint), kint))),
+                $call T.t_over ($call k1 ($call T.t_func ($call k1 (kstr), kint)))))
+$decl kt01 $call check ("tmpl: the template's id is in the key",
+  $call differ ($call T.t_tmpl (1), $call T.t_tmpl (2)))
+$decl kt02 $call check ("tmpl: one template is one class",
+  $call agree ($call T.t_tmpl (1), $call T.t_tmpl (1)))
+
+$decl kv01 $call check ("var: the placeholder's id is its class",
+  $call differ ($call T.t_var (1), $call T.t_var (2)))
+$decl kv02 $call check ("bnd: the de Bruijn index is its class",
+  $call differ ($call T.t_bnd (0), $call T.t_bnd (1)))
+$decl kv03 $call check ("var and bnd never share a class, whatever their numbers",
+  $call differ ($call T.t_var (0), $call T.t_bnd (0)))
+$decl kl01 $call check ("leaves are distinct classes",
+  $call P.and ($call differ (kint, kstr), $call P.and ($call differ (T.t_true, T.t_false), $call differ (T.t_unit, T.t_bot))))
+
+$decl done_k $call nl ("all class-key tests passed")
