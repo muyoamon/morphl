@@ -1929,7 +1929,10 @@ $decl ct_form_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n proto_fo
          ($if ($call spec_runtime_body (cx, pe, $call op (n, 0)))
               "a $specialize of a template whose body has a $decl"
               ($call ct_args_why (cx, pe, $call Pa.group_list ($call op (n, 1)))))
-    ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof"))) ""
+    // §4.10: never `$impl` or `$traitsof`. Each makes a trait object, which is a
+    // reference to a value (§6) and so not a constant.
+    ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof")))
+         ($call concat ("$", $call concat (k, ", which makes a trait object (§6),")))
          ($call concat ("$", k))))))
 }.ret
 

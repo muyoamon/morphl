@@ -350,6 +350,18 @@ $decl t44q $call check_str ("a $union's first member is evaluated, so it is held
   $call errs_of ("$decl f $func () 3  $decl b { $prop u $union ($call f (), 2) }"),
   "a $prop must be a constant expression (§4.10), and $call is not")
 
+// §4.10: "never `$impl` or `$traitsof`, which make references (§6)." A trait object
+// refers to a value, so it is not a constant, and a prop may not hold one.
+$decl t44s $call check_str ("a prop may not hold a $traitsof",
+  $call has_err ("$decl p { $prop area 0 }  $decl b { $prop t $traitsof p }",
+      "a $prop must be a constant expression (§4.10), and $traitsof, which makes a trait object (§6), is not"),
+  "a $prop must be a constant expression (§4.10), and $traitsof, which makes a trait object (§6), is not")
+
+$decl t44t $call check_str ("...nor an $impl",
+  $call has_err ("$decl p { $prop area 0 }  $decl n 7  $decl b { $prop t $impl n ($traitsof p) {} }",
+      "a $prop must be a constant expression (§4.10), and $impl, which makes a trait object (§6), is not"),
+  "a $prop must be a constant expression (§4.10), and $impl, which makes a trait object (§6), is not")
+
 // A name is fine as an argument, whatever it is bound to, when the generic it
 // is passed to is not compile-time: only its type reaches the specialisation.
 $decl t44r $call check_str ("a runtime name may be a non-compile-time argument",
