@@ -58,13 +58,14 @@ Two defects had to go first, both the same shape and neither visible to stage 0'
 | `$specialize t args` | **always explicit.** Never rely on `$call`-time inference of `T` (§4.9) |
 | `$import "name"` | none. Load-once, cycles are an error |
 | `$try e pat` | `pat` restricted to `err` / `none` / another prop-tagged block — §1.3 |
+| `$impl x trait override` | none, evaluated dynamically: a trait object is the value and an implementation block — `override`'s props, else the trait's defaults (SPEC §4.12). Stage 1's own source does not use it; it is in the subset so that trait programs run under both stages and keep the stage-0/stage-2 cross-check every other fixture has |
+| `$traitsof e` | none, likewise: the value and `e`'s own props (SPEC §4.13) |
 
 ### 1.2 Out of the subset
 
 | Excluded | Why, and what to write instead |
 |---|---|
 | `$overload` | The bootstrap root block is monomorphic (§2), so no overload set ever exists. Removes first-fit type-level resolution *and* the `R`-as-`⊥` rule (§5.5) from stage 0 entirely |
-| `$impl`, `$traitsof` | A compiler needs no traits. Removes witnesses, F-bounded conformance, and fat-reference dispatch |
 | `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap |
 | `$const`, all `&const` | Nothing in stage 1 needs a read-only view. (This exclusion used to be justified by fat references; under §5.1's prefix rule a `&const` upcast is free and thin, so the reason is now only that it is unused.) Use `&T` or `$mut`. |
 | `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and converted by the backend when emitting C — so the lexer still lexes them |
