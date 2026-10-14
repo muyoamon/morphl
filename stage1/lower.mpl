@@ -1017,6 +1017,22 @@ $decl fresh_mod_ic $func ($decl st proto_lst, $decl ps mprops.node, $decl en ben
     $decl x $set st.modix ($call mx_put ($call mx_val (st.modix), i, 0, me))
     $decl r i }.r
 
+// A specialisation's **generics module**: each prop is a generic, its source the
+// argument written at the `$specialize`. §4.9 evaluates an argument where the
+// `$specialize` stands, so its source resolves in the site's scope alone and never
+// sees the generics — with them in scope, `$specialize P.list T` written inside a
+// template whose own generic is also `T` lowered the argument `T` as the very prop
+// it is the source of, and derived a μ with no layout.
+$decl fresh_mod_gen $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
+                           $decl pt "", $decl fl "")
+  { $decl i $call P.ival (st.nmods)
+    $decl n $set st.nmods ($call add (i, 1))
+    $decl me $call mod_ent_g (i, ps, mdones.nil, en, "", pt, $call with_index (en), fl, no_mrec,
+                 $call P.sval (st.isctx), dx_empty)
+    $decl m $set st.mods ($call mods_list.cons (me, $call eval_mods (st.mods)))
+    $decl x $set st.modix ($call mx_put ($call mx_val (st.modix), i, 0, me))
+    $decl r i }.r
+
 // Written where it stands, so in whatever specialisation is being lowered.
 $decl fresh_mod_in $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
                           $decl bs "", $decl pt "", $decl fl "")
@@ -1919,15 +1935,15 @@ $decl infer_key $func ($decl st proto_lst, $decl i 0, $decl ks IR.ints.node, $de
   $case ks ($call concat ($call int_to_str (i), acc))
 )
 
-$decl spec_build $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+$decl spec_build_props $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                         $decl args Pa.nodes.node, $decl keys IR.ints.node,
                         $decl n Pa.proto_node)
   { $decl sk $call spec_key (st, r, keys)
     // The key goes in as the module's `path`, which is what `mod_short` reads when a
     // member of it is lowered — and `mod_short` is the identity on a name with no
     // directory and no `.mpl`, so the members come out named from the specialisation.
-    $decl gm $call fresh_mod_in (st, $call gen_props (r.generics, args, mprops.nil), e,
-                 "", sk, r.file)
+    $decl gm $call fresh_mod_gen (st, $call gen_props (r.generics, args, mprops.nil), e,
+                 sk, r.file)
     $decl be $call with_gens (r.env, $call strs.val (r.generics), gm)
     // Entered around the body, not only around each member: the body is a block with
     // props, and `const_of` gives each one its compile-time identity from the module
@@ -1941,10 +1957,8 @@ $decl spec_build $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmp
     $decl mr $call leave_mod (st, ms)
     $decl v  v0
     $decl ok $if ($call lt (v.mod, 0))
-        ($call err (st, "$specialize: this template's body is not a block with props, which is the only shape lowered so far", n))
-        ($if ($call has_fields (v.ty))
-             ($call err (st, "$specialize: this template's body has $decl fields; only a props-only block is lowered so far", n))
-             0)
+        ($call err (st, "$specialize: this template's body is not a block with props or $decls, which is the only shape lowered so far", n))
+        0
     $decl sp $call add_spec (st, $call spec_ent (r.id, keys, v.mod, v.ty))
     $decl out v }.out
 
@@ -1956,6 +1970,112 @@ $decl spec_build $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmp
 $decl spec_reuse $func ($decl st proto_lst, $decl sp proto_spec)
   { $decl bt $call T.tval (sp.bty)
     $decl r  $call lres3 ($call IR.e_block ($call intern (st, bt), IR.bslots.nil), bt, sp.mod) }.r
+
+// ------------------------------------------ a template body with `$decl`s (§4.9)
+//
+// §4.9: "Typing is memoized per argument type; values are not." A body that builds
+// anything at run time — a `$decl`, or a §3.3 effect — is evaluated where the
+// `$specialize` stands, like a block literal written there, so each use lowers its
+// items into **this** frame. Its props are compile-time and part of the type, so
+// they are shared: the props module is made once per argument type and reused,
+// which is what keeps a prop function lifted once rather than once per mention.
+//
+// Step 1 evaluates each argument **once** and binds it to its generic: the
+// argument is lowered at the site, into a slot of its own, and the generic names
+// that slot. (The props-only path binds a generic to the argument's *source* and
+// lowers it at each mention, which is right there and only there: §4.10 lets a
+// prop mention a generic only in a type-only position, never evaluated.)
+$decl inst_items $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call is_form (xs.head, "prop")) ($call inst_items ($call Pa.nodes.val (xs.tail))) true,
+  $case xs false
+)
+
+$decl inst_body $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "block"} ($call inst_items ($call Pa.nodes.val (n.items))),
+  $case n false
+)
+
+$decl body_items $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "block"} ($call Pa.nodes.val (n.items)),
+  $case n Pa.nodes.nil
+)
+
+$decl drop_props $func ($decl xs Pa.nodes.node, $decl acc Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call drop_props ($call Pa.nodes.val (xs.tail),
+        $if ($call is_form (xs.head, "prop")) acc ($call Pa.nodes.cons (xs.head, acc))),
+  $case xs ($call Pa.nodes.reverse (acc, Pa.nodes.nil))
+)
+
+// The props' compile-time values, newest first — the order `lower_item` builds them in.
+$decl inst_props $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl acc T.props.node) $match xs (
+  $case {$prop tag "cons"}
+    $call inst_props (st, $call Pa.nodes.val (xs.tail),
+        $if ($call is_form (xs.head, "prop"))
+            ($call T.props.cons ($call T.prop_entry ($call name_of ($call op (xs.head, 0)),
+                 $call const_of (st, $call op (xs.head, 1))), acc))
+            acc),
+  $case xs acc
+)
+
+$decl props_of_ty $func ($decl t0 T.proto_ty)
+  { $decl t $call T.unroll (t0)
+    $decl r $match t (
+        $case {$prop tag "block"} ($call T.props.val (t.props)),
+        $case t T.props.nil
+      ) }.r
+
+// The generics, each bound to a slot holding its argument's value.
+$decl gen_acc $func ($decl en benv.node, $decl sl IR.bslots.node, $decl fl T.fields.node)
+  { $decl env en  $decl slots sl  $decl flds fl }
+$decl proto_genacc $call gen_acc (benv.nil, IR.bslots.nil, T.fields.nil)
+
+$decl bind_args $func ($decl st proto_lst, $decl site benv.node, $decl gs strs.node,
+                       $decl xs Pa.nodes.node, $decl a proto_genacc) $match gs (
+  $case {$prop tag "cons"} $match xs (
+    $case {$prop tag "cons"}
+      { $decl v  $call lval ($call lower (st, site, xs.head, false))
+        $decl id $call intern (st, v.ty)
+        $decl sl $call fresh_slot (st, id)
+        $decl a2 $call gen_acc (
+            $call benv.cons ($call bind_ent6 (gs.head, "local", sl, v.ty, v.mod, v.tmpl),
+                $call benv.val (a.env)),
+            $call IR.bslots.cons ($call IR.bslot (sl, v.ir), $call IR.bslots.val (a.slots)),
+            $call T.fields.cons ($call T.field (gs.head, v.ty), $call T.fields.val (a.flds)))
+        $decl r  $call bind_args (st, site, $call strs.val (gs.tail), $call Pa.nodes.val (xs.tail), a2) }.r,
+    $case xs a),
+  $case gs a
+)
+
+
+$fwd spec_inst
+
+// A later use. Entered exactly as the first was, so what its items lift is named and
+// placed with the template (§4.9 makes an instantiation the template's code).
+$decl spec_reuse_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                             $decl args Pa.nodes.node, $decl keys IR.ints.node,
+                             $decl sp proto_spec, $decl n Pa.proto_node)
+  { $decl sk $call spec_key (st, r, keys)
+    $decl ms $call enter_mod_in (st, sk, r.file, $call infer_key (st, r.iid, keys, ""))
+    $decl v  $call lval ($call spec_inst (st, e, r, args, -1, sp.mod, sp.bty, false, n))
+    $decl mr $call leave_mod (st, ms)
+    $decl out v }.out
+
+$decl spec_build_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                             $decl args Pa.nodes.node, $decl keys IR.ints.node,
+                             $decl n Pa.proto_node)
+  { $decl sk $call spec_key (st, r, keys)
+    $decl gm $call fresh_mod_gen (st, $call gen_props (r.generics, args, mprops.nil), e,
+                 sk, r.file)
+    // In progress: a use reached while the body's own items are being lowered is the
+    // body reaching itself, which §4.9 makes evaluate without bound.
+    $decl pg $call add_spec (st, $call spec_ent (r.id, keys, -2, T.t_bot))
+    $decl ms $call enter_mod_in (st, sk, r.file, $call infer_key (st, r.iid, keys, ""))
+    $decl v  $call lval ($call spec_inst (st, e, r, args, gm, -1, T.t_bot, true, n))
+    $decl mr $call leave_mod (st, ms)
+    $decl sp $call add_spec (st, $call spec_ent (r.id, keys, v.mod, v.ty))
+    $decl out v }.out
 
 $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl argn Pa.proto_node, $decl n Pa.proto_node)
@@ -1969,9 +2089,19 @@ $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
              $call int_to_str (na)))), n)), T.t_bot))
         { $decl keys $call arg_keys (st, e, args, IR.ints.nil)
           $decl hit  $call find_spec (st.specs, r.id, keys)
+          $decl inst $call inst_body (r.body)
           $decl rr $match hit (
-              $case {$prop tag "cons"} ($call spec_reuse (st, hit.head)),
-              $case hit ($call spec_build (st, e, r, args, keys, n))
+              $case {$prop tag "cons"}
+                $if inst
+                    ($if ($call eq_int (hit.head.mod, -2))
+                         ($call lres ($call IR.e_unit ($call err (st,
+                              "$specialize: this specialisation's own $decls reach it again; §4.9 makes that evaluate without bound, and lowering it through a $func is not done yet", n)),
+                              T.t_bot))
+                         ($call spec_reuse_inst (st, e, r, args, keys, hit.head, n)))
+                    ($call spec_reuse (st, hit.head)),
+              $case hit
+                $if inst ($call spec_build_inst (st, e, r, args, keys, n))
+                    ($call spec_build_props (st, e, r, args, keys, n))
             ) }.rr }.out
 
 // ----------------------------------------------------------- $import (§4.14)
@@ -3243,6 +3373,47 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
                  ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps), $call P.sval (st.curfile)))
     $decl reg $if ($call lt (md, 0)) 0 ($call note_opaqs (st, md, ps))
     $decl r  $call lres3 (ir, ty, md) }.r
+
+// §4.9's instance, completing the `$fwd` above `spec_reuse_inst`: it needs the block
+// machinery, which is here.
+// One instance. `md` and `prps` are the props module and the props' values: made
+// here on the first use (`fresh` true), handed in from the memo on every later one.
+// The value is the instance block, reached through an outer block whose first slots
+// hold the arguments — the IR has no other way to give a slot an initializer, and
+// the generics must not become fields of the instance (§4.9 binds them, it does not
+// prepend them to the layout).
+$decl spec_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                       $decl args Pa.nodes.node, $decl gm 0, $decl md0 0, $decl bty0 T.proto_ty,
+                       $decl fresh P.boolean, $decl n Pa.proto_node)
+  { $decl items $call body_items (r.body)
+    $decl ga  $call bind_args (st, e, $call strs.val (r.generics), args,
+                  $call gen_acc ($call benv.val (r.env), IR.bslots.nil, T.fields.nil))
+    $decl a   $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
+                  $call benv.val (ga.env), IR.exprs.nil), $call drop_props (items, Pa.nodes.nil))
+    $decl prps $if fresh ($call inst_props (st, items, T.props.nil)) ($call props_of_ty (bty0))
+    $decl ps  $call block_props (items, mprops.nil)
+    // The props see the template's environment and the generics as props — never the
+    // instance's slots, since §4.10 forbids a prop reading an ordered sibling.
+    $decl md  $if fresh
+        ($if ($call mprops.is_nil (ps)) -1
+             ($call fresh_mod_in (st, ps, $call with_gens (r.env, $call strs.val (r.generics), gm),
+                  "", $call blk_key (st, ps), $call P.sval (st.curfile))))
+        md0
+    $decl reg $if ($call and (fresh, $call lt (-1, md))) ($call note_opaqs (st, md, ps)) 0
+    $decl ity $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil), prps)
+    $decl iid $call intern (st, ity)
+    $decl iir $call with_pending ($call IR.exprs.val (a.pend),
+        $call IR.e_block (iid, $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)), iid)
+    $decl ng  $call strs.length (r.generics, 0)
+    $decl isl $call fresh_slot (st, iid)
+    $decl oty $call T.t_block ($call T.fields.reverse (
+                  $call T.fields.cons ($call T.field ("$inst", ity), $call T.fields.val (ga.flds)),
+                  T.fields.nil), T.props.nil)
+    $decl oid $call intern (st, oty)
+    $decl oir $call IR.e_block (oid, $call IR.bslots.reverse (
+                  $call IR.bslots.cons ($call IR.bslot (isl, iir), $call IR.bslots.val (ga.slots)),
+                  IR.bslots.nil))
+    $decl out $call lres3 ($call IR.e_field (iid, oir, ng), ity, md) }.out
 
 // ----------------------------------------------------------------- the file
 //

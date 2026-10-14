@@ -188,6 +188,12 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/prop_param.mpl", .want = "98\n" },
         .{ .src = "stage1/fixtures/defaults.mpl", .want = "247\n" },
         .{ .src = "stage1/fixtures/init_fwd.mpl", .want = "22\n" },
+        // §4.9's instance semantics for a template body with `$decl`s: storage per
+        // evaluation, an argument evaluated once, props shared. 140.
+        .{ .src = "stage1/fixtures/instance.mpl", .want = "140\n" },
+        // The generic in type-only positions inside the `$decl`s, through the real
+        // prelude's `list`. 6.
+        .{ .src = "stage1/fixtures/instance_list.mpl", .want = "6\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -497,6 +503,9 @@ pub fn build(b: *std.Build) void {
         // position each takes comes from the call site's interned union (§7.5) — the
         // two implementations have to agree about that, not just about the bytes.
         "stage1/fixtures/write.mpl",
+        // §4.9: an instance's arguments sit in slots of an outer block and its body in
+        // the current frame, so both sides must agree on the slot numbering.
+        "stage1/fixtures/instance.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);
