@@ -87,9 +87,14 @@ $decl join_strs $func ($decl xs strs.node, $decl acc strs.node) $match xs (
 // this a diagnostic from a library template is reported against whichever file
 // happened to use it. Stage 0 carries the same field on a `$func` for the same
 // reason (see `Func.file` in lib/interp/value.zig).
+// `ctg` is §4.9's compile-time generics: the ones whose value reaches a prop, each
+// with the prop it reaches. Computed at the declaration (`ctg_fix`).
+$decl tmpl_rec_c $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en env.node,
+                        $decl fl "", $decl cg Pa.ctgs.node)
+  { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl file fl  $decl ctg cg }
 $decl tmpl_rec $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en env.node,
                       $decl fl "")
-  { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl file fl }
+  $call tmpl_rec_c (i, gs, bd, en, fl, Pa.ctgs.nil)
 
 $decl proto_tmpl $call tmpl_rec (0, strs.nil, Pa.proto_node, env.nil, "")
 $decl tmpl_list $specialize P.list proto_tmpl
@@ -1214,27 +1219,56 @@ $decl is_var_ty $func ($decl t T.proto_ty) $match t (
 $decl self_tmpl_env $func ($decl cx proto_ctx, $decl e env.node, $decl nm "", $decl init Pa.proto_node)
   $call bind (e, nm, $call T.t_tmpl ($call ct_id (cx, 7, init)))
 
-// §4.9: the declaration itself checks nothing. It records what specialization
-// will need and hands back an identity.
-$decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl gs    $call generic_names ($call op (n, 0), strs.nil)
-    // A generic is *not* added to `ctnames`. §4.9 evaluates an argument where the
-    // `$specialize` stands, so the generic's value is a runtime value even though
-    // its type is known, and §4.10 lets a prop mention one only in a type-only
-    // position. `ct_init` does not walk a compile-time form's operands, which is
-    // exactly what keeps `list T`'s `$prop cons $func ($decl h T, …)` legal while
-    // `$prop k T` is refused: two instances whose arguments share a type share
-    // one memoised type, and a prop reading the value would differ between them.
-    $decl id    $call ct_id (cx, 7, n)
-    $decl rec   $call tmpl_rec (id, gs, $call op (n, 1), e, $call sval (cx.file))
-    $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
-    $decl out   $call T.t_tmpl (id) }.out
-
 $decl find_tmpl $func ($decl xs tmpl_list.node, $decl i 0) $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_int (xs.head.id, i)) xs.head ($call find_tmpl (xs.tail, i)),
   $case xs ($call tmpl_rec (-1, strs.nil, Pa.proto_node, env.nil, ""))
 )
+
+// The compile-time generics of the template a `$specialize`'s target names, by
+// position — the resolver `Pa.ct_generics` asks for. The target is typed quietly:
+// this runs at the declaration, and the `$specialize` will be typed, and report,
+// at specialisation. The template being declared answers from `cur`, the fixpoint's
+// current guess, since its record does not exist yet.
+$decl ctg_target $func ($decl cx proto_ctx, $decl e env.node, $decl own 0, $decl gs strs.node,
+                        $decl cur Pa.ctgs.node, $decl x Pa.proto_node)
+  { $decl q0   $call bval (cx.quiet)
+    $decl hush $set cx.quiet true
+    $decl tt   $call deref_ty ($call infer (cx, e, x))
+    $decl back $set cx.quiet q0
+    $decl out $match tt (
+        $case {$prop tag "tmpl"}
+          $if ($call eq_int (tt.id, own)) ($call Pa.ctg_mask (gs, cur, Pa.pstrs.nil))
+              { $decl r $call find_tmpl (cx.tmpls, tt.id)
+                $decl m $call Pa.ctg_mask (r.generics, r.ctg, Pa.pstrs.nil) }.m,
+        $case tt Pa.pstrs.nil
+      ) }.out
+
+// A self-specialising template passes its own generics to itself, so whether one
+// is compile-time can depend on whether another is: iterate until the set stops
+// growing. It only grows, and it has at most one entry per generic.
+$decl ctg_fix $func ($decl cx proto_ctx, $decl e env.node, $decl own 0, $decl gs strs.node,
+                     $decl body Pa.proto_node, $decl cur Pa.ctgs.node, $decl k 0)
+  { $decl rs  $func ($decl x Pa.proto_node) $call ctg_target (cx, e, own, gs, cur, x)
+    $decl nx  $call Pa.ct_generics (body, gs, rs)
+    $decl out $if ($call or ($call eq_int ($call Pa.ctgs.length (nx, 0), $call Pa.ctgs.length (cur, 0)),
+                            $call lt (k, 1)))
+        nx ($call ctg_fix (cx, e, own, gs, body, nx, $call sub (k, 1))) }.out
+
+// §4.9: the declaration itself checks nothing. It records what specialization
+// will need and hands back an identity.
+$decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
+  { $decl gs    $call generic_names ($call op (n, 0), strs.nil)
+    // A generic a prop reads is compile-time by definition (§4.9), and every
+    // `$specialize` of this template is held to a constant argument for it — so in
+    // the body, reading one is reading a constant, and `ct_init` may say so.
+    $decl ctg   $set cx.ctnames ($call join_strs (gs, cx.ctnames))
+    $decl id    $call ct_id (cx, 7, n)
+    $decl cg    $call ctg_fix (cx, e, id, gs, $call op (n, 1), Pa.ctgs.nil,
+                    $call strs.length (gs, 0))
+    $decl rec   $call tmpl_rec_c (id, gs, $call op (n, 1), e, $call sval (cx.file), cg)
+    $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
+    $decl out   $call T.t_tmpl (id) }.out
 
 $decl memo_find $func ($decl xs memo_list.node, $decl k "") $match xs (
   $case {$prop tag "cons"}
@@ -1267,6 +1301,44 @@ $decl bind_generics $func ($decl e env.node, $decl gs strs.node, $decl ats T.tys
 $fwd infer_fwd_body
 $fwd infer_block
 
+// §4.9: "its value joins the argument types in the memo key." A literal is keyed by
+// its text; any other constant by where it is written, which can split two equal
+// constants into two types but never merge two different ones. Lowering builds the
+// same string (`lower.mpl`'s `spec_vals`), because the key is what every identity
+// in the body is minted from.
+$decl ct_vals $func ($decl cx proto_ctx, $decl gs strs.node, $decl args Pa.nodes.node,
+                     $decl cg Pa.ctgs.node, $decl acc "") $match gs (
+  $case {$prop tag "cons"} $match args (
+    $case {$prop tag "cons"}
+      { $decl p  $call Pa.ctg_prop (cg, gs.head)
+        $decl lk $call Pa.lit_key (args.head)
+        $decl v  $if ($call eq_str (p, "")) ""
+                     ($if ($call eq_str (lk, ""))
+                          ($call concat ("=@", $call int_to_str ($call ct_id (cx, 3, args.head))))
+                          ($call concat ("=", lk)))
+        $decl r  $call ct_vals (cx, gs.tail, $call Pa.nodes.val (args.tail), cg, $call concat (acc, v)) }.r,
+    $case args acc),
+  $case gs acc
+)
+
+// A compile-time generic bound to a literal is replaced by it (`Pa.subst_lit`), so
+// the value is in the props — and so in the type.
+$decl subst_ct $func ($decl body Pa.proto_node, $decl gs strs.node, $decl args Pa.nodes.node,
+                      $decl cg Pa.ctgs.node) $match gs (
+  $case {$prop tag "cons"} $match args (
+    $case {$prop tag "cons"}
+      $call subst_ct (
+          $if ($call and ($call not ($call eq_str ($call Pa.ctg_prop (cg, gs.head), "")),
+                          $call not ($call eq_str ($call Pa.lit_key (args.head), ""))))
+              ($call Pa.subst_lit (body, gs.head, args.head)) body,
+          gs.tail, $call Pa.nodes.val (args.tail), cg),
+    $case args body),
+  $case gs body
+)
+
+// Defined below `ct_init`, which it needs.
+$fwd ct_args_check
+
 $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                              $decl argn Pa.proto_node, $decl n Pa.proto_node)
   { $decl r  $call find_tmpl (cx.tmpls, id)
@@ -1281,7 +1353,8 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
     $decl out $if ($call not ($call eq_int (ng, na)))
         ($call err (cx, $call concat ("this template has ", $call concat ($call int_to_str (ng),
             $call concat (" generic parameters, found ", $call int_to_str (na)))), n))
-        { $decl key $call memo_key (id, ats, "")
+        { $decl chk $call ct_args_check (cx, e, r.generics, args, r.ctg)
+          $decl key $call concat ($call memo_key (id, ats, ""), $call ct_vals (cx, r.generics, args, r.ctg, ""))
           $decl hit $call memo_find (cx.memo, key)
           $decl deep $call lt (63, $call ival (cx.sdepth))
           $decl rr $if hit.ok
@@ -1307,7 +1380,8 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                 // A value, not the cell: `$decl` keeps a reference (§5.4), and
                 // restoring the cell to itself would keep the first pass's errors.
                 $decl e0  $call Pa.diags.val (cx.errs)
-                $decl ty0 $call infer (cx, benv, r.body)
+                $decl body  $call subst_ct (r.body, r.generics, args, r.ctg)
+                $decl ty0 $call infer (cx, benv, body)
                 // §5.5 discharges the placeholder if the body reached back.
                 $decl ty1 $call close_rec (cx, ty0, $call var_id (ph), n)
                 // A body that reached itself saw `R` there, and `R` cannot be
@@ -1320,7 +1394,7 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                     { $decl back $set cx.errs e0
                       $decl m2   $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty1),
                                      $call eval_memo (cx.memo)))
-                      $decl t2   $call infer (cx, benv, r.body) }.t2
+                      $decl t2   $call infer (cx, benv, body) }.t2
                     ty1
                 $decl left $set cx.file outer
                 $decl sleft $set cx.sctx souter
@@ -1690,15 +1764,6 @@ $decl mem_str $func ($decl xs strs.node, $decl n "") $match xs (
 // evaluated the call at run time; `$prop tag x` over a parameter type-checked,
 // ran as a per-call field in stage 0, and was refused by lowering at each *use*
 // with a message about the backend's difficulty rather than about the rule.
-$decl ct_kw $func ($decl k "")
-  $if ($call eq_str (k, "func")) true
-  ($if ($call eq_str (k, "template")) true
-  ($if ($call eq_str (k, "union")) true
-  ($if ($call eq_str (k, "overload")) true
-  ($if ($call eq_str (k, "specialize")) true
-  ($if ($call eq_str (k, "impl")) true
-  ($if ($call eq_str (k, "traitsof")) true false))))))
-
 // "a block made only of props" — one with a `$decl` has a layout, so it is a
 // runtime value and cannot be a compile-time constant.
 $decl props_only $func ($decl items Pa.nodes.node) $match items (
@@ -1708,37 +1773,106 @@ $decl props_only $func ($decl items Pa.nodes.node) $match items (
   $case items true
 )
 
-$decl ct_init $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node) $match n (
-  $case {$prop tag "int"}   true,
-  $case {$prop tag "float"} true,
-  $case {$prop tag "str"}   true,
-  $case {$prop tag "bool"}  true,
-  $case {$prop tag "unit"}  true,
+// §4.10's "never a block with a `$decl`", applied through a `$specialize`: the
+// template's body, if the target names one. Asked quietly, like `ctg_target` — the
+// `$specialize` itself is typed, and reports, as the prop's initializer.
+$decl spec_runtime_body $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node)
+  { $decl q0   $call bval (cx.quiet)
+    $decl hush $set cx.quiet true
+    $decl tt   $call deref_ty ($call infer (cx, e, x))
+    $decl back $set cx.quiet q0
+    $decl out $match tt (
+        $case {$prop tag "tmpl"}
+          { $decl r $call find_tmpl (cx.tmpls, tt.id)
+            $decl b r.body
+            $decl q $match b (
+                $case {$prop tag "block"} ($call not ($call props_only ($call Pa.nodes.val (b.items)))),
+                $case b false
+              ) }.q,
+        $case tt false
+      ) }.out
+
+// §4.10's constant expressions, as a reason: "" when `n` is one, and otherwise what
+// to say it is not. Judged after specialisation, so a `$specialize` is constant when
+// its arguments are and its body is made only of props.
+$fwd ct_why
+
+$decl ct_why_list $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl w $call ct_why (cx, pe, xs.head)
+      $decl r $if ($call eq_str (w, "")) ($call ct_why_list (cx, pe, $call Pa.nodes.val (xs.tail))) w }.r,
+  $case xs ""
+)
+
+// "Each argument of a `$specialize` inside a constant expression is evaluated, so it
+// must be a name or a constant expression." A name of any binding: reading one does
+// nothing, and its value cannot reach the prop unless the generic it is passed to is
+// compile-time — and then that `$specialize`'s own check holds it to a constant.
+$decl ct_args_why $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    { $decl x xs.head
+      $decl w $match x ($case {$prop tag "name"} "", $case x ($call ct_why (cx, pe, x)))
+      $decl r $if ($call eq_str (w, "")) ($call ct_args_why (cx, pe, $call Pa.nodes.val (xs.tail))) w }.r,
+  $case xs ""
+)
+
+$decl ct_form_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n proto_form)
+  { $decl k n.keyword
+    $decl r $if ($call or ($call eq_str (k, "func"), $call eq_str (k, "template"))) ""
+      // §4.8a: the first member is the value; the rest are type-only (§5.7).
+      ($if ($call eq_str (k, "union"))
+           ($call ct_why (cx, pe, $call Pa.nodes.nth ($call Pa.group_list ($call op (n, 0)), 0)))
+      ($if ($call eq_str (k, "overload"))
+           ($call ct_why_list (cx, pe, $call Pa.group_list ($call op (n, 0))))
+      ($if ($call eq_str (k, "specialize"))
+           ($if ($call spec_runtime_body (cx, pe, $call op (n, 0)))
+                "a $specialize of a template whose body has a $decl"
+                ($call ct_args_why (cx, pe, $call Pa.group_list ($call op (n, 1)))))
+      ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof"))) ""
+           ($call concat ("$", k)))))) }.r
+
+$decl ct_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node) $match n (
+  $case {$prop tag "int"}   "",
+  $case {$prop tag "float"} "",
+  $case {$prop tag "str"}   "",
+  $case {$prop tag "bool"}  "",
+  $case {$prop tag "unit"}  "",
   // §4.10 allows "projection of a prop", and the target is held to the same
   // rule — so `math.inner.two` is in and a projection off a parameter is out.
-  $case {$prop tag "proj_name"}  ($call ct_init (cx, pe, n.target)),
-  $case {$prop tag "proj_index"} ($call ct_init (cx, pe, n.target)),
+  $case {$prop tag "proj_name"}  ($call ct_why (cx, pe, n.target)),
+  $case {$prop tag "proj_index"} ($call ct_why (cx, pe, n.target)),
   // A name that is not in scope here at all is §4.10's *other* rule — an
   // ordered sibling, which the prop-only environment already excludes — so it is
   // left to inference's ordinary "unknown name", which says the more useful
   // thing. This reports only a name that resolves and is not compile-time.
   $case {$prop tag "name"}
-    $if ($call not ($call lookup (pe, n.text)).ok) true
-        ($call mem_str ($call strs.val (cx.ctnames), n.text)),
-  $case {$prop tag "block"} ($call props_only (n.items)),
-  // A compile-time form. Its operands are not walked: §5.7 makes `$union`'s
-  // members and a `$func`'s parameter defaults type-only positions, never
-  // evaluated, so what they mention is not a runtime read.
-  $case {$prop tag "form"}  ($call ct_kw (n.keyword)),
-  $case n false
+    $if ($call not ($call lookup (pe, n.text)).ok) ""
+        ($if ($call mem_str ($call strs.val (cx.ctnames), n.text)) ""
+             ($call concat ("'", $call concat (n.text, "'")))),
+  $case {$prop tag "block"} ($if ($call props_only (n.items)) "" "a block with a $decl in it"),
+  $case {$prop tag "form"}  ($call ct_form_why (cx, pe, n)),
+  $case n "this"
 )
 
-$decl ct_desc $func ($decl n Pa.proto_node) $match n (
-  $case {$prop tag "form"} ($call concat ("$", n.keyword)),
-  $case {$prop tag "name"} ($call concat ("'", $call concat (n.text, "'"))),
-  // §4.10 allows "a block made only of props"; one with a `$decl` has a layout.
-  $case {$prop tag "block"} "a block with a $decl in it",
-  $case n "this"
+$decl ct_init $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node)
+  $call eq_str ($call ct_why (cx, pe, n), "")
+
+// §4.9: a compile-time generic's "argument must be a constant expression". Asked at
+// every `$specialize`, memo hit or not, and reported at the argument, naming the prop
+// the generic reaches — the place a reader has to look to see why.
+$decl ct_args_check $func ($decl cx proto_ctx, $decl e env.node, $decl gs strs.node,
+                           $decl args Pa.nodes.node, $decl cg Pa.ctgs.node) $match gs (
+  $case {$prop tag "cons"} $match args (
+    $case {$prop tag "cons"}
+      { $decl p  $call Pa.ctg_prop (cg, gs.head)
+        $decl w  $if ($call eq_str (p, "")) "" ($call ct_why (cx, e, args.head))
+        $decl rp $if ($call eq_str (w, "")) T.t_bot
+            ($call err (cx, $call concat ("'", $call concat (gs.head, $call concat ("' reaches $prop ",
+                $call concat (p, $call concat (", so its argument must be a constant expression (§4.9), and ",
+                $call concat (w, " is not")))))), args.head))
+        $decl r  $call ct_args_check (cx, e, gs.tail, $call Pa.nodes.val (args.tail), cg) }.r,
+    $case args 0),
+  $case gs 0
 )
 
 // The type of one prop. §4.10: the initializer sees other props and enclosing
@@ -1748,9 +1882,10 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
     // Reported here, at the `$prop`, with its span — not at each projection that
     // later fails to reach the value. `err` is quiet during the first of the two
     // prop passes, so this is said once.
-    $decl ct   $if ($call ct_init (cx, pe, init)) T.t_bot
-        ($call err (cx, $call concat ("a $prop must be fully evaluable by the compiler (§4.10), and ",
-            $call concat ($call ct_desc (init), " is not")), it))
+    $decl why  $call ct_why (cx, pe, init)
+    $decl ct   $if ($call eq_str (why, "")) T.t_bot
+        ($call err (cx, $call concat ("a $prop must be a constant expression (§4.10), and ",
+            $call concat (why, " is not")), it))
     $decl id   $call var_id ($call lookup (pe, nm)).ty
     $decl out $if ($call is_form (init, "func"))
         ($call infer_rec_func (cx, pe, nm, init))

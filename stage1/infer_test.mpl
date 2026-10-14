@@ -288,17 +288,17 @@ $decl t44 $call check_str ("a prop may not name an ordered sibling",
 // equality, so a prop reading a parameter gives its block a type per call.
 $decl t44b $call check_str ("a $prop may not be a $call",
   $call errs_of ("$decl f $func () 3  $decl b { $prop p $call f () }"),
-  "a $prop must be fully evaluable by the compiler (§4.10), and $call is not")
+  "a $prop must be a constant expression (§4.10), and $call is not")
 
 $decl t44c $call check_str ("a $prop may not read an enclosing parameter",
   $call errs_of ("$decl mk $func ($decl x 0) { $prop tag x  $decl y 1 }"),
-  "a $prop must be fully evaluable by the compiler (§4.10), and 'x' is not")
+  "a $prop must be a constant expression (§4.10), and 'x' is not")
 
 // §4.10 allows "a block made only of props"; one with a `$decl` has a layout, so
 // it is a runtime value and cannot be a compile-time constant.
 $decl t44d $call check_str ("a $prop may not be a block with a $decl",
   $call errs_of ("$decl b { $prop p { $decl y 1 }  $decl z 2 }"),
-  "a $prop must be fully evaluable by the compiler (§4.10), and a block with a $decl in it is not")
+  "a $prop must be a constant expression (§4.10), and a block with a $decl in it is not")
 
 // And the legitimate shapes stay legitimate: a `$func`, a `$union`, a prop-only
 // block, a scalar, and a sibling prop by name (t43 above).
@@ -306,17 +306,51 @@ $decl t44e $call check_str ("the compile-time shapes are accepted",
   $call errs_of ($call concat ("$decl b { $prop f $func ($decl n 0) n  $prop u $union (1, 2) ",
                                " $prop n { $prop two 2 }  $prop k 7 }")), "")
 
-// §4.9/§4.10: a generic's *value* is a runtime value — the argument is evaluated
-// where the `$specialize` stands — so a prop may mention a generic only in a
-// type-only position. `$specialize t 5` and `$specialize t 6` share one memoised
-// type; `$prop k T` would give them different prop values.
-$decl t44j $call check_str ("a $prop may not read a generic's value",
-  $call errs_of ("$decl t $template T { $prop k T }  $decl s $specialize t 5"),
-  "a $prop must be fully evaluable by the compiler (§4.10), and 'T' is not")
+// §4.9's compile-time generics. A generic a prop reads is compile-time: the prop's
+// value is part of the type, so the generic's argument must be a constant, and its
+// value joins the memo key. `$specialize t 5` and `$specialize t 6` are two types.
+$decl t44j $call check_str ("a prop may read a generic, given a constant",
+  $call errs_of ("$decl t $template T { $prop k T }  $decl s $specialize t 5  $decl x s.k"), "")
 
-$decl t44k $call check_str ("...nor project off one",
+$decl t44j2 $call check_str ("...and the value is in the type",
+  $call field_ty ("$decl t $template T { $prop k T }  $decl s $specialize t 5", "s"), "{k=i5,}")
+
+$decl t44j3 $call check_str ("...so two values are two types",
+  $call errs_of ($call concat ("$decl t $template T { $prop k T }",
+      $call concat ("  $decl f $func ($decl x $specialize t 5) 0",
+                    "  $decl y $call f ($specialize t 6)"))),
+  "argument 1 is {k=i6,}, expected {k=i5,}")
+
+$decl t44k $call check_str ("a compile-time generic's argument must be a constant",
   $call errs_of ("$decl t $template T { $prop k T.a }  $decl s $specialize t { $decl a 1 }"),
-  "a $prop must be fully evaluable by the compiler (§4.10), and this is not")
+  "'T' reaches $prop k, so its argument must be a constant expression (§4.9), and a block with a $decl in it is not")
+
+$decl t44k2 $call check_str ("...which a $decl is not",
+  $call errs_of ("$decl t $template T { $prop k T }  $decl n 5  $decl s $specialize t n"),
+  "'T' reaches $prop k, so its argument must be a constant expression (§4.9), and 'n' is not")
+
+// §4.10's constant expressions, judged after specialisation: a `$specialize`
+// argument inside a prop is evaluated, so it must be a name or a constant — and a
+// body with a `$decl` has storage, which no constant can own.
+$decl t44o $call check_str ("a $call hidden in a prop's $specialize argument is refused",
+  $call errs_of ($call concat ("$decl f $func () 3  $decl t $template T { $prop k 1 }",
+                               "  $decl b { $prop p $specialize t $call f () }")),
+  "a $prop must be a constant expression (§4.10), and $call is not")
+
+$decl t44p $call check_str ("a prop may not hold an instance with storage",
+  $call errs_of ($call concat ("$decl cell $template T { $decl v $mut $alloc T }",
+                               "  $decl b { $prop c $specialize cell 1 }")),
+  "a $prop must be a constant expression (§4.10), and a $specialize of a template whose body has a $decl is not")
+
+$decl t44q $call check_str ("a $union's first member is evaluated, so it is held too",
+  $call errs_of ("$decl f $func () 3  $decl b { $prop u $union ($call f (), 2) }"),
+  "a $prop must be a constant expression (§4.10), and $call is not")
+
+// A name is fine as an argument, whatever it is bound to, when the generic it
+// is passed to is not compile-time: only its type reaches the specialisation.
+$decl t44r $call check_str ("a runtime name may be a non-compile-time argument",
+  $call errs_of ($call concat ("$decl t $template T { $prop mk $func ($decl v T) v }",
+                               "  $decl n 5  $decl b { $prop s $specialize t n }")), "")
 
 // ...but the type-only positions stay legal: a parameter default, a `$union`
 // member after the first, and a nested `$specialize` — the shapes the prelude's

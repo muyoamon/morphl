@@ -327,10 +327,20 @@ $decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $m
 // `iid` is the id *inference* gave the same template (`infer.mpl`'s `ct_id`, tag 7),
 // which is the head of its memo key and so of every identity minted in a
 // specialisation's body — see `opaque_at` and `spec_build`.
+// `ctg` is §4.9's compile-time generics, the same set inference computes, found on
+// first use (`tmpl_ctg`) — `ctok` says it has been, and an entry being computed is
+// `ctok` with an empty set, which errs permissive for a template reaching itself
+// through another. `vk` is the value part of one specialisation's memo key: a copy of
+// the record made per `$specialize` carries it, with the literals substituted into
+// `body`, so the build paths read both off `r` like everything else.
+$decl tmpl_rec_x $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node,
+                        $decl en benv.node, $decl ky "", $decl fl "", $decl ii 0,
+                        $decl cg Pa.ctgs.node, $decl ck P.boolean, $decl v "")
+  { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl key ky
+    $decl file fl  $decl iid ii  $decl ctg cg  $decl ctok ck  $decl vk v }
 $decl tmpl_rec_k $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node,
                         $decl en benv.node, $decl ky "", $decl fl "", $decl ii 0)
-  { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl key ky
-    $decl file fl  $decl iid ii }
+  $call tmpl_rec_x (i, gs, bd, en, ky, fl, ii, Pa.ctgs.nil, false, "")
 $decl tmpl_rec $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en benv.node)
   $call tmpl_rec_k (i, gs, bd, en, "", "", 0)
 $decl proto_tmpl $call tmpl_rec (0, strs.nil, Pa.proto_node, benv.nil)
@@ -342,8 +352,10 @@ $decl tmpls_list $specialize P.list proto_tmpl
 // emit its own `cons`. The key is the interned index of each argument's type,
 // which is exact: interning is by `T.same`, and de Bruijn binders make
 // alpha-equivalent types identical (§5.5).
+$decl spec_ent_v $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty, $decl v "")
+  { $decl tmpl t  $decl keys ks  $decl mod m  $decl bty bt  $decl vk v }
 $decl spec_ent $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty)
-  { $decl tmpl t  $decl keys ks  $decl mod m  $decl bty bt }
+  $call spec_ent_v (t, ks, m, bt, "")
 $decl proto_spec $call spec_ent (0, IR.ints.nil, 0, T.t_bot)
 $decl specs_list $specialize P.list proto_spec
 
@@ -363,12 +375,12 @@ $decl find_tmpl $func ($decl xs tmpls_list.node, $decl i 0) $match xs (
   $case xs tmpls_list.nil
 )
 
-$decl find_spec $func ($decl xs specs_list.node, $decl i 0, $decl ks IR.ints.node) $match xs (
+$decl find_spec $func ($decl xs specs_list.node, $decl i 0, $decl ks IR.ints.node, $decl v "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call and ($call eq_int (xs.head.tmpl, i),
+    $if ($call and ($call and ($call eq_int (xs.head.tmpl, i), $call eq_str (xs.head.vk, v)),
                     $call same_keys ($call IR.ints.val (xs.head.keys), ks)))
         ($call specs_list.cons (xs.head, specs_list.nil))
-        ($call find_spec (xs.tail, i, ks)),
+        ($call find_spec (xs.tail, i, ks, v)),
   $case xs specs_list.nil
 )
 
@@ -1012,10 +1024,10 @@ $decl tmpl_self $func ($decl st proto_lst, $decl tid 0, $decl nm "", $decl kind 
     $decl r $match hit (
         $case {$prop tag "cons"}
           { $decl t  hit.head
-            $decl nr $call tmpl_rec_k (t.id, t.generics, t.body,
+            $decl nr $call tmpl_rec_x (t.id, t.generics, t.body,
                          $call benv.cons ($call bind_ent6 (nm, kind, idx, ty, -1, tid),
                              $call benv.val (t.env)),
-                         t.key, t.file, t.iid)
+                         t.key, t.file, t.iid, t.ctg, t.ctok, t.vk)
             $decl w  $set st.tmpls ($call tmpls_list.cons (nr, $call eval_tmpls (st.tmpls)))
             $decl q  0 }.q,
         $case hit 0
@@ -1946,9 +1958,12 @@ $decl spec_hash $func ($decl st proto_lst, $decl ks IR.ints.node, $decl acc 0) $
   $case ks acc
 )
 
+// `vk` is hashed in too; empty, it hashes to nothing, so a template with no
+// compile-time generic keeps the name it always had.
 $decl spec_key $func ($decl st proto_lst, $decl r proto_tmpl, $decl ks IR.ints.node)
   $call concat (r.key, $call concat ("_",
-      $call int_to_str ($call spec_hash (st, ks, $call T.hash_str (r.key, 0, 0)))))
+      $call int_to_str ($call spec_hash (st, ks,
+          $call T.hash_str (r.vk, 0, $call T.hash_str (r.key, 0, 0))))))
 
 $decl infer_key $func ($decl st proto_lst, $decl i 0, $decl ks IR.ints.node, $decl acc "") $match ks (
   $case {$prop tag "cons"}
@@ -1956,6 +1971,11 @@ $decl infer_key $func ($decl st proto_lst, $decl i 0, $decl ks IR.ints.node, $de
         $call concat (acc, $call concat ("|", $call T.show ($call ty_at (st, ks.head))))),
   $case ks ($call concat ($call int_to_str (i), acc))
 )
+
+// Inference's memo key for this specialisation, value part included — exactly
+// `infer.mpl`'s `memo_key` followed by its `ct_vals`.
+$decl spec_ictx $func ($decl st proto_lst, $decl r proto_tmpl, $decl ks IR.ints.node)
+  $call concat ($call infer_key (st, r.iid, ks, ""), r.vk)
 
 $decl spec_build_props $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                         $decl args Pa.nodes.node, $decl keys IR.ints.node,
@@ -1974,14 +1994,14 @@ $decl spec_build_props $func ($decl st proto_lst, $decl e benv.node, $decl r pro
     // Inference's memo key for the same specialisation (`infer.mpl`'s `memo_key`):
     // the template's id, then each argument type rendered. Every identity minted in
     // the body hashes it, exactly as inference's `sctx` does.
-    $decl ms $call enter_mod_in (st, sk, r.file, $call infer_key (st, r.iid, keys, ""))
+    $decl ms $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys))
     $decl v0 $call lval ($call lower (st, be, r.body, false))
     $decl mr $call leave_mod (st, ms)
     $decl v  v0
     $decl ok $if ($call lt (v.mod, 0))
         ($call err (st, "$specialize: this template's body is not a block with props or $decls, which is the only shape lowered so far", n))
         0
-    $decl sp $call add_spec (st, $call spec_ent (r.id, keys, v.mod, v.ty))
+    $decl sp $call add_spec (st, $call spec_ent_v (r.id, keys, v.mod, v.ty, r.vk))
     $decl out v }.out
 
 // A second use of the same specialisation. §4.9 memoises per argument type, so
@@ -2079,7 +2099,7 @@ $decl spec_reuse_inst $func ($decl st proto_lst, $decl e benv.node, $decl r prot
                              $decl args Pa.nodes.node, $decl keys IR.ints.node,
                              $decl sp proto_spec, $decl n Pa.proto_node)
   { $decl sk $call spec_key (st, r, keys)
-    $decl ms $call enter_mod_in (st, sk, r.file, $call infer_key (st, r.iid, keys, ""))
+    $decl ms $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys))
     $decl v  $call lval ($call spec_inst (st, e, r, args, -1, sp.mod, sp.bty, false, n))
     $decl mr $call leave_mod (st, ms)
     $decl out v }.out
@@ -2092,12 +2112,80 @@ $decl spec_build_inst $func ($decl st proto_lst, $decl e benv.node, $decl r prot
                  sk, r.file)
     // In progress: a use reached while the body's own items are being lowered is the
     // body reaching itself, which §4.9 makes evaluate without bound.
-    $decl pg $call add_spec (st, $call spec_ent (r.id, keys, -2, T.t_bot))
-    $decl ms $call enter_mod_in (st, sk, r.file, $call infer_key (st, r.iid, keys, ""))
+    $decl pg $call add_spec (st, $call spec_ent_v (r.id, keys, -2, T.t_bot, r.vk))
+    $decl ms $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys))
     $decl v  $call lval ($call spec_inst (st, e, r, args, gm, -1, T.t_bot, true, n))
     $decl mr $call leave_mod (st, ms)
-    $decl sp $call add_spec (st, $call spec_ent (r.id, keys, v.mod, v.ty))
+    $decl sp $call add_spec (st, $call spec_ent_v (r.id, keys, v.mod, v.ty, r.vk))
     $decl out v }.out
+
+// §4.9's compile-time generics, lowering's half — the same scan as inference
+// (`Pa.ct_generics`) with lowering's way of resolving a `$specialize`'s target. The
+// answer is kept on the template's record, which the snapshot rolls back with it.
+$fwd tmpl_ctg
+
+// The identity at `proto_tmpl`: `tmpl_ctg`'s result is §5.5's placeholder above its
+// completion, and projecting off one fails.
+$decl tmpl_val $func ($decl r proto_tmpl) r
+
+$decl ctg_target_l $func ($decl st proto_lst, $decl en benv.node, $decl own 0, $decl gs strs.node,
+                          $decl cur Pa.ctgs.node, $decl x Pa.proto_node)
+  { $decl v   $call type_only (st, en, x)
+    $decl out $if ($call eq_int (v.tmpl, own)) ($call Pa.ctg_mask (gs, cur, Pa.pstrs.nil))
+        ($if ($call lt (v.tmpl, 0)) Pa.pstrs.nil
+             { $decl hit $call find_tmpl ($call eval_tmpls (st.tmpls), v.tmpl)
+               $decl q $match hit (
+                   $case {$prop tag "cons"}
+                     { $decl rr $call tmpl_val ($call tmpl_ctg (st, hit.head))
+                       $decl m  $call Pa.ctg_mask (rr.generics, rr.ctg, Pa.pstrs.nil) }.m,
+                   $case hit Pa.pstrs.nil
+                 ) }.q) }.out
+
+$decl ctg_fix_l $func ($decl st proto_lst, $decl r proto_tmpl, $decl cur Pa.ctgs.node, $decl k 0)
+  { $decl rs  $func ($decl x Pa.proto_node) $call ctg_target_l (st, r.env, r.id, r.generics, cur, x)
+    $decl nx  $call Pa.ct_generics (r.body, r.generics, rs)
+    $decl out $if ($call P.or ($call eq_int ($call Pa.ctgs.length (nx, 0), $call Pa.ctgs.length (cur, 0)),
+                            $call lt (k, 1)))
+        nx ($call ctg_fix_l (st, r, nx, $call isub (k, 1))) }.out
+
+$decl tmpl_ctg $func ($decl st proto_lst, $decl r proto_tmpl)
+  $if r.ctok r
+      { $decl busy $set st.tmpls ($call tmpls_list.cons ($call tmpl_rec_x (r.id, r.generics, r.body,
+                       r.env, r.key, r.file, r.iid, Pa.ctgs.nil, true, ""), $call eval_tmpls (st.tmpls)))
+        $decl cg   $call ctg_fix_l (st, r, Pa.ctgs.nil, $call strs.length (r.generics, 0))
+        $decl done $call tmpl_rec_x (r.id, r.generics, r.body, r.env, r.key, r.file, r.iid, cg, true, "")
+        $decl kept $set st.tmpls ($call tmpls_list.cons (done, $call eval_tmpls (st.tmpls)))
+        $decl out  done }.out
+
+// `infer.mpl`'s `ct_vals`, spelled the same way: a literal by its text, anything else
+// by where it is written — `opaque_at` is inference's `ct_id` with tag 3.
+$decl spec_vals $func ($decl st proto_lst, $decl gs strs.node, $decl args Pa.nodes.node,
+                       $decl cg Pa.ctgs.node, $decl acc "") $match gs (
+  $case {$prop tag "cons"} $match args (
+    $case {$prop tag "cons"}
+      { $decl p  $call Pa.ctg_prop (cg, gs.head)
+        $decl lk $call Pa.lit_key (args.head)
+        $decl v  $if ($call eq_str (p, "")) ""
+                     ($if ($call eq_str (lk, ""))
+                          ($call concat ("=@", $call int_to_str ($call opaque_at (st, args.head))))
+                          ($call concat ("=", lk)))
+        $decl r  $call spec_vals (st, gs.tail, $call Pa.nodes.val (args.tail), cg, $call concat (acc, v)) }.r,
+    $case args acc),
+  $case gs acc
+)
+
+$decl subst_ct_l $func ($decl body Pa.proto_node, $decl gs strs.node, $decl args Pa.nodes.node,
+                        $decl cg Pa.ctgs.node) $match gs (
+  $case {$prop tag "cons"} $match args (
+    $case {$prop tag "cons"}
+      $call subst_ct_l (
+          $if ($call and ($call not ($call eq_str ($call Pa.ctg_prop (cg, gs.head), "")),
+                          $call not ($call eq_str ($call Pa.lit_key (args.head), ""))))
+              ($call Pa.subst_lit (body, gs.head, args.head)) body,
+          gs.tail, $call Pa.nodes.val (args.tail), cg),
+    $case args body),
+  $case gs body
+)
 
 $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl argn Pa.proto_node, $decl n Pa.proto_node)
@@ -2110,7 +2198,12 @@ $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
              $call concat ($call int_to_str (ng), $call concat (" generic parameters, found ",
              $call int_to_str (na)))), n)), T.t_bot))
         { $decl keys $call arg_keys (st, e, args, IR.ints.nil)
-          $decl hit  $call find_spec (st.specs, r.id, keys)
+          $decl r0   $call tmpl_ctg (st, r)
+          $decl r    $call tmpl_rec_x (r0.id, r0.generics,
+                         $call subst_ct_l (r0.body, r0.generics, args, r0.ctg), r0.env,
+                         r0.key, r0.file, r0.iid, r0.ctg, true,
+                         $call spec_vals (st, r0.generics, args, r0.ctg, ""))
+          $decl hit  $call find_spec (st.specs, r.id, keys, r.vk)
           $decl inst $call inst_body (r.body)
           $decl rr $match hit (
               $case {$prop tag "cons"}

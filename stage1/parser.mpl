@@ -614,3 +614,201 @@ $decl bound_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
   $case {$prop tag "block"} ($call bound_names_list (n.items, acc)),
   $case n acc
 )
+
+// ------------------------------------------------- §4.9's compile-time generics
+//
+// "A generic whose value reaches a prop after specialization is a *compile-time
+// generic*." Whether one does is a question about the template's source, so it is
+// answered here, where the AST is, for both readers: inference and lowering each
+// supply `rs`, the one thing they answer differently — given a `$specialize`'s
+// target, which of that template's generics are compile-time, by position. An
+// entry's `prop` is the prop the generic reaches, for the diagnostic at a site that
+// passes it something that is not a constant; "" means not compile-time.
+
+$decl ctg_ent $func ($decl g "", $decl p "") { $decl gen g  $decl prop p }
+$decl proto_ctg $call ctg_ent ("", "")
+$decl ctgs $specialize P.list proto_ctg
+
+$decl ctg_prop $func ($decl xs ctgs.node, $decl g "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head.gen, g)) xs.head.prop ($call ctg_prop (xs.tail, g)),
+  $case xs ""
+)
+
+// Position by position: the prop each generic reaches, or "".
+$decl ctg_mask $func ($decl gs pstrs.node, $decl xs ctgs.node, $decl acc pstrs.node) $match gs (
+  $case {$prop tag "cons"} $call ctg_mask (gs.tail, xs, $call pstrs.cons ($call ctg_prop (xs, gs.head), acc)),
+  $case gs ($call pstrs.reverse (acc, pstrs.nil))
+)
+
+$decl pstrs_without $func ($decl xs pstrs.node, $decl drop pstrs.node, $decl acc pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call pstrs_without (xs.tail, drop,
+        $if ($call mem_pstr (drop, xs.head)) acc ($call pstrs.cons (xs.head, acc))),
+  $case xs ($call pstrs.reverse (acc, pstrs.nil))
+)
+
+// What a block binds directly — the scope a generic of the same name stops at.
+$decl block_binders $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call block_binders (xs.tail,
+        $if ($call or ($call is_kw (xs.head, "decl"), $call or ($call is_kw (xs.head, "prop"),
+                                                            $call is_kw (xs.head, "fwd"))))
+            ($call pstrs.cons ($call name_text ($call operand (xs.head, 0)), acc)) acc),
+  $case xs acc
+)
+
+// A `$func`'s parameters: one `$decl`, or a group of them (§3.4).
+$decl param_binders $func ($decl n proto_node) $match n (
+  $case {$prop tag "group"} ($call block_binders (n.items, pstrs.nil)),
+  $case {$prop tag "form"}  ($call block_binders ($call nodes.cons (n, nodes.nil), pstrs.nil)),
+  $case n pstrs.nil
+)
+
+$decl generic_binders $func ($decl n proto_node) $match n (
+  $case {$prop tag "name"} ($call pstrs.cons (n.text, pstrs.nil)),
+  $case n ($call bound_group (n, pstrs.nil))
+)
+
+$decl group_list $func ($decl n proto_node) $match n (
+  $case {$prop tag "group"} ($call nodes.val (n.items)),
+  $case n ($call nodes.cons (n, nodes.nil))
+)
+
+$decl proto_resolver $func ($decl x proto_node) pstrs.node
+
+$fwd ct_reads
+
+$decl ct_reads_list $func ($decl xs nodes.node, $decl gs pstrs.node, $decl pn "",
+                           $decl rs proto_resolver, $decl acc ctgs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call ct_reads_list (xs.tail, gs, pn, rs, $call ct_reads (xs.head, gs, pn, rs, acc)),
+  $case xs acc
+)
+
+// A `$specialize`'s arguments, against the callee's mask: an argument for a
+// compile-time generic of the callee is read for its value; any other is read for
+// its type alone, which is static, so it reaches nothing.
+$decl ct_spec_args $func ($decl xs nodes.node, $decl mask pstrs.node, $decl gs pstrs.node,
+                          $decl pn "", $decl rs proto_resolver, $decl acc ctgs.node) $match xs (
+  $case {$prop tag "cons"} $match mask (
+    $case {$prop tag "cons"}
+      $call ct_spec_args (xs.tail, mask.tail, gs, pn, rs,
+          $if ($call eq_str (mask.head, "")) acc ($call ct_reads (xs.head, gs, pn, rs, acc))),
+    $case mask acc),
+  $case xs acc
+)
+
+// The generics a prop initializer reads in an *evaluated* position (§4.10's
+// constant expressions). Type-only positions (§5.7) and a `$func`'s body read
+// nothing here; a nested prop is found by `ct_walk`, not by this.
+$decl ct_reads $func ($decl n proto_node, $decl gs pstrs.node, $decl pn "",
+                      $decl rs proto_resolver, $decl acc ctgs.node) $match n (
+  $case {$prop tag "name"}
+    $if ($call mem_pstr (gs, n.text))
+        ($if ($call eq_str ($call ctg_prop (acc, n.text), "")) ($call ctgs.cons ($call ctg_ent (n.text, pn), acc)) acc)
+        acc,
+  $case {$prop tag "proj_name"}  ($call ct_reads (n.target, gs, pn, rs, acc)),
+  $case {$prop tag "proj_index"} ($call ct_reads (n.target, gs, pn, rs, acc)),
+  $case {$prop tag "group"} ($call ct_reads_list (n.items, gs, pn, rs, acc)),
+  $case {$prop tag "form"}
+    { $decl k n.keyword
+      $decl r $if ($call eq_str (k, "union"))
+          // §4.8a: the first member is the value; the rest are type-only.
+          ($call ct_reads ($call nodes.nth ($call group_list ($call operand (n, 0)), 0), gs, pn, rs, acc))
+        ($if ($call eq_str (k, "overload"))
+          ($call ct_reads_list ($call group_list ($call operand (n, 0)), gs, pn, rs, acc))
+        ($if ($call eq_str (k, "specialize"))
+          { $decl mask $call rs ($call operand (n, 0))
+            $decl args $if ($call eq_int ($call pstrs.length (mask, 0), 1))
+                ($call nodes.cons ($call operand (n, 1), nodes.nil))
+                ($call group_list ($call operand (n, 1)))
+            $decl q $call ct_spec_args (args, mask, gs, pn, rs, acc) }.q
+        ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof")))
+          ($call ct_reads_list (n.operands, gs, pn, rs, acc))
+          acc))) }.r,
+  $case n acc
+)
+
+$fwd ct_walk
+
+$decl ct_walk_list $func ($decl xs nodes.node, $decl gs pstrs.node, $decl rs proto_resolver,
+                          $decl acc ctgs.node) $match xs (
+  $case {$prop tag "cons"} $call ct_walk_list (xs.tail, gs, rs, $call ct_walk (xs.head, gs, rs, acc)),
+  $case xs acc
+)
+
+// Every `$prop` in the body, at any depth — a block literal inside a `$decl` or a
+// `$func` has a type that depends on its props too. A binder of the same name ends
+// a generic's scope; without that the scan would demand a constant for a generic a
+// prop never reads, which rejects a valid program.
+$decl ct_walk $func ($decl n proto_node, $decl gs pstrs.node, $decl rs proto_resolver,
+                     $decl acc ctgs.node) $match n (
+  $case {$prop tag "form"}
+    { $decl k n.keyword
+      $decl r $if ($call eq_str (k, "prop"))
+          { $decl init $call operand (n, 1)
+            $decl a1   $call ct_reads (init, gs, $call name_text ($call operand (n, 0)), rs, acc)
+            $decl q    $call ct_walk (init, gs, rs, a1) }.q
+        ($if ($call eq_str (k, "func"))
+          ($call ct_walk_list (n.operands,
+               $call pstrs_without (gs, $call param_binders ($call operand (n, 0)), pstrs.nil), rs, acc))
+        ($if ($call eq_str (k, "template"))
+          ($call ct_walk ($call operand (n, 1),
+               $call pstrs_without (gs, $call generic_binders ($call operand (n, 0)), pstrs.nil), rs, acc))
+          ($call ct_walk_list (n.operands, gs, rs, acc)))) }.r,
+  $case {$prop tag "block"}
+    $call ct_walk_list (n.items,
+        $call pstrs_without (gs, $call block_binders (n.items, pstrs.nil), pstrs.nil), rs, acc),
+  $case {$prop tag "group"} ($call ct_walk_list (n.items, gs, rs, acc)),
+  $case {$prop tag "proj_name"}  ($call ct_walk (n.target, gs, rs, acc)),
+  $case {$prop tag "proj_index"} ($call ct_walk (n.target, gs, rs, acc)),
+  $case n acc
+)
+
+$decl ct_generics $func ($decl body proto_node, $decl gs pstrs.node, $decl rs proto_resolver)
+  $call ct_walk (body, gs, rs, ctgs.nil)
+
+// A literal's part of §4.9's memo key, "" for anything that is not a literal. The
+// value of a compile-time generic joins the key, and the two passes must spell it
+// the same way, because the key is what every identity in the body is minted from.
+$decl lit_key $func ($decl n proto_node) $match n (
+  $case {$prop tag "int"}  ($call concat ("i", $call int_to_str (n.value))),
+  $case {$prop tag "str"}  ($call concat ("s", n.text)),
+  $case {$prop tag "bool"} ($if n.value "true" "false"),
+  $case {$prop tag "unit"} "()",
+  $case n ""
+)
+
+// A compile-time generic bound to a literal is replaced by the literal, everywhere
+// its scope reaches. That is the substitution §4.9 says it is not — "by reference,
+// never textual" — made safe by what a literal is: evaluating one has no effect, so
+// once or at every mention is the same program. It is what puts the *value* in the
+// type: `$prop tag N` becomes `$prop tag "circle"`, a scalar prop, which both
+// passes then read the same way.
+$fwd subst_lit
+
+$decl subst_lits $func ($decl xs nodes.node, $decl nm "", $decl lit proto_node, $decl acc nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call subst_lits (xs.tail, nm, lit, $call nodes.cons ($call subst_lit (xs.head, nm, lit), acc)),
+  $case xs ($call nodes.reverse (acc, nodes.nil))
+)
+
+$decl subst_lit $func ($decl n proto_node, $decl nm "", $decl lit proto_node) $match n (
+  $case {$prop tag "name"} $if ($call eq_str (n.text, nm)) lit n,
+  $case {$prop tag "proj_name"}
+    $call n_projn ($call subst_lit (n.target, nm, lit), n.field, n.line, n.col),
+  $case {$prop tag "proj_index"}
+    $call n_proji ($call subst_lit (n.target, nm, lit), n.index, n.line, n.col),
+  $case {$prop tag "group"} ($call n_group ($call subst_lits (n.items, nm, lit, nodes.nil), n.line, n.col)),
+  $case {$prop tag "block"}
+    $if ($call mem_pstr ($call block_binders (n.items, pstrs.nil), nm)) n
+        ($call n_block ($call subst_lits (n.items, nm, lit, nodes.nil), n.line, n.col)),
+  $case {$prop tag "form"}
+    $if ($call or ($call and ($call eq_str (n.keyword, "func"),
+                              $call mem_pstr ($call param_binders ($call operand (n, 0)), nm)),
+                   $call and ($call eq_str (n.keyword, "template"),
+                              $call mem_pstr ($call generic_binders ($call operand (n, 0)), nm))))
+        n
+        ($call n_form (n.keyword, $call subst_lits (n.operands, nm, lit, nodes.nil), n.line, n.col)),
+  $case n n
+)

@@ -196,6 +196,9 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/instance_list.mpl", .want = "6\n" },
         // §4.9's self-specialisation, in the entry file and in a module member. 18.
         .{ .src = "stage1/fixtures/selfspec.mpl", .want = "18\n" },
+        // §4.9's compile-time generics: a value in the type, and tags made by a
+        // template. 61.
+        .{ .src = "stage1/fixtures/ctgen.mpl", .want = "61\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
