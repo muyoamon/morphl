@@ -285,7 +285,17 @@ $decl proto_ty $union (
     $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0
     $decl cid -1  $decl pv P.boolean
   },
-  { $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1  $decl pv P.boolean }
+  { $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  {
+    // §6: a trait, the type of a trait object. It binds `Self` the way `rec` binds its
+    // variable, so `bnd 0` in a member's type is `Self`; members are sorted by name,
+    // since props are unordered and a canonical order makes `same` positional. `frame`
+    // is the trait object's kind (§3.5) — set when it refers to frame storage — and
+    // is, like a function's, not part of the type's identity (§5.3a).
+    $prop tag "trait"
+    $decl members $alloc ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
+    $decl frame P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
+  }
 )
 
 $decl tval $func ($decl t proto_ty) t
@@ -346,6 +356,7 @@ $decl hash_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "rec"}    t.h,
   $case {$prop tag "over"}   t.h,
   $case {$prop tag "tmpl"}   t.h,
+  $case {$prop tag "trait"}  t.h,
   $case t 0
 )
 
@@ -425,6 +436,7 @@ $decl has_var $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "inter"} t.pv,
   $case {$prop tag "rec"}   t.pv,
   $case {$prop tag "over"}  t.pv,
+  $case {$prop tag "trait"} t.pv,
   $case t false
 )
 
@@ -474,6 +486,7 @@ $decl cid_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "rec"}    t.cid,
   $case {$prop tag "over"}   t.cid,
   $case {$prop tag "tmpl"}   t.cid,
+  $case {$prop tag "trait"}  t.cid,
   $case t -1
 )
 
@@ -768,6 +781,42 @@ $decl t_rec   $func ($decl b proto_ty) {
   $decl n   { $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c  $decl pv pvv }
   $decl ret n
 }.ret
+// §6. Members are sorted by name: props are unordered (§4.10), and one canonical order
+// is what lets `same`, the key and the hash all be positional. Key tag 11: the member
+// names and their types — never `frame`, which `same` ignores, exactly as for `func`.
+// §6's members by name, for `t_trait_fr`. Insertion sort: a trait has a handful of
+// members, and `str_lt` is the order `show` already uses.
+$decl insert_field $func ($decl f proto_field, $decl xs fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call str_lt (xs.head.name, f.name))
+        ($call fields.cons (xs.head, $call insert_field (f, $call fields.val (xs.tail))))
+        ($call fields.cons (f, xs)),
+  $case xs ($call fields.cons (f, fields.nil))
+)
+
+$decl sort_fields_go $func ($decl xs fields.node, $decl acc fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $call sort_fields_go ($call fields.val (xs.tail), $call insert_field (xs.head, acc)),
+  $case xs acc
+)
+
+$decl sort_fields $func ($decl xs fields.node) $call sort_fields_go (xs, fields.nil)
+
+$decl t_trait_fr $func ($decl ms fields.node, $decl fr P.boolean) {
+  $decl sm  $call sort_fields (ms)
+  $decl hv  $call hmix (23, $call hash_fields (sm, 0))
+  $decl ks  $call fkids_of (sm, cints.nil)
+  $decl c   $call cid_for ($call kids_ok (ks), hv,
+                $call ckey (11, "", "", ks, $call fnames_of (sm, strs.nil), strs.nil, cvals.nil, 0))
+  $decl pvv $if ($call has_var_fields (sm, 0)) true false
+  $decl n   {
+    $prop tag "trait" $decl members $alloc sm  $decl frame fr  $decl h hv  $decl cid c
+    $decl pv pvv
+  }
+  $decl ret n
+}.ret
+$decl t_trait $func ($decl ms fields.node) $call t_trait_fr (ms, false)
+
 $decl t_over  $func ($decl cs tys.node) {
   $decl hv $call hmix (21, $call hash_tys (cs, 0))
   $decl ks $call kids_of (cs, cints.nil)
@@ -888,6 +937,7 @@ $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "inter"}  $call concat ("^", $call concat ($call show_set (t.members), "^")),
   $case {$prop tag "bnd"}    $call concat ("b", $call int_to_str (t.idx)),
   $case {$prop tag "rec"}    $call concat ("mu.", $call show (t.body)),
+  $case {$prop tag "trait"}  $call concat ("trait{", $call concat ($call show_fields (t.members, ""), "}")),
   $case {$prop tag "over"}   $call concat ("O<", $call concat ($call show_tys (t.cands, "", true), ">")),
   $case {$prop tag "tmpl"}   $call concat ("Tmpl", $call int_to_str (t.id)),
   $case t "?"
@@ -1005,6 +1055,10 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
       $case {$prop tag "over"} $call same_tys (a.cands, b.cands), $case b false),
   $case {$prop tag "tmpl"} $match b (
       $case {$prop tag "tmpl"} $call eq_int (a.id, b.id), $case b false),
+  // Sorted by name at construction, so a positional walk is the set comparison; `frame`
+  // is not compared (§5.3a), as for a function.
+  $case {$prop tag "trait"} $match b (
+      $case {$prop tag "trait"} $call same_fields (a.members, b.members), $case b false),
   // The leaf types carry nothing, so equal renderings mean equal types — but
   // only once `b` is known to be one too. Reaching here says nothing about
   // `b`, and `show` of a compound renders the whole type: `same (Int, <big
@@ -1024,6 +1078,7 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
       $case {$prop tag "bnd"}   false,
       $case {$prop tag "over"}  false,
       $case {$prop tag "tmpl"}  false,
+      $case {$prop tag "trait"} false,
       // Both sides are leaves by now, and a leaf carries nothing — so equal
       // tags *are* equal types. This used to be `eq_str (show (a), show (b))`,
       // which renders two constants through a fifteen-arm match to compare two
@@ -1267,6 +1322,7 @@ $decl occurs $func ($decl t proto_ty, $decl i 0)
   // A binder binds no *placeholder*, so there is nothing to shadow here.
   $case {$prop tag "rec"}   $call occurs (t.body, i),
   $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
+  $case {$prop tag "trait"} $call occurs_fields (t.members, i),
   $case t false
 ))
 
@@ -1330,6 +1386,9 @@ $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
               t)
          t),
   $case {$prop tag "rec"}   $call t_rec ($call remap (t.body, o, $call add (d, 1))),
+  // A binder: `Self` is index 0 inside, so everything else moves up by one.
+  $case {$prop tag "trait"}
+    $call t_trait_fr ($call remap_fields (t.members, o, $call add (d, 1), fields.nil), t.frame),
   $case {$prop tag "block"} $call raw_block ($call remap_fields (t.fields, o, d, fields.nil), t.props),
   $case {$prop tag "group"} $call t_group ($call remap_tys (t.items, o, d, tys.nil)),
   $case {$prop tag "func"}
@@ -1352,6 +1411,8 @@ $decl subst $func ($decl t proto_ty, $decl i 0, $decl r proto_ty)
 
 $decl subst_bnd $func ($decl t proto_ty, $decl k 0, $decl r proto_ty)
   $call remap (t, $call rop_bnd (r), k)
+
+
 
 // §5.3a: "A type is **frame-bound** if a frame reference occurs anywhere in it
 // — directly, in a field, behind another reference, or in a closure's
@@ -1389,6 +1450,9 @@ $decl frame_bound $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "inter"} ($call frame_bound_tys (t.members, 0)),
   $case {$prop tag "rec"}   ($call frame_bound (t.body, 0)),
   $case {$prop tag "over"}  ($call frame_bound_tys (t.cands, 0)),
+  // §6: a trait object takes the kind of what it refers to, and like a closure's
+  // captures that is not in the type, so the flag is the whole record of it.
+  $case {$prop tag "trait"} t.frame,
   $case t false
 )
 
@@ -1429,6 +1493,7 @@ $decl first_frame $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "inter"} ($call first_frame_tys (t.members, 0)),
   $case {$prop tag "rec"}   ($call first_frame (t.body, 0)),
   $case {$prop tag "over"}  ($call first_frame_tys (t.cands, 0)),
+  $case {$prop tag "trait"} $if t.frame t t_bot,
   $case t t_bot
 )
 
@@ -1502,6 +1567,8 @@ $decl unguarded $func ($decl t proto_ty, $decl k 0) $match t (
   $case {$prop tag "ref"}   false,
   $case {$prop tag "array"} false,
   $case {$prop tag "func"}  false,
+  // A trait object is a reference (§6), so it guards too.
+  $case {$prop tag "trait"} false,
   // A nested binder shifts the index of the one being tested.
   $case {$prop tag "rec"}   $call unguarded (t.body, $call add (k, 1)),
   $case {$prop tag "block"} $call unguarded_fields (t.fields, k),
@@ -1565,6 +1632,17 @@ $decl find_field $func ($decl xs fields.node, $decl n "") $match xs (
   $case xs ($call field ("", t_bot))
 )
 
+// A member's type with `self` for `Self` (§6): conformance instantiates it at the
+// conforming type, and a projection off a trait object at the trait itself — which is
+// §5.5's unrolling, the reason a trait is a binder. Bottom when there is no such member.
+$decl trait_member $func ($decl t proto_ty, $decl nm "", $decl self proto_ty) $match t (
+  $case {$prop tag "trait"} {
+    $decl f   $call find_field ($call fields.val (t.members), nm)
+    $decl ret $if ($call eq_str (f.name, "")) t_bot ($call subst_bnd ($call tval (f.ty), 0, self))
+  }.ret,
+  $case t t_bot
+)
+
 $decl find_prop $func ($decl xs props.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.name, n)) xs.head ($call find_prop (xs.tail, n)),
@@ -1606,6 +1684,7 @@ $decl kind_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "func"}   "func",
   $case {$prop tag "ref"}    "ref",
   $case {$prop tag "array"}  "array",
+  $case {$prop tag "trait"}  "trait",
   $case {$prop tag "bottom"} "!",
   $case t ($call show (t))
 )

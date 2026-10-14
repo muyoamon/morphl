@@ -26,6 +26,7 @@
 //       | a ty                       array        m ty       μ (§5.5)
 //       | w<n> ty* ty <bool>         function: params, result, §5.3a frame flag
 //       | B<n> fld* <n> prp*         block: fields then props (§7.2 order)
+//       | t<n> fld* <bool>           trait (§6): members, then the frame flag
 //   fld = <str> ty
 //   prp = <str> cv ty                a prop's `ty` is written because for a
 //                                    `copaque` it does not follow from the value
@@ -244,6 +245,12 @@ $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
     $decl b   $do ($call put_flds (st, fs)) ($call put_n (st, $call T.props.length (ps, 0)))
     $decl ret $call put_prps (st, ps)
   }.ret,
+  $case {$prop tag "trait"} {
+    $decl ms  $call T.fields.val (t.members)
+    $decl a   $do ($call put (st, "t")) ($call put_n (st, $call T.fields.length (ms, 0)))
+    $decl b   $call put_flds (st, ms)
+    $decl ret $call put (st, $if t.frame "y" "w")
+  }.ret,
   $case t ($call put (st, "!"))
 )
 
@@ -443,6 +450,12 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
            $decl ret2  $call rt ($call add (rr.at, 1),
                         $call T.t_func_fr (ps.val, rr.val, fr))
          }.ret2
+         ($if ($call one (s, i, "t")) {
+           $decl nm   $call read_n (s, j)
+           $decl ms   $call read_flds (st, s, nm.at, nm.val, T.fields.nil)
+           $decl fr   $call one (s, ms.at, "y")
+           $decl ret2 $call rt ($call add (ms.at, 1), $call T.t_trait_fr (ms.val, fr))
+         }.ret2
          ($if ($call one (s, i, "B")) {
            $decl nf   $call read_n (s, j)
            $decl fs   $call read_flds (st, s, nf.at, nf.val, T.fields.nil)
@@ -450,7 +463,7 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
            $decl ps   $call read_prps (st, s, np.at, np.val, T.props.nil)
            $decl ret2 $call rt (ps.at, $call T.t_block (fs.val, ps.val))
          }.ret2
-              ($call rt (j, T.t_bot))))))))))))))))))))
+              ($call rt (j, T.t_bot)))))))))))))))))))))
 }.ret
 
 $decl read_at $func ($decl st proto_cst, $decl s "", $decl i 0)

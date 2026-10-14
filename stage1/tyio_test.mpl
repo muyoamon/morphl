@@ -43,6 +43,18 @@ $decl walk $func ($decl ts T.tys.node, $decl i 0, $decl bad 0, $decl first 0) $m
   $case ts { $decl nbad bad  $decl at first }
 )
 
+// §6's trait has no instance in a lowered program yet, so it is round-tripped directly:
+// both frame flags, and a member whose type mentions `Self` (`bnd 0`). `both` compares
+// the rendering as well as `same`, so it notices the flag, which `same` ignores.
+$decl tr_ms  $call T.fields.cons (
+    $call T.field ("area", $call T.t_func ($call T.tys.cons ($call T.t_bnd (0), T.tys.nil),
+        T.t_int)),
+    $call T.fields.cons ($call T.field ("name", T.t_str), T.fields.nil))
+$decl tr_ok  $call P.and ($call both ($call T.t_trait_fr (tr_ms, false)),
+                 $call both ($call T.t_trait_fr (tr_ms, true)))
+$decl tr_chk $if tr_ok ($call nl ("ok   a trait survives a round trip"))
+                 ($call panic ("a trait does not survive a round trip"))
+
 $decl argv $call args ()
 $decl path $if ($call lt (0, $call alen (argv))) ($call P.sval ($call at (argv, 0)))
                "stage1/types.mpl"

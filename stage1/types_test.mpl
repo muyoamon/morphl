@@ -454,4 +454,42 @@ $decl kl01 $call check ("leaves are distinct classes",
   $call P.and ($call differ (kint, kstr), $call P.and ($call differ (T.t_true, T.t_false),
       $call differ (T.t_unit, T.t_bot))))
 
+// §6's trait, key tag 11. Members are sorted at construction, so their order is NOT in
+// the key; `frame` is NOT in the key either, exactly as for a function (§5.3a).
+$decl ktr  $func ($decl n "", $decl t T.proto_ty) $call T.t_trait ($call kfield (n, t))
+$decl ktr2 $func ($decl n "", $decl t T.proto_ty, $decl m "", $decl u T.proto_ty)
+  $call T.t_trait ($call T.fields.cons ($call T.field (n, t), $call kfield (m, u)))
+
+$decl ktr01 $call check ("one trait built twice is one class",
+  $call agree ($call ktr ("area", kint), $call ktr ("area", kint)))
+$decl ktr02 $call check ("trait: a member's name is in the key",
+  $call differ ($call ktr ("area", kint), $call ktr ("size", kint)))
+$decl ktr03 $call check ("trait: a member's type is in the key",
+  $call differ ($call ktr ("area", kint), $call ktr ("area", kstr)))
+$decl ktr04 $call check ("trait: member order is NOT in the key (props are unordered)",
+  $call agree ($call ktr2 ("a", kint, "b", kstr), $call ktr2 ("b", kstr, "a", kint)))
+$decl ktr05 $call check ("trait: the number of members is in the key",
+  $call differ ($call ktr ("a", kint), $call ktr2 ("a", kint, "b", kint)))
+$decl ktr06 $call check ("trait: frame is NOT in the key (same ignores it, as for func)",
+  $call agree ($call T.t_trait_fr ($call kfield ("a", kint), true),
+               $call T.t_trait_fr ($call kfield ("a", kint), false)))
+$decl ktr07 $call check ("a trait is not the block with the same fields",
+  $call differ ($call ktr ("a", kint), $call kblk ("a", kint)))
+
+// `Self` is the trait's binder: `bnd 0` in a member, replaced by whatever conforms.
+$decl kself $call T.t_func ($call k1 ($call T.t_bnd (0)), kint)
+$decl ktr08 $call check ("trait_member puts the given type for Self",
+  $call T.same ($call T.trait_member ($call ktr ("area", kself), "area", kstr),
+                $call T.t_func ($call k1 (kstr), kint)))
+$decl ktr09 $call check ("...and answers bottom for a member it does not have",
+  $call T.same ($call T.trait_member ($call ktr ("area", kself), "size", kstr), T.t_bot))
+$decl ktr10 $call check ("a trait object is frame-bound exactly when its flag says so",
+  $call P.and ($call T.frame_bound ($call T.t_trait_fr ($call kfield ("a", kint), true), 0),
+      $call P.not ($call T.frame_bound ($call T.t_trait_fr ($call kfield ("a", kint), false), 0))))
+$decl ktr11 $call check ("a trait is a binder: an outer bound variable shifts past Self",
+  $call T.same ($call T.subst_bnd ($call ktr ("m", $call T.t_bnd (1)), 0, kstr),
+               $call ktr ("m", kstr)))
+$decl ktr12 $call check ("a placeholder in a member is a var the trait carries",
+  $call T.has_var ($call ktr ("m", $call T.t_var (7)), 0))
+
 $decl done_k $call nl ("all class-key tests passed")
