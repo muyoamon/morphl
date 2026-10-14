@@ -393,4 +393,20 @@ $decl t33 $call check_str ("a short call to a known function lowers clean",
   $call first_err ($call lower_errs ("$decl f $func ($decl a 0, $decl b 10) $call add (a, b)  $decl main $func () $call f (1) ")),
   "")
 
+// §4.9: "Two specializations whose arguments have the same types … share the same
+// code." A `$func` member of an instance body is lifted once per memo key; a second
+// instance at the same argument type adds no function, and one at another type adds
+// its own. Each closure still captures its own instance's slot.
+$decl cell_src $func ($decl uses "")
+  $call concat ("$decl cell $template T { $decl v $mut $alloc T  $decl get $func () v } ",
+      $call concat ("$decl main $func () { ", $call concat (uses, " $decl r 0 }.r ")))
+
+$decl t34 $call check ("a second instance at one argument type shares its $func members",
+  $call eq_int ($call nfuncs ($call cell_src ("$decl a $specialize cell 1  $decl b $specialize cell 2")),
+                $call nfuncs ($call cell_src ("$decl a $specialize cell 1"))))
+
+$decl t34b $call check ("...and one at another type has its own",
+  $call eq_int ($call nfuncs ($call cell_src ("$decl a $specialize cell 1  $decl b $specialize cell \"s\"")),
+                $call add ($call nfuncs ($call cell_src ("$decl a $specialize cell 1")), 1)))
+
 $decl done $call nl ("all lowering tests passed")

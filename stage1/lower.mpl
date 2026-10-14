@@ -487,6 +487,22 @@ $decl wrap_ent $func ($decl g 0, $decl k 0, $decl w 0, $decl t T.proto_ty, $decl
 $decl proto_wrap $call wrap_ent (0, 0, 0, T.t_bot, Pa.proto_node)
 $decl wrap_list $specialize P.list proto_wrap
 
+// §4.9: "Two specializations whose arguments have the same types … share the same
+// code." A `$func` literal inside a specialisation is lifted once per memo key, and
+// every later evaluation builds only its closure — the same code, this frame's
+// captures. Keyed on the specialisation's key (`isctx`) and where the literal is
+// written; outside a specialisation `isctx` is empty and nothing is memoised.
+$decl fnm_ent $func ($decl k "", $decl i 0, $decl t T.proto_ty) { $decl key k  $decl idx i  $decl ty t }
+$decl proto_fnm $call fnm_ent ("", 0, T.t_bot)
+$decl fnm_list $specialize P.list proto_fnm
+
+$decl find_fnm $func ($decl xs fnm_list.node, $decl k "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.key, k)) ($call fnm_list.cons (xs.head, fnm_list.nil))
+        ($call find_fnm (xs.tail, k)),
+  $case xs fnm_list.nil
+)
+
 $decl lstate $func ()
   { // §9.3's table, pending half: **newest first**, so an append is one cell.
     $decl tpend  $mut $alloc T.tys.node
@@ -538,6 +554,8 @@ $decl lstate $func ()
     $decl fdefs   $mut $alloc fdef_list.node
     $decl wraps   $mut $alloc wrap_list.node
     $decl wpends  $mut $alloc wrap_list.node
+    // Lifted `$func` literals by specialisation and position. See `fnm_ent`.
+    $decl fnmemo  $mut $alloc fnm_list.node
     // Imported modules in the order their loading **completed** — a dependency first,
     // since §4.14 finishes a module before the importer's next member. It is what
     // `mpl_init` has to call them in, and it cannot be recovered from the function
@@ -937,8 +955,10 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
                    $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
                    $decl tr IR.proto_trie, $decl oq opq_list.node, $decl pq pend_list.node,
                    $decl fd fdef_list.node, $decl wr wrap_list.node, $decl wp wrap_list.node,
-                   $decl mx mxtrie, $decl ti IR.proto_trie)
+                   $decl mx mxtrie, $decl ti IR.proto_trie, $decl fm fnm_list.node)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
+    // The shared `$func` literals name lifted indices, which a rollback hands out again.
+    $decl fnmemo fm
     // The prop registry names modules by id, and a rollback hands ids out again; a
     // pending read names a lifted index, which a rollback hands out again too.
     $decl opaqs oq  $decl pends pq
@@ -963,7 +983,8 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
                       tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil,
-                      pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil, mxtrie, IR.proto_trie)
+                      pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil, mxtrie, IR.proto_trie,
+                      fnm_list.nil)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -977,7 +998,7 @@ $decl take_snap $func ($decl st proto_lst)
       $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs),
       $call pend_list.val (st.pends), $call fdef_list.val (st.fdefs),
       $call wrap_list.val (st.wraps), $call wrap_list.val (st.wpends),
-      $call mx_val (st.modix), $call IR.tval_trie (st.tyix))
+      $call mx_val (st.modix), $call IR.tval_trie (st.tyix), $call fnm_list.val (st.fnmemo))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -999,6 +1020,7 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl w $set st.wpends   ($call wrap_list.val (sn.wpends))
     $decl x $set st.modix    ($call mx_val (sn.modix))
     $decl y $set st.tyix     ($call IR.tval_trie (sn.tyix))
+    $decl z $set st.fnmemo   ($call fnm_list.val (sn.fnmemo))
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
@@ -2853,13 +2875,31 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
         { $decl fns  $call free_names (n, strs.nil)
           $decl cs   $call caps (fns, e, benv.nil)
           $decl vals $call cap_exprs (st, cs, IR.exprs.nil)
-          $decl outer $call take_slots (st)
-          $decl ets  $call cap_tys (st, cs, IR.ints.nil)
-          $decl lf   $call lower_func (st, $call cap_env (cs, 0, e), "lambda", n, T.t_bot, ets)
-          $decl back $call restore_slots (st, outer)
-          $decl idx  $call add_lifted (st, lf)
-          $decl fty  $call fn_ty (st, lf)
-          $decl r    $call lres ($call IR.e_closure ($call intern (st, fty), idx, vals), fty) }.r
+          // The captures are found the same way at every evaluation, so they come
+          // out in the order the shared function's environment expects; only the
+          // slots they are read from differ.
+          $decl sp   $call P.span_of (n)
+          $decl fk   $if ($call eq_str ($call P.sval (st.isctx), "")) ""
+                         ($call concat ($call P.sval (st.isctx), $call concat ("@",
+                          $call concat ($call P.sval (st.curfile), $call concat (":",
+                          $call concat ($call int_to_str (sp.line), $call concat (":",
+                          $call int_to_str (sp.col))))))))
+          $decl hit  $if ($call eq_str (fk, "")) fnm_list.nil ($call find_fnm (st.fnmemo, fk))
+          $decl r    $match hit (
+              $case {$prop tag "cons"}
+                ($call lres ($call IR.e_closure ($call intern (st, hit.head.ty), hit.head.idx, vals),
+                     hit.head.ty)),
+              $case hit
+                { $decl outer $call take_slots (st)
+                  $decl ets  $call cap_tys (st, cs, IR.ints.nil)
+                  $decl lf   $call lower_func (st, $call cap_env (cs, 0, e), "lambda", n, T.t_bot, ets)
+                  $decl back $call restore_slots (st, outer)
+                  $decl idx  $call add_lifted (st, lf)
+                  $decl fty  $call fn_ty (st, lf)
+                  $decl memo $set st.fnmemo ($if ($call eq_str (fk, "")) ($call fnm_list.val (st.fnmemo))
+                                 ($call fnm_list.cons ($call fnm_ent (fk, idx, fty), st.fnmemo)))
+                  $decl q    $call lres ($call IR.e_closure ($call intern (st, fty), idx, vals), fty) }.q
+            ) }.r
       // §4.9: a template is compile-time and has no runtime value, so this
       // registers the body and evaluates to nothing. `$specialize` is the
       // only thing that can consume it, and it finds it by the index here.
