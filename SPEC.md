@@ -8,7 +8,7 @@
 
 - **Everything is an expression.** There are no statements. Blocks, declarations, functions, matches, and templates all evaluate to values.
 - **Static types, inferred from expressions.** There is no syntax for writing a type. A type is always the type *of some expression*. Where a type is needed as a bound or pattern, an example expression is written and only its type is used.
-- **Structural, never nominal.** Two values are compatible when their shapes are compatible. No type is declared; no conformance is declared. Subtyping is the only implicit coercion.
+- **Structural, never nominal.** Two values are compatible when their shapes are compatible. No type is declared, and conformance is never registered: a type conforms by having the props, or by an `$impl` written where it is used. Subtyping is the only implicit coercion.
 - **Fixed at declaration.** A name's type is fixed by its initializer and never changes because of later use.
 - **One mechanism per concept.** Namespace, scope, record, and module are the same thing (a block). Recursion, forward reference, and recursive data use one placeholder rule. Traits are blocks of props.
 - **Explicit over implicit.** Application, mutability, specialization, and conformance are all written down. Where the compiler must choose (overloads, match arms), it chooses by source order, first fit, and lints unreachable cases.
@@ -61,8 +61,8 @@ Newlines are whitespace. The language does not dictate formatting.
 | `$union members` | 1 | group |
 | `$template T body` | 2 | name or group of names, expression |
 | `$specialize t args` | 2 | template, expression or group |
-| `$impl T trait override` | 3 | block, trait template, block of props (`{}` if none) |
-| `$traitsof e` | 1 | block |
+| `$impl x trait override` | 3 | referable value, trait, block of props (`{}` if none) |
+| `$traitsof e` | 1 | referable block |
 | `$import "name"` | 1 | string literal |
 | `$try e pat` | 2 | expression, type-only pattern |
 | `$extern "symbol" sig` | 2 | string literal, type-only signature |
@@ -103,7 +103,7 @@ A block `{ … }` is a scope. Its **value** is the collection of its `$decl` slo
 
 A block never yields "the last expression." To compute and return a value: `{ … $decl r e }.r`.
 
-Blocks are also records, modules, namespaces, and (when made of props only) traits. A source file is a block.
+Blocks are also records, modules and namespaces. A source file is a block.
 
 ### 3.4 Functions
 
@@ -131,9 +131,9 @@ follows from which form created the storage.
 
 Types form a lattice with `|` (union) and `&` (intersection), and `⊥` (bottom, the type of `panic`). Unions arise from `$if`/`$match`, recursion, and the `$union` form (§4.8a); there is still no type syntax — `$union` takes example expressions.
 
-### 3.7 Overloads and templates
+### 3.7 Overloads, templates and trait objects
 
-An `$overload` is a group whose static type records "resolve by index" (§4.8). A `$template` is a compile-time abstraction (§4.9). Both are ordinary values that can be bound with `$decl`.
+An `$overload` is a group whose static type records "resolve by index" (§4.8). A `$template` is a compile-time abstraction (§4.9). Both are ordinary values that can be bound with `$decl`. A **trait object** (§6) is a reference to a value together with the implementation its calls dispatch to; its type is a **trait**.
 
 ---
 
@@ -267,7 +267,7 @@ A template is a compile-time abstraction. `T` (or each name in a group) denotes 
 
 **Compile-time generics.** A prop's value is part of the type (§4.10). So a generic whose value reaches a prop after specialization is a *compile-time generic*. A generic reaches a prop when it is read in an evaluated position of a `$prop` initializer anywhere in the body, at any depth, including a block literal inside a `$decl` or a `$func`. It also reaches one when it is passed as the argument for another template's compile-time generic. Its argument must be a constant expression (§4.10), and its value joins the argument types in the memo key. Given `$prop size T`, `$specialize t 5` and `$specialize t 6` are two types; without it they are one. Any other generic may be bound to any value, because only its type reaches the specialization's type. Application (`$call t args`) never infers a compile-time generic; write the `$specialize`.
 
-**Bounds.** A generic name may carry an example: `$template (T bound) body`. The bound is a type-only position (§5.7), so it may mention `T` itself — `$template (K ($specialize equatable K))` is the F-bounded form. At specialization, `type(arg) <: type(bound)` is checked first and reported as such. The body is still typed *after* substitution; the bound is a precondition, not a proof that all conforming arguments typecheck.
+**Bounds.** A generic name may carry an example: `$template (T bound) body`. The bound is a type-only position (§5.7), so it may mention `T` itself — `$template (K ($specialize ordered K))` is the F-bounded form. At specialization, `type(arg) <: type(bound)` is checked first and reported as such. A trait as a bound, `$template (T ($traitsof shape_proto))`, is satisfied by conformance (§6), and needs no F-bound: a trait's `Self` is the bounded type. The body is still typed *after* substitution; the bound is a precondition, not a proof that all conforming arguments typecheck.
 
 **Application infers `T`.** If a template's body is a `$func`, then `$call t args` means `$call ($specialize t inferred) args`. Inference matches the **shape of each parameter default one level deep**:
 
@@ -291,11 +291,11 @@ Declares a **compile-time constant** member of the enclosing block. `e` must be 
 - a literal, or `true`/`false`;
 - a `$func` or `$template` literal, whose body is not evaluated here;
 - a block made only of props, each initializer a constant expression;
-- `$union`, `$overload`, `$impl` or `$traitsof` whose *evaluated* operands are constant expressions; type-only positions (§5.7) are exempt;
+- `$union` or `$overload` whose *evaluated* operands are constant expressions; type-only positions (§5.7) are exempt;
 - a name bound to a prop, or to a generic whose argument is a constant expression;
 - a projection of a constant expression.
 
-Never `$new`, never `$call`, never a block with a `$decl`. Each argument of a `$specialize` inside a constant expression is evaluated (§4.9, step 1), so it must be a name or a constant expression. Reading a name has no effect, and if the name's value survives specialization into a prop, the rule above applies to it there.
+Never `$new`, never `$call`, never a block with a `$decl`, and never `$impl` or `$traitsof`, which make references (§6). Each argument of a `$specialize` inside a constant expression is evaluated (§4.9, step 1), so it must be a name or a constant expression. Reading a name has no effect, and if the name's value survives specialization into a prop, the rule above applies to it there.
 
 So `$specialize P.list proto_ty` is constant whatever `proto_ty` is bound to, because `list`'s body never reads its generic's value. `$specialize t 5` is constant when `t`'s body is, with `5` in place of its generic.
 
@@ -319,23 +319,22 @@ Future extension: an optional type operand must be written as a group, `$fwd (na
 
 There is **no hoisting**. Initialization order is source order. Mutual recursion uses `$fwd`.
 
-### 4.12 `$impl T trait override`
+### 4.12 `$impl x trait override`
 
-Assembles a **witness**: a block of props conforming to `$specialize trait T`. For each prop declared by the trait, the value is taken with precedence:
+Makes a **trait object** (§6) referring to `x`, dispatching to the implementation it assembles. For each prop the trait describes, the implementation's prop is:
 
-1. `override` (a block of props; must be `{}` if empty),
-2. `T`'s own prop of that name,
-3. the trait's default.
+1. `override`'s prop of that name (a block of props; `{}` if empty), else
+2. the trait's default.
 
-Every result must be a subtype of the trait's declared prop type. A prop in `override` that the trait does not declare is an error. Inside `override`, the trait's other members are in scope by name, resolved against the final collection.
+`x`'s own props are **not** consulted, so an `$impl` says everything it dispatches to; a prop `x` already has is reused by naming it, `{ $prop area tri.area }`. Each result's type must be a subtype of the trait's prop type with `x`'s type for `Self`. A prop in `override` that the trait does not describe is an error. Inside `override` and inside every default, the implementation's other members are in scope by name, resolved against the final collection.
 
-`$impl` evaluates to the witness, a compile-time block. It is the explicit statement "T implements trait", a first-class dictionary, and the table used by `&const` fat references (§7.4).
+`x` must be referable — a name or a reference — because a trait object refers to it, and it may be of any type, including one with no props: `$impl n shape int_area` makes an `Int` conform. `$impl` evaluates to the trait object, whose type is the trait.
 
-There is no registration and no coherence problem: a witness is just a block.
+The implementation is a compile-time table shared by every `$impl` with the same type of `x`, trait and override. It is never itself a value: no program names it, and no `$set` reaches it. There is no registration and no coherence problem: an implementation is chosen where it is written.
 
 ### 4.13 `$traitsof e`
 
-Derives a trait from a concrete block `e`: a `$template Self` whose props are `e`'s props with every occurrence of `e`'s type in those props' types replaced by `Self`, and `e`'s bodies as defaults. Substitution is structural (any parameter or field whose type equals `e`'s type becomes `Self`). Ordered fields never appear; traits promise no slots.
+Makes a trait object (§6) referring to `e`, dispatching to `e`'s own props. Its type is the **trait** of `e`: the name and type of each of `e`'s props, with every occurrence of `e`'s type in those types abstracted as `Self`. Substitution is structural (any parameter or field whose type equals `e`'s type becomes `Self`). Fields and values never appear in the trait: it promises no slots, and it describes rather than implements. `e`'s props are the trait's **defaults**, which `$impl` falls back on (§4.12). `e` must be referable.
 
 ### 4.14 `$import "name"`
 
@@ -483,27 +482,31 @@ Some positions hold an expression that is **never evaluated**; only its static t
 
 ## 6. Traits
 
-A **trait** is a template over `Self` whose body is a block containing only props, each with a default:
+A **trait** is a collection of props describing what a value can do: each prop's name and type, over a distinguished type `Self`. It describes; it does not implement. A trait is the type of a **trait object**, and `$traitsof` (§4.13) is the form that makes one.
+
+A **trait object** is a reference — read-only, like `&const` — to a value, together with the implementation its calls dispatch to. Its type is the trait. It is fully readable: `s.area` projects the prop through the object, and a call reaches the implementation.
 
 ```
-$decl shape $template Self {
-  $prop area $func ($decl s $const $new Self) 0.0
-  $prop describe $func ($decl s $const $new Self)
-    $call concat ("area=", $call to_str ($call area (s)))
+$decl shape_proto {
+  $prop area     $func ($decl s $const $new shape_proto) 0
+  $prop describe $func ($decl s $const $new shape_proto)
+    $call concat ("area=", $call int_to_str ($call s.area (s)))
 }
+$decl shape $traitsof shape_proto
 ```
 
-- **Interface satisfaction is subtyping**: `T` satisfies `shape` iff `T <: $specialize shape T` (F-bounded). A template bound of `($specialize shape T)` requires the *whole collection* with fixed signatures.
-- **Explicit conformance** is `$impl T shape override` (§4.12), which yields a witness.
-- **Required members**: every prop has a default. A member that must be overridden uses a panicking default whose return value fixes the signature:
-  `$prop area $func ($decl s $const $new Self) { $call panic ("unimplemented")  $decl r 0.0 }.r`
-- **Dispatch on non-block types** (`Int` has no fields) uses `$overload`. Extension is scope-based: `$decl show $overload (show_mine, show)` prepends a candidate in an inner scope.
-- **Deriving** a trait from an implementation: `$traitsof` (§4.13).
-- **Dynamic dispatch**: a `&const shape` reference accepts any conforming block; see §7.4 for cost.
+`$traitsof shape_proto` refers to `shape_proto`; its type is the trait, and `shape_proto`'s props are the trait's **defaults**. A prototype names itself in its props' parameters — §5.7 lets a type-only position name a declaration in progress — which is how a trait is written before any implementation exists. A trait is written as the type of such an expression, the way every type in the language is: `$decl s $traitsof shape_proto` is a parameter accepting any conforming value.
 
-No trait keyword exists. Traits are blocks, conformance is subtyping, witnesses are blocks.
+- **Conformance.** A type `T` *conforms* to a trait when, for every prop the trait describes, `T` has a prop of that name whose type is a subtype of the trait's prop type with `T` for `Self`. Only types are compared, never values: a trait says what a value can be used for, not what it is, and a tag is a `$match` concern (§4.7). Fields are not consulted. Defaults never make a type conform; a type that lacks a prop, or has none at all, conforms only through `$impl`.
+- **Coercion.** A trait object's type is a supertype of every type that conforms to it, and the coercion is how a trait object is ordinarily made: passing `rect` where `$traitsof shape_proto` is expected makes a trait object referring to `rect` and dispatching to `rect`'s own props. This is §5.1's rule for traits and not its block rule, which compares props by value because a function-valued prop's identity is part of a block's type (§4.10); a trait object is what is used when that identity must be forgotten. The argument must be referable — a name or a reference — because a trait object refers to it, and §5.4 never turns a value into storage implicitly. A trait object takes the kind of what it refers to (§3.5): one referring to a frame binding or to frame storage is frame-bound (§5.3a).
+- **`Self` in a trait object's type is that type**, so `$call s.area (s)` type-checks, and the call hands the implementation the value `s` refers to.
+- **Explicit conformance** is `$impl x trait override` (§4.12). It makes a trait object dispatching to exactly the implementation written — `override`'s props, else the trait's defaults — and never consults `x`'s own props. The two routes do not mix: conforming by itself means using one's own props, and `$impl` means using what is written.
+- **An implementation is one block**, so a name inside any of its props — a default included — resolves to the implementation's member (§4.10): `describe`'s default calling `s.area` reaches the `area` the implementation chose.
+- **Implementations are not values.** An implementation is a compile-time table; no program names it and no `$set` reaches it. Storage of trait type holds trait objects, so a `$set` on it replaces the reference and the implementation together and never writes into an implementation. That is the reason the two are distinct.
+- **Bounds.** A trait as a bound, `$template (T ($traitsof shape_proto))`, requires `T` to conform (§4.9). The body is specialized at `T` itself, so calls inside it are static; dynamic dispatch happens only where a value becomes a trait object.
+- **Dispatch on non-block types** uses `$impl`, or `$overload` where the set of types is closed. Extension by `$overload` is scope-based: `$decl show $overload (show_mine, show)` prepends a candidate in an inner scope.
 
-**Composing traits.** A template that needs several capabilities of one type takes one witness for a combined trait (`hashkey` = `hash` + `eq`) rather than one witness per trait. Since traits are just blocks of props, a combined trait is written by listing the props; there is no second mechanism for trait composition.
+**Composing traits.** A combined trait is the trait of a prototype listing both traits' props. There is no second mechanism.
 
 ---
 
@@ -543,7 +546,7 @@ Prefix subtyping (§5.1) makes structural coercion nearly free: a supertype's fi
 - `μR. B` ↔ its unrolling: free. They are one type (§5.5) and two terms, so the backend emits one as an alias of the other.
 - From `⊥`: nothing. The code is unreachable.
 - A reference's **kind** (§3.5) costs nothing at runtime: frame and allocated references are both thin pointers, and the distinction exists only to be checked.
-- **Fat references remain only for trait objects**: a `&const trait` carries the `$impl` witness (§4.12), emitted statically. That table exists because the trait's props are function implementations, not because of layout.
+- **Fat references remain only for trait objects** (§6): two pointers, the referent and its implementation. The implementation is emitted statically. Coercing a conforming value to a trait object costs the pair, not a copy of the value; the table exists because a trait's props are function implementations, not because of layout.
 
 ### 7.5 Runtime type information
 
@@ -638,7 +641,7 @@ The `$union` is load-bearing. §3.4 makes a parameter's default *fix* its type a
 
 - **The compiler is a library**: the root-block value `compiler` exposes `parse`, `check`, `verify`, `emit`, `link`, the typed tree it passes between them (§9.1), and props describing host and targets. A build file is a block that calls them.
 - **Staged, not interleaved.** The build program runs *before* compiling the target. There is no compile-time execution inside a program; templates and props are the only compile-time constructs.
-- **Tests are a structural interface**: any block conforming to `{$prop name ""  $prop run $func () true}`. Metadata is props (`$prop tags ("slow", "net")`). The runner is library code.
+- **Tests are a structural interface**: any block conforming to `$traitsof {$prop name ""  $prop run $func () true}` (§6). Metadata is props (`$prop tags ("slow", "net")`). The runner is library code.
 - **No in-language reflection.** `$call compiler.parse` returns an AST as a block; a build program that wants discovery walks it and generates a runner source. Reflection lives in the compiler library at build time.
 - **Dependencies are in code, resolution is in the build.** `$import` (§4.14) declares the graph; the build program provides the resolver and picks entry files. It never assembles the graph by hand, but it can override any edge, inject names into the root block, or specialize a template module.
 - **No macros / conditional compilation.** Environment selection is either an import override in the build (swap which file `"net"` resolves to) or a `$template` over a config block that the build specializes. Unused branches are dead by type (matching on prop values) and still type-checked.
@@ -781,7 +784,7 @@ These follow from stated rules and are accepted by design:
 10. `$traitsof` abstracts by structural type equality, so any parameter whose type equals the source block's type becomes `Self`.
 11. A recursive type whose recursion does not pass through storage is an error rather than an inferred type (§5.5), so `$new` appears in every recursive data constructor — the library's `list` included. This is the price of `$new` being the only allocation in the language.
 12. A function's type does not record its captures (§7.3), so **capture-freeness is a property of an expression, not of a type**. §4.16's C-callback rule is checkable exactly when the compiler can see which `$func` literal a value came from; a closure reaching a callback parameter through a mutable function slot cannot be checked and is rejected.
-13. For the same reason, an `$impl` witness (§4.12) is a static table exactly when its function props are capture-free, which is the ordinary case; a witness whose props capture is an ordinary runtime block.
+13. An implementation (§4.12) is always a static table: its props come from an override or a prototype, both blocks of props, and a prop cannot capture (§4.10). A trait object's only runtime part is its reference.
 14. Storage that outlives the scope it was made in must be written `$alloc`, so a container returned to a caller names an allocator (§5.3a) while one used within a scope is free. The cost lands at the container, not at every use.
 15. There is no optimisation level and no canonical pass pipeline (§9.2), so `emit` must stay correct on unoptimised input and no pass may be assumed to have run. The cost of "optimisation is a library" is paid by the compiler, not by the user.
 16. Frame storage is safe by construction and allocated storage is **unsafe by declaration**: the language guarantees a frame reference never dangles, and says nothing about an allocated one after its allocator released it. There is no collector and nothing is inferred.
@@ -891,24 +894,52 @@ $decl show $overload (
 $call show true               // picks candidate 1
 ```
 
-**Trait, implementation, witness**
+**Traits: conformance, coercion, `$impl`**
 
 ```
-$decl rect { $decl w $new 0.0  $decl h $new 0.0 }
-$decl rect_shape $impl rect shape {
-  $prop area $func ($decl r $const $new rect) $call mul (r.w, r.h)
+$decl shape_proto {
+  $prop area     $func ($decl s $const $new shape_proto) 0
+  $prop describe $func ($decl s $const $new shape_proto)
+    $call concat ("area=", $call int_to_str ($call s.area (s)))
 }
-$call rect_shape.describe (rect)     // "area=0"
+
+$decl rect { $decl w 3  $decl h 4
+  $prop area     $func ($decl r $const $new rect) $call mul (r.w, r.h)
+  $prop describe $func ($decl r $const $new rect) "a rect" }
+$decl sq   { $decl side 5
+  $prop area     $func ($decl q $const $new sq) $call mul (q.side, q.side)
+  $prop describe $func ($decl q $const $new sq) "a square" }
+
+// Both conform, so each coerces to a trait object at the call.
+$decl total $func ($decl a $traitsof shape_proto, $decl b $traitsof shape_proto)
+  $call add ($call a.area (a), $call b.area (b))
+$call total (rect, sq)                                   // 37
+
+// `tri` lacks `describe`, so it does not conform by itself; `$impl` says what it
+// dispatches to — `tri`'s own `area`, named, and the default `describe`.
+$decl tri { $decl b 6  $decl h 2
+  $prop area $func ($decl t $const $new tri) $call div ($call mul (t.b, t.h), 2) }
+$decl tri_s $impl tri ($traitsof shape_proto) { $prop area tri.area }
+$call tri_s.describe (tri_s)                             // "area=6"
+
+// `Int` has no props at all; one implementation serves every `Int`.
+$decl int_area { $prop area $func ($decl n $const $new 0) n }
+$decl n 7
+$decl n_s $impl n ($traitsof shape_proto) int_area
+$call n_s.describe (n_s)                                 // "area=7"
+
+// Storage of trait type holds trait objects; `$set` replaces the whole object.
+$decl cur $mut $alloc $traitsof shape_proto
+$set cur rect
+$set cur sq
 ```
 
-**Deriving a trait from an implementation**
+**A bound: conformance checked, calls static**
 
 ```
-$decl point { $decl x $new 0.0  $decl y $new 0.0
-  $prop len $func ($decl p $const $new point)
-    $call sqrt ($call add ($call mul (p.x, p.x), $call mul (p.y, p.y))) }
-
-$decl vec3 $impl { $decl x $new 0.0  $decl y $new 0.0  $decl z $new 0.0 }
-               ($traitsof point)
-               { $prop len $func ($decl v $const $new vec3) … }
+$decl doubled $template (T ($traitsof shape_proto)) {
+  $prop run $func ($decl v $const $new T) $call mul ($call v.area (v), 2)
+}
+$call ($specialize doubled rect).run (rect)              // 24; `v.area` is a direct call
+$specialize doubled tri                                  // error: tri does not conform
 ```
