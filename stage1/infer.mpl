@@ -1192,9 +1192,13 @@ $decl ct_id $func ($decl cx proto_ctx, $decl tag 0, $decl n Pa.proto_node)
 // will need and hands back an identity.
 $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
   { $decl gs    $call generic_names ($call op (n, 0), strs.nil)
-    // §4.9 monomorphises, so a generic is a compile-time value and a prop inside
-    // the body may name it — `list T`'s `$prop cons $func ($decl h T, …)` does.
-    $decl ctg   $set cx.ctnames ($call join_strs (gs, cx.ctnames))
+    // A generic is *not* added to `ctnames`. §4.9 evaluates an argument where the
+    // `$specialize` stands, so the generic's value is a runtime value even though
+    // its type is known, and §4.10 lets a prop mention one only in a type-only
+    // position. `ct_init` does not walk a compile-time form's operands, which is
+    // exactly what keeps `list T`'s `$prop cons $func ($decl h T, …)` legal while
+    // `$prop k T` is refused: two instances whose arguments share a type share
+    // one memoised type, and a prop reading the value would differ between them.
     $decl id    $call ct_id (cx, 7, n)
     $decl rec   $call tmpl_rec (id, gs, $call op (n, 1), e, $call sval (cx.file))
     $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))

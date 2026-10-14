@@ -294,6 +294,25 @@ $decl t44e $call check_str ("the compile-time shapes are accepted",
   $call errs_of ($call concat ("$decl b { $prop f $func ($decl n 0) n  $prop u $union (1, 2) ",
                                " $prop n { $prop two 2 }  $prop k 7 }")), "")
 
+// §4.9/§4.10: a generic's *value* is a runtime value — the argument is evaluated
+// where the `$specialize` stands — so a prop may mention a generic only in a
+// type-only position. `$specialize t 5` and `$specialize t 6` share one memoised
+// type; `$prop k T` would give them different prop values.
+$decl t44j $call check_str ("a $prop may not read a generic's value",
+  $call errs_of ("$decl t $template T { $prop k T }  $decl s $specialize t 5"),
+  "a $prop must be fully evaluable by the compiler (§4.10), and 'T' is not")
+
+$decl t44k $call check_str ("...nor project off one",
+  $call errs_of ("$decl t $template T { $prop k T.a }  $decl s $specialize t { $decl a 1 }"),
+  "a $prop must be fully evaluable by the compiler (§4.10), and this is not")
+
+// ...but the type-only positions stay legal: a parameter default, a `$union`
+// member after the first, and a nested `$specialize` — the shapes the prelude's
+// `list T` is written in.
+$decl t44l $call check_str ("a generic in a type-only position of a prop is fine",
+  $call errs_of ($call concat ("$decl t $template T { $prop mk $func ($decl v T) v  $prop u $union (1, T) }",
+                               "  $decl s $specialize t 5  $decl x $call s.mk (3)")), "")
+
 // §4.7's first fit, and §5.7's reason it bites. A pattern is a type-only position
 // and there is no type syntax, so `$case 1` denotes `Int` and claims every integer
 // — the second arm then answers for nothing, silently, and `classify (7)` returns
