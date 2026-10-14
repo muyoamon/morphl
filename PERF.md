@@ -2490,6 +2490,43 @@ the old values also show how little of `hmod`'s range a linear fold of small lea
 Rerunning the count over a self-emit: **0 of 320,417,995** hash-equal pairs are not the same type.
 Every struct is renamed and nothing else changes; the self-emit is 40.0s, the same as before.
 
+### Lowering's three linear scans, indexed: 1.45x
+
+With types compared by class and `has_var` a field read (INTERNING.md), a profile of the 10s
+self-emit put three plain list scans in lowering at **40.6%** between them — `lookup` 19.5%
+(the name environment), `find_mdone` 13.6% (a module's lowered members by name), `find_mod`
+7.6% (the module list by id). Each is now indexed by a persistent trie, *beside* the list
+rather than instead of it, because each list's answer is "the first match" and the index has
+to give exactly that one:
+
+- **`find_mod`** — `lstate.modix`, keyed by the id's bits, changed at the three places the list
+  is (`fresh_mod_ic`, `save_mod`, `put_snap`), and in the snapshot with it.
+- **`find_mdone`** — `mod_ent.dix`, keyed by the name's hash, on the entry itself so a rollback
+  restores the two together; each bucket is newest first, like the list. The two rebuild sites
+  carry it, and `note_prop` adds to it. `member_ir`/`member_ty` still scan, being once per
+  module.
+- **`lookup`** — environments stay lists (extended a binding at a time; shadowing is first
+  match), but a long-lived one gets an **index entry** on top (`with_index`): slot `-7`, name
+  `$index`, carrying a trie of every binding below it. A lookup that reaches one answers from
+  it and stops. Placed on a module's member environment, the root block, the entry file's
+  globals and each thunk member's scoped environment. A module's environment is its members
+  consed onto the intrinsics, so every reference to `add` or `concat` used to walk past every
+  member to reach them.
+
+Each was built and measured separately, and after each the *committed* compiler was timed
+compiling the new source — the check for the source-shape blow-up that once made lowering
+`lower.mpl` run out of memory — which stayed normal (9–11s):
+
+| self-emit of `mplc.mpl` | committed | change |
+|---|---|---|
+| `find_mod` indexed | 10.2–10.8s | 9.6–10.3s |
+| `+ find_mdone` indexed | 10.3–10.6s | 8.8–9.3s |
+| `+ lookup` indexed | 10.9–11.9s | **7.6–8.0s** |
+
+**~1.45x** over the three; the emitted C is byte-identical at every stage. Memory rose 5.6%
+(2,509 MB against 2,376 MB), most of it the per-thunk scoped environments' indexes. Since the
+start of the interning work the self-emit has gone from ~45s to ~8s, **~5.7x**.
+
 ### Lowering is super-additive, so there is nothing per-module to cache
 
 The interface cache works because **inference is additive**: per-module marginals sum to

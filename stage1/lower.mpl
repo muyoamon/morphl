@@ -48,8 +48,9 @@ $decl mem_str $func ($decl xs strs.node, $decl x "") $match xs (
 // a root-block intrinsic (§2.1: an intrinsic is an ordinary shadowable name, so
 // this is a lookup, not a special case).
 
-$decl bind_ent6 $func ($decl n "", $decl k "", $decl s 0, $decl t T.proto_ty,
-                       $decl m 0, $decl tm 0)
+// A binding, as `lookup` answers it.
+$decl pbind $func ($decl n "", $decl k "", $decl s 0, $decl t T.proto_ty,
+                   $decl m 0, $decl tm 0)
   { $decl name n  $decl kind k  $decl slot s  $decl ty t
     // The module this name's value is, if it is one — see the compile-time
     // environment below. -1 for everything that is not a block with props.
@@ -59,6 +60,52 @@ $decl bind_ent6 $func ($decl n "", $decl k "", $decl s 0, $decl t T.proto_ty,
     // body: the type says *that* a name is a template, this says which one
     // lowering registered.
     $decl tmpl tm }
+$decl proto_pbind $call pbind ("", "", 0, T.t_bot, 0, 0)
+$decl pbinds $specialize P.list proto_pbind
+
+// **An environment index.** `lookup` scanned the environment from the front, and a
+// module's environment is its members — hundreds — consed onto the root block's
+// intrinsics, so every reference to `add` or `concat` walked past every member: 19.5% of
+// a self-emit. Environments stay lists, because they are extended one binding at a time
+// and shadowing is "the first match"; but a long-lived one gets an *index entry* on top
+// (`with_index`), whose trie answers for everything below it. A lookup that reaches one
+// stops there. The trie keeps each bucket newest first, so its first match is the list's.
+$decl ptrie $union (
+  { $prop tag "leaf"   $decl items $alloc pbinds.node },
+  { $prop tag "branch" $decl lo $alloc ptrie  $decl hi $alloc ptrie }
+)
+$decl pt_leaf $func ($decl xs pbinds.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl pt_branch $func ($decl l ptrie, $decl h ptrie) { $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h }
+$decl pt_val $func ($decl x ptrie) x
+$decl pt_items $func ($decl tr ptrie) $match tr ($case {$prop tag "leaf"} ($call pbinds.val (tr.items)), $case tr pbinds.nil)
+$decl pt_kid $func ($decl tr ptrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call pt_val ($if hi tr.hi tr.lo)),
+  $case tr ($call pt_leaf (pbinds.nil))
+)
+$decl pt_depth 10
+$decl pt_key $func ($decl nm "") $call mod ($call add ($call mod ($call T.hash_str (nm, 0, 0), 1021), 1021), 1021)
+$decl pt_add $func ($decl tr ptrie, $decl k 0, $decl d 0, $decl b proto_pbind)
+  $if ($call not ($call lt (d, pt_depth))) ($call pt_leaf ($call pbinds.cons (b, $call pt_items (tr))))
+      { $decl lo $call pt_kid (tr, false)
+        $decl hi $call pt_kid (tr, true)
+        $decl up $call eq_int ($call mod (k, 2), 0)
+        $decl r  $if up ($call pt_branch ($call pt_add (lo, $call div (k, 2), $call add (d, 1), b), hi))
+                        ($call pt_branch (lo, $call pt_add (hi, $call div (k, 2), $call add (d, 1), b))) }.r
+$decl pt_empty $call pt_leaf (pbinds.nil)
+
+// The slot an index entry carries, and the name: a slot no binding has, so telling one
+// apart is an integer test, and a name no identifier can be (§2: none starts with `$`),
+// since `lower_name` looks up "" for a node that is not a name.
+$decl ix_slot -7
+
+$decl bind_ent7 $func ($decl n "", $decl k "", $decl s 0, $decl t T.proto_ty,
+                       $decl m 0, $decl tm 0, $decl x ptrie)
+  { $decl name n  $decl kind k  $decl slot s  $decl ty t  $decl mod m  $decl tmpl tm
+    $decl ix $alloc x }
+
+$decl bind_ent6 $func ($decl n "", $decl k "", $decl s 0, $decl t T.proto_ty,
+                       $decl m 0, $decl tm 0)
+  $call bind_ent7 (n, k, s, t, m, tm, pt_empty)
 
 $decl bind_ent5 $func ($decl n "", $decl k "", $decl s 0, $decl t T.proto_ty, $decl m 0)
   $call bind_ent6 (n, k, s, t, m, -1)
@@ -72,13 +119,52 @@ $decl bind_ent $func ($decl n "", $decl k "", $decl s 0, $decl t T.proto_ty)
 $decl proto_bind $call bind_ent6 ("", "", 0, T.t_bot, 0, 0)
 $decl benv $specialize P.list proto_bind
 
-$decl found $func ($decl ok P.boolean, $decl b proto_bind) { $decl hit ok  $decl bnd b }
+$decl found $func ($decl ok P.boolean, $decl b proto_pbind) { $decl hit ok  $decl bnd b }
+
+$decl pt_scan $func ($decl xs pbinds.node, $decl n "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head.name, n)) ($call found (true, xs.head)) ($call pt_scan ($call pbinds.val (xs.tail), n)),
+  $case xs ($call found (false, proto_pbind))
+)
+$decl pt_find $func ($decl tr ptrie, $decl k 0, $decl n "") $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (k, 2), 0)) ($call pt_find ($call pt_val (tr.lo), $call div (k, 2), n))
+        ($call pt_find ($call pt_val (tr.hi), $call div (k, 2), n)),
+  $case tr ($call pt_scan ($call pt_items (tr), n))
+)
+
+$decl as_pbind $func ($decl b proto_bind)
+  $call pbind (b.name, b.kind, b.slot, b.ty, b.mod, b.tmpl)
 
 $decl lookup $func ($decl e benv.node, $decl n "") $match e (
   $case {$prop tag "cons"}
-    $if ($call eq_str (e.head.name, n)) ($call found (true, e.head)) ($call lookup (e.tail, n)),
-  $case e ($call found (false, proto_bind))
+    $if ($call eq_int (e.head.slot, ix_slot))
+        ($call pt_find ($call pt_val (e.head.ix), $call pt_key (n), n))
+        ($if ($call eq_str (e.head.name, n)) ($call found (true, $call as_pbind (e.head))) ($call lookup (e.tail, n))),
+  $case e ($call found (false, proto_pbind))
 )
+
+// Everything in `e` from its head down to the first index entry, which is where `with_index`
+// can stop: that entry already answers for the rest.
+$decl ix_segment $func ($decl e benv.node, $decl acc pbinds.node) $match e (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (e.head.slot, ix_slot)) acc
+        ($call ix_segment (e.tail, $call pbinds.cons ($call as_pbind (e.head), acc))),
+  $case e acc
+)
+$decl ix_base $func ($decl e benv.node) $match e (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (e.head.slot, ix_slot)) ($call pt_val (e.head.ix)) ($call ix_base (e.tail)),
+  $case e pt_empty
+)
+// `ix_segment` hands the segment back oldest first, so consing each onto its bucket leaves
+// the newest at the front — the binding the list would have found.
+$decl ix_fill $func ($decl tr ptrie, $decl xs pbinds.node) $match xs (
+  $case {$prop tag "cons"} $call ix_fill ($call pt_add (tr, $call pt_key (xs.head.name), 0, xs.head), $call pbinds.val (xs.tail)),
+  $case xs tr
+)
+$decl with_index $func ($decl e benv.node)
+  $call benv.cons ($call bind_ent7 ("$index", "index", ix_slot, T.t_bot, -1, -1,
+                       $call ix_fill ($call ix_base (e), $call ix_segment (e, pbinds.nil))), e)
 
 // ------------------------------------------------- the compile-time environment
 //
@@ -142,24 +228,69 @@ $decl mrec_val $func ($decl r no_mrec) r
 // own top level, and the enclosing `$specialize`'s key for a block literal in a
 // template body — whose prop bodies inference typed inside that specialisation, and
 // which lowering only reaches later, from wherever the first projection happens.
+// `done` by name. `find_mdone` scanned the list — 13% of a self-emit, since every
+// projection onto a module member asks it — so the entry carries a trie keyed by the
+// name's hash as well. On the entry rather than beside it, so a rollback restores the two
+// together. A bucket is newest first like the list, so the first match is the same one.
+$decl dxtrie $union (
+  { $prop tag "leaf"   $decl items $alloc mdones.node },
+  { $prop tag "branch" $decl lo $alloc dxtrie  $decl hi $alloc dxtrie }
+)
+$decl dx_leaf $func ($decl xs mdones.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl dx_branch $func ($decl l dxtrie, $decl h dxtrie) { $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h }
+$decl dx_val $func ($decl x dxtrie) x
+$decl dx_items $func ($decl tr dxtrie) $match tr ($case {$prop tag "leaf"} ($call mdones.val (tr.items)), $case tr mdones.nil)
+$decl dx_kid $func ($decl tr dxtrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call dx_val ($if hi tr.hi tr.lo)),
+  $case tr ($call dx_leaf (mdones.nil))
+)
+$decl dx_depth 10
+$decl dx_key $func ($decl nm "") $call mod ($call add ($call mod ($call T.hash_str (nm, 0, 0), 1021), 1021), 1021)
+$decl dx_scan $func ($decl xs mdones.node, $decl nm "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.name, nm)) ($call mdones.cons (xs.head, mdones.nil))
+        ($call dx_scan ($call mdones.val (xs.tail), nm)),
+  $case xs mdones.nil
+)
+$decl dx_find $func ($decl tr dxtrie, $decl k 0, $decl nm "") $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (k, 2), 0)) ($call dx_find ($call dx_val (tr.lo), $call div (k, 2), nm))
+        ($call dx_find ($call dx_val (tr.hi), $call div (k, 2), nm)),
+  $case tr ($call dx_scan ($call dx_items (tr), nm))
+)
+$decl dx_add $func ($decl tr dxtrie, $decl k 0, $decl d 0, $decl m proto_mdone)
+  $if ($call not ($call lt (d, dx_depth))) ($call dx_leaf ($call mdones.cons (m, $call dx_items (tr))))
+      { $decl lo $call dx_kid (tr, false)
+        $decl hi $call dx_kid (tr, true)
+        $decl up $call eq_int ($call mod (k, 2), 0)
+        $decl r  $if up ($call dx_branch ($call dx_add (lo, $call div (k, 2), $call add (d, 1), m), hi))
+                        ($call dx_branch (lo, $call dx_add (hi, $call div (k, 2), $call add (d, 1), m))) }.r
+$decl dx_empty $call dx_leaf (mdones.nil)
+
 $decl mod_ent_g $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                        $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node,
-                       $decl fl "", $decl rc no_mrec, $decl ic "")
+                       $decl fl "", $decl rc no_mrec, $decl ic "", $decl dx dxtrie)
   { $decl id i  $decl props $alloc ps  $decl done $alloc ds  $decl env $alloc en
     $decl base bs  $decl path pt  $decl file fl  $decl isctx ic
     // `with_props (en, ps, i)`, built once at registration. See `with_props`.
     $decl penv $alloc pe
-    $decl rec $alloc rc }
+    $decl rec $alloc rc
+    $decl dix $alloc dx }
+
 
 $decl mod_ent_f $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                        $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node,
                        $decl fl "")
-  $call mod_ent_g (i, ps, ds, en, bs, pt, pe, fl, no_mrec, "")
+  $call mod_ent_g (i, ps, ds, en, bs, pt, pe, fl, no_mrec, "", dx_empty)
 
 $decl mod_ent $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                      $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node)
   $call mod_ent_f (i, ps, ds, en, bs, pt, pe, "")
 $decl proto_mod $call mod_ent (0, mprops.nil, mdones.nil, benv.nil, "", "", benv.nil)
+
+// A module's lowered member by name, as a list of zero or one: `find_mdone`'s answer.
+$decl find_mdone_m $func ($decl m proto_mod, $decl nm "")
+  $call dx_find ($call dx_val (m.dix), $call dx_key (nm), nm)
 $decl mods_list $specialize P.list proto_mod
 
 // Every member of a module bound at once, which is what a `$prop` body and a
@@ -287,6 +418,39 @@ $decl opq_ent $func ($decl i 0, $decl m 0, $decl nm "") { $decl id i  $decl mod 
 $decl proto_opq $call opq_ent (0, 0, "")
 $decl opq_list $specialize P.list proto_opq
 
+// The module list by id. `find_mod` used to scan `st.mods` comparing ids — 7.4% of a
+// self-emit once types compared in O(1) — so the list is indexed by a trie on the id's
+// bits. Kept beside the list, not instead of it: the list is what is iterated and what
+// `put_snap` restores, and the index is changed at exactly the three places the list is
+// (`fresh_mod_ic`, `save_mod`, `put_snap`). A leaf holds the one entry for its id.
+$decl mxtrie $union (
+  { $prop tag "leaf"   $decl items $alloc mods_list.node },
+  { $prop tag "branch" $decl lo $alloc mxtrie  $decl hi $alloc mxtrie }
+)
+$decl mx_leaf $func ($decl xs mods_list.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl mx_branch $func ($decl l mxtrie, $decl h mxtrie) { $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h }
+$decl mx_val $func ($decl x mxtrie) x
+$decl mx_items $func ($decl tr mxtrie) $match tr ($case {$prop tag "leaf"} ($call mods_list.val (tr.items)), $case tr mods_list.nil)
+$decl mx_kid $func ($decl tr mxtrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call mx_val ($if hi tr.hi tr.lo)),
+  $case tr ($call mx_leaf (mods_list.nil))
+)
+// Sixteen levels: 65,536 modules, against a dozen in the compiler.
+$decl mx_depth 16
+$decl mx_find $func ($decl tr mxtrie, $decl k 0, $decl d 0) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (k, 2), 0)) ($call mx_find ($call mx_val (tr.lo), $call div (k, 2), $call add (d, 1)))
+        ($call mx_find ($call mx_val (tr.hi), $call div (k, 2), $call add (d, 1))),
+  $case tr ($call mx_items (tr))
+)
+$decl mx_put $func ($decl tr mxtrie, $decl k 0, $decl d 0, $decl m proto_mod)
+  $if ($call not ($call lt (d, mx_depth))) ($call mx_leaf ($call mods_list.cons (m, mods_list.nil)))
+      { $decl lo $call mx_kid (tr, false)
+        $decl hi $call mx_kid (tr, true)
+        $decl up $call eq_int ($call mod (k, 2), 0)
+        $decl r  $if up ($call mx_branch ($call mx_put (lo, $call div (k, 2), $call add (d, 1), m), hi))
+                        ($call mx_branch (lo, $call mx_put (hi, $call div (k, 2), $call add (d, 1), m))) }.r
+
 // A read of a function-valued prop whose source had not been lowered yet when the read
 // was, kept until the end of the file. See `prop_pending`.
 $decl pend_ent $func ($decl i 0, $decl nm "", $decl k 0, $decl t T.proto_ty, $decl n Pa.proto_node)
@@ -332,6 +496,7 @@ $decl lstate $func ()
     $decl tytrie   $mut $alloc IR.proto_trie
     $decl mods   $mut $alloc mods_list.node
     $decl nmods  $mut $alloc 0
+    $decl modix  $mut $alloc mxtrie
     // Which module's code is being lowered right now, or -1 for the entry file.
     // §4.14 lets two modules bind one name, so this is what lets a function be
     // *named* by something stable rather than by its table index. Saved and restored
@@ -402,6 +567,9 @@ $decl lstate $func ()
     $decl errs   $mut $alloc Pa.diags.node }
 
 $decl proto_lst $call lstate ()
+
+// The module with id `i`, as a list of zero or one, the shape `find_mod` gave.
+$decl find_mod_st $func ($decl st proto_lst, $decl i 0) $call mx_find ($call mx_val (st.modix), i, 0)
 
 // Enter a module for the duration of lowering one of its members, answering the
 // previous value so the caller can put it back. A module's members can load another
@@ -636,7 +804,7 @@ $decl intern $func ($decl st proto_lst, $decl t T.proto_ty)
 // interned as before.
 $decl mod_rec_of $func ($decl st proto_lst, $decl mid 0)
   $if ($call lt (mid, 0)) no_mrec
-      { $decl ms $call find_mod (st.mods, mid)
+      { $decl ms $call find_mod_st (st, mid)
         $decl r  $match ms (
             $case {$prop tag "cons"} ($call mrec_val (ms.head.rec)),
             $case ms no_mrec
@@ -735,7 +903,8 @@ $decl put_mod $func ($decl xs mods_list.node, $decl m proto_mod, $decl acc mods_
   )
 
 $decl save_mod $func ($decl st proto_lst, $decl m proto_mod)
-  { $decl s $set st.mods ($call put_mod (st.mods, m, mods_list.nil))
+  { $decl x $set st.modix ($call mx_put ($call mx_val (st.modix), m.id, 0, m))
+    $decl s $set st.mods ($call put_mod (st.mods, m, mods_list.nil))
     $decl r 0 }.r
 
 $decl fresh_var $func ($decl st proto_lst)
@@ -752,13 +921,16 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
                    $decl sp specs_list.node, $decl tm tmpls_list.node, $decl nt 0,
                    $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
                    $decl tr IR.proto_trie, $decl oq opq_list.node, $decl pq pend_list.node,
-                   $decl fd fdef_list.node, $decl wr wrap_list.node, $decl wp wrap_list.node)
+                   $decl fd fdef_list.node, $decl wr wrap_list.node, $decl wp wrap_list.node,
+                   $decl mx mxtrie)
   { $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
     // The prop registry names modules by id, and a rollback hands ids out again; a
     // pending read names a lifted index, which a rollback hands out again too.
     $decl opaqs oq  $decl pends pq
     // Function definitions and wrappers name lifted indices too.
     $decl fdefs fd  $decl wraps wr  $decl wpends wp
+    // The module index, which a rollback has to restore with the list it indexes.
+    $decl modix mx
     $decl specs sp   $decl tmpls tm    $decl ntmpls nt
     // §9.3's table, both halves of the banker's queue and both counters. Every
     // type the discarded pass interned is garbage by construction: it was
@@ -774,7 +946,7 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
 
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
                       tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil,
-                      pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil)
+                      pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil, mxtrie)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -787,7 +959,8 @@ $decl take_snap $func ($decl st proto_lst)
       $call P.ival (st.nsettled), $call P.ival (st.ntypes),
       $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs),
       $call pend_list.val (st.pends), $call fdef_list.val (st.fdefs),
-      $call wrap_list.val (st.wraps), $call wrap_list.val (st.wpends))
+      $call wrap_list.val (st.wraps), $call wrap_list.val (st.wpends),
+      $call mx_val (st.modix))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
   { $decl a $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -807,6 +980,7 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap)
     $decl u $set st.fdefs    ($call fdef_list.val (sn.fdefs))
     $decl v $set st.wraps    ($call wrap_list.val (sn.wraps))
     $decl w $set st.wpends   ($call wrap_list.val (sn.wpends))
+    $decl x $set st.modix    ($call mx_val (sn.modix))
     $decl r 0 }.r
 
 $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
@@ -831,10 +1005,10 @@ $decl fresh_mod_ic $func ($decl st proto_lst, $decl ps mprops.node, $decl en ben
     $decl n $set st.nmods ($call add (i, 1))
     // The prop environment is a function of the module alone, so it is built
     // here and never again.
-    $decl pe $call with_props (en, ps, i)
-    $decl m $set st.mods ($call mods_list.cons (
-                              $call mod_ent_g (i, ps, mdones.nil, en, bs, pt, pe, fl, no_mrec, ic),
-                              $call eval_mods (st.mods)))
+    $decl pe $call with_index ($call with_props (en, ps, i))
+    $decl me $call mod_ent_g (i, ps, mdones.nil, en, bs, pt, pe, fl, no_mrec, ic, dx_empty)
+    $decl m $set st.mods ($call mods_list.cons (me, $call eval_mods (st.mods)))
+    $decl x $set st.modix ($call mx_put ($call mx_val (st.modix), i, 0, me))
     $decl r i }.r
 
 // Written where it stands, so in whatever specialisation is being lowered.
@@ -852,7 +1026,7 @@ $decl fresh_mod $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.n
   $call fresh_mod_at (st, ps, en, "", "")
 
 $decl mod_props $func ($decl st proto_lst, $decl mid 0)
-  { $decl ms $call find_mod (st.mods, mid)
+  { $decl ms $call find_mod_st (st, mid)
     $decl r $match ms (
         $case {$prop tag "cons"} ($call mprops.val (ms.head.props)),
         $case ms mprops.nil
@@ -1299,11 +1473,11 @@ $decl prop_from_ty $func ($decl st proto_lst, $decl ps T.props.node, $decl nm ""
 // which inference gives in full, §3.3 — still lists them as fields; taking the
 // field would emit a read of a layout the module does not have.
 $decl mod_has $func ($decl st proto_lst, $decl mid 0, $decl nm "")
-  { $decl ms $call find_mod (st.mods, mid)
+  { $decl ms $call find_mod_st (st, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
           ($if ($call mprops.is_nil ($call find_mprop (ms.head.props, nm)))
-               ($call not ($call mdones.is_nil ($call find_mdone (ms.head.done, nm))))
+               ($call not ($call mdones.is_nil ($call find_mdone_m (ms.head, nm))))
                true),
         $case ms false
       ) }.r
@@ -1545,7 +1719,8 @@ $decl caps $func ($decl ns strs.node, $decl e benv.node, $decl acc benv.node) $m
                ($call eq_str (f.bnd.kind, "capture")))
           false
       $decl r $call caps (ns.tail, e,
-                  $if keep ($call benv.cons (f.bnd, acc)) acc) }.r,
+                  $if keep ($call benv.cons ($call bind_ent6 (f.bnd.name, f.bnd.kind, f.bnd.slot,
+                                f.bnd.ty, f.bnd.mod, f.bnd.tmpl), acc)) acc) }.r,
   $case ns acc
 )
 
@@ -1972,7 +2147,7 @@ $decl top_props $func ($decl xs Pa.nodes.node, $decl acc mprops.node) $match xs 
 // An effect takes one of those indices too and `mpl_init` runs it there, which
 // is how it lands between the member before it and the member after.
 $decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node, $decl pos 0)
-  { $decl ms $call find_mod (st.mods, mid)
+  { $decl ms $call find_mod_st (st, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
           // A **fourth** place that lowers a module's code, beside the three
@@ -2100,7 +2275,7 @@ $decl rec_slots $func ($decl st proto_lst, $decl ds mdones.node, $decl xs mprops
 )
 
 $decl mod_value $func ($decl st proto_lst, $decl mid 0)
-  { $decl ms $call find_mod (st.mods, mid)
+  { $decl ms $call find_mod_st (st, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
           { $decl m  ms.head
@@ -2125,7 +2300,7 @@ $decl mod_value $func ($decl st proto_lst, $decl mid 0)
                   $decl kept $if a.settled
                       ($call save_mod (st, $call mod_ent_g (m.id, ps, ds, $call benv.val (m.env),
                            m.base, m.path, $call benv.val (m.penv), m.file,
-                           $call mrec (true, t, id, fs), m.isctx)))
+                           $call mrec (true, t, id, fs), m.isctx, $call dx_val (m.dix))))
                       0
                   $decl w  $call lres3 ($call IR.e_block (id,
                                $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)), t, mid) }.w }.v,
@@ -2609,7 +2784,7 @@ $decl no_caps $func ($decl st proto_lst, $decl pe benv.node, $decl n Pa.proto_no
 // body can lower its siblings, so the entry read at the start is stale by the
 // time the body is done.
 $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone)
-  { $decl ms $call find_mod (st.mods, mid)
+  { $decl ms $call find_mod_st (st, mid)
     $decl r $match ms (
         $case {$prop tag "cons"}
           // A copy, so `file` comes across — it is where this module's code is
@@ -2620,7 +2795,7 @@ $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone)
               $call mdones.cons (d, ms.head.done),
               $call benv.val (ms.head.env), ms.head.base, ms.head.path,
               $call benv.val (ms.head.penv), ms.head.file, $call mrec_val (ms.head.rec),
-              ms.head.isctx))),
+              ms.head.isctx, $call dx_add ($call dx_val (ms.head.dix), $call dx_key (d.name), 0, d)))),
         $case ms 0
       ) }.r
 
@@ -2814,8 +2989,8 @@ $decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.prot
 $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node)
   { $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
-    $decl pe   $call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
-                   ($union (false, true)))
+    $decl pe   $call with_index ($call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
+                   ($union (false, true))))
     $decl chk  $call no_caps (st, pe, pn)
     $decl idx  $call reserve_lifted (st)
     // §5.5 again, and for the same reason as a `$prop`: a module's members are
@@ -2918,7 +3093,7 @@ $decl lower_prop_replay $func ($decl st proto_lst, $decl m proto_mod, $decl nm "
 
 $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                            $decl n Pa.proto_node)
-  { $decl d $call find_mdone (m.done, nm)
+  { $decl d $call find_mdone_m (m, nm)
     $decl r $match d (
         $case {$prop tag "cons"}
           ($if ($call eq_str (d.head.kind, "global")) ($call prop_global (st, d.head))
@@ -2941,7 +3116,7 @@ $decl lower_prop_in $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
       ) }.r
 
 $decl lower_prop $func ($decl st proto_lst, $decl mid 0, $decl nm "", $decl n Pa.proto_node)
-  { $decl ms $call find_mod (st.mods, mid)
+  { $decl ms $call find_mod_st (st, mid)
     $decl r $match ms (
         $case {$prop tag "cons"} ($call lower_prop_in (st, ms.head, nm, n)),
         $case ms ($call lres ($call IR.e_unit ($call err (st,
@@ -3573,7 +3748,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     // lowered against the root block alone — so both are recorded before any
     // item is lowered.
     $decl based $set st.base base
-    $decl rooted $set st.rootenv prims
+    $decl rooted $set st.rootenv ($call with_index (prims))
     // **§3.3's top-level `$prop`s, which used to be dropped.** A file is a block, so
     // its top level may carry props — inference puts them in the file's type and they
     // resolve normally — but `lower_top` walks the type's *fields*, and a prop is in
@@ -3592,7 +3767,7 @@ $decl lower_file $func ($decl st proto_lst, $decl items Pa.nodes.node, $decl fty
     $decl tprops $call top_props (items, mprops.nil)
     $decl pmid $if ($call mprops.is_nil (tprops)) -1
                    ($call fresh_mod_in (st, tprops, env0, base, "", ""))
-    $decl env  $if ($call eq_int (pmid, -1)) env0 ($call with_props (env0, tprops, pmid))
+    $decl env  $call with_index ($if ($call eq_int (pmid, -1)) env0 ($call with_props (env0, tprops, pmid)))
     // A global's index is its position among the top-level `$decl`s, so the
     // lifted functions take the indices after them.
     $decl fnbased $set st.fnbase ($call T.fields.length (flds, 0))
