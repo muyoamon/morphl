@@ -1369,6 +1369,15 @@ $decl remap_fields $func ($decl xs fields.node, $decl o proto_rop, $decl d 0,
   $case xs ($call fields.reverse (acc, fields.nil))
 )
 
+$decl remap_props $func ($decl xs props.node, $decl o proto_rop, $decl d 0,
+    $decl acc props.node) $match xs (
+  $case {$prop tag "cons"}
+    $call remap_props (xs.tail, o, d,
+        $call props.cons ($call prop_typed (xs.head.name, xs.head.value,
+            $call remap (xs.head.ty, o, d)), acc)),
+  $case xs ($call props.reverse (acc, props.nil))
+)
+
 $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "var"}
     $if ($call eq_int (t.id, o.i))
@@ -1389,7 +1398,12 @@ $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   // A binder: `Self` is index 0 inside, so everything else moves up by one.
   $case {$prop tag "trait"}
     $call t_trait_fr ($call remap_fields (t.members, o, $call add (d, 1), fields.nil), t.frame),
-  $case {$prop tag "block"} $call raw_block ($call remap_fields (t.fields, o, d, fields.nil), t.props),
+  // A prop's `ty` is rebuilt too. It is outside the type's identity (§5.1 compares a
+  // prop's value), but §6's conformance reads it — so a bound variable left in it by
+  // `unroll` would make a recursive block fail to conform to its own trait.
+  $case {$prop tag "block"}
+    $call raw_block ($call remap_fields (t.fields, o, d, fields.nil),
+        $call remap_props (t.props, o, d, props.nil)),
   $case {$prop tag "group"} $call t_group ($call remap_tys (t.items, o, d, tys.nil)),
   $case {$prop tag "func"}
     $call t_func_fr ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d),
@@ -1811,6 +1825,51 @@ $decl sub_ref $func ($decl a proto_ref, $decl b proto_ref, $decl st proto_actx)
        ($call and ($call not ($call eq_str (a.qual, "const")), $call ty_eq (a.inner, b.inner)))
        ($call and ($call eq_str (a.qual, ""), $call ty_eq (a.inner, b.inner)))))
 
+// §6: a trait object's type is a supertype of every type that conforms to it. A member
+// is met by a prop of the same name whose *type* — `ty`, which `same_props` ignores — is a
+// subtype of the member's with the conforming type for `Self`. Values are never compared:
+// a trait says what a value can be used for, not what it is (a tag is `$match`'s concern).
+$decl conforms $func ($decl ps props.node, $decl ms fields.node, $decl self proto_ty,
+                      $decl b proto_ty, $decl st proto_actx) $match ms (
+  $case {$prop tag "cons"} {
+    $decl p   $call find_prop (ps, ms.head.name)
+    $decl ret $if ($call eq_str (p.name, "")) false
+        ($if ($call sub_seen ($call tval (p.ty), $call trait_member (b, ms.head.name, self), st))
+             ($call conforms (ps, $call fields.val (ms.tail), self, b, st)) false)
+  }.ret,
+  $case ms true
+)
+
+// A trait against a trait: width, unordered. `Self` stays the bound variable on both
+// sides — both views describe one referent, so it is one abstract type, not two.
+$decl members_sub $func ($decl xs fields.node, $decl ms fields.node, $decl st proto_actx)
+    $match ms (
+  $case {$prop tag "cons"} {
+    $decl f   $call find_field (xs, ms.head.name)
+    $decl ret $if ($call eq_str (f.name, "")) false
+        ($if ($call sub_seen ($call tval (f.ty), $call tval (ms.head.ty), st))
+             ($call members_sub (xs, $call fields.val (ms.tail), st)) false)
+  }.ret,
+  $case ms true
+)
+
+$decl is_trait $func ($decl t proto_ty) $match t ($case {$prop tag "trait"} true, $case t false)
+
+$decl sub_trait $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match b (
+  $case {$prop tag "trait"} $match a (
+      $case {$prop tag "trait"}
+        $call members_sub ($call fields.val (a.members), $call fields.val (b.members), st),
+      $case {$prop tag "block"}
+        $call conforms ($call props.val (a.props), $call fields.val (b.members), a, b, st),
+      // A trait object refers to its value (§6), so a reference to a conforming value
+      // conforms — the coercion takes the pointer it already is.
+      $case {$prop tag "ref"}   $call sub_seen ($call tval (a.inner), b, st),
+      $case {$prop tag "inter"} $call subs_any_left (a.members, b, st),
+      $case a false
+    ),
+  $case b false
+)
+
 $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match a (
   // §3.6: ⊥ is a subtype of everything.
   $case {$prop tag "bottom"} true,
@@ -1829,7 +1888,7 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
             ($call sub_seen (a, $call unroll (b), $call with_goal (st, a, b))),
       $case {$prop tag "union"} $call subs_any_right (a, b.members, st),
       $case {$prop tag "inter"} $call subs_all_right (a, b.members, st),
-      $case b $match a (
+      $case b $if ($call is_trait (b)) ($call sub_trait (a, b, st)) ($match a (
           $case {$prop tag "inter"} $call subs_any_left (a.members, b, st),
           $case {$prop tag "block"} $match b (
               $case {$prop tag "block"}
@@ -1859,7 +1918,7 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
           // Base types are unrelated (§5.1) and equality was already checked,
           // so anything left over is not a subtype.
           $case a false
-        )
+        ))
     )
 )
 

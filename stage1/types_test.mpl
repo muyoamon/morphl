@@ -492,4 +492,41 @@ $decl ktr11 $call check ("a trait is a binder: an outer bound variable shifts pa
 $decl ktr12 $call check ("a placeholder in a member is a var the trait carries",
   $call T.has_var ($call ktr ("m", $call T.t_var (7)), 0))
 
+// §6: conformance is subtyping against a trait — a prop of the member's name whose *type*
+// fits, with the conforming type for `Self`. Values are never compared.
+$decl kfn    $call T.t_func ($call k1 (kint), kstr)
+$decl kop    $call T.cv_opaque (1)
+$decl kname  $call ktr ("name", kfn)
+$decl kshape $call ktr ("area", $call T.t_func ($call k1 ($call T.t_bnd (0)), kint))
+
+$decl trs01 $call check ("a block with the member as a prop conforms",
+  $call T.sub ($call kprop ("name", kop, kfn), kname))
+$decl trs02 $call check ("...one without it does not",
+  $call P.not ($call T.sub ($call kprop ("size", kop, kfn), kname)))
+$decl trs03 $call check ("...nor one whose prop has the wrong type",
+  $call P.not ($call T.sub ($call kprop ("name", kop, $call T.t_func ($call k1 (kstr), kstr)),
+      kname)))
+$decl trs04 $call check ("a prop's value is never compared: different values both conform",
+  $call P.and ($call T.sub ($call kprop ("name", $call T.cv_opaque (1), kfn), kname),
+               $call T.sub ($call kprop ("name", $call T.cv_opaque (2), kfn), kname)))
+// The prototype idiom: a block whose prop names the block itself is a μ, and conforming
+// puts that block for `Self`.
+$decl kproto $call T.t_rec ($call kprop ("area", kop,
+    $call T.t_func ($call k1 ($call T.t_bnd (0)), kint)))
+$decl trs05 $call check ("a recursive block conforms with itself for Self",
+  $call T.sub (kproto, kshape))
+$decl trs06 $call check ("a reference to a conforming block conforms (a trait object refers)",
+  $call T.sub ($call T.t_ref ("const", $call kprop ("name", kop, kfn)), kname))
+$decl trs07 $call check ("trait width: more members is a subtype of fewer",
+  $call T.sub ($call ktr2 ("name", kfn, "size", kint), kname))
+$decl trs08 $call check ("...and fewer is not a subtype of more",
+  $call P.not ($call T.sub (kname, $call ktr2 ("name", kfn, "size", kint))))
+$decl trs09 $call check ("a union of conforming blocks conforms",
+  $call T.sub ($call T.union2 ($call kprop ("name", $call T.cv_opaque (1), kfn),
+                               $call kprop ("name", $call T.cv_opaque (2), kfn)), kname))
+$decl trs10 $call check ("a trait is not a subtype of a block",
+  $call P.not ($call T.sub (kname, $call kprop ("name", kop, kfn))))
+$decl trs11 $call check ("a block's *fields* do not meet a member: a trait describes props",
+  $call P.not ($call T.sub ($call kblk ("name", kfn), kname)))
+
 $decl done_k $call nl ("all class-key tests passed")
