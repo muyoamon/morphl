@@ -2527,6 +2527,26 @@ compiling the new source — the check for the source-shape blow-up that once ma
 (2,509 MB against 2,376 MB), most of it the per-thunk scoped environments' indexes. Since the
 start of the interning work the self-emit has gone from ~45s to ~8s, **~5.7x**.
 
+### `occurs` pruned by `pv`: 7.5%, of a 12% share
+
+Profiled again after the indexed scans, the self-emit (~7.4s) had no single leader; the largest
+group was `T.occurs` and its two list helpers at **~11.9%** of self time — the walk asking
+whether placeholder `R` appears in a type. A type whose `pv` flag is false holds no placeholder
+at all (INTERNING.md), so it cannot hold `R`: `occurs` now returns `false` there before
+matching, and since it recurses through its children the guard prunes every such subtree too.
+Exact by construction — `occurs` finds placeholders only through its `var` case, and walks the
+same children `has_var` does (fields, not props' types).
+
+| self-emit | committed | `occurs` pruned |
+|---|---|---|
+| interleaved | 7.21 / 7.27 / 7.53s | **6.67 / 6.99 / 6.70s** |
+
+**~7.5%**, against a 12% share: much of the time was on types that really do hold a placeholder,
+which the guard cannot skip. Output byte-identical. The share was read off *self* time, which a
+deep recursion does not distort; the inclusive figures do undercount here, because the compiler's
+recursion exceeds perf's 127-frame stack limit and a truncated stack never reaches `main`. The
+phases were timed directly instead — parse+infer ~1.9s, lowering ~3.8s, emit ~1.6s.
+
 ### Lowering is super-additive, so there is nothing per-module to cache
 
 The interface cache works because **inference is additive**: per-module marginals sum to

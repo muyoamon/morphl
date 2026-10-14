@@ -1169,7 +1169,11 @@ $decl occurs_fields $func ($decl xs fields.node, $decl i 0) $match xs (
   $case xs false
 )
 
-$decl occurs $func ($decl t proto_ty, $decl i 0) $match t (
+// A type with no placeholder in it at all (`has_var`, a field read since `pv`) cannot
+// hold placeholder `i`, so the walk stops there — at the top and, since this recurses
+// through its children, at every subtree too. It was ~12% of a self-emit as a full walk.
+$decl occurs $func ($decl t proto_ty, $decl i 0)
+  $if ($call not ($call has_var (t, 0))) false ($match t (
   $case {$prop tag "var"}   $call eq_int (t.id, i),
   $case {$prop tag "block"} $call occurs_fields (t.fields, i),
   $case {$prop tag "group"} $call occurs_tys (t.items, i),
@@ -1182,7 +1186,7 @@ $decl occurs $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "rec"}   $call occurs (t.body, i),
   $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
   $case t false
-)
+))
 
 // Every rewriting of a type is the same walk: rebuild each node, count the
 // binders passed on the way down, and do something at a leaf. Writing that walk
