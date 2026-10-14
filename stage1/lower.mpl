@@ -999,6 +999,28 @@ $decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.prot
                                $call eval_tmpls (st.tmpls)))
     $decl r i }.r
 
+// §4.9's self-specialisation, lowering's half of what `infer.mpl`'s `self_tmpl_env`
+// does. A template records the environment it was *written* in, and its own name was
+// not bound there yet — the `$decl` naming it is lowered after its initializer — so
+// `$specialize list T` inside `list` found a plain global and said "expects a
+// template". Once the `$decl` is known to be a template, its name is bound in that
+// environment too. `find_tmpl` takes the first record with the id, so the rebuilt one
+// goes in front.
+$decl tmpl_self $func ($decl st proto_lst, $decl tid 0, $decl nm "", $decl kind "",
+                       $decl idx 0, $decl ty T.proto_ty)
+  { $decl hit $call find_tmpl ($call eval_tmpls (st.tmpls), tid)
+    $decl r $match hit (
+        $case {$prop tag "cons"}
+          { $decl t  hit.head
+            $decl nr $call tmpl_rec_k (t.id, t.generics, t.body,
+                         $call benv.cons ($call bind_ent6 (nm, kind, idx, ty, -1, tid),
+                             $call benv.val (t.env)),
+                         t.key, t.file, t.iid)
+            $decl w  $set st.tmpls ($call tmpls_list.cons (nr, $call eval_tmpls (st.tmpls)))
+            $decl q  0 }.q,
+        $case hit 0
+      ) }.r
+
 $decl add_spec $func ($decl st proto_lst, $decl sp proto_spec)
   { $decl s $set st.specs ($call specs_list.cons (sp, st.specs))
     $decl r 0 }.r
@@ -3289,6 +3311,7 @@ $decl lower_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto
         $decl id  $call intern (st, v.ty)
         $decl ir  $call with_pending (a.pend, v.ir, id)
         $decl sl  $call fresh_slot (st, id)
+        $decl slf $if ($call lt (-1, v.tmpl)) ($call tmpl_self (st, v.tmpl, nm, "local", sl, v.ty)) 0
         $decl r   $call blk_acc (
             $call IR.bslots.cons ($call IR.bslot (sl, ir), $call IR.bslots.val (a.slots)),
             $call T.fields.cons ($call T.field (nm, v.ty), $call T.fields.val (a.flds)),
@@ -3626,6 +3649,8 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
                             v.mod, v.tmpl) }.t
       $decl f    fm.fn
       $decl idx  $call IR.fns.length (acc, 0)
+      $decl slf  $if ($call lt (-1, fm.tmpl))
+          ($call tmpl_self (st, fm.tmpl, nm, "global", idx, $call ty_at (st, f.result))) 0
       // A top-level `$decl` whose value is a block with props is a module, and
       // one whose value is a `$template` is a template — neither of which the
       // environment built up front could know, because the initializer had not

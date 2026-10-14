@@ -48,6 +48,18 @@ $decl errs_of $func ($decl src "")
         $case es ""
       ) }.out
 
+// Whether `m` is among the diagnostics, answering `m` if so — for a check whose
+// own report is followed by the cascade it causes, so it is not the newest.
+$decl has_err_in $func ($decl es Pa.diags.node, $decl m "") $match es (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (es.head.msg, m)) m ($call has_err_in ($call Pa.diags.val (es.tail), m)),
+  $case es ""
+)
+
+$decl has_err $func ($decl src "", $decl m "")
+  { $decl r   $call I.check_source (src)
+    $decl out $call has_err_in ($call Pa.diags.val (r.errs), m) }.out
+
 $decl n_errs $func ($decl src "")
   { $decl r $call I.check_source (src)
     $decl out $call Pa.diags.length (r.errs, 0) }.out
@@ -312,6 +324,24 @@ $decl t44k $call check_str ("...nor project off one",
 $decl t44l $call check_str ("a generic in a type-only position of a prop is fine",
   $call errs_of ($call concat ("$decl t $template T { $prop mk $func ($decl v T) v  $prop u $union (1, T) }",
                                "  $decl s $specialize t 5  $decl x $call s.mk (3)")), "")
+
+// §4.9's self-specialisation. The template's own name used to be §5.5's
+// placeholder in the environment its body is typed in, so `$specialize box T`
+// inside `box` said "expects a template, found v1". A projection off the
+// in-progress entry needs the body typed a second time against the first answer.
+$decl t44m $call check_str ("a template may specialise itself",
+  $call errs_of ($call concat ("$decl box $template T { $prop mk $func ($decl v T) { $decl val v }",
+      $call concat ("  $prop again $func ($decl v T) $call ($specialize box T).mk (v) }",
+      "  $decl b $specialize box 0  $decl x $call b.again (5)  $decl y x.val"))), "")
+
+// "A chain of *distinct* argument types is unbounded; there is a fixed
+// instantiation depth limit and exceeding it is an error."
+$decl t44n $call check_str ("a growing chain of specialisations stops at the depth limit",
+  $call has_err ($call concat ("$decl grow $template T { $prop up $func ($decl v T)",
+      $call concat (" $call ($specialize grow { $decl inner T }).up ({ $decl inner v }) }",
+      "  $decl g $specialize grow 0")),
+      "$specialize: the instantiation depth limit (64) is exceeded — a chain of distinct argument types (§4.9)"),
+  "$specialize: the instantiation depth limit (64) is exceeded — a chain of distinct argument types (§4.9)")
 
 // §4.7's first fit, and §5.7's reason it bites. A pattern is a type-only position
 // and there is no type syntax, so `$case 1` denotes `Int` and claims every integer

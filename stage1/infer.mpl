@@ -220,6 +220,16 @@ $decl ctx $func ()
     // third is not, which is how a first attempt at this patched two and silently
     // missed one — the exact shape of no-op this file warns about twice.
     $decl fdepth  $mut $alloc 0
+    // How many specialisations are being typed, one inside another. §4.9: "A chain
+    // of *distinct* argument types is unbounded; there is a fixed instantiation
+    // depth limit and exceeding it is an error." Self-specialisation made the chain
+    // reachable; without the limit a template that specialises itself at a growing
+    // type would not terminate.
+    $decl sdepth  $mut $alloc 0
+    // How many times a specialisation has been answered with an entry still in
+    // progress — §4.9's "hitting an in-progress entry returns its `R`". Compared
+    // across a body's first pass to learn whether the body reached itself.
+    $decl sreach  $mut $alloc 0
     // §4.16 rule 2. The section makes capture-freeness "a property of the
     // *expression* in the argument position", holding "when the compiler can see
     // which `$func` literal the value came from" — so the check is syntactic, and
@@ -1188,6 +1198,22 @@ $decl ct_id $func ($decl cx proto_ctx, $decl tag 0, $decl n Pa.proto_node)
                  $call T.hash_str ($call short_of ($call sval (cx.file)), 0, tag))
     $decl r  $call T.hmix ($call T.hmix (h0, sp.line), sp.col) }.r
 
+$decl is_var_ty $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "var"} true,
+  $case t false
+)
+
+// §4.9's self-specialisation: `$decl list $template T { … $specialize list T … }`.
+// A `$decl`'s name inside its own initializer is §5.5's placeholder `R` — and the
+// template's body is typed only at specialisation, in the environment recorded
+// here, so `list` in it was still `R` then and `$specialize` refused it ("expects a
+// template, found v1"). But a template's identity is where it is written
+// (`ct_id`, tag 7), not anything its body determines, so it is known before the
+// body is recorded: the name is bound to the template itself, and the knot is
+// tied by §4.9's memo, which hands back the in-progress entry's `R`.
+$decl self_tmpl_env $func ($decl cx proto_ctx, $decl e env.node, $decl nm "", $decl init Pa.proto_node)
+  $call bind (e, nm, $call T.t_tmpl ($call ct_id (cx, 7, init)))
+
 // §4.9: the declaration itself checks nothing. It records what specialization
 // will need and hands back an identity.
 $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
@@ -1257,8 +1283,15 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
             $call concat (" generic parameters, found ", $call int_to_str (na)))), n))
         { $decl key $call memo_key (id, ats, "")
           $decl hit $call memo_find (cx.memo, key)
-          $decl rr $if hit.ok hit.ty
-              { $decl benv  $call bind_generics (r.env, r.generics, ats)
+          $decl deep $call lt (63, $call ival (cx.sdepth))
+          $decl rr $if hit.ok
+              ($do ($set cx.sreach ($if ($call is_var_ty (hit.ty))
+                        ($call add ($call ival (cx.sreach), 1)) ($call ival (cx.sreach))))
+                   hit.ty)
+              ($if deep
+              ($call err (cx, "$specialize: the instantiation depth limit (64) is exceeded — a chain of distinct argument types (§4.9)", n))
+              { $decl din   $set cx.sdepth ($call add ($call ival (cx.sdepth), 1))
+                $decl benv  $call bind_generics (r.env, r.generics, ats)
                 // The body's spans are the template's file, not this one.
                 $decl outer   $call sval (cx.file)
                 $decl entered $set cx.file r.file
@@ -1270,13 +1303,30 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                 // in-progress entry returns its `R`."
                 $decl ph  $call T.t_var ($call fresh (cx))
                 $decl m0  $set cx.memo ($call memo_list.cons ($call memo_ent (key, ph), $call eval_memo (cx.memo)))
+                $decl r0  $call ival (cx.sreach)
+                // A value, not the cell: `$decl` keeps a reference (§5.4), and
+                // restoring the cell to itself would keep the first pass's errors.
+                $decl e0  $call Pa.diags.val (cx.errs)
                 $decl ty0 $call infer (cx, benv, r.body)
                 // §5.5 discharges the placeholder if the body reached back.
-                $decl ty  $call close_rec (cx, ty0, $call var_id (ph), n)
+                $decl ty1 $call close_rec (cx, ty0, $call var_id (ph), n)
+                // A body that reached itself saw `R` there, and `R` cannot be
+                // projected from — `($specialize box T).mk` inside `box` failed. So it
+                // is typed once more against the first pass's answer, which is what a
+                // block's props do (`infer_block`'s two passes), and only the second
+                // pass speaks. One that did not reach itself is typed once.
+                $decl again $call lt (r0, $call ival (cx.sreach))
+                $decl ty $if again
+                    { $decl back $set cx.errs e0
+                      $decl m2   $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty1),
+                                     $call eval_memo (cx.memo)))
+                      $decl t2   $call infer (cx, benv, r.body) }.t2
+                    ty1
                 $decl left $set cx.file outer
                 $decl sleft $set cx.sctx souter
                 $decl m1  $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty), $call eval_memo (cx.memo)))
-                $decl res ty }.res }.rr }.out
+                $decl dout $set cx.sdepth ($call sub ($call ival (cx.sdepth), 1))
+                $decl res ty }.res) }.rr }.out
 
 // §4.9 steps 2 and 3: type the substituted expression with ordinary rules, and
 // have exactly its type.
@@ -1582,10 +1632,12 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
         ($call infer_fwd_body (cx, s.env, init, fe.id))
         ($if ($call is_form (init, "func"))
             ($call infer_rec_func (cx, s.env, nm, init))
+        ($if ($call is_form (init, "template"))
+            ($call infer (cx, $call self_tmpl_env (cx, s.env, nm, init), init))
             { $decl id  $call fresh (cx)
               $decl e1  $call bind (s.env, nm, $call T.t_var (id))
               $decl raw $call infer (cx, e1, init)
-              $decl r   $call close_rec (cx, raw, id, it) }.r)
+              $decl r   $call close_rec (cx, raw, id, it) }.r))
     $decl eqn $if ($call lt (-1, fe.id))
         ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
                                           $call eval_res (s.res))))
@@ -1702,7 +1754,8 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
     $decl id   $call var_id ($call lookup (pe, nm)).ty
     $decl out $if ($call is_form (init, "func"))
         ($call infer_rec_func (cx, pe, nm, init))
-        { $decl raw $call infer (cx, pe, init)
+        { $decl raw $call infer (cx, $if ($call is_form (init, "template"))
+                                          ($call self_tmpl_env (cx, pe, nm, init)) pe, init)
           $decl r   $if ($call lt (-1, id)) ($call close_rec (cx, raw, id, it)) raw }.r }.out
 
 // §4.10 says props are "typed together as one system", which is the one place
