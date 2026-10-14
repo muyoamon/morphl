@@ -249,21 +249,21 @@ $decl proto_ty $union (
     // function renders as `copaque`, and writing `cv_unit` here said no block
     // with such a prop was a type at all.
     $decl props $alloc ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node
-    $decl h 0  $decl cid -1 },
-  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
+    $decl h 0  $decl cid -1  $decl pv P.boolean },
+  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
   { $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node  $decl result $alloc proto_ty
-    $decl frame P.boolean  $decl h 0  $decl cid -1 },
+    $decl frame P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean },
   // §3.5: storage has a **kind** as well as a qualifier, and the two are
   // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
   // `""` and allocated is `"alloc"`, so a reference built without saying is
   // frame, which is what `$new` makes.
-  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0  $decl cid -1 },
-  { $prop tag "array" $decl elem $alloc proto_ty  $decl h 0  $decl cid -1 },
-  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
-  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
-  { $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0  $decl cid -1 },
-  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1 },
-  { $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1 }
+  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  { $prop tag "array" $decl elem $alloc proto_ty  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  { $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  { $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1  $decl pv P.boolean }
 )
 
 $decl tval $func ($decl t proto_ty) t
@@ -380,6 +380,40 @@ $decl hash_props $func ($decl xs props.node, $decl acc 0) $match xs (
         $call hmix ($call hash_str (xs.head.name, 0, acc),
                     $call cv_tag_h (xs.head.value))),
   $case xs acc
+)
+
+// Whether *any* placeholder survives in a type. A `$var` that is still here is by
+// construction unsolved (§5.5), so such a type is not a layout and nothing at run time
+// has it — which is what lets the backend skip it rather than fail on it.
+//
+// It was a walk of the whole type, and it became the largest cost in the compiler once
+// `same` stopped being one (33.7% of a self-emit): lowering asks it of every member type
+// it reads (`unsettled`). It is a property of how a type was built, like `h` and `cid`,
+// so each constructor records it as `pv` from its children's, and the answer is a field
+// read. It mirrors the walk it replaced exactly — a block's *fields* count and its props'
+// types do not.
+$decl has_var $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "var"}   true,
+  $case {$prop tag "block"} t.pv,
+  $case {$prop tag "group"} t.pv,
+  $case {$prop tag "func"}  t.pv,
+  $case {$prop tag "ref"}   t.pv,
+  $case {$prop tag "array"} t.pv,
+  $case {$prop tag "union"} t.pv,
+  $case {$prop tag "inter"} t.pv,
+  $case {$prop tag "rec"}   t.pv,
+  $case {$prop tag "over"}  t.pv,
+  $case t false
+)
+
+$decl has_var_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call has_var ($call tval (xs.head), 0)) true ($call has_var_tys (xs.tail, 0)),
+  $case xs false
+)
+
+$decl has_var_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call has_var ($call tval (xs.head.ty), 0)) true ($call has_var_fields (xs.tail, 0)),
+  $case xs false
 )
 
 // ------------------------------------------------------------- identity
@@ -588,28 +622,32 @@ $decl raw_block $func ($decl fs fields.node, $decl ps props.node)
     $decl c  $call cid_for ($call kids_ok (ks), hv,
                  $call ckey (1, "", "", ks, $call fnames_of (fs, strs.nil), $call pnames_of (ps, strs.nil),
                              $call pvals_of (ps, cvals.nil), 0))
-    $decl n  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var_fields (fs, 0)) true false
+    $decl n  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 
 $decl raw_union $func ($decl ms tys.node)
   { $decl hv $call hmix (18, $call hash_tys (ms, 0))
     $decl ks $call kids_of (ms, cints.nil)
     $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (6, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "union" $decl members $alloc ms  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var_tys (ms, 0)) true false
+    $decl n  { $prop tag "union" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 $decl raw_inter $func ($decl ms tys.node)
   { $decl hv $call hmix (19, $call hash_tys_comm (ms, 0))
     $decl ks $call kids_of (ms, cints.nil)
     $decl c  $call cid_for ($call kids_ok (ks), hv,
                  $call ckey (7, "", "", $call ci_sort (ks, cints.nil), strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var_tys (ms, 0)) true false
+    $decl n  { $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 
 $decl t_group $func ($decl xs tys.node)
   { $decl hv $call hmix (14, $call hash_tys (xs, 0))
     $decl ks $call kids_of (xs, cints.nil)
     $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (2, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "group" $decl items $alloc xs  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var_tys (xs, 0)) true false
+    $decl n  { $prop tag "group" $decl items $alloc xs  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 // `frame` is §5.3a's closure clause. §7.3 keeps a closure's captures out of its
 // *type* — that is what makes every function value two words — so a `$func`
@@ -621,7 +659,8 @@ $decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean)
     // The result first, then the parameters; `frame` is not in the key (see `ckey`).
     $decl ks $call cints.cons ($call cid_of (r), $call kids_of (ps, cints.nil))
     $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (3, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl h hv  $decl cid c }
+    $decl pvv $if ($if ($call has_var_tys (ps, 0)) true ($call has_var (r, 0))) true false
+    $decl n  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl h hv  $decl cid c  $decl pv pvv }
     $decl out n }.out
 
 $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r, false)
@@ -636,7 +675,8 @@ $decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "")
   { $decl hv $call hmix ($call hash_str (k, 0, $call hash_str (q, 0, 16)), $call hash_of (t))
     $decl ks $call kid1 (t)
     $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (4, q, k, ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var (t, 0)) true false
+    $decl n  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 
 $decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
@@ -649,19 +689,22 @@ $decl t_array $func ($decl e proto_ty)
   { $decl hv $call hmix (17, $call hash_of (e))
     $decl ks $call kid1 (e)
     $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (5, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "array" $decl elem $alloc e  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var (e, 0)) true false
+    $decl n  { $prop tag "array" $decl elem $alloc e  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 $decl t_rec   $func ($decl b proto_ty)
   { $decl hv $call hmix (20, $call hash_of (b))
     $decl ks $call kid1 (b)
     $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (8, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var (b, 0)) true false
+    $decl n  { $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 $decl t_over  $func ($decl cs tys.node)
   { $decl hv $call hmix (21, $call hash_tys (cs, 0))
     $decl ks $call kids_of (cs, cints.nil)
     $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (9, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl n  { $prop tag "over" $decl cands $alloc cs  $decl h hv  $decl cid c }
+    $decl pvv $if ($call has_var_tys (cs, 0)) true false
+    $decl n  { $prop tag "over" $decl cands $alloc cs  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 
 // A template (§4.9). Its body is *not* type-checked at declaration, so there is
@@ -671,7 +714,8 @@ $decl t_over  $func ($decl cs tys.node)
 $decl t_tmpl  $func ($decl i 0)
   { $decl hv $call hmix (12, i)
     $decl c  $call cid_for (true, hv, $call ckey (10, "", "", cints.nil, strs.nil, strs.nil, cvals.nil, i))
-    $decl n  { $prop tag "tmpl" $decl id i  $decl h hv  $decl cid c }
+    $decl pvv $if (false) true false
+    $decl n  { $prop tag "tmpl" $decl id i  $decl h hv  $decl cid c  $decl pv pvv }
     $decl r  n }.r
 
 // Props have no layout (§4.10), so their order is not part of the type.
@@ -1219,38 +1263,6 @@ $decl subst $func ($decl t proto_ty, $decl i 0, $decl r proto_ty)
 
 $decl subst_bnd $func ($decl t proto_ty, $decl k 0, $decl r proto_ty)
   $call remap (t, $call rop_bnd (r), k)
-
-// Whether *any* placeholder survives in a type. A `$var` that is still here
-// is by construction unsolved (§5.5), so such a type is not a layout and
-// nothing at run time has it — which is what lets the backend skip it rather
-// than fail on it.
-$fwd has_var
-
-$decl has_var_tys $func ($decl xs tys.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call has_var (xs.head, 0)) true ($call has_var_tys (xs.tail, 0)),
-  $case xs false
-)
-
-$decl has_var_fields $func ($decl xs fields.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"}
-    $if ($call has_var (xs.head.ty, 0)) true ($call has_var_fields (xs.tail, 0)),
-  $case xs false
-)
-
-$decl has_var $func ($decl t proto_ty, $decl i 0) $match t (
-  $case {$prop tag "var"}   true,
-  $case {$prop tag "block"} ($call has_var_fields (t.fields, 0)),
-  $case {$prop tag "group"} ($call has_var_tys (t.items, 0)),
-  $case {$prop tag "func"}
-    $if ($call has_var_tys (t.params, 0)) true ($call has_var (t.result, 0)),
-  $case {$prop tag "ref"}   ($call has_var (t.inner, 0)),
-  $case {$prop tag "array"} ($call has_var (t.elem, 0)),
-  $case {$prop tag "union"} ($call has_var_tys (t.members, 0)),
-  $case {$prop tag "inter"} ($call has_var_tys (t.members, 0)),
-  $case {$prop tag "rec"}   ($call has_var (t.body, 0)),
-  $case {$prop tag "over"}  ($call has_var_tys (t.cands, 0)),
-  $case t false
-)
 
 // §5.3a: "A type is **frame-bound** if a frame reference occurs anywhere in it
 // — directly, in a field, behind another reference, or in a closure's

@@ -254,3 +254,30 @@ pointee; there the answer was never wrong either. So the step proves the key rig
 everything the compiler compares, which is the property that matters for its own output. A key
 row exercised by no input still wants a test of its own.
 
+## After step 2: `has_var` was next, and step 3 was not
+
+With `same` O(1), a profile of the self-emit put step 3's targets at about 6% — `unroll_find`
+4.3% inclusive (its own linear scan of the cache), `intern`/`ty_find` 2.0% — and something else
+at the top: **`T.has_var` at 33.7%**, the deep walk asking whether a type still holds a §5.5
+placeholder. Lowering asks it of every member type it reads (`unsettled`, `prop_global`).
+
+It is a property of how a type was built, exactly like `h` and `cid`. So every compound node now
+carries `pv`, which its constructor computes from its children's, and `has_var` is a field read.
+It mirrors the walk it replaced: a block's fields count and its props' types do not.
+
+| | before | after |
+|---|---|---|
+| emitted C | — | **byte-identical** (self-emit, every fixture, `lexer`, `types`, `infer`) |
+| self-emit, interleaved | 16.3 / 15.5 / 15.7s | **10.2 / 10.3 / 10.4s — 1.5x** |
+| peak memory | 2,085 MB | 2,100 MB |
+| `has_var` calls over a self-emit, flag against the walk | — | 791,204, **0 disagreements** |
+
+That is **~4.4x** against the compiler before step 1 (~45s). Only 791k calls cost a third of the
+run, so each walk was over a large type, which is what made a flag pay this much.
+
+**What the profile says next.** At 10s, the leaders are lowering's own linear scans: the name
+environment (`lookup`, 13.3% inclusive at 15s), a module's lowered members (`find_mdone`, 9.7%),
+and the module list (`find_mod`, 4.8%). These are ordinary data-structure fixes, but they sit in
+lowering's central state, where an edge into §5.5's knot once made compiling `lower.mpl` itself
+run out of memory (PERF.md). Step 3, at ~6%, waits behind them.
+
