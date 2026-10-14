@@ -8,14 +8,16 @@
 $decl half $func ($decl n 0)
   $if ($call eq_int ($call mod (n, 2), 0)) ($call div (n, 2)) none
 
-$decl quarter $func ($decl n 0)
-  { $decl h $try ($call half (n)) none
-    $decl out $try ($call half (h)) none }.out
+$decl quarter $func ($decl n 0) {
+  $decl h   $try ($call half (n)) none
+  $decl ret $try ($call half (h)) none
+}.ret
 
 // §4.7 is how the caller consumes it: a literal pattern is its base type, so
 // `$case 0` selects the Int member and narrows `r` to it.
-$decl or_zero $func ($decl n 0)
-  { $decl r $call quarter (n)
-    $decl out $match r ($case {$prop tag "none"} 0, $case 0 r) }.out
+$decl or_zero $func ($decl n 0) {
+  $decl r   $call quarter (n)
+  $decl ret $match r ($case {$prop tag "none"} 0, $case 0 r)
+}.ret
 
 $decl main $func () $call add ($call or_zero (20), $call or_zero (6))

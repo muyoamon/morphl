@@ -68,10 +68,11 @@ $decl tyid $func ($decl i 0) i
 // deterministic — which the bootstrap's byte-identical gate depends on.
 $decl next_id $mut $alloc 0
 
-$decl fresh_id $func ()
-  { $decl i $call P.ival (next_id)
-    $decl n $set next_id ($call add (i, 1))
-    $decl r i }.r
+$decl fresh_id $func () {
+  $decl i   $call P.ival (next_id)
+  $decl n   $set next_id ($call add (i, 1))
+  $decl ret i
+}.ret
 
 // `ty` then `id` are the first two slots of every node, so this block is a
 // prefix supertype of all of them (§5.1) — which is how a pass reads either
@@ -132,50 +133,61 @@ $decl proto_expr $union (
   { $prop tag "new"     $decl ty 0  $decl id 0  $decl init $alloc proto_expr },
   // §5.4's implicit read, made explicit.
   { $prop tag "deref"   $decl ty 0  $decl id 0  $decl src $alloc proto_expr },
-  // §4.4: writes *through* storage.
-  { $prop tag "set"     $decl ty 0  $decl id 0  $decl target $alloc proto_expr  $decl value $alloc proto_expr },
+ {  // §4.4: writes *through* storage.
+   $prop tag "set"     $decl ty 0  $decl id 0  $decl target $alloc proto_expr
+   $decl value $alloc proto_expr
+ },
 
   // §7.4: a value coerced to a prefix supertype. A prefix copy, no scatter.
   // A reference coercion costs nothing and produces no node.
   { $prop tag "copy"    $decl ty 0  $decl id 0  $decl src $alloc proto_expr },
-
-  // §4.5: a block's value is its `$decl` slots, in layout order. Non-`$decl`
-  // expressions ran for effect during lowering and are `do` chains by now.
-  //
-  // Each entry is evaluated in order and assigned to its slot before the next
-  // runs, because a later `$decl` may name an earlier one (§4.10, source
-  // order); the block's value is the struct of those slots afterwards. The
-  // slot number is carried rather than implied by position: a nested block
-  // inside an initializer takes slots of its own, so a block's are not
-  // contiguous.
-  { $prop tag "block"   $decl ty 0  $decl id 0
-    $decl slots $alloc ($specialize P.list { $decl slot 0  $decl init proto_expr }).node },
+ {
+   // §4.5: a block's value is its `$decl` slots, in layout order. Non-`$decl`
+   // expressions ran for effect during lowering and are `do` chains by now.
+   //
+   // Each entry is evaluated in order and assigned to its slot before the next
+   // runs, because a later `$decl` may name an earlier one (§4.10, source
+   // order); the block's value is the struct of those slots afterwards. The
+   // slot number is carried rather than implied by position: a nested block
+   // inside an initializer takes slots of its own, so a block's are not
+   // contiguous.
+   $prop tag "block"   $decl ty 0  $decl id 0
+   $decl slots $alloc ($specialize P.list { $decl slot 0  $decl init proto_expr }).node
+ },
   { $prop tag "group"   $decl ty 0  $decl id 0  $decl items $alloc ($specialize P.list proto_expr).node },
-
-  // §7.3: a function value is a code pointer and an environment, two words
-  // whatever its signature — which is what lets a function type be a valid
-  // recursion guard and a function-typed slot have a size.
-  { $prop tag "closure" $decl ty 0  $decl id 0  $decl fn 0
-    $decl captures $alloc ($specialize P.list proto_expr).node },
-
-  // §7.7 decides `tail`, §6a decides what the backend does with it.
-  { $prop tag "call"    $decl ty 0  $decl id 0  $decl callee $alloc proto_expr
-    $decl args $alloc ($specialize P.list proto_expr).node  $decl tail P.boolean },
-
-  { $prop tag "if"      $decl ty 0  $decl id 0  $decl cond $alloc proto_expr
-    $decl then $alloc proto_expr  $decl els $alloc proto_expr },
-
-  // §4.7 lowered: §7.5 gives a union value a discriminator, and §1.3 keeps
-  // patterns to tag blocks and literals, so an arm is a discriminator test.
-  // Exhaustiveness was checked (§5.6), so `default` is the catch-all every
-  // `$match` must end in.
-  { $prop tag "switch"  $decl ty 0  $decl id 0  $decl scrut $alloc proto_expr
-    $decl arms $alloc ($specialize P.list { $decl discs ($specialize P.list 0).node  $decl slot 0  $decl body proto_expr }).node
-    $decl default $alloc proto_expr },
-
-  // §4.8b. The reason this form exists at all is that a call inside a block is
-  // never in tail position, so it is the only way to sequence and keep §7.7.
-  { $prop tag "do"      $decl ty 0  $decl id 0  $decl first $alloc proto_expr  $decl then $alloc proto_expr },
+ {
+   // §7.3: a function value is a code pointer and an environment, two words
+   // whatever its signature — which is what lets a function type be a valid
+   // recursion guard and a function-typed slot have a size.
+   $prop tag "closure" $decl ty 0  $decl id 0  $decl fn 0
+   $decl captures $alloc ($specialize P.list proto_expr).node
+ },
+ {
+   // §7.7 decides `tail`, §6a decides what the backend does with it.
+   $prop tag "call"    $decl ty 0  $decl id 0  $decl callee $alloc proto_expr
+   $decl args $alloc ($specialize P.list proto_expr).node  $decl tail P.boolean
+ },
+ {
+   $prop tag "if"      $decl ty 0  $decl id 0  $decl cond $alloc proto_expr
+   $decl then $alloc proto_expr  $decl els $alloc proto_expr
+ },
+ {
+   // §4.7 lowered: §7.5 gives a union value a discriminator, and §1.3 keeps
+   // patterns to tag blocks and literals, so an arm is a discriminator test.
+   // Exhaustiveness was checked (§5.6), so `default` is the catch-all every
+   // `$match` must end in.
+   $prop tag "switch"  $decl ty 0  $decl id 0  $decl scrut $alloc proto_expr
+   $decl arms $alloc ($specialize P.list {
+     $decl discs ($specialize P.list 0).node  $decl slot 0  $decl body proto_expr
+   }).node
+   $decl default $alloc proto_expr
+ },
+ {
+   // §4.8b. The reason this form exists at all is that a call inside a block is
+   // never in tail position, so it is the only way to sequence and keep §7.7.
+   $prop tag "do"      $decl ty 0  $decl id 0  $decl first $alloc proto_expr
+   $decl then $alloc proto_expr
+ },
 
   // §4.15, the only non-local exit: if the value matches, return it from the
   // enclosing function. `disc` is the discriminator the pattern selects.
@@ -188,9 +200,9 @@ $decl eval $func ($decl e proto_expr) e
 
 $decl exprs $specialize P.list proto_expr
 
-$decl bslot $func ($decl i 0, $decl e proto_expr) { $decl slot i  $decl init e }
+$decl bslot       $func ($decl i 0, $decl e proto_expr) { $decl slot i  $decl init e }
 $decl proto_bslot $call bslot (0, { $prop tag "unit" $decl ty 0  $decl id 0 })
-$decl bslots $specialize P.list proto_bslot
+$decl bslots      $specialize P.list proto_bslot
 
 // One source arm, and the discriminators it covers: §4.7 is first fit, so an
 // arm answers for every union member no earlier arm already claimed — which in
@@ -198,47 +210,86 @@ $decl bslots $specialize P.list proto_bslot
 $decl arm $func ($decl d ints.node, $decl s 0, $decl b proto_expr)
   { $decl discs d  $decl slot s  $decl body b }
 $decl proto_arm $call arm (ints.nil, 0, { $prop tag "unit" $decl ty 0  $decl id 0 })
-$decl arms $specialize P.list proto_arm
+$decl arms      $specialize P.list proto_arm
 
 // ------------------------------------------------------------- constructors
 
-$decl e_int   $func ($decl t 0, $decl n 0)    { $prop tag "int"   $decl ty t  $decl id ($call fresh_id ())  $decl v n }
-$decl e_float $func ($decl t 0, $decl s "")   { $prop tag "float" $decl ty t  $decl id ($call fresh_id ())  $decl text s }
-$decl e_str   $func ($decl t 0, $decl s "")   { $prop tag "str"   $decl ty t  $decl id ($call fresh_id ())  $decl text s }
-$decl e_bool  $func ($decl t 0, $decl b P.boolean) { $prop tag "bool" $decl ty t  $decl id ($call fresh_id ())  $decl v b }
-$decl e_unit  $func ($decl t 0)               { $prop tag "unit"  $decl ty t  $decl id ($call fresh_id ()) }
-$decl e_panic $func ($decl t 0, $decl m "")   { $prop tag "panic" $decl ty t  $decl id ($call fresh_id ())  $decl msg m }
+$decl e_int   $func ($decl t 0, $decl n 0)    {
+  $prop tag "int"   $decl ty t  $decl id ($call fresh_id ())  $decl v n
+}
+$decl e_float $func ($decl t 0, $decl s "")   {
+  $prop tag "float" $decl ty t  $decl id ($call fresh_id ())  $decl text s
+}
+$decl e_str   $func ($decl t 0, $decl s "")   {
+  $prop tag "str"   $decl ty t  $decl id ($call fresh_id ())  $decl text s
+}
+$decl e_bool  $func ($decl t 0, $decl b P.boolean) {
+  $prop tag "bool" $decl ty t  $decl id ($call fresh_id ())  $decl v b
+}
+$decl e_unit  $func ($decl t 0)               {
+  $prop tag "unit"  $decl ty t  $decl id ($call fresh_id ())
+}
+$decl e_panic $func ($decl t 0, $decl m "")   {
+  $prop tag "panic" $decl ty t  $decl id ($call fresh_id ())  $decl msg m
+}
 
-$decl e_local   $func ($decl t 0, $decl i 0) { $prop tag "local"   $decl ty t  $decl id ($call fresh_id ())  $decl slot i }
-$decl e_capture $func ($decl t 0, $decl i 0) { $prop tag "capture" $decl ty t  $decl id ($call fresh_id ())  $decl slot i }
-$decl e_global  $func ($decl t 0, $decl i 0) { $prop tag "global"  $decl ty t  $decl id ($call fresh_id ())  $decl fn i }
-$decl e_prim    $func ($decl t 0, $decl n "") { $prop tag "prim"   $decl ty t  $decl id ($call fresh_id ())  $decl name n }
-$decl e_extern  $func ($decl t 0, $decl y "") { $prop tag "extern" $decl ty t  $decl id ($call fresh_id ())  $decl sym y }
+$decl e_local   $func ($decl t 0, $decl i 0) {
+  $prop tag "local"   $decl ty t  $decl id ($call fresh_id ())  $decl slot i
+}
+$decl e_capture $func ($decl t 0, $decl i 0) {
+  $prop tag "capture" $decl ty t  $decl id ($call fresh_id ())  $decl slot i
+}
+$decl e_global  $func ($decl t 0, $decl i 0) {
+  $prop tag "global"  $decl ty t  $decl id ($call fresh_id ())  $decl fn i
+}
+$decl e_prim    $func ($decl t 0, $decl n "") {
+  $prop tag "prim"   $decl ty t  $decl id ($call fresh_id ())  $decl name n
+}
+$decl e_extern  $func ($decl t 0, $decl y "") {
+  $prop tag "extern" $decl ty t  $decl id ($call fresh_id ())  $decl sym y
+}
 
 $decl e_field $func ($decl t 0, $decl e proto_expr, $decl i 0)
   { $prop tag "field" $decl ty t  $decl id ($call fresh_id ())  $decl target $alloc e  $decl index i }
 
-$decl e_new   $func ($decl t 0, $decl e proto_expr) { $prop tag "new"   $decl ty t  $decl id ($call fresh_id ())  $decl init $alloc e }
-$decl e_deref $func ($decl t 0, $decl e proto_expr) { $prop tag "deref" $decl ty t  $decl id ($call fresh_id ())  $decl src $alloc e }
-$decl e_copy  $func ($decl t 0, $decl e proto_expr) { $prop tag "copy"  $decl ty t  $decl id ($call fresh_id ())  $decl src $alloc e }
+$decl e_new   $func ($decl t 0, $decl e proto_expr) {
+  $prop tag "new"   $decl ty t  $decl id ($call fresh_id ())  $decl init $alloc e
+}
+$decl e_deref $func ($decl t 0, $decl e proto_expr) {
+  $prop tag "deref" $decl ty t  $decl id ($call fresh_id ())  $decl src $alloc e
+}
+$decl e_copy  $func ($decl t 0, $decl e proto_expr) {
+  $prop tag "copy"  $decl ty t  $decl id ($call fresh_id ())  $decl src $alloc e
+}
 
-$decl e_set $func ($decl t 0, $decl dst proto_expr, $decl v proto_expr)
-  { $prop tag "set" $decl ty t  $decl id ($call fresh_id ())  $decl target $alloc dst  $decl value $alloc v }
+$decl e_set $func ($decl t 0, $decl dst proto_expr, $decl v proto_expr) {
+  $prop tag "set" $decl ty t  $decl id ($call fresh_id ())  $decl target $alloc dst  $decl value $alloc v
+}
 
-$decl e_block $func ($decl t 0, $decl xs bslots.node) { $prop tag "block" $decl ty t  $decl id ($call fresh_id ())  $decl slots $alloc xs }
-$decl e_group $func ($decl t 0, $decl xs exprs.node) { $prop tag "group" $decl ty t  $decl id ($call fresh_id ())  $decl items $alloc xs }
+$decl e_block $func ($decl t 0, $decl xs bslots.node) {
+  $prop tag "block" $decl ty t  $decl id ($call fresh_id ())  $decl slots $alloc xs
+}
+$decl e_group $func ($decl t 0, $decl xs exprs.node) {
+  $prop tag "group" $decl ty t  $decl id ($call fresh_id ())  $decl items $alloc xs
+}
 
 $decl e_closure $func ($decl t 0, $decl f 0, $decl cs exprs.node)
   { $prop tag "closure" $decl ty t  $decl id ($call fresh_id ())  $decl fn f  $decl captures $alloc cs }
 
-$decl e_call $func ($decl t 0, $decl f proto_expr, $decl xs exprs.node, $decl tl P.boolean)
-  { $prop tag "call" $decl ty t  $decl id ($call fresh_id ())  $decl callee $alloc f  $decl args $alloc xs  $decl tail tl }
+$decl e_call $func ($decl t 0, $decl f proto_expr, $decl xs exprs.node, $decl tl P.boolean) {
+  $prop tag "call" $decl ty t  $decl id ($call fresh_id ())  $decl callee $alloc f
+  $decl args $alloc xs  $decl tail tl
+}
 
-$decl e_if $func ($decl t 0, $decl c proto_expr, $decl a proto_expr, $decl b proto_expr)
-  { $prop tag "if" $decl ty t  $decl id ($call fresh_id ())  $decl cond $alloc c  $decl then $alloc a  $decl els $alloc b }
+$decl e_if $func ($decl t 0, $decl c proto_expr, $decl a proto_expr, $decl b proto_expr) {
+  $prop tag "if" $decl ty t  $decl id ($call fresh_id ())  $decl cond $alloc c
+  $decl then $alloc a  $decl els $alloc b
+}
 
-$decl e_switch $func ($decl t 0, $decl s proto_expr, $decl xs arms.node, $decl d proto_expr)
-  { $prop tag "switch" $decl ty t  $decl id ($call fresh_id ())  $decl scrut $alloc s  $decl arms $alloc xs  $decl default $alloc d }
+$decl e_switch $func ($decl t 0, $decl s proto_expr, $decl xs arms.node, $decl d proto_expr) {
+  $prop tag "switch" $decl ty t  $decl id ($call fresh_id ())  $decl scrut $alloc s
+  $decl arms $alloc xs  $decl default $alloc d
+}
 
 $decl e_do $func ($decl t 0, $decl a proto_expr, $decl b proto_expr)
   { $prop tag "do" $decl ty t  $decl id ($call fresh_id ())  $decl first $alloc a  $decl then $alloc b }
@@ -271,8 +322,8 @@ $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
 // or **"" for the entry file**. A *name* and not the module id, because an id is
 // handed out in load order, so reordering the entry file's `$import`s would renumber
 // every module and rename every function with it. The point of not using the table
-// index is that a name survives an edit elsewhere, and an id gives that up. It exists so a function can be *named* by
-// something other than its position in the table: §4.14 lets two modules bind the
+// index is that a name survives an edit elsewhere, and an id gives that up. It exists so a function
+// can be *named* by something other than its position in the table: §4.14 lets two modules bind the
 // same name (`types.mpl` and `parser.mpl` both have a `show`), so the morphl name
 // alone does not identify one.
 //
@@ -324,10 +375,11 @@ $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
 $decl fn_p $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                   $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
                   $decl ev ints.node, $decl md "", $decl rk 0, $decl pb P.boolean,
-                  $decl nd "")
-  { $decl name nm  $decl params ps  $decl result res  $decl slots ns
-    $decl body $alloc bd  $decl self_tail st  $decl thunk th  $decl env ev
-    $decl mod md  $decl rank rk  $decl pub pb  $decl nmod nd }
+                  $decl nd "") {
+  $decl name nm  $decl params ps  $decl result res  $decl slots ns
+  $decl body $alloc bd  $decl self_tail st  $decl thunk th  $decl env ev
+  $decl mod  md  $decl rank rk  $decl pub pb  $decl nmod nd
+}
 
 $decl fn_m $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node,
                   $decl bd proto_expr, $decl st P.boolean, $decl th P.boolean,
@@ -340,7 +392,7 @@ $decl fn $func ($decl nm "", $decl ps ints.node, $decl res 0, $decl ns ints.node
   $call fn_m (nm, ps, res, ns, bd, st, th, ev, "", 0)
 
 $decl proto_fn $call fn ("", ints.nil, 0, ints.nil, $call e_unit (0), false, false, ints.nil)
-$decl fns $specialize P.list proto_fn
+$decl fns      $specialize P.list proto_fn
 
 // A copy marked `pub`. `lower_func` serves both a module member and an entry-file
 // global, so the member path marks what it gets back rather than the constructor
@@ -364,9 +416,9 @@ $decl fn_export $func ($decl f proto_fn) $call fn_member (f, f.rank)
 // share one system of equations"). §6a contifies each into a single C function
 // with a state variable, which needs the group, not just its members.
 
-$decl group_of $func ($decl xs ints.node) { $decl members xs }
+$decl group_of    $func ($decl xs ints.node) { $decl members xs }
 $decl proto_group $call group_of (ints.nil)
-$decl groups $specialize P.list proto_group
+$decl groups      $specialize P.list proto_group
 
 // §3.3: "a non-`$decl` expression runs for effect and is discarded" — the value
 // is discarded, not the expression. §4.10 initialises a file's items **once, in
@@ -390,7 +442,7 @@ $decl groups $specialize P.list proto_group
 $decl effect $func ($decl a 0, $decl f 0, $decl im P.boolean)
   { $decl after a  $decl fn f  $decl inmod im }
 $decl proto_effect $call effect (0, 0, false)
-$decl effects $specialize P.list proto_effect
+$decl effects      $specialize P.list proto_effect
 
 // `fnbase` is where the entry file's own globals end and the lifted functions
 // begin. A global's index is its position among the top-level `$decl`s, so the
@@ -413,9 +465,10 @@ $decl effects $specialize P.list proto_effect
 // divided by a `hmod` static that was still zero: SIGFPE at startup. `mplc` escaped it
 // only because `compiler.mpl`'s own statics happen not to touch another module's.
 $decl program_m $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
-                       $decl e 0, $decl efs effects.node, $decl fb 0, $decl ms strs.node)
-  { $decl types ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
-    $decl fnbase fb  $decl mods ms }
+                       $decl e 0, $decl efs effects.node, $decl fb 0, $decl ms strs.node) {
+  $decl types  ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
+  $decl fnbase fb  $decl mods ms
+}
 
 $decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
                      $decl e 0, $decl efs effects.node, $decl fb 0)
@@ -424,9 +477,9 @@ $decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.nod
 // §9.1: one output of `emit`, carrying the path it should be written to. It lives here
 // rather than in `compiler` because `emit` is what builds them and cannot import its own
 // caller; `compiler.emitted` holds the list.
-$decl ofile $func ($decl p "", $decl t "") { $decl path p  $decl text t }
+$decl ofile       $func ($decl p "", $decl t "") { $decl path p  $decl text t }
 $decl proto_ofile $call ofile ("", "")
-$decl ofiles $specialize P.list proto_ofile
+$decl ofiles      $specialize P.list proto_ofile
 
 $decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0, effects.nil, 0)
 
@@ -457,9 +510,9 @@ $decl proto_program $call program (T.tys.nil, fns.nil, groups.nil, 0, effects.ni
 $decl found $func ($decl ok P.boolean, $decl i 0) { $decl hit ok  $decl id i }
 
 // An interned type and the index it was given.
-$decl tyent $func ($decl i 0, $decl t T.proto_ty) { $decl idx i  $decl ty t }
+$decl tyent       $func ($decl i 0, $decl t T.proto_ty) { $decl idx i  $decl ty t }
 $decl proto_tyent $call tyent (0, T.t_bot)
-$decl tyents $specialize P.list proto_tyent
+$decl tyents      $specialize P.list proto_tyent
 
 // §5.5: the recursion passes through storage, which is what gives it a layout.
 // §4.8a makes this evaluate to the first member, an empty leaf — the empty trie.
@@ -482,7 +535,7 @@ $decl tval_trie $func ($decl x proto_trie) x
 // constant for each of the nineteen leaf types, and those would otherwise all
 // land in one bucket.
 $decl trie_depth 10
-$decl bucket_of $func ($decl h 0) $call mod (h, 1021)
+$decl bucket_of  $func ($decl h 0) $call mod (h, 1021)
 
 // §4.7's catch-all pattern is a *name*, so it denotes the whole scrutinee and does
 // not narrow — a leaf's `items` is not reachable through one. Each member that is
@@ -519,14 +572,15 @@ $decl trie_kid $func ($decl tr proto_trie, $decl hi P.boolean) $match tr (
 // over the whole run — against the 275M comparisons it removes.
 $decl trie_add $func ($decl tr proto_trie, $decl b 0, $decl d 0, $decl e proto_tyent)
   $if ($call not ($call lt (d, trie_depth)))
-      ($call trie_leaf ($call tyents.cons (e, $call trie_items (tr))))
-      { $decl lo $call trie_kid (tr, false)
+      ($call trie_leaf ($call tyents.cons (e, $call trie_items (tr)))) {
+        $decl lo $call trie_kid (tr, false)
         $decl hi $call trie_kid (tr, true)
         $decl up $call eq_int ($call mod (b, 2), 0)
         $decl b2 $call div (b, 2)
         $decl d2 $call add (d, 1)
-        $decl r  $if up ($call trie_branch ($call trie_add (lo, b2, d2, e), hi))
-                        ($call trie_branch (lo, $call trie_add (hi, b2, d2, e))) }.r
+        $decl ret  $if up ($call trie_branch ($call trie_add (lo, b2, d2, e), hi))
+                        ($call trie_branch (lo, $call trie_add (hi, b2, d2, e)))
+      }.ret
 
 // The same trie as an **index**: entry `i` of a table, filed under `i mod 1021`, the
 // bucket count the type index already uses. A table walked by position — `ty_at`,
@@ -536,26 +590,32 @@ $decl ix_bucket $func ($decl i 0) $call mod (i, 1021)
 $decl ix_put $func ($decl tr proto_trie, $decl i 0, $decl t T.proto_ty)
   $call trie_add (tr, $call ix_bucket (i), 0, $call tyent (i, t))
 $decl ix_scan $func ($decl xs tyents.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx, i)) ($call found (true, i)) ($call ix_scan ($call tyents.val (xs.tail), i)),
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx, i)) ($call found (true,
+      i)) ($call ix_scan ($call tyents.val (xs.tail), i)),
   $case xs ($call found (false, i))
 )
 $decl ix_ty $func ($decl xs tyents.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx, i)) ($call T.tval (xs.head.ty)) ($call ix_ty ($call tyents.val (xs.tail), i)),
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx,
+      i)) ($call T.tval (xs.head.ty)) ($call ix_ty ($call tyents.val (xs.tail), i)),
   $case xs T.t_bot
 )
 $decl ix_leaf $func ($decl tr proto_trie, $decl b 0) $match tr (
   $case {$prop tag "branch"}
-    $if ($call eq_int ($call mod (b, 2), 0)) ($call ix_leaf ($call tval_trie (tr.lo), $call div (b, 2)))
+    $if ($call eq_int ($call mod (b, 2), 0)) ($call ix_leaf ($call tval_trie (tr.lo), $call div (b,
+        2)))
         ($call ix_leaf ($call tval_trie (tr.hi), $call div (b, 2))),
   $case tr ($call trie_items (tr))
 )
 // Whether entry `i` is present, and the type at it (⊥ when absent — ask `ix_has` first
 // where absence is possible).
-$decl ix_has $func ($decl tr proto_trie, $decl i 0) ($call ix_scan ($call ix_leaf (tr, $call ix_bucket (i)), i)).hit
-$decl ix_get $func ($decl tr proto_trie, $decl i 0) $call ix_ty ($call ix_leaf (tr, $call ix_bucket (i)), i)
+$decl ix_has $func ($decl tr proto_trie, $decl i 0) ($call ix_scan ($call ix_leaf (tr,
+    $call ix_bucket (i)), i)).hit
+$decl ix_get $func ($decl tr proto_trie, $decl i 0) $call ix_ty ($call ix_leaf (tr,
+    $call ix_bucket (i)), i)
 
 $decl ix_fill $func ($decl tr proto_trie, $decl xs T.tys.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $call ix_fill ($call ix_put (tr, i, $call T.tval (xs.head)), $call T.tys.val (xs.tail), $call add (i, 1)),
+  $case {$prop tag "cons"} $call ix_fill ($call ix_put (tr, i, $call T.tval (xs.head)),
+      $call T.tys.val (xs.tail), $call add (i, 1)),
   $case xs tr
 )
 // A whole table, indexed: for emit, which is handed the table complete.

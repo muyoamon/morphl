@@ -31,25 +31,29 @@ $decl check $func ($decl name "", $decl ok P.boolean)
       ($do ($call print ("FAIL ")) ($do ($call nl (name)) ($call panic (name))))
 
 // Parse one expression and hand back the `$func` form inside it.
-$decl parse_one $func ($decl src "")
-  { $decl r $call Pa.parse (src)
-    $decl n $call Pa.nodes.nth ($call Pa.nodes.val (r.exprs), 0)
-    $decl out n }.out
+$decl parse_one $func ($decl src "") {
+  $decl r   $call Pa.parse (src)
+  $decl n   $call Pa.nodes.nth ($call Pa.nodes.val (r.exprs), 0)
+  $decl ret n
+}.ret
 
 // An `Int -> Int` signature, which is the shape all of these have.
 $decl ii $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_int)
 
 // §8's arithmetic, as ordinary names in the environment (§2.1).
-$decl ii_i $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int)
-$decl ii_b $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_bool)
+$decl ii_i $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)),
+    T.t_int)
+$decl ii_b $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)),
+    T.t_bool)
 
 $decl prims $call L.with_prim ($call L.with_prim ($call L.with_prim (L.benv.nil,
     "add", ii_i), "sub", ii_i), "eq", ii_b)
 
-$decl lower_src $func ($decl src "", $decl fty T.proto_ty, $decl env L.benv.node)
-  { $decl st $call L.lstate ()
-    $decl f  $call L.lower_func (st, env, "f", $call parse_one (src), fty)
-    $decl out $call IR.show (f.body) }.out
+$decl lower_src $func ($decl src "", $decl fty T.proto_ty, $decl env L.benv.node) {
+  $decl st  $call L.lstate ()
+  $decl f   $call L.lower_func (st, env, "f", $call parse_one (src), fty)
+  $decl ret $call IR.show (f.body)
+}.ret
 
 // ---------------------------------------------------------------- the cases
 
@@ -66,14 +70,16 @@ $decl t2 $call check_str ("`$do`'s first operand is not in tail position",
 
 // §12's counter. `n` is storage, so reading it inside `add` is §5.4's implicit
 // dereference — which appears nowhere in the source and must appear here.
-$decl ri $call T.t_ref ("mut", T.t_int)
+$decl ri      $call T.t_ref ("mut", T.t_int)
 $decl ref_env $call L.benv.cons ($call L.bind_ent ("n", "local", 0, ri), prims)
 
 $decl t3 $call check_str ("reading storage becomes an explicit deref",
-  { $decl st $call L.lstate ()
+  {
+    $decl st $call L.lstate ()
     $decl r  $call L.lval ($call L.lower (st, ref_env,
         $call parse_one ("$set n ($call add (n, 1))"), false))
-    $decl out $call IR.show (r.ir) }.out,
+    $decl ret $call IR.show (r.ir)
+  }.ret,
   "(set (local 0) (call (prim add) (deref (local 0)) (int 1)))")
 
 // §12's loop: both arms of an `$if` in tail position are themselves in tail
@@ -103,21 +109,25 @@ $decl t5 $call check_str ("every arm of a match becomes a case, the default unre
 // Frame size is the slot counter left over (§7.2: a frame is the sum of its
 // slots), which is what `emit` declares as C locals.
 $decl t6 $call check ("the frame size is the slots the function used",
-  { $decl st $call L.lstate ()
+  {
+    $decl st $call L.lstate ()
     $decl f  $call L.lower_func (st, prims, "f",
         $call parse_one ("$func ($decl a 0, $decl b 0) $call add (a, b)"),
         $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int))
     // `slots` is now the *type* of each slot (§7.2), so its length is the
     // frame size the backend declares.
-    $decl out $call eq_int ($call IR.ints.length ($call IR.ints.val (f.slots), 0), 2) }.out)
+    $decl ret $call eq_int ($call IR.ints.length ($call IR.ints.val (f.slots), 0), 2)
+  }.ret)
 
 // Interning hands out one index per distinct type, and hands the same one back.
 $decl t7 $call check ("interning is stable and by type identity",
-  { $decl st $call L.lstate ()
-    $decl a  $call L.intern (st, T.t_int)
-    $decl b  $call L.intern (st, T.t_str)
-    $decl c  $call L.intern (st, T.t_int)
-    $decl out $if ($call eq_int (a, c)) ($call not ($call eq_int (a, b))) false }.out)
+  {
+    $decl st  $call L.lstate ()
+    $decl a   $call L.intern (st, T.t_int)
+    $decl b   $call L.intern (st, T.t_str)
+    $decl c   $call L.intern (st, T.t_int)
+    $decl ret $if ($call eq_int (a, c)) ($call not ($call eq_int (a, b))) false
+  }.ret)
 
 // §3.3: a block's value is its `$decl` slots, and a slot carries its number
 // because a nested block inside an initializer takes slots of its own.
@@ -147,29 +157,36 @@ $decl t11 $call check_str ("a $prop takes no slot",
 $decl file_src $call concat ("$decl f $func ($decl n 0) $call f (n) ",
                              "$decl k 7 ")
 
-$decl lowered $func ($decl src "")
-  { $decl r  $call I.check_source (src, "", "")
-    $decl a  $call Pa.parse (src)
-    $decl st $call L.lstate ()
-    $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
-                  $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), "")
-    $decl out p }.out
+$decl lowered $func ($decl src "") {
+  $decl r  $call I.check_source (src, "", "")
+  $decl a  $call Pa.parse (src)
+  $decl st $call L.lstate ()
+  $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
+                $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), "")
+  $decl ret p
+}.ret
 
 // Bound first: `$call lowered (file_src).funcs` projects off the *argument*.
 $decl t12 $call check ("a file lowers to one function per top-level $decl",
-  { $decl p $call lowered (file_src)
-    $decl out $call eq_int ($call IR.fns.length (p.funcs, 0), 2) }.out)
+  {
+    $decl p   $call lowered (file_src)
+    $decl ret $call eq_int ($call IR.fns.length (p.funcs, 0), 2)
+  }.ret)
 
 $decl t13 $call check_str ("a self-reference resolves to its own global index",
-  { $decl p  $call lowered (file_src)
-    $decl f0 $call IR.fns.nth (p.funcs, 0)
-    $decl out $call IR.show (f0.body) }.out,
+  {
+    $decl p   $call lowered (file_src)
+    $decl f0  $call IR.fns.nth (p.funcs, 0)
+    $decl ret $call IR.show (f0.body)
+  }.ret,
   "(tailcall (global 0) (local 0))")
 
 $decl t14 $call check ("a non-function top-level $decl becomes a thunk",
-  { $decl p  $call lowered (file_src)
-    $decl f1 $call IR.fns.nth (p.funcs, 1)
-    $decl out $call eq_int ($call IR.ints.length (f1.params, 0), 0) }.out)
+  {
+    $decl p   $call lowered (file_src)
+    $decl f1  $call IR.fns.nth (p.funcs, 1)
+    $decl ret $call eq_int ($call IR.ints.length (f1.params, 0), 0)
+  }.ret)
 
 // ------------------------------------------------------ props (§4.10)
 //
@@ -177,31 +194,34 @@ $decl t14 $call check ("a non-function top-level $decl becomes a thunk",
 // Where the answer comes from depends on what the prop's value is: a scalar is
 // in the block's type, and anything else is code lowering has to still have.
 
-$decl lower_errs $func ($decl src "")
-  { $decl r  $call I.check_source (src, "", "")
-    $decl a  $call Pa.parse (src)
-    $decl st $call L.lstate ()
-    $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
-                  $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), "")
-    $decl out $call Pa.diags.val ($call L.eval_diags (st.errs)) }.out
+$decl lower_errs $func ($decl src "") {
+  $decl r  $call I.check_source (src, "", "")
+  $decl a  $call Pa.parse (src)
+  $decl st $call L.lstate ()
+  $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
+                $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), "")
+  $decl ret $call Pa.diags.val ($call L.eval_diags (st.errs))
+}.ret
 
-$decl lower_errs_at $func ($decl src "", $decl base "")
-  { $decl r  $call I.check_source (src, base, "")
-    $decl a  $call Pa.parse (src)
-    $decl st $call L.lstate ()
-    $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
-                  $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), base)
-    $decl out $call Pa.diags.val ($call L.eval_diags (st.errs)) }.out
+$decl lower_errs_at $func ($decl src "", $decl base "") {
+  $decl r  $call I.check_source (src, base, "")
+  $decl a  $call Pa.parse (src)
+  $decl st $call L.lstate ()
+  $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
+                $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), base)
+  $decl ret $call Pa.diags.val ($call L.eval_diags (st.errs))
+}.ret
 
 $decl first_err $func ($decl ds Pa.diags.node) $match ds (
   $case {$prop tag "cons"} ds.head.msg,
   $case ds ""
 )
 
-$decl body_of $func ($decl src "", $decl i 0)
-  { $decl p $call lowered (src)
-    $decl f $call IR.fns.nth ($call IR.fns.val (p.funcs), i)
-    $decl out $call IR.show ($call IR.eval (f.body)) }.out
+$decl body_of $func ($decl src "", $decl i 0) {
+  $decl p   $call lowered (src)
+  $decl f   $call IR.fns.nth ($call IR.fns.val (p.funcs), i)
+  $decl ret $call IR.show ($call IR.eval (f.body))
+}.ret
 
 // §4.10: "its value is part of the block's type" — so this one needs no source
 // at all, and would work on a block from another file just as well.
@@ -250,9 +270,10 @@ $decl t19 $call check_str ("a prop read off a function's result is found by its 
 // the program is monomorphic by then, which is what makes a block type a C
 // struct (§7.2).
 
-$decl nfuncs $func ($decl src "")
-  { $decl p $call lowered (src)
-    $decl out $call IR.fns.length ($call IR.fns.val (p.funcs), 0) }.out
+$decl nfuncs $func ($decl src "") {
+  $decl p   $call lowered (src)
+  $decl ret $call IR.fns.length ($call IR.fns.val (p.funcs), 0)
+}.ret
 
 $decl box_src $call concat ("$decl box $template T { $prop wrap $func ($decl x T) { $decl v x } } ",
                             "$decl ibox $specialize box 0 ")
@@ -317,20 +338,22 @@ $decl t24 $call check_str ("a $specialize of something that is not a template is
 // These lower a real file off disk, so they read `stage1/fixtures` the way a
 // build would.
 
-$decl lowered_at $func ($decl src "", $decl base "")
-  { $decl r  $call I.check_source (src, base, "")
-    $decl a  $call Pa.parse (src)
-    $decl st $call L.lstate ()
-    $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
-                  $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), base)
-    $decl out p }.out
+$decl lowered_at $func ($decl src "", $decl base "") {
+  $decl r  $call I.check_source (src, base, "")
+  $decl a  $call Pa.parse (src)
+  $decl st $call L.lstate ()
+  $decl p  $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
+                $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), base)
+  $decl ret p
+}.ret
 
 $decl fx "stage1/fixtures"
 
-$decl body_at $func ($decl src "", $decl i 0)
-  { $decl p $call lowered_at (src, fx)
-    $decl f $call IR.fns.nth ($call IR.fns.val (p.funcs), i)
-    $decl out $call IR.show ($call IR.eval (f.body)) }.out
+$decl body_at $func ($decl src "", $decl i 0) {
+  $decl p   $call lowered_at (src, fx)
+  $decl f   $call IR.fns.nth ($call IR.fns.val (p.funcs), i)
+  $decl ret $call IR.show ($call IR.eval (f.body))
+}.ret
 
 // A `$func` member becomes a global and the call is direct — no layout is read
 // on the way, because the module has none.
@@ -367,10 +390,11 @@ $decl t29 $call check_str ("a file that does not exist is reported, not guessed"
 // lowering (`drop_records`): `M.k` resolves at compile time and never reads `M`'s
 // static. Whether a module binding still builds its record is invisible in every
 // answer, so these are what notice if the pass stops dropping — or drops too much.
-$decl body0 $func ($decl src "")
-  { $decl p  $call lowered_at (src, fx)
-    $decl f0 $call IR.fns.nth (p.funcs, 0)
-    $decl out $call IR.show (f0.body) }.out
+$decl body0 $func ($decl src "") {
+  $decl p   $call lowered_at (src, fx)
+  $decl f0  $call IR.fns.nth (p.funcs, 0)
+  $decl ret $call IR.show (f0.body)
+}.ret
 
 $decl t30 $call check_str ("a module only projected builds no record",
   $call body0 ("$decl M $import \"modval_util\"  $decl main $func () M.k "),

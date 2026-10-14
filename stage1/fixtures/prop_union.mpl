@@ -25,13 +25,14 @@ $decl ints $specialize P.list 0
 // `$mut $new xs.node` idiom, with §5.3a's `$alloc` because it is returned.
 $decl fresh $func () $mut $alloc ints.node
 
-$decl main $func ()
-  { $decl a  $mut $alloc ints.node
-    $decl b  $mut $alloc ints.node
-    $decl c  $call fresh ()
-    $decl s1 $set a ($call ints.cons (4, $call ints.val (a)))
-    $decl s2 $set b ($call ints.cons (5, $call ints.cons (6, $call ints.val (b))))
-    $decl n0 $if ($call ints.is_nil ($call ints.val (c))) 1 0
-    $decl r  $call add ($call ints.length ($call ints.val (a), 0),
-                 $call add ($call ints.length ($call ints.val (b), 0),
-                      $call add ($call ints.nth ($call ints.val (b), 0), n0))) }.r
+$decl main $func () {
+  $decl a  $mut $alloc ints.node
+  $decl b  $mut $alloc ints.node
+  $decl c  $call fresh ()
+  $decl s1 $set a ($call ints.cons (4, $call ints.val (a)))
+  $decl s2 $set b ($call ints.cons (5, $call ints.cons (6, $call ints.val (b))))
+  $decl n0 $if ($call ints.is_nil ($call ints.val (c))) 1 0
+  $decl ret  $call add ($call ints.length ($call ints.val (a), 0),
+               $call add ($call ints.length ($call ints.val (b), 0),
+                    $call add ($call ints.nth ($call ints.val (b), 0), n0)))
+}.ret

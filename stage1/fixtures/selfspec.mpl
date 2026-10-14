@@ -32,7 +32,8 @@ $decl b $specialize box 0
 $decl w $specialize wrap 0
 $decl p $specialize U.pair 0
 
-$decl main $func ()
-  { $decl x $call b.again (5)
-    $decl q $call p.swap ($call p.mk (4, 9))
-    $decl r $call add ($call add (x.val, w.self.k), $call add (q.fst, q.snd)) }.r
+$decl main $func () {
+  $decl x   $call b.again (5)
+  $decl q   $call p.swap ($call p.mk (4, 9))
+  $decl ret $call add ($call add (x.val, w.self.k), $call add (q.fst, q.snd))
+}.ret

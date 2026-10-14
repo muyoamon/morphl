@@ -135,8 +135,8 @@ $decl t12 $call check_str ("verify rejects a slot that names nothing",
 
 // §9.3, and the one a real pass breaks: inlining copies a subtree, ids and
 // all. Using one node twice is exactly what that looks like from here.
-$decl shared   $call IR.e_local (0, 0)
-$decl dup_ids  $call prog_of ($call fn_of ($call IR.e_do (0, shared, shared), false))
+$decl shared  $call IR.e_local (0, 0)
+$decl dup_ids $call prog_of ($call fn_of ($call IR.e_do (0, shared, shared), false))
 
 $decl t13 $call check ("verify rejects two nodes sharing an index",
   $call eq_int ($call n_errs ($call C.verify (dup_ids)), 1))
@@ -184,10 +184,12 @@ $decl t17 $call check_str ("verify rejects a call with the wrong argument count"
 // pass can (§9.2), which is why it is built here.
 $decl ord_prog $func ($decl rb IR.proto_expr)
   $call IR.program (tys1,
-      $call IR.fns.cons ($call IR.fn ("base", IR.ints.nil, 0, IR.ints.nil, $call IR.e_int (0, 41), false, true, IR.ints.nil),
+      $call IR.fns.cons ($call IR.fn ("base", IR.ints.nil, 0, IR.ints.nil, $call IR.e_int (0, 41),
+          false, true, IR.ints.nil),
       $call IR.fns.cons ($call IR.fn ("rd", IR.ints.nil, 0, IR.ints.nil, rb, false, false, IR.ints.nil),
       $call IR.fns.cons ($call IR.fn ("early", IR.ints.nil, 0, IR.ints.nil,
-                             $call IR.e_call (0, $call IR.e_global (0, 1), IR.exprs.nil, true), false, true, IR.ints.nil),
+                             $call IR.e_call (0, $call IR.e_global (0, 1), IR.exprs.nil,
+                                 true), false, true, IR.ints.nil),
       IR.fns.nil))),
       IR.groups.nil, 0, IR.effects.nil, 2)
 

@@ -17,8 +17,9 @@ $decl P $import "../prelude"
 
 $decl ints $specialize P.list 0
 
-$decl main $func ()
-  { $decl xs $call ints.cons (7, $call ints.cons (8, $call ints.cons (9, ints.nil)))
-    $decl ys $call ints.reverse (xs, ints.nil)
-    $decl r  $call add ($call ints.length (xs, 0),
-                 $call add ($call ints.nth (xs, 1), $call ints.nth (ys, 0))) }.r
+$decl main $func () {
+  $decl xs $call ints.cons (7, $call ints.cons (8, $call ints.cons (9, ints.nil)))
+  $decl ys $call ints.reverse (xs, ints.nil)
+  $decl ret  $call add ($call ints.length (xs, 0),
+               $call add ($call ints.nth (xs, 1), $call ints.nth (ys, 0)))
+}.ret

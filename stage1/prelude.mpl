@@ -100,7 +100,7 @@ $decl list $template T {
 // them — no per-kind dispatch, and the upcast is free (§7.4). It is the clearest
 // payoff of the prefix rule in this codebase.
 $decl proto_span { $decl line 0  $decl col 0 }
-$decl span_of $func ($decl x proto_span) { $decl line x.line  $decl col x.col }
+$decl span_of    $func ($decl x proto_span) { $decl line x.line  $decl col x.col }
 
 // Path helpers, for resolving `$import` (§4.14).
 $decl c_slash $call byte ("/", 0)
@@ -110,6 +110,7 @@ $decl last_slash $func ($decl p "", $decl i 0, $decl best -1)
       ($call last_slash (p, $call add (i, 1),
           $if ($call eq_int ($call byte (p, i), c_slash)) i best))
 
-$decl dirname $func ($decl p "")
-  { $decl i $call last_slash (p, 0, -1)
-    $decl out $if ($call lt (i, 0)) "" ($call slice (p, 0, i)) }.out
+$decl dirname $func ($decl p "") {
+  $decl i   $call last_slash (p, 0, -1)
+  $decl ret $if ($call lt (i, 0)) "" ($call slice (p, 0, i))
+}.ret

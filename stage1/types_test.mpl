@@ -27,14 +27,14 @@ $decl check_str $func ($decl name "", $decl got "", $decl want "")
            ($call panic (name))))))
 
 // Shorthands
-$decl int   T.t_int
-$decl str   T.t_str
-$decl flt   T.t_float
-$decl bot   T.t_bot
-$decl unit  T.t_unit
-$decl tru   T.t_true
-$decl fls   T.t_false
-$decl bool  T.t_bool
+$decl int  T.t_int
+$decl str  T.t_str
+$decl flt  T.t_float
+$decl bot  T.t_bot
+$decl unit T.t_unit
+$decl tru  T.t_true
+$decl fls  T.t_false
+$decl bool T.t_bool
 
 $decl two $func ($decl a T.proto_ty, $decl b T.proto_ty)
   $call T.tys.cons (a, $call T.tys.cons (b, T.tys.nil))
@@ -127,10 +127,11 @@ $decl t21 $call check ("bottom <: a block", $call T.sub (bot, ab))
 $decl t22 $call check ("Int is not <: bottom", $call not ($call T.sub (int, bot)))
 
 // §5.1: blocks match by ordered prefix, with depth inside the prefix.
-$decl abc $call T.t_block ($call T.fields.cons ($call T.field ("a", int), $call fld2 ("b", str, "c", flt)), T.props.nil)
+$decl abc    $call T.t_block ($call T.fields.cons ($call T.field ("a", int), $call fld2 ("b", str,
+    "c", flt)), T.props.nil)
 $decl just_a $call T.t_block ($call T.f1 ("a", int), T.props.nil)
-$decl t23 $call check ("a longer block is a subtype of its prefix", $call T.sub (abc, just_a))
-$decl t24 $call check ("...but not the other way", $call not ($call T.sub (just_a, abc)))
+$decl t23    $call check ("a longer block is a subtype of its prefix", $call T.sub (abc, just_a))
+$decl t24    $call check ("...but not the other way", $call not ($call T.sub (just_a, abc)))
 // §5.1: order is part of subtyping, not only of equality.
 $decl t25 $call check ("a reordered block is not a subtype in either direction",
   $call and ($call not ($call T.sub (ab, ba)), $call not ($call T.sub (ba, ab))))
@@ -155,11 +156,11 @@ $decl t28 $call check ("...and an unrelated field type is not",
   $call not ($call T.sub ($call T.t_block ($call T.f1 ("a", str), T.props.nil), just_a)))
 
 // §5.1: "for every prop of T, S has the same prop with the same value."
-$decl circle $call T.tag_block ("kind", "circle")
-$decl square $call T.tag_block ("kind", "square")
+$decl circle   $call T.tag_block ("kind", "circle")
+$decl square   $call T.tag_block ("kind", "square")
 $decl circle_r $call T.t_block ($call T.f1 ("r", flt), $call T.p1 ("kind", $call T.cv_str ("circle")))
-$decl t29 $call check ("a tag matches itself", $call T.sub (circle_r, circle))
-$decl t30 $call check ("a different tag value does not match", $call not ($call T.sub (circle_r, square)))
+$decl t29      $call check ("a tag matches itself", $call T.sub (circle_r, circle))
+$decl t30      $call check ("a different tag value does not match", $call not ($call T.sub (circle_r, square)))
 $decl t31 $call check ("a block without the prop does not match",
   $call not ($call T.sub (just_a, circle)))
 
@@ -185,11 +186,11 @@ $decl t36 $call check ("...and not covariant in parameters",
 $decl r_plain $call T.t_ref ("", int)
 $decl r_mut   $call T.t_ref ("mut", int)
 $decl r_const $call T.t_ref ("const", int)
-$decl t37 $call check ("&T <: &mut T", $call T.sub (r_plain, r_mut))
-$decl t38 $call check ("&mut T <: &const T", $call T.sub (r_mut, r_const))
-$decl t39 $call check ("&T <: &const T", $call T.sub (r_plain, r_const))
-$decl t40 $call check ("&mut T is not <: &T", $call not ($call T.sub (r_mut, r_plain)))
-$decl t41 $call check ("&const T is not <: &mut T", $call not ($call T.sub (r_const, r_mut)))
+$decl t37     $call check ("&T <: &mut T", $call T.sub (r_plain, r_mut))
+$decl t38     $call check ("&mut T <: &const T", $call T.sub (r_mut, r_const))
+$decl t39     $call check ("&T <: &const T", $call T.sub (r_plain, r_const))
+$decl t40     $call check ("&mut T is not <: &T", $call not ($call T.sub (r_mut, r_plain)))
+$decl t41     $call check ("&const T is not <: &mut T", $call not ($call T.sub (r_const, r_mut)))
 
 // Consequence (§10.8): a bare `&T` parameter rejects a `&mut` argument, which
 // is why idiomatic code qualifies parameters.
@@ -229,7 +230,8 @@ $decl t50 $call check ("a finite list is a subtype of the recursive type",
   $call T.sub (two_elem, list_ty))
 $decl t51 $call check ("unit is a subtype of the recursive type", $call T.sub (unit, list_ty))
 $decl t52 $call check ("a Str-headed cell is not",
-  $call not ($call T.sub ($call cons_cell ($call T.t_block ($call fld2 ("head", str, "tail", unit), T.props.nil)),
+  $call not ($call T.sub ($call cons_cell ($call T.t_block ($call fld2 ("head", str, "tail", unit),
+      T.props.nil)),
                           list_ty)))
 
 // Unrolling the outer binder must leave a variable bound by an inner one
@@ -254,7 +256,8 @@ $decl t58 $call check ("meet keeps the subtype", $call T.ty_eq ($call T.meet (tr
 $decl t59 $call check ("meet of unrelated base types is bottom (§5.1)",
   $call T.ty_eq ($call T.meet (int, str), bot))
 $decl t60 $call check ("meet of two blocks keeps both fields",
-  $call and ($call T.sub ($call T.meet (just_a, $call T.t_block ($call T.f1 ("b", str), T.props.nil)), just_a),
+  $call and ($call T.sub ($call T.meet (just_a, $call T.t_block ($call T.f1 ("b", str),
+      T.props.nil)), just_a),
              $call T.sub ($call T.meet (just_a, $call T.t_block ($call T.f1 ("b", str), T.props.nil)),
                           $call T.t_block ($call T.f1 ("b", str), T.props.nil))))
 
@@ -350,10 +353,12 @@ $decl done_h $call nl ("all hash-invariant tests passed")
 // so a test cannot pass by both sides falling back to the structural walk.
 $decl kint T.t_int
 $decl kstr T.t_str
-$decl k1 $func ($decl a T.proto_ty) $call T.tys.cons (a, T.tys.nil)
-$decl k2 $func ($decl a T.proto_ty, $decl b T.proto_ty) $call T.tys.cons (a, $call T.tys.cons (b, T.tys.nil))
-$decl kfield $func ($decl n "", $decl t T.proto_ty) $call T.fields.cons ($call T.field (n, t), T.fields.nil)
-$decl kblk $func ($decl n "", $decl t T.proto_ty) $call T.t_block ($call kfield (n, t), T.props.nil)
+$decl k1   $func ($decl a T.proto_ty) $call T.tys.cons (a, T.tys.nil)
+$decl k2     $func ($decl a T.proto_ty, $decl b T.proto_ty) $call T.tys.cons (a,
+    $call T.tys.cons (b, T.tys.nil))
+$decl kfield $func ($decl n "", $decl t T.proto_ty) $call T.fields.cons ($call T.field (n, t),
+    T.fields.nil)
+$decl kblk   $func ($decl n "", $decl t T.proto_ty) $call T.t_block ($call kfield (n, t), T.props.nil)
 $decl kblk2 $func ($decl n "", $decl t T.proto_ty, $decl m "", $decl u T.proto_ty)
   $call T.t_block ($call T.fields.cons ($call T.field (n, t), $call kfield (m, u)), T.props.nil)
 $decl kprop $func ($decl n "", $decl c T.proto_cv, $decl t T.proto_ty)
@@ -410,7 +415,8 @@ $decl kf03 $call check ("func: the number of parameters is in the key",
 $decl kf04 $call check ("func: a parameter is not confused with the result",
   $call differ ($call T.t_func ($call k1 (kint), kstr), $call T.t_func ($call k1 (kstr), kint)))
 $decl kf05 $call check ("func: frame is NOT in the key (§5.3a's flag is not type identity)",
-  $call agree ($call T.t_func ($call k1 (kint), kint), $call T.t_func_fr ($call k1 (kint), kint, true)))
+  $call agree ($call T.t_func ($call k1 (kint), kint), $call T.t_func_fr ($call k1 (kint), kint,
+      true)))
 
 $decl kr01 $call check ("ref: the qualifier is in the key",
   $call differ ($call T.t_ref_k ("", kint, ""), $call T.t_ref_k ("mut", kint, "")))
@@ -421,7 +427,8 @@ $decl kr03 $call check ("ref: the pointee is in the key",
 $decl ka01 $call check ("array: the element is in the key",
   $call differ ($call T.t_array (kint), $call T.t_array (kstr)))
 $decl kc01 $call check ("rec: the body is in the key",
-  $call differ ($call T.t_rec ($call kblk ("a", $call T.t_bnd (0))), $call T.t_rec ($call kblk ("b", $call T.t_bnd (0)))))
+  $call differ ($call T.t_rec ($call kblk ("a", $call T.t_bnd (0))), $call T.t_rec ($call kblk ("b",
+      $call T.t_bnd (0)))))
 $decl ko01 $call check ("over: candidates are in the key",
   $call differ ($call T.t_over ($call k1 ($call T.t_func ($call k1 (kint), kint))),
                 $call T.t_over ($call k1 ($call T.t_func ($call k1 (kstr), kint)))))
@@ -437,6 +444,7 @@ $decl kv02 $call check ("bnd: the de Bruijn index is its class",
 $decl kv03 $call check ("var and bnd never share a class, whatever their numbers",
   $call differ ($call T.t_var (0), $call T.t_bnd (0)))
 $decl kl01 $call check ("leaves are distinct classes",
-  $call P.and ($call differ (kint, kstr), $call P.and ($call differ (T.t_true, T.t_false), $call differ (T.t_unit, T.t_bot))))
+  $call P.and ($call differ (kint, kstr), $call P.and ($call differ (T.t_true, T.t_false),
+      $call differ (T.t_unit, T.t_bot))))
 
 $decl done_k $call nl ("all class-key tests passed")

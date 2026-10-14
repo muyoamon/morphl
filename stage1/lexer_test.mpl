@@ -12,8 +12,8 @@
 $decl L $import "lexer"
 $decl P $import "prelude"
 
-$decl not P.not
-$decl and P.and
+$decl not  P.not
+$decl and  P.and
 $decl toks L.toks
 
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
@@ -138,21 +138,22 @@ $decl t38 $call check ("several errors in one run",
 // Lexing its own source is the prerequisite for self-hosting: if this reports
 // an `invalid` token, stage 1 cannot read stage 1.
 
-$decl self_src $func ($decl p "")
-  { $decl c $call read_file (p)
-    $decl out $match c (
-        $case {$prop tag "some"} c.v,
-        $case c ($call panic ($call concat ("cannot read ", p)))
-      ) }.out
+$decl self_src $func ($decl p "") {
+  $decl c $call read_file (p)
+  $decl ret $match c (
+      $case {$prop tag "some"} c.v,
+      $case c ($call panic ($call concat ("cannot read ", p)))
+    )
+}.ret
 
 $decl src $call self_src ("stage1/lexer.mpl")
 $decl t39 $call check ("its own source is readable", $call not ($call eq_str (src, "")))
 
 $decl self_toks $call L.tokenize (src)
-$decl n_self  $call toks.length (self_toks, 0)
-$decl n_bad   $call L.count_kind (self_toks, "invalid", 0)
-$decl n_kw    $call L.count_kind (self_toks, "keyword", 0)
-$decl n_str   $call L.count_kind (self_toks, "str", 0)
+$decl n_self    $call toks.length (self_toks, 0)
+$decl n_bad     $call L.count_kind (self_toks, "invalid", 0)
+$decl n_kw      $call L.count_kind (self_toks, "keyword", 0)
+$decl n_str     $call L.count_kind (self_toks, "str", 0)
 
 $decl r1 $call nl ($call concat ("      tokens in lexer.mpl: ", $call int_to_str (n_self)))
 $decl r2 $call nl ($call concat ("      keywords: ", $call int_to_str (n_kw)))

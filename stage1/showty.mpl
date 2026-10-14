@@ -1,10 +1,10 @@
 // Print the inferred type of one top-level declaration:
 //   morphlc --run stage1/showty.mpl <file.mpl> <name>
-$decl I  $import "infer"
-$decl T  $import "types"
-$decl P  $import "prelude"
+$decl I $import "infer"
+$decl T $import "types"
+$decl P $import "prelude"
 
-$decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
+$decl nl   $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 $decl argv $call args ()
 $decl path $call at (argv, 0)
 $decl name $call at (argv, 1)

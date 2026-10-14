@@ -21,21 +21,25 @@ $decl get $func () M
 // Held in a block's field.
 $decl boxed { $decl m M }
 
-$decl main $func ()
-  { // `$new` copies the record, and its storage fields still alias the module's own
-    // storage — a module is loaded once (§4.14), not instanced.
-    $decl c  $mut $new M
-    $decl w  $set c.cell 9
-    $decl a  $call twice (M, 5)
-    $decl b  $call inner (M)
-    $decl g  $call get ()
-    $decl e  boxed.m.k
-    $decl f  $call add (M.cell, 0)
-    // The cell can be `$set` to another block of the same type, so a field read
-    // through it is a run-time fact — it must not resolve to the module's member.
-    $decl s  $set c { $decl Q M.Q  $decl cell $mut $alloc 0  $decl k 4  $decl double M.double
-                      $prop tag "util" }
-    $decl h  c.k
-    $decl t  $call tagged (M)
-    // 10 + 11 + 3 + 3 + 9 + 4 + 1 = 41.
-    $decl r  $call add (a, $call add (b, $call add (g.k, $call add (e, $call add (f, $call add (h, t)))))) }.r
+$decl main $func () {
+  // `$new` copies the record, and its storage fields still alias the module's own
+  // storage — a module is loaded once (§4.14), not instanced.
+  $decl c $mut $new M
+  $decl w $set c.cell 9
+  $decl a $call twice (M, 5)
+  $decl b $call inner (M)
+  $decl g $call get ()
+  $decl e boxed.m.k
+  $decl f $call add (M.cell, 0)
+  // The cell can be `$set` to another block of the same type, so a field read
+  // through it is a run-time fact — it must not resolve to the module's member.
+  $decl s  $set c {
+    $decl Q M.Q  $decl cell $mut $alloc 0  $decl k 4  $decl double M.double
+    $prop tag "util"
+  }
+  $decl h c.k
+  $decl t $call tagged (M)
+  // 10 + 11 + 3 + 3 + 9 + 4 + 1 = 41.
+  $decl ret  $call add (a, $call add (b, $call add (g.k, $call add (e, $call add (f, $call add (h,
+      t))))))
+}.ret

@@ -34,7 +34,7 @@ $decl diag $func ($decl m "", $decl l 0, $decl c 0, $decl f "")
   { $decl msg m  $decl line l  $decl col c  $decl file f }
 
 $decl proto_diag $call diag ("", 0, 0, "")
-$decl diags $specialize P.list proto_diag
+$decl diags      $specialize P.list proto_diag
 
 // ------------------------------------------------------------------ AST nodes
 //
@@ -45,13 +45,25 @@ $decl diags $specialize P.list proto_diag
 // of every node type *and* of the token type — one span accessor, no per-kind
 // dispatch, and the upcast is free (§7.4).
 
-$decl n_int   $func ($decl v 0,     $decl l 0, $decl c 0) { $prop tag "int"   $decl line l  $decl col c  $decl value v }
-$decl n_float $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "float" $decl line l  $decl col c  $decl text t }
-$decl n_str   $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "str"   $decl line l  $decl col c  $decl text t }
-$decl n_bool  $func ($decl v P.boolean, $decl l 0, $decl c 0) { $prop tag "bool"  $decl line l  $decl col c  $decl value v }
-$decl n_name  $func ($decl t "",    $decl l 0, $decl c 0) { $prop tag "name"  $decl line l  $decl col c  $decl text t }
+$decl n_int   $func ($decl v 0,     $decl l 0, $decl c 0) {
+  $prop tag "int"   $decl line l  $decl col c  $decl value v
+}
+$decl n_float $func ($decl t "",    $decl l 0, $decl c 0) {
+  $prop tag "float" $decl line l  $decl col c  $decl text t
+}
+$decl n_str   $func ($decl t "",    $decl l 0, $decl c 0) {
+  $prop tag "str"   $decl line l  $decl col c  $decl text t
+}
+$decl n_bool  $func ($decl v P.boolean, $decl l 0, $decl c 0) {
+  $prop tag "bool"  $decl line l  $decl col c  $decl value v
+}
+$decl n_name  $func ($decl t "",    $decl l 0, $decl c 0) {
+  $prop tag "name"  $decl line l  $decl col c  $decl text t
+}
 $decl n_unit  $func ($decl l 0,     $decl c 0)            { $prop tag "unit"  $decl line l  $decl col c }
-$decl n_err   $func ($decl m "",    $decl l 0, $decl c 0) { $prop tag "error" $decl line l  $decl col c  $decl msg m }
+$decl n_err   $func ($decl m "",    $decl l 0, $decl c 0) {
+  $prop tag "error" $decl line l  $decl col c  $decl msg m
+}
 
 // The node type.
 //
@@ -74,15 +86,23 @@ $decl proto_node $union (
   $call n_name  ("", 0, 0),
   $call n_unit  (0, 0),
   $call n_err   ("", 0, 0),
-  // §5.5: every field that reaches a node again goes through storage. Boxing
-  // the *list* is enough for a list of nodes — a cons cell holds its element
-  // inline, so its size needs the node's, and putting the list behind a pointer
-  // is what breaks that circle. The elements themselves stay values.
-  { $prop tag "group"      $decl line 0  $decl col 0  $decl items $alloc ($specialize P.list proto_node).node },
-  { $prop tag "block"      $decl line 0  $decl col 0  $decl items $alloc ($specialize P.list proto_node).node },
+ {  // §5.5: every field that reaches a node again goes through storage. Boxing
+   // the *list* is enough for a list of nodes — a cons cell holds its element
+   // inline, so its size needs the node's, and putting the list behind a pointer
+   // is what breaks that circle. The elements themselves stay values.
+   $prop tag "group"      $decl line 0  $decl col 0
+   $decl items $alloc ($specialize P.list proto_node).node
+ },
+  {
+    $prop tag "block"      $decl line 0  $decl col 0
+    $decl items $alloc ($specialize P.list proto_node).node
+  },
   { $prop tag "proj_name"  $decl line 0  $decl col 0  $decl target $alloc proto_node  $decl field "" },
   { $prop tag "proj_index" $decl line 0  $decl col 0  $decl target $alloc proto_node  $decl index 0 },
-  { $prop tag "form"       $decl line 0  $decl col 0  $decl keyword ""  $decl operands $alloc ($specialize P.list proto_node).node }
+  {
+    $prop tag "form"       $decl line 0  $decl col 0  $decl keyword ""
+    $decl operands $alloc ($specialize P.list proto_node).node
+  }
 )
 
 $decl nodes $specialize P.list proto_node
@@ -113,8 +133,8 @@ $decl kw_entry $func ($decl n "", $decl a 0, $decl k1 "", $decl k2 "", $decl k3 
   { $decl name n  $decl arity a  $decl o1 k1  $decl o2 k2  $decl o3 k3 }
 
 $decl proto_kw $call kw_entry ("", 0, "", "", "")
-$decl kws $specialize P.list proto_kw
-$decl no_kw $call kw_entry ("", -1, "", "", "")
+$decl kws      $specialize P.list proto_kw
+$decl no_kw    $call kw_entry ("", -1, "", "", "")
 
 // `kws.node` rather than `kws.nil`: `$new` takes the type of its operand
 // (§4.2), so initialising from `nil` would give storage that only a `nil`
@@ -160,35 +180,38 @@ $decl lookup_kw $func ($decl n "") $call find_kw (kw_table, n)
 
 // -------------------------------------------------------------- parser state
 
-$decl parser $func ($decl ts L.toks.node)
-  { $decl rest $mut $alloc ts
-    $decl errs $mut $alloc diags.node }
+$decl parser $func ($decl ts L.toks.node) {
+  $decl rest $mut $alloc ts
+  $decl errs $mut $alloc diags.node
+}
 
 $decl proto_parser $call parser (L.toks.nil)
-$decl eof_token $call L.token ("eof", "", 0, 0, 0)
+$decl eof_token    $call L.token ("eof", "", 0, 0, 0)
 
 // The list is read out of storage first so that it can be `$match`ed: only
 // `$match` narrows (§4.7), and a bare `$if` would leave the union un-narrowed
 // with nothing to project. Binding it also gives the catch-all a name.
-$decl peek $func ($decl ps proto_parser)
-  { $decl rest $call L.toks.val (ps.rest)
-    $decl out $match rest (
-        $case {$prop tag "cons"} rest.head,
-        $case rest eof_token
-      ) }.out
+$decl peek $func ($decl ps proto_parser) {
+  $decl rest $call L.toks.val (ps.rest)
+  $decl ret $match rest (
+      $case {$prop tag "cons"} rest.head,
+      $case rest eof_token
+    )
+}.ret
 
 $decl at_kind $func ($decl ps proto_parser, $decl k "")
   $call eq_str (($call peek (ps)).kind, k)
 
 // Never advances past `eof`, so `peek` is always answerable.
-$decl bump $func ($decl ps proto_parser)
-  { $decl t    $call peek (ps)
-    $decl rest $call L.toks.val (ps.rest)
-    $decl moved $match rest (
-        $case {$prop tag "cons"} $if ($call eq_str (t.kind, "eof")) () ($set ps.rest rest.tail),
-        $case rest ()
-      )
-    $decl out t }.out
+$decl bump $func ($decl ps proto_parser) {
+  $decl t    $call peek (ps)
+  $decl rest $call L.toks.val (ps.rest)
+  $decl moved $match rest (
+      $case {$prop tag "cons"} $if ($call eq_str (t.kind, "eof")) () ($set ps.rest rest.tail),
+      $case rest ()
+    )
+  $decl ret t
+}.ret
 
 $decl note_at $func ($decl ps proto_parser, $decl m "", $decl l 0, $decl c 0)
   $set ps.errs ($call diags.cons ($call diag (m, l, c, ""), ps.errs))
@@ -198,13 +221,15 @@ $decl note_at $func ($decl ps proto_parser, $decl m "", $decl l 0, $decl c 0)
 $decl note_at_span $func ($decl ps proto_parser, $decl m "", $decl x P.proto_span)
   $call note_at (ps, m, x.line, x.col)
 
-$decl note $func ($decl ps proto_parser, $decl m "")
-  { $decl t $call peek (ps)
-    $decl out $call note_at (ps, m, t.line, t.col) }.out
+$decl note $func ($decl ps proto_parser, $decl m "") {
+  $decl t   $call peek (ps)
+  $decl ret $call note_at (ps, m, t.line, t.col)
+}.ret
 
-$decl fail_at $func ($decl ps proto_parser, $decl m "", $decl l 0, $decl c 0)
-  { $decl noted $call note_at (ps, m, l, c)
-    $decl out $call n_err (m, l, c) }.out
+$decl fail_at $func ($decl ps proto_parser, $decl m "", $decl l 0, $decl c 0) {
+  $decl noted $call note_at (ps, m, l, c)
+  $decl ret   $call n_err (m, l, c)
+}.ret
 
 $decl describe $func ($decl k "")
   $if ($call eq_str (k, "int"))     "integer literal"
@@ -228,38 +253,41 @@ $decl describe $func ($decl k "")
 $fwd parse_expr
 
 // `( e, e, … )` — §2.3. Comma separated, unlike a block.
-$decl group_items $func ($decl ps proto_parser, $decl acc nodes.node, $decl open L.proto_token)
-  { $decl e    $call parse_expr (ps)
-    $decl acc2 $call nodes.cons (e, acc)
-    $decl out $if ($call at_kind (ps, "comma"))
-        ($do ($call bump (ps))
-             ($if ($call at_kind (ps, "rparen"))
-                  ($do ($call note (ps, "trailing ',' in group"))
-                       ($do ($call bump (ps)) acc2))
-                  ($call group_items (ps, acc2, open))))
-        ($if ($call at_kind (ps, "rparen"))
-             ($do ($call bump (ps)) acc2)
-        ($if ($call at_kind (ps, "eof"))
-             ($do ($call note_at (ps, "unclosed '(' — group is missing its ')'", open.line, open.col)) acc2)
-             // Consuming here is what guarantees progress, so one bad token
-             // cannot hang the parse.
-             ($do ($call note (ps, $call concat ("expected ',' or ')' in group, found ",
-                                                 $call describe (($call peek (ps)).kind))))
-                  ($do ($call bump (ps)) ($call group_items (ps, acc2, open)))))) }.out
+$decl group_items $func ($decl ps proto_parser, $decl acc nodes.node, $decl open L.proto_token) {
+  $decl e    $call parse_expr (ps)
+  $decl acc2 $call nodes.cons (e, acc)
+  $decl ret $if ($call at_kind (ps, "comma"))
+      ($do ($call bump (ps))
+           ($if ($call at_kind (ps, "rparen"))
+                ($do ($call note (ps, "trailing ',' in group"))
+                     ($do ($call bump (ps)) acc2))
+                ($call group_items (ps, acc2, open))))
+      ($if ($call at_kind (ps, "rparen"))
+           ($do ($call bump (ps)) acc2)
+      ($if ($call at_kind (ps, "eof"))
+           ($do ($call note_at (ps, "unclosed '(' — group is missing its ')'", open.line, open.col)) acc2)
+           // Consuming here is what guarantees progress, so one bad token
+           // cannot hang the parse.
+           ($do ($call note (ps, $call concat ("expected ',' or ')' in group, found ",
+                                               $call describe (($call peek (ps)).kind))))
+                ($do ($call bump (ps)) ($call group_items (ps, acc2, open))))))
+}.ret
 
-$decl parse_group $func ($decl ps proto_parser)
-  { $decl open $call bump (ps)
-    $decl out $if ($call at_kind (ps, "rparen"))
-        // §2.3: the empty group and the empty block are the same value.
-        ($do ($call bump (ps)) ($call n_unit (open.line, open.col)))
-        { $decl rev   $call group_items (ps, nodes.nil, open)
-          $decl items $call nodes.reverse (rev, nodes.nil)
-          $decl n     $call nodes.length (items, 0)
-          // §2.3: "A one-element group is the element." There is no one-tuple,
-          // so a folded group never reaches the tree.
-          $decl o $if ($call eq_int (n, 1)) ($call nodes.nth (items, 0))
-                 ($if ($call eq_int (n, 0)) ($call n_unit (open.line, open.col))
-                      ($call n_group (items, open.line, open.col))) }.o }.out
+$decl parse_group $func ($decl ps proto_parser) {
+  $decl open $call bump (ps)
+  $decl ret $if ($call at_kind (ps, "rparen"))
+      // §2.3: the empty group and the empty block are the same value.
+      ($do ($call bump (ps)) ($call n_unit (open.line, open.col))) {
+        $decl rev   $call group_items (ps, nodes.nil, open)
+        $decl items $call nodes.reverse (rev, nodes.nil)
+        $decl n     $call nodes.length (items, 0)
+        // §2.3: "A one-element group is the element." There is no one-tuple,
+        // so a folded group never reaches the tree.
+        $decl ret2 $if ($call eq_int (n, 1)) ($call nodes.nth (items, 0))
+               ($if ($call eq_int (n, 0)) ($call n_unit (open.line, open.col))
+                    ($call n_group (items, open.line, open.col)))
+      }.ret2
+}.ret
 
 // `{ e e … }` — §2.3, no separator required. The recursive call is in tail
 // position, which matters: a block can hold a whole file.
@@ -269,34 +297,40 @@ $decl block_items $func ($decl ps proto_parser, $decl acc nodes.node, $decl open
        ($do ($call note_at (ps, "unclosed '{' — block is missing its '}'", open.line, open.col)) acc)
        ($call block_items (ps, $call nodes.cons ($call parse_expr (ps), acc), open)))
 
-$decl parse_block $func ($decl ps proto_parser)
-  { $decl open $call bump (ps)
-    $decl out $if ($call at_kind (ps, "rbrace"))
-        ($do ($call bump (ps)) ($call n_unit (open.line, open.col)))
-        { $decl rev $call block_items (ps, nodes.nil, open)
-          $decl o   $call n_block ($call nodes.reverse (rev, nodes.nil), open.line, open.col) }.o }.out
+$decl parse_block $func ($decl ps proto_parser) {
+  $decl open $call bump (ps)
+  $decl ret $if ($call at_kind (ps, "rbrace"))
+      ($do ($call bump (ps)) ($call n_unit (open.line, open.col))) {
+        $decl rev  $call block_items (ps, nodes.nil, open)
+        $decl ret2 $call n_block ($call nodes.reverse (rev, nodes.nil), open.line, open.col)
+      }.ret2
+}.ret
 
 $decl parse_name_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl idx 0)
-  $if ($call at_kind (ps, "name"))
-      { $decl t $call bump (ps)
-        $decl o $call n_name (t.text, t.line, t.col) }.o
-      { $decl t $call peek (ps)
-        $decl o $call fail_at (ps,
-            $call concat ("$", $call concat (kwt.text,
-            $call concat (" operand ", $call concat ($call int_to_str (idx),
-            $call concat (" must be a name, found ", $call describe (t.kind)))))),
-            t.line, t.col) }.o
+  $if ($call at_kind (ps, "name")) {
+    $decl t   $call bump (ps)
+    $decl ret $call n_name (t.text, t.line, t.col)
+  }.ret {
+    $decl t $call peek (ps)
+    $decl ret $call fail_at (ps,
+        $call concat ("$", $call concat (kwt.text,
+        $call concat (" operand ", $call concat ($call int_to_str (idx),
+        $call concat (" must be a name, found ", $call describe (t.kind)))))),
+        t.line, t.col)
+  }.ret
 
 $decl parse_str_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl idx 0)
-  $if ($call at_kind (ps, "str"))
-      { $decl t $call bump (ps)
-        $decl o $call n_str (t.text, t.line, t.col) }.o
-      { $decl t $call peek (ps)
-        $decl o $call fail_at (ps,
-            $call concat ("$", $call concat (kwt.text,
-            $call concat (" operand ", $call concat ($call int_to_str (idx),
-            $call concat (" must be a string literal, found ", $call describe (t.kind)))))),
-            t.line, t.col) }.o
+  $if ($call at_kind (ps, "str")) {
+    $decl t   $call bump (ps)
+    $decl ret $call n_str (t.text, t.line, t.col)
+  }.ret {
+    $decl t $call peek (ps)
+    $decl ret $call fail_at (ps,
+        $call concat ("$", $call concat (kwt.text,
+        $call concat (" operand ", $call concat ($call int_to_str (idx),
+        $call concat (" must be a string literal, found ", $call describe (t.kind)))))),
+        t.line, t.col)
+  }.ret
 
 // Every element of a `$template`'s generic group must be a plain name (§4.9).
 // This is where prop tags pay for themselves: the check is a `$match` on the
@@ -307,29 +341,31 @@ $decl parse_str_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $
 // binding a reference would keep it a reference (§5.4) and the pattern would
 // then be testing the wrong shape.
 $decl all_names $func ($decl xs nodes.node) $match xs (
-  $case {$prop tag "cons"}
-    { $decl h xs.head
-      $decl out $match h (
-          $case {$prop tag "name"} $call all_names (xs.tail),
-          $case h false
-        ) }.out,
+  $case {$prop tag "cons"} {
+    $decl h xs.head
+    $decl ret $match h (
+        $case {$prop tag "name"} $call all_names (xs.tail),
+        $case h false
+      )
+  }.ret,
   $case xs true
 )
 
 $decl parse_names_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl idx 0)
-  $if ($call at_kind (ps, "lparen"))
-      { $decl g $call parse_group (ps)
-        $decl o $match g (
-            // `(T)` folded to `T` — §2.3 again.
-            $case {$prop tag "name"} g,
-            $case {$prop tag "group"} $if ($call all_names (g.items)) g
-                ($call fail_at (ps,
-                    $call concat ("$", $call concat (kwt.text, " generic parameters must be plain names")),
-                    g.line, g.col)),
-            $case g ($call fail_at (ps,
-                $call concat ("$", $call concat (kwt.text, " expects a name or a group of names")),
-                g.line, g.col))
-          ) }.o
+  $if ($call at_kind (ps, "lparen")) {
+    $decl g $call parse_group (ps)
+    $decl ret $match g (
+        // `(T)` folded to `T` — §2.3 again.
+        $case {$prop tag "name"} g,
+        $case {$prop tag "group"} $if ($call all_names (g.items)) g
+            ($call fail_at (ps,
+                $call concat ("$", $call concat (kwt.text, " generic parameters must be plain names")),
+                g.line, g.col)),
+        $case g ($call fail_at (ps,
+            $call concat ("$", $call concat (kwt.text, " expects a name or a group of names")),
+            g.line, g.col))
+      )
+  }.ret
       ($call parse_name_operand (ps, kwt, idx))
 
 $decl parse_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl kind "", $decl idx 0)
@@ -340,55 +376,68 @@ $decl parse_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl
 
 // A keyword form reads exactly its own operands — no precedence, no
 // associativity, no separators (§2.2).
-$decl parse_form $func ($decl ps proto_parser)
-  { $decl t $call bump (ps)
-    $decl s $call lookup_kw (t.text)
-    $decl out $if ($call eq_int (s.arity, -1))
-        ($call fail_at (ps, $call concat ("unknown keyword '$", $call concat (t.text, "'")), t.line, t.col))
+$decl parse_form $func ($decl ps proto_parser) {
+  $decl t $call bump (ps)
+  $decl s $call lookup_kw (t.text)
+  $decl ret $if ($call eq_int (s.arity, -1))
+      ($call fail_at (ps, $call concat ("unknown keyword '$", $call concat (t.text, "'")), t.line, t.col)) {
         // Operands are evaluated in source order (§7.1), so these three
         // `$decl`s consume tokens left to right.
-        { $decl o1 $if ($call lt (0, s.arity)) ($call parse_operand (ps, t, s.o1, 1)) ($call n_unit (t.line, t.col))
-          $decl o2 $if ($call lt (1, s.arity)) ($call parse_operand (ps, t, s.o2, 2)) ($call n_unit (t.line, t.col))
-          $decl o3 $if ($call lt (2, s.arity)) ($call parse_operand (ps, t, s.o3, 3)) ($call n_unit (t.line, t.col))
-          $decl ops $if ($call eq_int (s.arity, 1))
-              ($call nodes.cons (o1, nodes.nil))
-              ($if ($call eq_int (s.arity, 2))
-                  ($call nodes.cons (o1, $call nodes.cons (o2, nodes.nil)))
-                  ($call nodes.cons (o1, $call nodes.cons (o2, $call nodes.cons (o3, nodes.nil)))))
-          $decl n $call n_form (t.text, ops, t.line, t.col) }.n }.out
+        $decl o1 $if ($call lt (0, s.arity)) ($call parse_operand (ps, t, s.o1,
+            1)) ($call n_unit (t.line, t.col))
+        $decl o2 $if ($call lt (1, s.arity)) ($call parse_operand (ps, t, s.o2,
+            2)) ($call n_unit (t.line, t.col))
+        $decl o3 $if ($call lt (2, s.arity)) ($call parse_operand (ps, t, s.o3,
+            3)) ($call n_unit (t.line, t.col))
+        $decl ops $if ($call eq_int (s.arity, 1))
+            ($call nodes.cons (o1, nodes.nil))
+            ($if ($call eq_int (s.arity, 2))
+                ($call nodes.cons (o1, $call nodes.cons (o2, nodes.nil)))
+                ($call nodes.cons (o1, $call nodes.cons (o2, $call nodes.cons (o3, nodes.nil)))))
+        $decl ret2 $call n_form (t.text, ops, t.line, t.col)
+      }.ret2
+}.ret
 
-$decl parse_primary $func ($decl ps proto_parser)
-  { $decl t $call peek (ps)
-    $decl k t.kind
-    $decl out $if ($call eq_str (k, "int"))     ($do ($call bump (ps)) ($call n_int (t.num, t.line, t.col)))
-             ($if ($call eq_str (k, "float"))   ($do ($call bump (ps)) ($call n_float (t.text, t.line, t.col)))
-             ($if ($call eq_str (k, "str"))     ($do ($call bump (ps)) ($call n_str (t.text, t.line, t.col)))
-             ($if ($call eq_str (k, "true"))    ($do ($call bump (ps)) ($call n_bool (true, t.line, t.col)))
-             ($if ($call eq_str (k, "false"))   ($do ($call bump (ps)) ($call n_bool (false, t.line, t.col)))
-             ($if ($call eq_str (k, "name"))    ($do ($call bump (ps)) ($call n_name (t.text, t.line, t.col)))
-             ($if ($call eq_str (k, "lparen"))  ($call parse_group (ps))
-             ($if ($call eq_str (k, "lbrace"))  ($call parse_block (ps))
-             ($if ($call eq_str (k, "keyword")) ($call parse_form (ps))
-             // The lexer already described what went wrong; carry its message
-             // rather than inventing a worse one.
-             ($if ($call eq_str (k, "invalid")) ($do ($call bump (ps)) ($call fail_at (ps, t.text, t.line, t.col)))
-             ($if ($call eq_str (k, "eof"))
-                  ($call fail_at (ps, "unexpected end of file, expected an expression", t.line, t.col))
-             ($if ($call or ($call eq_str (k, "proj_name"), $call eq_str (k, "proj_index")))
-                  ($do ($call bump (ps)) ($call fail_at (ps, "projection has nothing to its left", t.line, t.col)))
-                  ($do ($call bump (ps))
-                       ($call fail_at (ps, $call concat ("expected an expression, found ", $call describe (k)),
-                                       t.line, t.col)))))))))))))) }.out
+$decl parse_primary $func ($decl ps proto_parser) {
+  $decl t $call peek (ps)
+  $decl k t.kind
+  $decl ret $if ($call eq_str (k, "int"))     ($do ($call bump (ps)) ($call n_int (t.num, t.line,
+      t.col)))
+           ($if ($call eq_str (k, "float"))   ($do ($call bump (ps)) ($call n_float (t.text, t.line,
+               t.col)))
+           ($if ($call eq_str (k, "str"))     ($do ($call bump (ps)) ($call n_str (t.text, t.line,
+               t.col)))
+           ($if ($call eq_str (k, "true"))    ($do ($call bump (ps)) ($call n_bool (true, t.line, t.col)))
+           ($if ($call eq_str (k, "false"))   ($do ($call bump (ps)) ($call n_bool (false, t.line, t.col)))
+           ($if ($call eq_str (k, "name"))    ($do ($call bump (ps)) ($call n_name (t.text, t.line,
+               t.col)))
+           ($if ($call eq_str (k, "lparen"))  ($call parse_group (ps))
+           ($if ($call eq_str (k, "lbrace"))  ($call parse_block (ps))
+           ($if ($call eq_str (k, "keyword")) ($call parse_form (ps))
+           // The lexer already described what went wrong; carry its message
+           // rather than inventing a worse one.
+           ($if ($call eq_str (k, "invalid")) ($do ($call bump (ps)) ($call fail_at (ps, t.text,
+               t.line, t.col)))
+           ($if ($call eq_str (k, "eof"))
+                ($call fail_at (ps, "unexpected end of file, expected an expression", t.line, t.col))
+           ($if ($call or ($call eq_str (k, "proj_name"), $call eq_str (k, "proj_index")))
+                ($do ($call bump (ps)) ($call fail_at (ps, "projection has nothing to its left", t.line, t.col)))
+                ($do ($call bump (ps))
+                     ($call fail_at (ps, $call concat ("expected an expression, found ", $call describe (k)),
+                                     t.line, t.col))))))))))))))
+}.ret
 
 // Postfix projection binds tighter than everything else. Since there are no
 // infix operators, a `.x` token can only be a projection.
 $decl parse_postfix $func ($decl ps proto_parser, $decl n proto_node)
-  $if ($call at_kind (ps, "proj_name"))
-      { $decl t $call bump (ps)
-        $decl o $call parse_postfix (ps, $call n_projn (n, t.text, n.line, n.col)) }.o
-  ($if ($call at_kind (ps, "proj_index"))
-      { $decl t $call bump (ps)
-        $decl o $call parse_postfix (ps, $call n_proji (n, t.num, n.line, n.col)) }.o
+  $if ($call at_kind (ps, "proj_name")) {
+    $decl t   $call bump (ps)
+    $decl ret $call parse_postfix (ps, $call n_projn (n, t.text, n.line, n.col))
+  }.ret
+  ($if ($call at_kind (ps, "proj_index")) {
+    $decl t   $call bump (ps)
+    $decl ret $call parse_postfix (ps, $call n_proji (n, t.num, n.line, n.col))
+  }.ret
       n)
 
 $decl parse_expr $func ($decl ps proto_parser)
@@ -419,7 +468,8 @@ $decl validate_arm $func ($decl a proto_node, $decl ps proto_parser) $match a (
 )
 
 $decl validate_arm_items $func ($decl xs nodes.node, $decl ps proto_parser) $match xs (
-  $case {$prop tag "cons"} $do ($call validate_arm (xs.head, ps)) ($call validate_arm_items (xs.tail, ps)),
+  $case {$prop tag "cons"} $do ($call validate_arm (xs.head,
+      ps)) ($call validate_arm_items (xs.tail, ps)),
   $case xs ()
 )
 
@@ -473,7 +523,8 @@ $decl dump $func ($decl n proto_node) $match n (
   $case {$prop tag "group"} $call dump_list ("(group", n.items),
   $case {$prop tag "block"} $call dump_list ("(block", n.items),
   $case {$prop tag "proj_name"}
-    $call concat ("(. ", $call concat ($call dump (n.target), $call concat (" ", $call concat (n.field, ")")))),
+    $call concat ("(. ", $call concat ($call dump (n.target), $call concat (" ",
+        $call concat (n.field, ")")))),
   $case {$prop tag "proj_index"}
     $call concat ("(. ", $call concat ($call dump (n.target),
                   $call concat (" ", $call concat ($call int_to_str (n.index), ")")))),
@@ -491,16 +542,19 @@ $decl file_items $func ($decl ps proto_parser, $decl acc nodes.node)
 
 // §3.3: "A source file is a block." Returns the expressions plus any
 // diagnostics; a tree comes back either way, with the unparsable parts marked.
-$decl parse_tokens $func ($decl ts L.toks.node)
-  { $decl ps      $call parser (ts)
-    $decl rev     $call file_items (ps, nodes.nil)
-    // Not `$decl exprs`: the field below would then read the slot it is
-    // itself initializing, which §4.1 forbids — a name is readable from
-    // inside its own initializer only from within a `$func` body.
-    $decl es      $call nodes.reverse (rev, nodes.nil)
-    $decl checked $call validate_list (es, ps)
-    $decl result  { $decl exprs es
-                    $decl errs  $call diags.reverse (ps.errs, diags.nil) } }.result
+$decl parse_tokens $func ($decl ts L.toks.node) {
+  $decl ps  $call parser (ts)
+  $decl rev $call file_items (ps, nodes.nil)
+  // Not `$decl exprs`: the field below would then read the slot it is
+  // itself initializing, which §4.1 forbids — a name is readable from
+  // inside its own initializer only from within a `$func` body.
+  $decl es      $call nodes.reverse (rev, nodes.nil)
+  $decl checked $call validate_list (es, ps)
+  $decl ret  {
+    $decl exprs es
+    $decl errs  $call diags.reverse (ps.errs, diags.nil)
+  }
+}.ret
 
 $decl parse $func ($decl src "") $call parse_tokens ($call L.tokenize (src))
 
@@ -562,11 +616,12 @@ $decl free_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
 )
 
 $decl bound_group_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
-  $case {$prop tag "cons"}
-    { $decl nm $call name_text (xs.head)
-      $decl a2 $if ($call eq_str (nm, "")) acc
-                   ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
-      $decl r  $call bound_group_list (xs.tail, a2) }.r,
+  $case {$prop tag "cons"} {
+    $decl nm $call name_text (xs.head)
+    $decl a2 $if ($call eq_str (nm, "")) acc
+                 ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
+    $decl ret  $call bound_group_list (xs.tail, a2)
+  }.ret,
   $case xs acc
 )
 
@@ -590,26 +645,28 @@ $decl bound_names_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match 
 // missed capture rather than a wrongly rejected program, which is the right
 // way round for a check that would otherwise reject valid code.
 $decl bound_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
-  $case {$prop tag "form"}
-    { $decl k n.keyword
-      // §4.1/§4.10: these name their first operand. §4.7's `$case` binds its
-      // pattern when the pattern is a bare name, and §4.9's `$template` binds
-      // its generics.
-      $decl binds $if ($call eq_str (k, "decl")) true
-                      ($if ($call eq_str (k, "prop")) true
-                           ($if ($call eq_str (k, "fwd")) true
-                                ($if ($call eq_str (k, "case")) true
-                                     ($call eq_str (k, "template")))))
-      $decl here $if binds
-          { $decl nm $call name_text ($call operand (n, 0))
-            $decl gs $if ($call eq_str (nm, ""))
-                // A `$template`'s generics may be a group, and a `$case`
-                // pattern may be anything — a non-name binds nothing.
-                ($call bound_group ($call operand (n, 0), acc)) 
-                ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
-            $decl r gs }.r
-          acc
-      $decl r $call bound_names_list (n.operands, here) }.r,
+  $case {$prop tag "form"} {
+    $decl k n.keyword
+    // §4.1/§4.10: these name their first operand. §4.7's `$case` binds its
+    // pattern when the pattern is a bare name, and §4.9's `$template` binds
+    // its generics.
+    $decl binds $if ($call eq_str (k, "decl")) true
+                    ($if ($call eq_str (k, "prop")) true
+                         ($if ($call eq_str (k, "fwd")) true
+                              ($if ($call eq_str (k, "case")) true
+                                   ($call eq_str (k, "template")))))
+    $decl here $if binds {
+      $decl nm $call name_text ($call operand (n, 0))
+      $decl gs $if ($call eq_str (nm, ""))
+          // A `$template`'s generics may be a group, and a `$case`
+          // pattern may be anything — a non-name binds nothing.
+          ($call bound_group ($call operand (n, 0), acc))
+          ($if ($call mem_pstr (acc, nm)) acc ($call pstrs.cons (nm, acc)))
+      $decl ret2 gs
+    }.ret2
+        acc
+    $decl ret $call bound_names_list (n.operands, here)
+  }.ret,
   $case {$prop tag "group"} ($call bound_names_list (n.items, acc)),
   $case {$prop tag "block"} ($call bound_names_list (n.items, acc)),
   $case n acc
@@ -625,9 +682,9 @@ $decl bound_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
 // entry's `prop` is the prop the generic reaches, for the diagnostic at a site that
 // passes it something that is not a constant; "" means not compile-time.
 
-$decl ctg_ent $func ($decl g "", $decl p "") { $decl gen g  $decl prop p }
+$decl ctg_ent   $func ($decl g "", $decl p "") { $decl gen g  $decl prop p }
 $decl proto_ctg $call ctg_ent ("", "")
-$decl ctgs $specialize P.list proto_ctg
+$decl ctgs      $specialize P.list proto_ctg
 
 $decl ctg_prop $func ($decl xs ctgs.node, $decl g "") $match xs (
   $case {$prop tag "cons"} $if ($call eq_str (xs.head.gen, g)) xs.head.prop ($call ctg_prop (xs.tail, g)),
@@ -636,11 +693,13 @@ $decl ctg_prop $func ($decl xs ctgs.node, $decl g "") $match xs (
 
 // Position by position: the prop each generic reaches, or "".
 $decl ctg_mask $func ($decl gs pstrs.node, $decl xs ctgs.node, $decl acc pstrs.node) $match gs (
-  $case {$prop tag "cons"} $call ctg_mask (gs.tail, xs, $call pstrs.cons ($call ctg_prop (xs, gs.head), acc)),
+  $case {$prop tag "cons"} $call ctg_mask (gs.tail, xs, $call pstrs.cons ($call ctg_prop (xs,
+      gs.head), acc)),
   $case gs ($call pstrs.reverse (acc, pstrs.nil))
 )
 
-$decl pstrs_without $func ($decl xs pstrs.node, $decl drop pstrs.node, $decl acc pstrs.node) $match xs (
+$decl pstrs_without $func ($decl xs pstrs.node, $decl drop pstrs.node,
+    $decl acc pstrs.node) $match xs (
   $case {$prop tag "cons"}
     $call pstrs_without (xs.tail, drop,
         $if ($call mem_pstr (drop, xs.head)) acc ($call pstrs.cons (xs.head, acc))),
@@ -705,27 +764,31 @@ $decl ct_reads $func ($decl n proto_node, $decl gs pstrs.node, $decl pn "",
                       $decl rs proto_resolver, $decl acc ctgs.node) $match n (
   $case {$prop tag "name"}
     $if ($call mem_pstr (gs, n.text))
-        ($if ($call eq_str ($call ctg_prop (acc, n.text), "")) ($call ctgs.cons ($call ctg_ent (n.text, pn), acc)) acc)
+        ($if ($call eq_str ($call ctg_prop (acc, n.text),
+            "")) ($call ctgs.cons ($call ctg_ent (n.text, pn), acc)) acc)
         acc,
   $case {$prop tag "proj_name"}  ($call ct_reads (n.target, gs, pn, rs, acc)),
   $case {$prop tag "proj_index"} ($call ct_reads (n.target, gs, pn, rs, acc)),
   $case {$prop tag "group"} ($call ct_reads_list (n.items, gs, pn, rs, acc)),
-  $case {$prop tag "form"}
-    { $decl k n.keyword
-      $decl r $if ($call eq_str (k, "union"))
-          // §4.8a: the first member is the value; the rest are type-only.
-          ($call ct_reads ($call nodes.nth ($call group_list ($call operand (n, 0)), 0), gs, pn, rs, acc))
-        ($if ($call eq_str (k, "overload"))
-          ($call ct_reads_list ($call group_list ($call operand (n, 0)), gs, pn, rs, acc))
-        ($if ($call eq_str (k, "specialize"))
-          { $decl mask $call rs ($call operand (n, 0))
-            $decl args $if ($call eq_int ($call pstrs.length (mask, 0), 1))
-                ($call nodes.cons ($call operand (n, 1), nodes.nil))
-                ($call group_list ($call operand (n, 1)))
-            $decl q $call ct_spec_args (args, mask, gs, pn, rs, acc) }.q
-        ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof")))
-          ($call ct_reads_list (n.operands, gs, pn, rs, acc))
-          acc))) }.r,
+  $case {$prop tag "form"} {
+    $decl k n.keyword
+    $decl ret $if ($call eq_str (k, "union"))
+        // §4.8a: the first member is the value; the rest are type-only.
+        ($call ct_reads ($call nodes.nth ($call group_list ($call operand (n, 0)), 0), gs, pn, rs,
+            acc))
+      ($if ($call eq_str (k, "overload"))
+        ($call ct_reads_list ($call group_list ($call operand (n, 0)), gs, pn, rs, acc))
+      ($if ($call eq_str (k, "specialize")) {
+        $decl mask $call rs ($call operand (n, 0))
+        $decl args $if ($call eq_int ($call pstrs.length (mask, 0), 1))
+            ($call nodes.cons ($call operand (n, 1), nodes.nil))
+            ($call group_list ($call operand (n, 1)))
+        $decl ret2 $call ct_spec_args (args, mask, gs, pn, rs, acc)
+      }.ret2
+      ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof")))
+        ($call ct_reads_list (n.operands, gs, pn, rs, acc))
+        acc)))
+  }.ret,
   $case n acc
 )
 
@@ -743,19 +806,23 @@ $decl ct_walk_list $func ($decl xs nodes.node, $decl gs pstrs.node, $decl rs pro
 // prop never reads, which rejects a valid program.
 $decl ct_walk $func ($decl n proto_node, $decl gs pstrs.node, $decl rs proto_resolver,
                      $decl acc ctgs.node) $match n (
-  $case {$prop tag "form"}
-    { $decl k n.keyword
-      $decl r $if ($call eq_str (k, "prop"))
-          { $decl init $call operand (n, 1)
-            $decl a1   $call ct_reads (init, gs, $call name_text ($call operand (n, 0)), rs, acc)
-            $decl q    $call ct_walk (init, gs, rs, a1) }.q
-        ($if ($call eq_str (k, "func"))
-          ($call ct_walk_list (n.operands,
-               $call pstrs_without (gs, $call param_binders ($call operand (n, 0)), pstrs.nil), rs, acc))
-        ($if ($call eq_str (k, "template"))
-          ($call ct_walk ($call operand (n, 1),
-               $call pstrs_without (gs, $call generic_binders ($call operand (n, 0)), pstrs.nil), rs, acc))
-          ($call ct_walk_list (n.operands, gs, rs, acc)))) }.r,
+  $case {$prop tag "form"} {
+    $decl k n.keyword
+    $decl ret $if ($call eq_str (k, "prop")) {
+      $decl init $call operand (n, 1)
+      $decl a1   $call ct_reads (init, gs, $call name_text ($call operand (n, 0)), rs, acc)
+      $decl ret2 $call ct_walk (init, gs, rs, a1)
+    }.ret2
+      ($if ($call eq_str (k, "func"))
+        ($call ct_walk_list (n.operands,
+             $call pstrs_without (gs, $call param_binders ($call operand (n, 0)),
+                 pstrs.nil), rs, acc))
+      ($if ($call eq_str (k, "template"))
+        ($call ct_walk ($call operand (n, 1),
+             $call pstrs_without (gs, $call generic_binders ($call operand (n, 0)),
+                 pstrs.nil), rs, acc))
+        ($call ct_walk_list (n.operands, gs, rs, acc))))
+  }.ret,
   $case {$prop tag "block"}
     $call ct_walk_list (n.items,
         $call pstrs_without (gs, $call block_binders (n.items, pstrs.nil), pstrs.nil), rs, acc),
@@ -787,7 +854,8 @@ $decl lit_key $func ($decl n proto_node) $match n (
 // passes then read the same way.
 $fwd subst_lit
 
-$decl subst_lits $func ($decl xs nodes.node, $decl nm "", $decl lit proto_node, $decl acc nodes.node) $match xs (
+$decl subst_lits $func ($decl xs nodes.node, $decl nm "", $decl lit proto_node,
+    $decl acc nodes.node) $match xs (
   $case {$prop tag "cons"}
     $call subst_lits (xs.tail, nm, lit, $call nodes.cons ($call subst_lit (xs.head, nm, lit), acc)),
   $case xs ($call nodes.reverse (acc, nodes.nil))
@@ -799,7 +867,8 @@ $decl subst_lit $func ($decl n proto_node, $decl nm "", $decl lit proto_node) $m
     $call n_projn ($call subst_lit (n.target, nm, lit), n.field, n.line, n.col),
   $case {$prop tag "proj_index"}
     $call n_proji ($call subst_lit (n.target, nm, lit), n.index, n.line, n.col),
-  $case {$prop tag "group"} ($call n_group ($call subst_lits (n.items, nm, lit, nodes.nil), n.line, n.col)),
+  $case {$prop tag "group"} ($call n_group ($call subst_lits (n.items, nm, lit, nodes.nil), n.line,
+      n.col)),
   $case {$prop tag "block"}
     $if ($call mem_pstr ($call block_binders (n.items, pstrs.nil), nm)) n
         ($call n_block ($call subst_lits (n.items, nm, lit, nodes.nil), n.line, n.col)),
@@ -809,6 +878,7 @@ $decl subst_lit $func ($decl n proto_node, $decl nm "", $decl lit proto_node) $m
                    $call and ($call eq_str (n.keyword, "template"),
                               $call mem_pstr ($call generic_binders ($call operand (n, 0)), nm))))
         n
-        ($call n_form (n.keyword, $call subst_lits (n.operands, nm, lit, nodes.nil), n.line, n.col)),
+        ($call n_form (n.keyword, $call subst_lits (n.operands, nm, lit, nodes.nil), n.line,
+            n.col)),
   $case n n
 )

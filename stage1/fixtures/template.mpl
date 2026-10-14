@@ -22,8 +22,9 @@ $decl pair $template T {
 $decl ipair $specialize pair 0
 $decl spair $specialize pair ""
 
-$decl main $func ()
-  { $decl p $call ipair.make (40, 2)
-    $decl q $call ipair.swap (p)
-    $decl s $call spair.make ("a", "b")
-    $decl r $call add ($call add (p.fst, q.fst), $call len (s.fst)) }.r
+$decl main $func () {
+  $decl p   $call ipair.make (40, 2)
+  $decl q   $call ipair.swap (p)
+  $decl s   $call spair.make ("a", "b")
+  $decl ret $call add ($call add (p.fst, q.fst), $call len (s.fst))
+}.ret

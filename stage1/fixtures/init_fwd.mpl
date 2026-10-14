@@ -8,5 +8,5 @@
 // earlier indices than members written above them. `b` was assigned before `a` and read
 // 0 — no diagnostic, a wrong answer. The effect moves with it: it was placed by its
 // lifted index too.
-$decl U $import "init_fwd_util"
+$decl U    $import "init_fwd_util"
 $decl main $func () $call add ($call U.f (), U.cell)

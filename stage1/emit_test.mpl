@@ -42,22 +42,24 @@ $decl idx $func ($decl hay "", $decl needle "") $call idx_at (hay, needle, 0)
 
 // The last occurrence of `needle` at or before `limit`, or -1.
 $decl last_idx_before $func ($decl hay "", $decl needle "", $decl from 0, $decl best -1,
-                             $decl limit 0)
-  { $decl i $call idx_at (hay, needle, from)
-    $decl r $if ($call lt (i, 0)) best
-             ($if ($call lt (limit, i)) best
-                  ($call last_idx_before (hay, needle, $call add (i, 1), i, limit))) }.r
+                             $decl limit 0) {
+  $decl i $call idx_at (hay, needle, from)
+  $decl ret $if ($call lt (i, 0)) best
+           ($if ($call lt (limit, i)) best
+                ($call last_idx_before (hay, needle, $call add (i, 1), i, limit)))
+}.ret
 
 // The name of the struct whose definition body is `body`, **read off the output**.
 // A struct's name is derived from its type's content, not from a table position, so
 // hard-coding one makes a test that fails whenever anything about that type changes —
 // exactly the reason a `verify` node index may not be hard-coded either. Three
 // assertions here did hard-code `mpl_t1`, and the rename is what found them.
-$decl struct_name_at $func ($decl code "", $decl body "")
-  { $decl b $call idx (code, body)
-    $decl s $call last_idx_before (code, "struct ", 0, -1, b)
-    $decl r $if ($call lt (s, 0)) ""
-                ($call slice (code, $call add (s, 7), $call sub (b, 1))) }.r
+$decl struct_name_at $func ($decl code "", $decl body "") {
+  $decl b $call idx (code, body)
+  $decl s $call last_idx_before (code, "struct ", 0, -1, b)
+  $decl ret $if ($call lt (s, 0)) ""
+              ($call slice (code, $call add (s, 7), $call sub (b, 1)))
+}.ret
 
 $decl join_ofiles $func ($decl fs IR.ofiles.node, $decl acc "") $match fs (
   $case {$prop tag "cons"}
@@ -67,17 +69,18 @@ $decl join_ofiles $func ($decl fs IR.ofiles.node, $decl acc "") $match fs (
 
 $decl result $func ($decl c "", $decl n 0) { $decl code c  $decl nerrs n }
 
-$decl compile $func ($decl src "")
-  { $decl r     $call I.check_source (src, "", "")
-    $decl ast   $call Pa.parse (src)
-    $decl st    $call L.lstate ()
-    $decl prims $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil)
-    $decl prog  $call L.lower_file (st, $call Pa.nodes.val (ast.exprs), r.ty, prims)
-    $decl est   $call E.estate ()
-    // §9.1 makes `emit_program` answer a *list* of outputs, so the text these tests
-    // search is all of them joined — which is valid to concatenate, declarations first.
-    $decl c     $call join_ofiles ($call E.emit_program (est, prog), "")
-    $decl out   $call result (c, $call Pa.diags.length ($call E.emit_errs (est), 0)) }.out
+$decl compile $func ($decl src "") {
+  $decl r     $call I.check_source (src, "", "")
+  $decl ast   $call Pa.parse (src)
+  $decl st    $call L.lstate ()
+  $decl prims $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil)
+  $decl prog  $call L.lower_file (st, $call Pa.nodes.val (ast.exprs), r.ty, prims)
+  $decl est   $call E.estate ()
+  // §9.1 makes `emit_program` answer a *list* of outputs, so the text these tests
+  // search is all of them joined — which is valid to concatenate, declarations first.
+  $decl c   $call join_ofiles ($call E.emit_program (est, prog), "")
+  $decl ret $call result (c, $call Pa.diags.length ($call E.emit_errs (est), 0))
+}.ret
 
 // ---------------------------------------------------------------- the cases
 
@@ -97,11 +100,12 @@ $decl t2 $call check ("a self tail call becomes a loop",
 
 // The sharp form: `main` may call `count`, but `count`'s own body must not —
 // that call is what became the `continue`.
-$decl body_of $func ($decl code "", $decl marker "")
-  { $decl at   $call idx (code, marker)
-    $decl rest $call slice (code, at, $call len (code))
-    $decl nxt  $call idx ($call slice (rest, 1, $call len (rest)), "\nstatic ")
-    $decl out  $if ($call lt (nxt, 0)) rest ($call slice (rest, 0, nxt)) }.out
+$decl body_of $func ($decl code "", $decl marker "") {
+  $decl at   $call idx (code, marker)
+  $decl rest $call slice (code, at, $call len (code))
+  $decl nxt  $call idx ($call slice (rest, 1, $call len (rest)), "\nstatic ")
+  $decl ret  $if ($call lt (nxt, 0)) rest ($call slice (rest, 0, nxt))
+}.ret
 
 $decl t3 $call check ("...and its own body does not call it",
   $call not ($call has ($call body_of (loop_c.code, "/* count */"), "mpl_f")))
@@ -109,9 +113,11 @@ $decl t3 $call check ("...and its own body does not call it",
 // §6a's hazard: `$call f (b, a)` must not clobber `b` before reading it, so
 // every new argument lands in a temporary before any slot is written.
 $decl t4 $call check ("the parameters are updated in parallel",
-  { $decl first_write $call idx (loop_c.code, "  s0 = t")
+  {
+    $decl first_write $call idx (loop_c.code, "  s0 = t")
     $decl last_temp   $call idx (loop_c.code, "  s1 = t")
-    $decl out $if ($call lt (0, first_write)) ($call lt (first_write, last_temp)) false }.out)
+    $decl ret         $if ($call lt (0, first_write)) ($call lt (first_write, last_temp)) false
+  }.ret)
 
 // A binary intrinsic is an operator, not a call.
 $decl t5 $call check ("§8's arithmetic is emitted infix",
@@ -139,14 +145,18 @@ $decl t7b $call check ("and the host's arguments reach the runtime before mpl_in
 // without a C form is `Float` — BOOTSTRAP §1.2 leaves float arithmetic out and
 // §3.1 keeps a literal as its source text.
 $decl t8 $call check ("an unsupported construct is refused, not guessed at",
-  { $decl r $call compile ("$decl main $func () 1.5 ")
-    $decl out $call lt (0, r.nerrs) }.out)
+  {
+    $decl r   $call compile ("$decl main $func () 1.5 ")
+    $decl ret $call lt (0, r.nerrs)
+  }.ret)
 
 // And a program with no `main` is refused, since the emitted file would not
 // link.
 $decl t9 $call check ("a program with no main is refused",
-  { $decl r $call compile ("$decl f $func ($decl n 0) n ")
-    $decl out $call lt (0, r.nerrs) }.out)
+  {
+    $decl r   $call compile ("$decl f $func ($decl n 0) n ")
+    $decl ret $call lt (0, r.nerrs)
+  }.ret)
 
 // ------------------------------------------------------------------ blocks
 
@@ -170,11 +180,13 @@ $decl t11 $call check ("a block becomes a struct in $decl order",
   $call has (blk_c.code, "{ int64_t f0; int64_t f1; };"))
 
 $decl t11b $call check ("...declared before it is defined",
-  { $decl nm $call struct_name_at (blk_c.code, "{ int64_t f0; int64_t f1; };")
-    $decl r  $if ($call eq_str (nm, "")) false
+  {
+    $decl nm $call struct_name_at (blk_c.code, "{ int64_t f0; int64_t f1; };")
+    $decl ret  $if ($call eq_str (nm, "")) false
         ($call has (blk_c.code,
             $call concat ("typedef struct ", $call concat (nm, $call concat (" ",
-                $call concat (nm, ";")))))) }.r)
+                $call concat (nm, ";"))))))
+  }.ret)
 
 // §4.10: a prop is in the type but occupies no space, so this struct has one
 // field, not two.
@@ -185,14 +197,16 @@ $decl t12 $call check ("a $prop takes no space in the struct",
 // is, because lowering interns a field's type before the block containing it,
 // and §5.5 makes the nesting acyclic.
 $decl t13 $call check ("a nested block is a struct of structs, declared in order",
-  { $decl nm    $call struct_name_at (blk_c.code, "{ int64_t f0; int64_t f1; };")
+  {
+    $decl nm    $call struct_name_at (blk_c.code, "{ int64_t f0; int64_t f1; };")
     $decl inner $call idx (blk_c.code, "int64_t f0; int64_t f1; }")
     // The outer struct embeds the inner one twice, so it is spelled with the inner's
     // own name — which is why that name has to be read rather than assumed.
     $decl outer $call idx (blk_c.code,
                     $call concat (nm, $call concat (" f0; ", $call concat (nm, " f1; }"))))
-    $decl out $if ($call eq_str (nm, "")) false
-        ($if ($call lt (0, inner)) ($call lt (inner, outer)) false) }.out)
+    $decl ret $if ($call eq_str (nm, "")) false
+        ($if ($call lt (0, inner)) ($call lt (inner, outer)) false)
+  }.ret)
 
 // §4.6 as a layout position.
 $decl t14 $call check ("projection is a field by index",
@@ -270,9 +284,11 @@ $decl t25 $call check ("a global has a variable of its own, assigned once by mpl
       ($call has (sto_c.code, "(NULL);")) false)
 
 $decl t26 $call check ("...and mpl_init runs before the entry point",
-  { $decl i $call idx (sto_c.code, "mpl_init();")
-    $decl m $call idx (sto_c.code, "int main(int argc, char **argv)")
-    $decl out $if ($call lt (0, m)) ($call lt (m, i)) false }.out)
+  {
+    $decl i   $call idx (sto_c.code, "mpl_init();")
+    $decl m   $call idx (sto_c.code, "int main(int argc, char **argv)")
+    $decl ret $if ($call lt (0, m)) ($call lt (m, i)) false
+  }.ret)
 
 // §4.8b discards the first operand, so C is right that its temporary is never
 // read — the cast says so rather than silencing the warning file-wide.

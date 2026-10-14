@@ -29,20 +29,21 @@ $decl show_errs $func ($decl xs Pa.diags.node, $decl what "") $match xs (
 // regression test), so the top-level form works too. It stays here because a
 // top-level `$decl` is a *static*, and three of them naming `ckd` would run the
 // pipeline once each.
-$decl main $func ()
-  { $decl argv $call args ()
-    $decl path $if ($call lt (0, $call alen (argv)))
-        ($call P.sval ($call at (argv, 0)))
-        ($call panic ("usage: emit_diag <file.mpl>"))
-    $decl rf  $call read_file (path)
-    $decl src $match rf (
-        $case {$prop tag "some"} rf.v,
-        $case rf ($call panic ($call concat ("cannot read ", path)))
-      )
-    $decl ckd $call C.check ($call C.parse (src, path))
-    $decl bad $call C.verify (ckd.program)
-    $decl out $call C.emit (ckd.program)
-    $decl e0 $call show_errs ($call Pa.diags.val (ckd.diagnostics), "check")
-    $decl e1 $call show_errs (bad, "verify")
-    $decl e2 $call show_errs ($call Pa.diags.val (out.diagnostics), "emit")
-    $decl r  "" }.r
+$decl main $func () {
+  $decl argv $call args ()
+  $decl path $if ($call lt (0, $call alen (argv)))
+      ($call P.sval ($call at (argv, 0)))
+      ($call panic ("usage: emit_diag <file.mpl>"))
+  $decl rf  $call read_file (path)
+  $decl src $match rf (
+      $case {$prop tag "some"} rf.v,
+      $case rf ($call panic ($call concat ("cannot read ", path)))
+    )
+  $decl ckd $call C.check ($call C.parse (src, path))
+  $decl bad $call C.verify (ckd.program)
+  $decl out $call C.emit (ckd.program)
+  $decl e0  $call show_errs ($call Pa.diags.val (ckd.diagnostics), "check")
+  $decl e1  $call show_errs (bad, "verify")
+  $decl e2  $call show_errs ($call Pa.diags.val (out.diagnostics), "emit")
+  $decl ret ""
+}.ret

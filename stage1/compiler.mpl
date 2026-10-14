@@ -92,12 +92,13 @@ $decl empty_program $call IR.program (T.tys.nil, IR.fns.nil, IR.groups.nil, 0, I
 
 // ------------------------------------------------------------------- parse
 
-$decl parse $func ($decl src "", $decl path "")
-  { $decl p $call Pa.parse (src)
-    // The parser is handed a string and does not know where it came from; the
-    // reader stamps the file in (parser.mpl says so above `diag`).
-    $decl out $call parsed ($call Pa.nodes.val (p.exprs), path, $call P.dirname (path),
-                   $call I.stamp_file (p.errs, path, Pa.diags.nil)) }.out
+$decl parse $func ($decl src "", $decl path "") {
+  $decl p $call Pa.parse (src)
+  // The parser is handed a string and does not know where it came from; the
+  // reader stamps the file in (parser.mpl says so above `diag`).
+  $decl ret $call parsed ($call Pa.nodes.val (p.exprs), path, $call P.dirname (path),
+                 $call I.stamp_file (p.errs, path, Pa.diags.nil))
+}.ret
 
 // ------------------------------------------------------------------- check
 //
@@ -113,9 +114,10 @@ $decl parse $func ($decl src "", $decl path "")
 $decl typed $func ($decl t T.proto_ty, $decl d Pa.diags.node)
   { $decl ty t  $decl diagnostics d }
 
-$decl infer_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "")
-  { $decl r   $call I.infer_file (items, I.root_env, base, path)
-    $decl out $call typed (r.ty, $call Pa.diags.val (r.errs)) }.out
+$decl infer_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "") {
+  $decl r   $call I.infer_file (items, I.root_env, base, path)
+  $decl ret $call typed (r.ty, $call Pa.diags.val (r.errs))
+}.ret
 
 $decl infer $func ($decl p proto_parsed)
   $if ($call Pa.diags.is_nil ($call Pa.diags.val (p.diagnostics)))
@@ -123,23 +125,25 @@ $decl infer $func ($decl p proto_parsed)
       ($call typed (T.t_bot, $call Pa.diags.val (p.diagnostics)))
 
 
-$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "", $decl path "")
-  { $decl st    $call L.lstate ()
-    // The entry file's name, so lowering identifies the entry file's function-valued
-    // props exactly as inference does (`opaque_at`) — inference has the path, and a
-    // parameter's type is inference's.
-    $decl named $set st.entry ($call L.mod_short (path))
-    // §2's root block, straight from inference: a `binding` is `{name, ty}`,
-    // which is a `T.field`, so one converter reads both (§5.1).
-    $decl prims $call L.prims_from (I.root_env, L.benv.nil)
-    $decl prog  $call L.lower_file (st, items, fty, prims, base)
-    $decl out   $call checked (prog, st.errs) }.out
+$decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "", $decl path "") {
+  $decl st    $call L.lstate ()
+  // The entry file's name, so lowering identifies the entry file's function-valued
+  // props exactly as inference does (`opaque_at`) — inference has the path, and a
+  // parameter's type is inference's.
+  $decl named $set st.entry ($call L.mod_short (path))
+  // §2's root block, straight from inference: a `binding` is `{name, ty}`,
+  // which is a `T.field`, so one converter reads both (§5.1).
+  $decl prims $call L.prims_from (I.root_env, L.benv.nil)
+  $decl prog  $call L.lower_file (st, items, fty, prims, base)
+  $decl ret   $call checked (prog, st.errs)
+}.ret
 
-$decl check_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "")
-  { $decl r   $call infer_ok (items, base, path)
-    $decl out $if ($call Pa.diags.is_nil ($call Pa.diags.val (r.diagnostics)))
-        ($call lower_ok (items, r.ty, base, path))
-        ($call checked (empty_program, $call Pa.diags.val (r.diagnostics))) }.out
+$decl check_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "") {
+  $decl r   $call infer_ok (items, base, path)
+  $decl ret $if ($call Pa.diags.is_nil ($call Pa.diags.val (r.diagnostics)))
+      ($call lower_ok (items, r.ty, base, path))
+      ($call checked (empty_program, $call Pa.diags.val (r.diagnostics)))
+}.ret
 
 $decl check $func ($decl p proto_parsed)
   $if ($call Pa.diags.is_nil ($call Pa.diags.val (p.diagnostics)))
@@ -156,10 +160,11 @@ $decl verify V.verify
 
 // ------------------------------------------------------------------- emit
 
-$decl emit $func ($decl pr IR.proto_program)
-  { $decl st  $call E.estate ()
-    $decl c   $call E.emit_program (st, pr)
-    $decl out $call emitted (c, $call E.emit_errs (st)) }.out
+$decl emit $func ($decl pr IR.proto_program) {
+  $decl st  $call E.estate ()
+  $decl c   $call E.emit_program (st, pr)
+  $decl ret $call emitted (c, $call E.emit_errs (st))
+}.ret
 
 // -------------------------------------------------------------------- link
 //
@@ -177,11 +182,12 @@ $decl link $func ($decl e proto_emitted, $decl path "")
 // §9.1's project-level form is "a convenience over these, not a separate
 // mechanism". This is that convenience, and it is exactly the three calls.
 
-$decl compile $func ($decl src "", $decl path "")
-  { $decl ckd $call check ($call parse (src, path))
-    $decl out $if ($call Pa.diags.is_nil ($call Pa.diags.val (ckd.diagnostics)))
-        ($call emit (ckd.program))
-        ($call emitted (IR.ofiles.nil, $call Pa.diags.val (ckd.diagnostics))) }.out
+$decl compile $func ($decl src "", $decl path "") {
+  $decl ckd $call check ($call parse (src, path))
+  $decl ret $if ($call Pa.diags.is_nil ($call Pa.diags.val (ckd.diagnostics)))
+      ($call emit (ckd.program))
+      ($call emitted (IR.ofiles.nil, $call Pa.diags.val (ckd.diagnostics)))
+}.ret
 
 // ------------------------------------------------------------ host and target
 //

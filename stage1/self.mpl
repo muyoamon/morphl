@@ -19,14 +19,15 @@ $decl src $match rf (
   $case rf ($call panic ("cannot read stage1/lexer.mpl"))
 )
 
-$decl run_it $func ($decl s "")
-  { $decl ckd  $call C.check ($call C.parse (s, path))
-    $decl prog ckd.program
-    $decl bad  $call C.verify (prog)
-    $decl ne   $call Pa.diags.length ($call Pa.diags.val (ckd.diagnostics), 0)
-    $decl nv   $call Pa.diags.length (bad, 0)
-    $decl nf   $call IR.fns.length ($call IR.fns.val (prog.funcs), 0)
-    $decl nbad $call add (ne, nv)
-    $decl out  $if ($call lt (0, nbad)) ($call sub (0, nbad)) nf }.out
+$decl run_it $func ($decl s "") {
+  $decl ckd  $call C.check ($call C.parse (s, path))
+  $decl prog ckd.program
+  $decl bad  $call C.verify (prog)
+  $decl ne   $call Pa.diags.length ($call Pa.diags.val (ckd.diagnostics), 0)
+  $decl nv   $call Pa.diags.length (bad, 0)
+  $decl nf   $call IR.fns.length ($call IR.fns.val (prog.funcs), 0)
+  $decl nbad $call add (ne, nv)
+  $decl ret  $if ($call lt (0, nbad)) ($call sub (0, nbad)) nf
+}.ret
 
 $decl main $func () $call run_it (src)

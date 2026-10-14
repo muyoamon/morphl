@@ -5,8 +5,8 @@
 // single file, which is what makes the linkage property testable: a module's output has
 // to be a function of its own source, so the same module in two different programs must
 // come out byte-identical. `test-stable` in `build.zig` is that check.
-$decl C  $import "compiler"
-$decl P  $import "prelude"
+$decl C $import "compiler"
+$decl P $import "prelude"
 
 $decl pick $func ($decl want "", $decl fs C.ir.ofiles.node) $match fs (
   $case {$prop tag "cons"}
@@ -23,6 +23,6 @@ $decl src  $match rf (
     $case {$prop tag "some"} rf.v,
     $case rf ($call panic ($call concat ("cannot read ", path)))
   )
-$decl ckd  $call C.check ($call C.parse (src, path))
-$decl out  $call C.emit (ckd.program)
-$decl go   $call pick (want, $call C.ir.ofiles.val (out.files))
+$decl ckd $call C.check ($call C.parse (src, path))
+$decl out $call C.emit (ckd.program)
+$decl go  $call pick (want, $call C.ir.ofiles.val (out.files))

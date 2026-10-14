@@ -16,10 +16,11 @@ $decl ints $specialize P.list 0
 
 // Frame storage, used and finished with inside one scope — §5.3a's "one built
 // and consumed inside a single scope may use `$new` and costs nothing".
-$decl scaled $func ($decl n 0)
-  { $decl acc $mut $new n
-    $decl a   $set acc ($call mul ($call P.ival (acc), 3))
-    $decl r   $call P.ival (acc) }.r
+$decl scaled $func ($decl n 0) {
+  $decl acc $mut $new n
+  $decl a   $set acc ($call mul ($call P.ival (acc), 3))
+  $decl ret $call P.ival (acc)
+}.ret
 
 // A list *returned* to a caller: its cells outlive the frame that consed them,
 // so prelude's `cons` allocates. §5.3a is explicit that this is the one place
@@ -27,8 +28,9 @@ $decl scaled $func ($decl n 0)
 $decl build $func ($decl n 0)
   $call ints.cons (n, $call ints.cons ($call add (n, 1), ints.nil))
 
-$decl main $func ()
-  { $decl xs $call build (4)
-    $decl r  $call add ($call scaled (10),
-                 $call add ($call ints.length (xs, 0), $call add ($call ints.nth (xs, 0),
-                     $call ints.nth (xs, 1)))) }.r
+$decl main $func () {
+  $decl xs $call build (4)
+  $decl ret  $call add ($call scaled (10),
+               $call add ($call ints.length (xs, 0), $call add ($call ints.nth (xs, 0),
+                   $call ints.nth (xs, 1))))
+}.ret

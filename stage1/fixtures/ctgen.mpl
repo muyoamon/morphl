@@ -17,8 +17,8 @@ $decl tagged $template N {
 
 $decl five $specialize sized 5
 $decl six  $specialize sized 6
-$decl A $specialize tagged "a"
-$decl B $specialize tagged "b"
+$decl A    $specialize tagged "a"
+$decl B    $specialize tagged "b"
 
 $decl pick $func ($decl x $union ($call A.mk (0), $call B.mk (0))) $match x (
   $case {$prop tag "a"} x.val,
@@ -27,11 +27,12 @@ $decl pick $func ($decl x $union ($call A.mk (0), $call B.mk (0))) $match x (
 
 // A prop holding a specialisation, with a runtime name as the argument for a
 // generic that is *not* compile-time: only its type reaches the result.
-$decl seven 7
-$decl box $template T { $prop get $func ($decl v T) v }
+$decl seven  7
+$decl box    $template T { $prop get $func ($decl v T) v }
 $decl holder { $prop b $specialize box seven }
 
-$decl main $func ()
-  { $decl s $call add (five.size, six.size)
-    $decl p $call add ($call pick ($call A.mk (3)), $call pick ($call B.mk (4)))
-    $decl r $call add ($call add (s, p), $call holder.b.get (7)) }.r
+$decl main $func () {
+  $decl s   $call add (five.size, six.size)
+  $decl p   $call add ($call pick ($call A.mk (3)), $call pick ($call B.mk (4)))
+  $decl ret $call add ($call add (s, p), $call holder.b.get (7))
+}.ret

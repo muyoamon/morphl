@@ -84,20 +84,21 @@ $decl fold_arms $func ($decl xs IR.arms.node, $decl acc IR.arms.node) $match xs 
 // *after* the operands are folded, so `add (add (1, 2), 3)` collapses in one
 // pass rather than needing the pipeline to run this twice.
 $decl fold_call $func ($decl t 0, $decl f IR.proto_expr, $decl xs IR.exprs.node,
-                       $decl tl P.boolean)
-  { $decl op  $call prim_name (f)
-    $decl two $call eq_int ($call IR.exprs.length (xs, 0), 2)
-    $decl hit $if two
-        ($if ($call foldable (op))
-             ($call P.and ($call is_int ($call IR.exprs.nth (xs, 0)),
-                           $call is_int ($call IR.exprs.nth (xs, 1))))
-             false)
-        false
-    $decl out $if hit
-        ($call IR.eval ($call IR.e_int (t, $call apply (op,
-            $call int_val ($call IR.exprs.nth (xs, 0)),
-            $call int_val ($call IR.exprs.nth (xs, 1))))))
-        ($call IR.eval ($call IR.e_call (t, f, xs, tl))) }.out
+                       $decl tl P.boolean) {
+  $decl op  $call prim_name (f)
+  $decl two $call eq_int ($call IR.exprs.length (xs, 0), 2)
+  $decl hit $if two
+      ($if ($call foldable (op))
+           ($call P.and ($call is_int ($call IR.exprs.nth (xs, 0)),
+                         $call is_int ($call IR.exprs.nth (xs, 1))))
+           false)
+      false
+  $decl ret $if hit
+      ($call IR.eval ($call IR.e_int (t, $call apply (op,
+          $call int_val ($call IR.exprs.nth (xs, 0)),
+          $call int_val ($call IR.exprs.nth (xs, 1))))))
+      ($call IR.eval ($call IR.e_call (t, f, xs, tl)))
+}.ret
 
 // Every node is rebuilt, so every node gets a fresh index (§9.3). `IR.eval` is
 // what makes the arms join: each constructor gives its own block type, and
@@ -111,9 +112,11 @@ $decl fold_expr $func ($decl e IR.proto_expr) $match e (
   $case {$prop tag "set"}
     ($call IR.eval ($call IR.e_set (e.ty, $call fold_expr (e.target), $call fold_expr (e.value)))),
   $case {$prop tag "block"}
-    ($call IR.eval ($call IR.e_block (e.ty, $call fold_slots ($call IR.bslots.val (e.slots), IR.bslots.nil)))),
+    ($call IR.eval ($call IR.e_block (e.ty, $call fold_slots ($call IR.bslots.val (e.slots),
+        IR.bslots.nil)))),
   $case {$prop tag "group"}
-    ($call IR.eval ($call IR.e_group (e.ty, $call fold_list ($call IR.exprs.val (e.items), IR.exprs.nil)))),
+    ($call IR.eval ($call IR.e_group (e.ty, $call fold_list ($call IR.exprs.val (e.items),
+        IR.exprs.nil)))),
   $case {$prop tag "closure"}
     ($call IR.eval ($call IR.e_closure (e.ty, e.fn,
         $call fold_list ($call IR.exprs.val (e.captures), IR.exprs.nil)))),

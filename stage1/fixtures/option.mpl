@@ -19,32 +19,36 @@
 //
 // 42 - 1 + 10 + 2 - 1 + 0 = 52.
 
-$decl num $func ($decl s "")
-  { $decl r $call str_to_int (s)
-    $decl out $match r (
-        $case {$prop tag "some"} r.v,
-        $case r -1
-      ) }.out
+$decl num $func ($decl s "") {
+  $decl r $call str_to_int (s)
+  $decl ret $match r (
+      $case {$prop tag "some"} r.v,
+      $case r -1
+    )
+}.ret
 
 // §3.1 makes a `Str` bytes, so the length of the encoding is what is checked —
 // 233 is U+00E9, which is two bytes in UTF-8.
-$decl code_len $func ($decl c 0)
-  { $decl r $call from_code (c)
-    $decl out $match r (
-        $case {$prop tag "some"} ($call len (r.v)),
-        $case r -1
-      ) }.out
+$decl code_len $func ($decl c 0) {
+  $decl r $call from_code (c)
+  $decl ret $match r (
+      $case {$prop tag "some"} ($call len (r.v)),
+      $case r -1
+    )
+}.ret
 
-$decl file_len $func ($decl p "")
-  { $decl r $call read_file (p)
-    $decl out $match r (
-        $case {$prop tag "some"} ($call len (r.v)),
-        $case r 0
-      ) }.out
+$decl file_len $func ($decl p "") {
+  $decl r $call read_file (p)
+  $decl ret $match r (
+      $case {$prop tag "some"} ($call len (r.v)),
+      $case r 0
+    )
+}.ret
 
-$decl main $func ()
-  { $decl a $call add ($call num ("42"), $call num ("12x"))
-    $decl b $call add (a, $call num ("1_0"))
-    $decl c $call add (b, $call code_len (233))
-    $decl d $call add (c, $call code_len (55296))
-    $decl out $call add (d, $call file_len ("/nonexistent/morphl/fixture")) }.out
+$decl main $func () {
+  $decl a   $call add ($call num ("42"), $call num ("12x"))
+  $decl b   $call add (a, $call num ("1_0"))
+  $decl c   $call add (b, $call code_len (233))
+  $decl d   $call add (c, $call code_len (55296))
+  $decl ret $call add (d, $call file_len ("/nonexistent/morphl/fixture"))
+}.ret

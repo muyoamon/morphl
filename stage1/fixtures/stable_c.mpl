@@ -8,6 +8,6 @@
 // only because none of those names is drawn from a counter any more. The same member
 // set has to be projected in both, since a module's *contents* are a whole-program
 // fact (§4.9) even once its *naming* is not — hence `P.not` and nothing else.
-$decl U $import "stable_util"
-$decl P $import "../prelude"
+$decl U    $import "stable_util"
+$decl P    $import "../prelude"
 $decl main $func () $if ($call U.f ($call P.not (true))) 7 0

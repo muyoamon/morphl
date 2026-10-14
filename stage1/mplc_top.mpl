@@ -6,8 +6,8 @@
 // in `build.zig` runs it, because that would cost a three-minute emit per build —
 // `stage1/fixtures/init_order.mpl` is the automated guard, and this is the
 // full-size one to reach for if the ordering is ever touched again.
-$decl C  $import "compiler"
-$decl P  $import "prelude"
+$decl C $import "compiler"
+$decl P $import "prelude"
 
 $decl argv $call args ()
 $decl path $if ($call lt (0, $call alen (argv)))

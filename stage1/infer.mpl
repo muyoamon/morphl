@@ -31,14 +31,14 @@ $decl or  P.or
 
 // Reading a value out of storage needs a value-expecting position (§5.4), so
 // each cell type gets an identity function. See BOOTSTRAP.md §7.
-$decl tval   $func ($decl x T.proto_ty) x
-$decl ival   P.ival
+$decl tval $func ($decl x T.proto_ty) x
+$decl ival P.ival
 
 // ---------------------------------------------------------------- environment
 
 $decl binding $func ($decl n "", $decl t T.proto_ty) { $decl name n  $decl ty t }
 $decl proto_binding $call binding ("", T.t_bot)
-$decl env $specialize P.list proto_binding
+$decl env     $specialize P.list proto_binding
 
 $decl eval_env $func ($decl x env.node) x
 
@@ -97,12 +97,12 @@ $decl tmpl_rec $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $de
   $call tmpl_rec_c (i, gs, bd, en, fl, Pa.ctgs.nil)
 
 $decl proto_tmpl $call tmpl_rec (0, strs.nil, Pa.proto_node, env.nil, "")
-$decl tmpl_list $specialize P.list proto_tmpl
+$decl tmpl_list  $specialize P.list proto_tmpl
 
 // §4.9: "Typing is memoized per **argument type**."
-$decl memo_ent $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty t }
+$decl memo_ent   $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty t }
 $decl proto_memo $call memo_ent ("", T.t_bot)
-$decl memo_list $specialize P.list proto_memo
+$decl memo_list  $specialize P.list proto_memo
 
 // §4.14: "**Loaded once.** All imports of the same resolved file yield the same
 // block", and "**Cycles are an error.**" `state` is "loading" while a module is
@@ -119,20 +119,20 @@ $decl mod_ent_h $func ($decl k "", $decl st "", $decl t T.proto_ty, $decl h 0)
 $decl mod_ent $func ($decl k "", $decl st "", $decl t T.proto_ty)
   $call mod_ent_h (k, st, t, 0)
 $decl proto_mod $call mod_ent ("", "", T.t_bot)
-$decl mod_list $specialize P.list proto_mod
+$decl mod_list  $specialize P.list proto_mod
 
 // §4.11 + §5.5: a `$fwd` name and the placeholder standing for its result.
-$decl fwd_ent $func ($decl n "", $decl i 0) { $decl name n  $decl id i }
+$decl fwd_ent   $func ($decl n "", $decl i 0) { $decl name n  $decl id i }
 $decl proto_fwd $call fwd_ent ("", 0)
-$decl fwd_list $specialize P.list proto_fwd
+$decl fwd_list  $specialize P.list proto_fwd
 
 // §4.16 rule 2 asks "which `$func` literal did this value come from", so what a
 // `$decl` of a literal records is the **literal**, not a verdict about it. The
 // capture analysis is two AST walks and is wanted only for an argument that
 // actually crosses into C, which in a program with no `$extern` is none.
-$decl fnlit_ent $func ($decl n "", $decl l Pa.proto_node) { $decl name n  $decl lit l }
+$decl fnlit_ent   $func ($decl n "", $decl l Pa.proto_node) { $decl name n  $decl lit l }
 $decl proto_fnlit $call fnlit_ent ("", Pa.proto_node)
-$decl fnlit_list $specialize P.list proto_fnlit
+$decl fnlit_list  $specialize P.list proto_fnlit
 
 $decl find_fnlit $func ($decl xs fnlit_list.node, $decl nm "") $match xs (
   $case {$prop tag "cons"}
@@ -153,111 +153,112 @@ $decl find_fwd $func ($decl xs fwd_list.node, $decl nm "") $match xs (
 $decl def_ent $func ($decl l 0, $decl c 0, $decl m "", $decl a T.proto_ty, $decl b T.proto_ty)
   { $decl line l  $decl col c  $decl msg m  $decl sub a  $decl sup b }
 $decl proto_def $call def_ent (0, 0, "", T.t_bot, T.t_bot)
-$decl def_list $specialize P.list proto_def
+$decl def_list  $specialize P.list proto_def
 
 
 // One equation of the system: this placeholder resolves to this type.
-$decl res_ent $func ($decl i 0, $decl t T.proto_ty) { $decl id i  $decl ty t }
+$decl res_ent   $func ($decl i 0, $decl t T.proto_ty) { $decl id i  $decl ty t }
 $decl proto_res $call res_ent (0, T.t_bot)
-$decl res_list $specialize P.list proto_res
+$decl res_list  $specialize P.list proto_res
 
 // -------------------------------------------------------------------- context
 
-$decl ctx $func ()
-  { $decl next   $mut $alloc 1
-    // §4.2 types storage from its operand, so `$new xs.nil` is storage only the
-    // empty list fits into. `node` *is* the list type and still evaluates to
-    // nil (§4.8a: a union evaluates to its first member), so it widens the
-    // storage to what gets written without changing what it starts as.
-    $decl errs   $mut $alloc Pa.diags.node
-    // §4.15: the error set of the function currently being typed.
-    $decl tryset $mut $alloc T.proto_ty
-    // Set while the first of the two prop passes runs, so that a diagnostic is
-    // reported once — by the pass that has the resolved types.
-    $decl quiet  $mut $alloc ($union (false, true))
-    $decl tmpls  $mut $alloc tmpl_list.node
-    $decl memo   $mut $alloc memo_list.node
-    $decl mods   $mut $alloc mod_list.node
-    $decl defer  $mut $alloc def_list.node
-    // Where `$import` resolves from. §4.14 makes import names logical and hands
-    // resolution to the build program; this is the stage-1 stand-in.
-    $decl base   $mut $alloc ""
-    // The file currently being typed. A diagnostic belongs to the file whose
-    // source raised it, which is not the file the checker was invoked on as
-    // soon as anything is imported.
-    $decl file   $mut $alloc ""
-    // Which `$specialize` body is being typed, as §4.9's memo key — "" at a file's
-    // top level. It exists so a compile-time identity can be a function of its
-    // *source* rather than of a counter: `specialize_with` retargets `cx.file` to the
-    // **template's** file while typing the body, so (file, span) is identical for
-    // every instantiation and could not tell `$specialize P.list Int` from
-    // `$specialize P.list Str`. Their props are `cv_opaque`, `same_props` compares
-    // values, and two props-only blocks with equal props are one type — so without
-    // this the two specialisations would compare **equal**. Saved and restored around
-    // the body exactly as `file` is.
-    $decl sctx   $mut $alloc ""
-    // ------------------------------------------------- the interface cache (§9)
-    //
-    // Where a module's serialised interface is kept, or "" for **off** — which is the
-    // default, so the compiler behaves exactly as before unless a driver asks. §9 makes
-    // the build a program, so whether to cache is the build's decision and not the
-    // compiler's; what the compiler supplies is the hook.
-    $decl cdir   $mut $alloc ""
-    $decl nhit   $mut $alloc 0
-    $decl nmiss  $mut $alloc 0
-    // §4.10's compile-time names: every `$prop` bound anywhere, and every
-    // `$template` generic. A prop initializer may name one of these and nothing
-    // else — a parameter or a `$decl` is an enclosing *runtime* binding, and
-    // §4.10 requires the initializer to be "fully evaluable by the compiler".
-    //
-    // It only ever grows: a name that has gone out of scope stays in the set, so
-    // the check can be too permissive but never too strict. That is the safe
-    // direction — a missed report rather than a rejected valid program — and it
-    // avoids a save/restore discipline over a mutable context that is otherwise
-    // append-only.
-    $decl ctnames $mut $alloc strs.node
-    // How many `$func` bodies enclose the expression being typed. §4.15 makes
-    // `$try` outside one a compile error — it returns from "the nearest enclosing
-    // `$func`", and at a file's top level or in a prop initializer there is none.
-    //
-    // Bumped at **all three** places a `$func` body is typed (`infer_func`,
-    // `infer_rec_func`, `infer_fwd_body`). Two of them are indented alike and the
-    // third is not, which is how a first attempt at this patched two and silently
-    // missed one — the exact shape of no-op this file warns about twice.
-    $decl fdepth  $mut $alloc 0
-    // How many specialisations are being typed, one inside another. §4.9: "A chain
-    // of *distinct* argument types is unbounded; there is a fixed instantiation
-    // depth limit and exceeding it is an error." Self-specialisation made the chain
-    // reachable; without the limit a template that specialises itself at a growing
-    // type would not terminate.
-    $decl sdepth  $mut $alloc 0
-    // How many times a specialisation has been answered with an entry still in
-    // progress — §4.9's "hitting an in-progress entry returns its `R`". Compared
-    // across a body's first pass to learn whether the body reached itself.
-    $decl sreach  $mut $alloc 0
-    // §4.16 rule 2. The section makes capture-freeness "a property of the
-    // *expression* in the argument position", holding "when the compiler can see
-    // which `$func` literal the value came from" — so the check is syntactic, and
-    // these three sets are what it can see.
-    //
-    // `extnames` is the names bound to an `$extern`, which is how a call site
-    // knows it is crossing into C: §4.16's signature is an ordinary `$func` type
-    // and carries nothing to say so. `cffns` maps a name to the `$func` **literal**
-    // its `$decl` gave it — the literal itself, not a verdict about it, since the
-    // capture analysis is two AST walks and is wanted only for an argument that
-    // actually crosses. `topnames` is the names bound at a file's top
-    // level, which lowering lifts to globals — reading one is not a capture
-    // (§7.3), so they are what the captured set is taken modulo.
-    //
-    // All three grow and never shrink, like `ctnames` above, and all three err
-    // the same way: `topnames` too large, or `cffns` answering for a name that is
-    // no longer the one in scope, means a capture missed,
-    // which §5.3a's scope-blind `Pa.bound_names` already accepts as the right
-    // direction. `extnames` too large is the one that could reject a valid
-    // program, and takes a call to an unrelated name spelled like an extern.
-    $decl extnames $mut $alloc strs.node
-    $decl cffns    $mut $alloc fnlit_list.node
-    $decl topnames $mut $alloc strs.node }
+$decl ctx $func () {
+  $decl next   $mut $alloc 1
+  // §4.2 types storage from its operand, so `$new xs.nil` is storage only the
+  // empty list fits into. `node` *is* the list type and still evaluates to
+  // nil (§4.8a: a union evaluates to its first member), so it widens the
+  // storage to what gets written without changing what it starts as.
+  $decl errs   $mut $alloc Pa.diags.node
+  // §4.15: the error set of the function currently being typed.
+  $decl tryset $mut $alloc T.proto_ty
+  // Set while the first of the two prop passes runs, so that a diagnostic is
+  // reported once — by the pass that has the resolved types.
+  $decl quiet $mut $alloc ($union (false, true))
+  $decl tmpls $mut $alloc tmpl_list.node
+  $decl memo  $mut $alloc memo_list.node
+  $decl mods  $mut $alloc mod_list.node
+  $decl defer $mut $alloc def_list.node
+  // Where `$import` resolves from. §4.14 makes import names logical and hands
+  // resolution to the build program; this is the stage-1 stand-in.
+  $decl base   $mut $alloc ""
+  // The file currently being typed. A diagnostic belongs to the file whose
+  // source raised it, which is not the file the checker was invoked on as
+  // soon as anything is imported.
+  $decl file   $mut $alloc ""
+  // Which `$specialize` body is being typed, as §4.9's memo key — "" at a file's
+  // top level. It exists so a compile-time identity can be a function of its
+  // *source* rather than of a counter: `specialize_with` retargets `cx.file` to the
+  // **template's** file while typing the body, so (file, span) is identical for
+  // every instantiation and could not tell `$specialize P.list Int` from
+  // `$specialize P.list Str`. Their props are `cv_opaque`, `same_props` compares
+  // values, and two props-only blocks with equal props are one type — so without
+  // this the two specialisations would compare **equal**. Saved and restored around
+  // the body exactly as `file` is.
+  $decl sctx   $mut $alloc ""
+  // ------------------------------------------------- the interface cache (§9)
+  //
+  // Where a module's serialised interface is kept, or "" for **off** — which is the
+  // default, so the compiler behaves exactly as before unless a driver asks. §9 makes
+  // the build a program, so whether to cache is the build's decision and not the
+  // compiler's; what the compiler supplies is the hook.
+  $decl cdir  $mut $alloc ""
+  $decl nhit  $mut $alloc 0
+  $decl nmiss $mut $alloc 0
+  // §4.10's compile-time names: every `$prop` bound anywhere, and every
+  // `$template` generic. A prop initializer may name one of these and nothing
+  // else — a parameter or a `$decl` is an enclosing *runtime* binding, and
+  // §4.10 requires the initializer to be "fully evaluable by the compiler".
+  //
+  // It only ever grows: a name that has gone out of scope stays in the set, so
+  // the check can be too permissive but never too strict. That is the safe
+  // direction — a missed report rather than a rejected valid program — and it
+  // avoids a save/restore discipline over a mutable context that is otherwise
+  // append-only.
+  $decl ctnames $mut $alloc strs.node
+  // How many `$func` bodies enclose the expression being typed. §4.15 makes
+  // `$try` outside one a compile error — it returns from "the nearest enclosing
+  // `$func`", and at a file's top level or in a prop initializer there is none.
+  //
+  // Bumped at **all three** places a `$func` body is typed (`infer_func`,
+  // `infer_rec_func`, `infer_fwd_body`). Two of them are indented alike and the
+  // third is not, which is how a first attempt at this patched two and silently
+  // missed one — the exact shape of no-op this file warns about twice.
+  $decl fdepth  $mut $alloc 0
+  // How many specialisations are being typed, one inside another. §4.9: "A chain
+  // of *distinct* argument types is unbounded; there is a fixed instantiation
+  // depth limit and exceeding it is an error." Self-specialisation made the chain
+  // reachable; without the limit a template that specialises itself at a growing
+  // type would not terminate.
+  $decl sdepth  $mut $alloc 0
+  // How many times a specialisation has been answered with an entry still in
+  // progress — §4.9's "hitting an in-progress entry returns its `R`". Compared
+  // across a body's first pass to learn whether the body reached itself.
+  $decl sreach  $mut $alloc 0
+  // §4.16 rule 2. The section makes capture-freeness "a property of the
+  // *expression* in the argument position", holding "when the compiler can see
+  // which `$func` literal the value came from" — so the check is syntactic, and
+  // these three sets are what it can see.
+  //
+  // `extnames` is the names bound to an `$extern`, which is how a call site
+  // knows it is crossing into C: §4.16's signature is an ordinary `$func` type
+  // and carries nothing to say so. `cffns` maps a name to the `$func` **literal**
+  // its `$decl` gave it — the literal itself, not a verdict about it, since the
+  // capture analysis is two AST walks and is wanted only for an argument that
+  // actually crosses. `topnames` is the names bound at a file's top
+  // level, which lowering lifts to globals — reading one is not a capture
+  // (§7.3), so they are what the captured set is taken modulo.
+  //
+  // All three grow and never shrink, like `ctnames` above, and all three err
+  // the same way: `topnames` too large, or `cffns` answering for a name that is
+  // no longer the one in scope, means a capture missed,
+  // which §5.3a's scope-blind `Pa.bound_names` already accepts as the right
+  // direction. `extnames` too large is the one that could reject a valid
+  // program, and takes a call to an unrelated name spelled like an extern.
+  $decl extnames $mut $alloc strs.node
+  $decl cffns    $mut $alloc fnlit_list.node
+  $decl topnames $mut $alloc strs.node
+}
 
 $decl proto_ctx $call ctx ()
 
@@ -270,25 +271,28 @@ $decl eval_res   $func ($decl x res_list.node) x
 $decl eval_defer $func ($decl x def_list.node) x
 $decl sval       P.sval
 
-$decl fresh $func ($decl cx proto_ctx)
-  { $decl i       $call ival (cx.next)
-    $decl bumped  $set cx.next ($call add (i, 1))
-    $decl out     i }.out
+$decl fresh $func ($decl cx proto_ctx) {
+  $decl i      $call ival (cx.next)
+  $decl bumped $set cx.next ($call add (i, 1))
+  $decl ret    i
+}.ret
 
 $decl bval $func ($decl b P.boolean) b
 
-$decl err $func ($decl cx proto_ctx, $decl m "", $decl x P.proto_span)
-  { $decl noted $if ($call bval (cx.quiet)) ()
-        ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, x.line, x.col, cx.file), cx.errs)))
-    $decl out   T.t_bot }.out
+$decl err $func ($decl cx proto_ctx, $decl m "", $decl x P.proto_span) {
+  $decl noted $if ($call bval (cx.quiet)) ()
+      ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, x.line, x.col, cx.file), cx.errs)))
+  $decl ret   T.t_bot
+}.ret
 
 // §5.5: park a check whose types still mention an unresolved placeholder. It is
 // re-run once the knot is tied, and reported then if it fails.
 $decl defer_check $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl b T.proto_ty,
-                         $decl m "", $decl x P.proto_span)
-  { $decl noted $set cx.defer ($call def_list.cons ($call def_ent (x.line, x.col, m, a, b),
-                                                    $call eval_defer (cx.defer)))
-    $decl out T.t_unit }.out
+                         $decl m "", $decl x P.proto_span) {
+  $decl noted $set cx.defer ($call def_list.cons ($call def_ent (x.line, x.col, m, a, b),
+                                                  $call eval_defer (cx.defer)))
+  $decl ret T.t_unit
+}.ret
 
 // §5.4: a reference behaves as its pointee wherever a value is expected.
 $decl deref_ty $func ($decl t T.proto_ty) $match t (
@@ -350,19 +354,21 @@ $decl has_free_var $func ($decl t T.proto_ty) $call hfv (t)
 // own binder is reachable without going through a reference. Inference is still
 // total — the type is returned either way — and what failed is the layout of
 // the type it produced, not the inference of it.
-$decl close_rec $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl i 0, $decl x P.proto_span)
+$decl close_rec $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl i 0, $decl x P.proto_span) {
   // `μR. A | R` is `A` (see `T.drop_var`), so simplify before deciding whether
   // a binder is needed at all.
-  { $decl r   $call T.drop_var (t, i)
-    $decl out $if ($call occurs (r, i))
-        { $decl m     $call T.close_var (r, i)
-          $decl noted $if ($call T.unguarded_rec (m))
-              ($call err (cx, $call concat (
-                  "this recursive type has no layout: it recurs through a value, not storage. Write $new at the recursive position (§5.5). Inferred ",
-                  $call T.show (m)), x))
-              T.t_bot
-          $decl res   m }.res
-        r }.out
+  $decl r   $call T.drop_var (t, i)
+  $decl ret $if ($call occurs (r, i)) {
+    $decl m     $call T.close_var (r, i)
+    $decl noted $if ($call T.unguarded_rec (m))
+        ($call err (cx, $call concat (
+            "this recursive type has no layout: it recurs through a value, not storage. Write $new at the recursive position (§5.5). Inferred ",
+            $call T.show (m)), x))
+        T.t_bot
+    $decl ret2   m
+  }.ret2
+      r
+}.ret
 
 // ------------------------------------------------------------------ helpers
 
@@ -418,17 +424,23 @@ $decl group_items $func ($decl n Pa.proto_node) $match n (
 // intrinsics as `$overload` sets; dropping float arithmetic is what lets each
 // of these be a single function type.
 
-$decl ii_i $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int)
-$decl ii_b $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_bool)
-$decl ss_b $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)), T.t_bool)
-$decl ss_s $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)), T.t_str)
-$decl i_i  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_int)
-$decl s_i  $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_int)
-$decl i_s  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_str)
-$decl si_i $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_int)
+$decl ii_i $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)),
+    T.t_int)
+$decl ii_b $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)),
+    T.t_bool)
+$decl ss_b $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
+    T.t_bool)
+$decl ss_s $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
+    T.t_str)
+$decl i_i $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_int)
+$decl s_i $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_int)
+$decl i_s $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_str)
+$decl si_i $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_int, T.tys.nil)),
+    T.t_int)
 $decl sii_s $call T.t_func ($call T.tys.cons (T.t_str,
-                            $call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil))), T.t_str)
-$decl s_u  $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_unit)
+                            $call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int,
+                                T.tys.nil))), T.t_str)
+$decl s_u   $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_unit)
 $decl s_bot $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_bot)
 
 // §4.15's shapes, and the `option` that §8 requires failing operations to use.
@@ -446,9 +458,10 @@ $decl opt_str $call T.union2 (t_none, $call some_of (T.t_str))
 // `Str`. §7.6 makes `at` return a base+index handle rather than an interior
 // pointer, which is a reference — so reading one is §5.4's transparency, and
 // `$decl p $call at (a, 0)` binds a reference, not a copy.
-$decl arr_str  $call T.t_array (T.t_str)
-$decl args_t   $call T.t_func (T.tys.nil, arr_str)
-$decl array_t  $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_str, T.tys.nil)), arr_str)
+$decl arr_str $call T.t_array (T.t_str)
+$decl args_t  $call T.t_func (T.tys.nil, arr_str)
+$decl array_t $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_str, T.tys.nil)),
+    arr_str)
 $decl at_t     $call T.t_func ($call T.tys.cons (arr_str, $call T.tys.cons (T.t_int, T.tys.nil)),
                                $call T.t_ref ("mut", T.t_str))
 $decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
@@ -476,7 +489,8 @@ $decl root_env
 
 $fwd infer
 
-$decl infer_tys $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.node, $decl acc T.tys.node) $match xs (
+$decl infer_tys $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.node,
+    $decl acc T.tys.node) $match xs (
   $case {$prop tag "cons"}
     $call infer_tys (cx, e, xs.tail, $call T.tys.cons ($call infer (cx, e, xs.head), acc)),
   $case xs ($call T.tys.reverse (acc, T.tys.nil))
@@ -489,18 +503,22 @@ $fwd proj_one
 $decl proj_members $func ($decl cx proto_ctx, $decl ms T.tys.node, $decl fld "",
                           $decl n Pa.proto_node, $decl acc T.proto_ty) $match ms (
   $case {$prop tag "cons"}
-    $call proj_members (cx, ms.tail, fld, n, $call T.join (acc, $call proj_one (cx, ms.head, fld, n))),
+    $call proj_members (cx, ms.tail, fld, n, $call T.join (acc, $call proj_one (cx, ms.head, fld,
+        n))),
   $case ms acc
 )
 
-$decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "", $decl n Pa.proto_node) $match tt (
-  $case {$prop tag "block"}
-    { $decl f $call T.find_field (tt.fields, fld)
-      $decl r $if ($call not ($call eq_str (f.name, ""))) f.ty
-          { $decl p $call T.find_prop (tt.props, fld)
-            $decl rr $if ($call not ($call eq_str (p.name, ""))) p.ty
-                ($call err (cx, $call concat ("block has no field '",
-                             $call concat (fld, "'")), n)) }.rr }.r,
+$decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
+    $decl n Pa.proto_node) $match tt (
+  $case {$prop tag "block"} {
+    $decl f $call T.find_field (tt.fields, fld)
+    $decl ret $if ($call not ($call eq_str (f.name, ""))) f.ty {
+      $decl p $call T.find_prop (tt.props, fld)
+      $decl ret2 $if ($call not ($call eq_str (p.name, ""))) p.ty
+          ($call err (cx, $call concat ("block has no field '",
+                       $call concat (fld, "'")), n))
+    }.ret2
+  }.ret,
   // A union is usable wherever all of its members are (§5.1), so a field that
   // every member carries is projectable from the union itself — which is the
   // whole point of every node beginning with the same `line`/`col` prefix.
@@ -515,15 +533,17 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "", $de
 $decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_projn)
   $call proj_one (cx, $call deref_ty ($call infer (cx, e, n.target)), n.field, n)
 
-$decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_proji)
-  { $decl tt $call deref_ty ($call infer (cx, e, n.target))
-    $decl out $match tt (
-        $case {$prop tag "group"}
-          $if ($call and ($call lt (0, n.index), $call not ($call lt ($call T.tys.length (tt.items, 0), n.index))))
-              ($call T.tys.nth (tt.items, $call sub (n.index, 1)))
-              ($call err (cx, "group index is out of range", n)),
-        $case tt ($call err (cx, $call concat ("cannot index into ", $call T.show (tt)), n))
-      ) }.out
+$decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_proji) {
+  $decl tt $call deref_ty ($call infer (cx, e, n.target))
+  $decl ret $match tt (
+      $case {$prop tag "group"}
+        $if ($call and ($call lt (0, n.index), $call not ($call lt ($call T.tys.length (tt.items,
+            0), n.index))))
+            ($call T.tys.nth (tt.items, $call sub (n.index, 1)))
+            ($call err (cx, "group index is out of range", n)),
+      $case tt ($call err (cx, $call concat ("cannot index into ", $call T.show (tt)), n))
+    )
+}.ret
 
 // §5.3a's closure clause: "A `$func` literal that captures a frame reference is
 // itself frame-bound, so a closure cannot carry one out either (§7.3)."
@@ -535,21 +555,23 @@ $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n prot
 // parameters; `Pa.bound_names` is deliberately scope-blind, so a name both
 // captured and shadowed deeper in is missed rather than wrongly reported.
 $decl param_names $func ($decl ps Pa.nodes.node, $decl acc Pa.pstrs.node) $match ps (
-  $case {$prop tag "cons"}
-    { $decl nm $if ($call is_form (ps.head, "decl"))
-                   ($call name_of ($call op (ps.head, 0))) ""
-      $decl a2 $if ($call eq_str (nm, "")) acc ($call Pa.pstrs.cons (nm, acc))
-      $decl r  $call param_names ($call Pa.nodes.val (ps.tail), a2) }.r,
+  $case {$prop tag "cons"} {
+    $decl nm $if ($call is_form (ps.head, "decl"))
+                 ($call name_of ($call op (ps.head, 0))) ""
+    $decl a2  $if ($call eq_str (nm, "")) acc ($call Pa.pstrs.cons (nm, acc))
+    $decl ret $call param_names ($call Pa.nodes.val (ps.tail), a2)
+  }.ret,
   $case ps acc
 )
 
 $decl caps_frame $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
                         $decl skip Pa.pstrs.node) $match ns (
-  $case {$prop tag "cons"}
-    { $decl skipped $call Pa.mem_pstr (skip, ns.head)
-      $decl f  $if skipped ($call found (false, T.t_bot)) ($call lookup (e, ns.head))
-      $decl hit $if f.ok ($call T.frame_bound (f.ty, 0)) false
-      $decl r  $if hit true ($call caps_frame (cx, e, $call Pa.pstrs.val (ns.tail), skip)) }.r,
+  $case {$prop tag "cons"} {
+    $decl skipped $call Pa.mem_pstr (skip, ns.head)
+    $decl f       $if skipped ($call found (false, T.t_bot)) ($call lookup (e, ns.head))
+    $decl hit     $if f.ok ($call T.frame_bound (f.ty, 0)) false
+    $decl ret     $if hit true ($call caps_frame (cx, e, $call Pa.pstrs.val (ns.tail), skip))
+  }.ret,
   $case ns false
 )
 
@@ -570,20 +592,22 @@ $decl in_strs $func ($decl xs strs.node, $decl n "") $match xs (
 // reaches through a static rather than through the environment word.
 $decl first_cap $func ($decl cx proto_ctx, $decl ns Pa.pstrs.node, $decl skip Pa.pstrs.node)
   $match ns (
-    $case {$prop tag "cons"}
-      { $decl nm ns.head
-        $decl gl $call lookup (root_env, nm)
-        $decl ok $if ($call Pa.mem_pstr (skip, nm)) true
-                     ($if ($call in_strs ($call strs.val (cx.topnames), nm)) true gl.ok)
-        $decl r  $if ok ($call first_cap (cx, $call Pa.pstrs.val (ns.tail), skip)) nm }.r,
+    $case {$prop tag "cons"} {
+      $decl nm ns.head
+      $decl gl $call lookup (root_env, nm)
+      $decl ok $if ($call Pa.mem_pstr (skip, nm)) true
+                   ($if ($call in_strs ($call strs.val (cx.topnames), nm)) true gl.ok)
+      $decl ret  $if ok ($call first_cap (cx, $call Pa.pstrs.val (ns.tail), skip)) nm
+    }.ret,
     $case ns ""
   )
 
-$decl lit_caps $func ($decl cx proto_ctx, $decl n Pa.proto_node)
-  { $decl ps   $call group_items ($call op (n, 0))
-    $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
-    $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
-    $decl r    $call first_cap (cx, free, shad) }.r
+$decl lit_caps $func ($decl cx proto_ctx, $decl n Pa.proto_node) {
+  $decl ps   $call group_items ($call op (n, 0))
+  $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+  $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+  $decl ret  $call first_cap (cx, free, shad)
+}.ret
 
 // "Can the compiler see which `$func` literal this came from?" A literal, yes. A
 // name bound to one by a `$decl`, yes — `cffns` is that set. Anything else is no,
@@ -594,10 +618,11 @@ $decl lit_caps $func ($decl cx proto_ctx, $decl n Pa.proto_node)
 $decl cb_ok $func ($decl cx proto_ctx, $decl a Pa.proto_node) $match a (
   $case {$prop tag "form"}
     $if ($call eq_str (a.keyword, "func")) ($call eq_str ($call lit_caps (cx, a), "")) false,
-  $case {$prop tag "name"}
-    { $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
-      $decl r $if ($call eq_str (f.name, "")) false
-                  ($call eq_str ($call lit_caps (cx, f.lit), "")) }.r,
+  $case {$prop tag "name"} {
+    $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
+    $decl ret $if ($call eq_str (f.name, "")) false
+                ($call eq_str ($call lit_caps (cx, f.lit), ""))
+  }.ret,
   $case a false
 )
 
@@ -606,12 +631,13 @@ $decl cb_why $func ($decl cx proto_ctx, $decl a Pa.proto_node) $match a (
     $if ($call eq_str (a.keyword, "func"))
         ($call concat ("it captures ", $call lit_caps (cx, a)))
         "the compiler cannot see which $func literal it is",
-  $case {$prop tag "name"}
-    { $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
-      $decl r $if ($call eq_str (f.name, ""))
-                  ($call concat (a.text, " is not a $decl of a $func literal"))
-                  ($call concat (a.text, $call concat (" captures ",
-                      $call lit_caps (cx, f.lit)))) }.r,
+  $case {$prop tag "name"} {
+    $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
+    $decl ret $if ($call eq_str (f.name, ""))
+                ($call concat (a.text, " is not a $decl of a $func literal"))
+                ($call concat (a.text, $call concat (" captures ",
+                    $call lit_caps (cx, f.lit))))
+  }.ret,
   $case a "the compiler cannot see which $func literal it is"
 )
 
@@ -631,13 +657,14 @@ $decl tys_rest $func ($decl ts T.tys.node) $match ts (
 // pair has nowhere to go — an ordinary morphl call carries the environment word.
 $decl chk_cbs $func ($decl cx proto_ctx, $decl ts T.tys.node, $decl as Pa.nodes.node)
   $match as (
-    $case {$prop tag "cons"}
-      { $decl pt  $call deref_ty ($call tys_head (ts))
-        $decl bad $if ($call is_fn_ty (pt)) ($call not ($call cb_ok (cx, as.head))) false
-        $decl rep $if bad ($call err (cx,
-                      $call concat ("a callback passed to C must be capture-free (§4.16 rule 2): ",
-                          $call cb_why (cx, as.head)), as.head)) T.t_unit
-        $decl r   $call chk_cbs (cx, $call tys_rest (ts), $call Pa.nodes.val (as.tail)) }.r,
+    $case {$prop tag "cons"} {
+      $decl pt  $call deref_ty ($call tys_head (ts))
+      $decl bad $if ($call is_fn_ty (pt)) ($call not ($call cb_ok (cx, as.head))) false
+      $decl rep $if bad ($call err (cx,
+                    $call concat ("a callback passed to C must be capture-free (§4.16 rule 2): ",
+                        $call cb_why (cx, as.head)), as.head)) T.t_unit
+      $decl ret   $call chk_cbs (cx, $call tys_rest (ts), $call Pa.nodes.val (as.tail))
+    }.ret,
     $case as T.t_unit
   )
 
@@ -664,36 +691,38 @@ $decl escapes $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl what "",
       t
 
 // §4.3: `$mut` requires a reference.
-$decl infer_mut $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl t $call T.tval ($call infer (cx, e, $call op (n, 0)))
-    $decl out $match t (
-        // §5.3: a view preserves the kind — `$mut` of allocated storage is
-        // still allocated.
-        $case {$prop tag "ref"} $call T.t_ref_k ("mut", t.inner, t.kind),
-        $case t ($call err (cx, $call concat ("$mut expects storage, found ",
-                     $call concat ($call T.show (t), "; only $new creates storage")), n))
-      ) }.out
+$decl infer_mut $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl t $call T.tval ($call infer (cx, e, $call op (n, 0)))
+  $decl ret $match t (
+      // §5.3: a view preserves the kind — `$mut` of allocated storage is
+      // still allocated.
+      $case {$prop tag "ref"} $call T.t_ref_k ("mut", t.inner, t.kind),
+      $case t ($call err (cx, $call concat ("$mut expects storage, found ",
+                   $call concat ($call T.show (t), "; only $new creates storage")), n))
+    )
+}.ret
 
 // §4.4: writes *through* storage; the type is the written value's.
-$decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl tgt $call T.tval ($call infer (cx, e, $call op (n, 0)))
-    $decl val $call deref_ty ($call infer (cx, e, $call op (n, 1)))
-    $decl out $match tgt (
-        $case {$prop tag "ref"}
-          // §5.3a's second clause: allocated storage outlives every scope, so
-          // a frame reference written into it would outlive its frame.
-          $do ($if ($call T.is_alloc (tgt.kind))
-                   ($call escapes (cx, val, "this value", n)) val)
-          ($if ($call T.sub (val, tgt.inner)) val
-              ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
-                  ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
-                  ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
-                               $call concat (" into storage of ", $call T.show (tgt.inner)))), n)))),
-        $case tgt ($call err (cx, $call concat ("$set needs storage on the left, found ",
-                       $call T.show (tgt)), n))
-      ) }.out
+$decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl tgt $call T.tval ($call infer (cx, e, $call op (n, 0)))
+  $decl val $call deref_ty ($call infer (cx, e, $call op (n, 1)))
+  $decl ret $match tgt (
+      $case {$prop tag "ref"}
+        // §5.3a's second clause: allocated storage outlives every scope, so
+        // a frame reference written into it would outlive its frame.
+        $do ($if ($call T.is_alloc (tgt.kind))
+                 ($call escapes (cx, val, "this value", n)) val)
+        ($if ($call T.sub (val, tgt.inner)) val
+            ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
+                ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
+                ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
+                             $call concat (" into storage of ", $call T.show (tgt.inner)))), n)))),
+      $case tgt ($call err (cx, $call concat ("$set needs storage on the left, found ",
+                     $call T.show (tgt)), n))
+    )
+}.ret
 
-$decl pres $func ($decl ts T.tys.node, $decl en env.node) { $decl tys ts  $decl env en }
+$decl pres       $func ($decl ts T.tys.node, $decl en env.node) { $decl tys ts  $decl env en }
 $decl proto_pres $call pres (T.tys.nil, env.nil)
 
 // §3.4: "each default fixes the parameter's type."
@@ -735,16 +764,17 @@ $decl has_earlier $func ($decl nm "", $decl k "", $decl seen Pa.nodes.node) $mat
 
 $decl check_unique $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
                           $decl seen Pa.nodes.node, $decl what "") $match items (
-  $case {$prop tag "cons"}
-    { $decl it   items.head
-      $decl nm   $call binder_name (it)
-      $decl said $if ($call eq_str (nm, "")) T.t_bot
-          ($if ($call has_earlier (nm, $call binder_kind (it), seen))
-               ($call err (cx, $call concat ("'", $call concat (nm,
-                   $call concat ("' is already ",
-                   $call concat (what, "; a name is bound once (4.1) - rename one of them")))), it))
-               T.t_bot)
-      $decl out  $call check_unique (cx, items.tail, $call Pa.nodes.cons (it, seen), what) }.out,
+  $case {$prop tag "cons"} {
+    $decl it items.head
+    $decl nm $call binder_name (it)
+    $decl said $if ($call eq_str (nm, "")) T.t_bot
+        ($if ($call has_earlier (nm, $call binder_kind (it), seen))
+             ($call err (cx, $call concat ("'", $call concat (nm,
+                 $call concat ("' is already ",
+                 $call concat (what, "; a name is bound once (4.1) - rename one of them")))), it))
+             T.t_bot)
+    $decl ret  $call check_unique (cx, items.tail, $call Pa.nodes.cons (it, seen), what)
+  }.ret,
   $case items ()
 )
 
@@ -779,10 +809,10 @@ $decl check_unique $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
 // which is exactly how the syntactic half of the rule already treats a direct
 // reference, so the two halves agree.
 $decl fwd_hit $func ($decl n "", $decl v "") { $decl name n  $decl via v }
-$decl no_hit $call fwd_hit ("", "")
+$decl no_hit  $call fwd_hit ("", "")
 // One walk's visited set, so a call graph with a cycle or a diamond is walked
 // once per function rather than once per path.
-$decl fwd_st $func () { $decl seen $mut $alloc Pa.pstrs.node }
+$decl fwd_st       $func () { $decl seen $mut $alloc Pa.pstrs.node }
 $decl proto_fwd_st $call fwd_st ()
 
 // Forms whose operands do not run when the form is evaluated: a `$func` body
@@ -815,12 +845,15 @@ $decl hit_val $func ($decl h no_hit) h
 
 $fwd fwd_reach
 
-$decl fwd_reach_list $func ($decl xs Pa.nodes.node, $decl pend Pa.pstrs.node, $decl fns fnlit_list.node,
-                            $decl bound Pa.pstrs.node, $decl st proto_fwd_st, $decl via "") $match xs (
-  $case {$prop tag "cons"}
-    { $decl h   $call hit_val ($call fwd_reach (xs.head, pend, fns, bound, st, via))
-      $decl out $if ($call eq_str (h.name, ""))
-          ($call fwd_reach_list (xs.tail, pend, fns, bound, st, via)) h }.out,
+$decl fwd_reach_list $func ($decl xs Pa.nodes.node, $decl pend Pa.pstrs.node,
+    $decl fns fnlit_list.node,
+                            $decl bound Pa.pstrs.node, $decl st proto_fwd_st, $decl via "")
+                                $match xs (
+  $case {$prop tag "cons"} {
+    $decl h   $call hit_val ($call fwd_reach (xs.head, pend, fns, bound, st, via))
+    $decl ret $if ($call eq_str (h.name, ""))
+        ($call fwd_reach_list (xs.tail, pend, fns, bound, st, via)) h
+  }.ret,
   $case xs no_hit
 )
 
@@ -830,28 +863,32 @@ $decl fwd_reach_list $func ($decl xs Pa.nodes.node, $decl pend Pa.pstrs.node, $d
 $decl fwd_follow $func ($decl c Pa.proto_node, $decl pend Pa.pstrs.node, $decl fns fnlit_list.node,
                         $decl bound Pa.pstrs.node, $decl st proto_fwd_st, $decl via "")
   $if ($call is_form (c, "func"))
-      ($call fwd_reach ($call op (c, 1), pend, fns, $call Pa.bound_names (c, bound), st, via))
-      { $decl nm $call name_of (c)
+      ($call fwd_reach ($call op (c, 1), pend, fns, $call Pa.bound_names (c, bound), st, via)) {
+        $decl nm $call name_of (c)
         $decl f  $call find_fnlit (fns, nm)
         $decl go $call and ($call not ($call eq_str (f.name, "")),
                  $call and ($call not ($call Pa.mem_pstr (bound, nm)),
                             $call not ($call Pa.mem_pstr (st.seen, nm))))
-        $decl out $if go
+        $decl ret $if go
             ($do ($set st.seen ($call Pa.pstrs.cons (nm, st.seen)))
                  ($call fwd_reach ($call op (f.lit, 1), pend, fns,
                                    $call Pa.bound_names (f.lit, Pa.pstrs.nil), st, nm)))
-            no_hit }.out
+            no_hit
+      }.ret
 
-$decl fwd_reach_call $func ($decl c Pa.proto_node, $decl ops Pa.nodes.node, $decl pend Pa.pstrs.node,
+$decl fwd_reach_call $func ($decl c Pa.proto_node, $decl ops Pa.nodes.node,
+    $decl pend Pa.pstrs.node,
                             $decl fns fnlit_list.node, $decl bound Pa.pstrs.node,
-                            $decl st proto_fwd_st, $decl via "")
-  { $decl h   $call hit_val ($call fwd_reach_list (ops, pend, fns, bound, st, via))
-    $decl out $if ($call eq_str (h.name, "")) ($call fwd_follow (c, pend, fns, bound, st, via)) h }.out
+                            $decl st  proto_fwd_st, $decl via "") {
+  $decl h   $call hit_val ($call fwd_reach_list (ops, pend, fns, bound, st, via))
+  $decl ret $if ($call eq_str (h.name, "")) ($call fwd_follow (c, pend, fns, bound, st, via)) h
+}.ret
 
 $decl fwd_reach $func ($decl n Pa.proto_node, $decl pend Pa.pstrs.node, $decl fns fnlit_list.node,
                        $decl bound Pa.pstrs.node, $decl st proto_fwd_st, $decl via "") $match n (
   $case {$prop tag "name"}
-    $if ($call and ($call Pa.mem_pstr (pend, n.text), $call not ($call Pa.mem_pstr (bound, n.text))))
+    $if ($call and ($call Pa.mem_pstr (pend, n.text), $call not ($call Pa.mem_pstr (bound,
+        n.text))))
         ($call fwd_hit (n.text, via)) no_hit,
   $case {$prop tag "group"}      ($call fwd_reach_list (n.items, pend, fns, bound, st, via)),
   $case {$prop tag "block"}      ($call fwd_reach_list (n.items, pend, fns, bound, st, via)),
@@ -863,9 +900,11 @@ $decl fwd_reach $func ($decl n Pa.proto_node, $decl pend Pa.pstrs.node, $decl fn
     ($if ($call eq_str (n.keyword, "case"))
          ($call fwd_reach ($call Pa.nodes.nth (n.operands, 1), pend, fns, bound, st, via))
     ($if ($call eq_str (n.keyword, "union"))
-         ($call fwd_reach ($call union_first ($call Pa.nodes.nth (n.operands, 0)), pend, fns, bound, st, via))
+         ($call fwd_reach ($call union_first ($call Pa.nodes.nth (n.operands, 0)), pend, fns, bound,
+             st, via))
     ($if ($call eq_str (n.keyword, "call"))
-         ($call fwd_reach_call ($call Pa.nodes.nth (n.operands, 0), n.operands, pend, fns, bound, st, via))
+         ($call fwd_reach_call ($call Pa.nodes.nth (n.operands, 0), n.operands, pend, fns, bound,
+             st, via))
          ($call fwd_reach_list (n.operands, pend, fns, bound, st, via))))),
   $case n no_hit
 )
@@ -894,7 +933,8 @@ $decl decl_fns $func ($decl items Pa.nodes.node, $decl acc fnlit_list.node) $mat
 
 $decl fwd_drop $func ($decl xs Pa.pstrs.node, $decl nm "", $decl acc Pa.pstrs.node) $match xs (
   $case {$prop tag "cons"}
-    $call fwd_drop (xs.tail, nm, $if ($call eq_str (xs.head, nm)) acc ($call Pa.pstrs.cons (xs.head, acc))),
+    $call fwd_drop (xs.tail, nm, $if ($call eq_str (xs.head, nm)) acc ($call Pa.pstrs.cons (xs.head,
+        acc))),
   $case xs acc
 )
 
@@ -907,21 +947,22 @@ $decl has_fwd $func ($decl items Pa.nodes.node) $match items (
 // it is compile-time and sees only props (§4.10), never an ordered slot.
 $decl check_fwd_go $func ($decl cx proto_ctx, $decl items Pa.nodes.node, $decl fns fnlit_list.node,
                           $decl pend Pa.pstrs.node) $match items (
-  $case {$prop tag "cons"}
-    { $decl it   items.head
-      $decl nm   $call binder_name (it)
-      $decl k    $call binder_kind (it)
-      $decl live $call and ($call not ($call eq_str (k, "fwd")),
-                 $call and ($call not ($call eq_str (k, "prop")),
-                            $call lt (0, $call Pa.pstrs.length (pend, 0))))
-      $decl e    $if ($call eq_str (k, "decl")) ($call op (it, 1)) it
-      $decl h    $if live
-          ($call fwd_reach (e, pend, fns, $call Pa.bound_names (e, Pa.pstrs.nil), $call fwd_st (), ""))
-          no_hit
-      $decl said $if ($call eq_str (h.name, "")) T.t_bot ($call err (cx, $call fwd_msg (h), it))
-      $decl p2   $if ($call eq_str (k, "fwd")) ($call Pa.pstrs.cons (nm, pend))
-                     ($if ($call eq_str (k, "decl")) ($call fwd_drop (pend, nm, Pa.pstrs.nil)) pend)
-      $decl out  $call check_fwd_go (cx, items.tail, fns, p2) }.out,
+  $case {$prop tag "cons"} {
+    $decl it items.head
+    $decl nm $call binder_name (it)
+    $decl k  $call binder_kind (it)
+    $decl live $call and ($call not ($call eq_str (k, "fwd")),
+               $call and ($call not ($call eq_str (k, "prop")),
+                          $call lt (0, $call Pa.pstrs.length (pend, 0))))
+    $decl e    $if ($call eq_str (k, "decl")) ($call op (it, 1)) it
+    $decl h    $if live
+        ($call fwd_reach (e, pend, fns, $call Pa.bound_names (e, Pa.pstrs.nil), $call fwd_st (), ""))
+        no_hit
+    $decl said $if ($call eq_str (h.name, "")) T.t_bot ($call err (cx, $call fwd_msg (h), it))
+    $decl p2   $if ($call eq_str (k, "fwd")) ($call Pa.pstrs.cons (nm, pend))
+                   ($if ($call eq_str (k, "decl")) ($call fwd_drop (pend, nm, Pa.pstrs.nil)) pend)
+    $decl ret  $call check_fwd_go (cx, items.tail, fns, p2)
+  }.ret,
   $case items ()
 )
 
@@ -933,14 +974,15 @@ $decl check_fwd_reads $func ($decl cx proto_ctx, $decl items Pa.nodes.node)
 
 $decl infer_params_go $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
                              $decl acc T.tys.node, $decl inner env.node) $match ps (
-  $case {$prop tag "cons"}
-    { $decl d  ps.head
-      $decl ok $call is_form (d, "decl")
-      $decl nm $if ok ($call name_of ($call op (d, 0))) ""
-      $decl ty $if ok ($call infer (cx, e, $call op (d, 1)))
-                      ($call err (cx, "$func parameters must each be a $decl", d))
-      $decl out $call infer_params_go (cx, e, ps.tail,
-                    $call T.tys.cons (ty, acc), $call bind (inner, nm, ty)) }.out,
+  $case {$prop tag "cons"} {
+    $decl d  ps.head
+    $decl ok $call is_form (d, "decl")
+    $decl nm $if ok ($call name_of ($call op (d, 0))) ""
+    $decl ty $if ok ($call infer (cx, e, $call op (d, 1)))
+                    ($call err (cx, "$func parameters must each be a $decl", d))
+    $decl ret $call infer_params_go (cx, e, ps.tail,
+                  $call T.tys.cons (ty, acc), $call bind (inner, nm, ty))
+  }.ret,
   $case ps ($call pres ($call T.tys.reverse (acc, T.tys.nil), inner))
 )
 
@@ -951,9 +993,10 @@ $decl infer_params_go $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.n
 // is typed in three places (`infer_func`, `infer_rec_func`, `infer_fwd_body`)
 // and putting a rule in only one of them has looked like a no-op twice before.
 $decl infer_params $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
-                          $decl acc T.tys.node, $decl inner env.node)
-  { $decl uniq $call check_unique (cx, ps, Pa.nodes.nil, "a parameter of this $func")
-    $decl out  $call infer_params_go (cx, e, ps, acc, inner) }.out
+                          $decl acc T.tys.node, $decl inner env.node) {
+  $decl uniq $call check_unique (cx, ps, Pa.nodes.nil, "a parameter of this $func")
+  $decl ret  $call infer_params_go (cx, e, ps, acc, inner)
+}.ret
 
 // §5.5 for a function that names itself.
 //
@@ -963,120 +1006,128 @@ $decl infer_params $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.node
 // unknown is the result: bind the name to `[params] -> R`, type the body, and
 // close `R` over it. §5.5's own example then comes out exactly as the spec
 // states it — the μ binds the *return* type, giving a list type.
-$decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "", $decl n Pa.proto_node)
-  { $decl ps   $call group_items ($call op (n, 0))
-    $decl id   $call fresh (cx)
-    $decl r    $call infer_params (cx, e, ps, T.tys.nil, e)
-    $decl self $call T.t_func (r.tys, $call T.t_var (id))
-    $decl benv $call bind (r.env, nm, self)
-    $decl saved   $call tval (cx.tryset)
-    $decl cleared $set cx.tryset T.t_bot
-    $decl din $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
-    $decl body    $call infer (cx, benv, $call op (n, 1))
-    $decl dout   $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
-    $decl tries   $call tval (cx.tryset)
-    $decl restored $set cx.tryset saved
-    $decl res0 $call T.join (body, tries)
-    // `μR.R` is uninhabited: a function whose only result is its own recursive
-    // call never returns, so its result type is ⊥ (§3.6).
-    $decl res  $if ($call T.ty_eq (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx, res0, id, n))
-    // §5.3a's first clause — see `infer_func`. A top-level `$decl` of a `$func`
-    // is typed here rather than there, because its own name has to be bound
-    // while its body is typed (§5.5).
-    $decl esc  $call escapes (cx, res, "this function's result", n)
-    // §5.3a's closure clause — see `infer_func`. A `$decl` of a `$func` is
-    // typed here, whether at a file's top level or inside a block, because its
-    // own name has to be bound while its body is typed (§5.5).
-    $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
-    $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
-    $decl capf $call caps_frame (cx, e, free, shad)
-    $decl out  $call T.t_func_fr (r.tys, res, capf) }.out
+$decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
+    $decl n Pa.proto_node) {
+  $decl ps       $call group_items ($call op (n, 0))
+  $decl id       $call fresh (cx)
+  $decl r        $call infer_params (cx, e, ps, T.tys.nil, e)
+  $decl self     $call T.t_func (r.tys, $call T.t_var (id))
+  $decl benv     $call bind (r.env, nm, self)
+  $decl saved    $call tval (cx.tryset)
+  $decl cleared  $set cx.tryset T.t_bot
+  $decl din      $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
+  $decl body     $call infer (cx, benv, $call op (n, 1))
+  $decl dout     $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
+  $decl tries    $call tval (cx.tryset)
+  $decl restored $set cx.tryset saved
+  $decl res0     $call T.join (body, tries)
+  // `μR.R` is uninhabited: a function whose only result is its own recursive
+  // call never returns, so its result type is ⊥ (§3.6).
+  $decl res  $if ($call T.ty_eq (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx, res0, id,
+      n))
+  // §5.3a's first clause — see `infer_func`. A top-level `$decl` of a `$func`
+  // is typed here rather than there, because its own name has to be bound
+  // while its body is typed (§5.5).
+  $decl esc  $call escapes (cx, res, "this function's result", n)
+  // §5.3a's closure clause — see `infer_func`. A `$decl` of a `$func` is
+  // typed here, whether at a file's top level or inside a block, because its
+  // own name has to be bound while its body is typed (§5.5).
+  $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+  $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+  $decl capf $call caps_frame (cx, e, free, shad)
+  $decl ret  $call T.t_func_fr (r.tys, res, capf)
+}.ret
 
-$decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl ps   $call group_items ($call op (n, 0))
-    $decl r    $call infer_params (cx, e, ps, T.tys.nil, e)
-    // Each `$func` has its own error set (§4.15); save and restore the
-    // enclosing one, since `$try` targets the *nearest* function.
-    $decl saved   $call tval (cx.tryset)
-    $decl cleared $set cx.tryset T.t_bot
-    $decl din $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
-    $decl body    $call infer (cx, r.env, $call op (n, 1))
-    $decl dout   $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
-    $decl tries   $call tval (cx.tryset)
-    $decl restored $set cx.tryset saved
-    // §4.15: "The enclosing function's inferred return type gains
-    // `type(e) & pat` as union members." Joining with ⊥ is the identity, so a
-    // function with no `$try` is unaffected.
-    $decl res  $call T.join (body, tries)
-    // §5.3a's first clause. The frame this `$func` returns to is gone by the
-    // time the caller has the value.
-    $decl esc  $call escapes (cx, res, "this function's result", n)
-    // ...and its closure clause: a literal that captured frame storage is
-    // itself frame-bound, so returning *it* is an escape too — caught by the
-    // same rule, one level out.
-    $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
-    $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
-    $decl capf $call caps_frame (cx, e, free, shad)
-    $decl out $call T.t_func_fr (r.tys, res, capf) }.out
+$decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl ps $call group_items ($call op (n, 0))
+  $decl r  $call infer_params (cx, e, ps, T.tys.nil, e)
+  // Each `$func` has its own error set (§4.15); save and restore the
+  // enclosing one, since `$try` targets the *nearest* function.
+  $decl saved    $call tval (cx.tryset)
+  $decl cleared  $set cx.tryset T.t_bot
+  $decl din      $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
+  $decl body     $call infer (cx, r.env, $call op (n, 1))
+  $decl dout     $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
+  $decl tries    $call tval (cx.tryset)
+  $decl restored $set cx.tryset saved
+  // §4.15: "The enclosing function's inferred return type gains
+  // `type(e) & pat` as union members." Joining with ⊥ is the identity, so a
+  // function with no `$try` is unaffected.
+  $decl res  $call T.join (body, tries)
+  // §5.3a's first clause. The frame this `$func` returns to is gone by the
+  // time the caller has the value.
+  $decl esc  $call escapes (cx, res, "this function's result", n)
+  // ...and its closure clause: a literal that captured frame storage is
+  // itself frame-bound, so returning *it* is an escape too — caught by the
+  // same rule, one level out.
+  $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+  $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+  $decl capf $call caps_frame (cx, e, free, shad)
+  $decl ret  $call T.t_func_fr (r.tys, res, capf)
+}.ret
 
 $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.node,
                         $decl as Pa.nodes.node, $decl n Pa.proto_node, $decl i 1) $match as (
   $case {$prop tag "cons"} $match ps (
-      $case {$prop tag "cons"}
-        { $decl raw $call infer (cx, e, as.head)
-          // §5.4: a parameter whose type is a reference wants storage; any
-          // other parameter wants a value, so the argument dereferences.
-          $decl at $if ($call is_ref (ps.head)) raw ($call deref_ty (raw))
-          $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
-          $decl out $if ($call T.sub (at, ps.head))
-              ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1)))
-              // §5.5: a constraint on an unresolved `R` is checked after the
-              // knot is tied, not now — otherwise every call inside a recursive
-              // group would fail against its own placeholder.
-              ($if ($call or ($call has_free_var (at), $call has_free_var (ps.head)))
-                  ($do ($call defer_check (cx, at, ps.head, why, as.head))
-                       ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1))))
-                  ($do ($call T.explain (at, ps.head))
-                       ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
-                                 $call concat (", expected ", $call T.show (ps.head)))), as.head))
-                            false))) }.out,
+      $case {$prop tag "cons"} {
+        $decl raw $call infer (cx, e, as.head)
+        // §5.4: a parameter whose type is a reference wants storage; any
+        // other parameter wants a value, so the argument dereferences.
+        $decl at  $if ($call is_ref (ps.head)) raw ($call deref_ty (raw))
+        $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
+        $decl ret $if ($call T.sub (at, ps.head))
+            ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1)))
+            // §5.5: a constraint on an unresolved `R` is checked after the
+            // knot is tied, not now — otherwise every call inside a recursive
+            // group would fail against its own placeholder.
+            ($if ($call or ($call has_free_var (at), $call has_free_var (ps.head)))
+                ($do ($call defer_check (cx, at, ps.head, why, as.head))
+                     ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1))))
+                ($do ($call T.explain (at, ps.head))
+                     ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
+                               $call concat (", expected ", $call T.show (ps.head)))), as.head))
+                          false)))
+      }.ret,
       $case ps ($do ($call err (cx, "too many arguments", n)) false)
     ),
   // Fewer arguments than parameters is fine: the defaults fill in (§3.4).
   $case as true
 )
 
-$decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl ft   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
-    $decl args $call group_items ($call op (n, 1))
-    $decl out $match ft (
-        $case {$prop tag "func"}
-          { $decl ok $call check_args (cx, e, ft.params, args, n, 1)
-            $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
-                ($call chk_cbs (cx, $call T.tys.val (ft.params), args)) T.t_unit
-            // A `$decl` initializer keeps a reference (§5.4), and `result` is
-            // storage now, so the type has to be taken out of it here.
-            $decl r  $if ok ($call T.tval (ft.result)) T.t_bot }.r,
-        // §3.6: a call on ⊥ stays ⊥ rather than reporting a second error.
-        $case {$prop tag "bottom"} T.t_bot,
-        // §4.9 would infer `T` from the argument shapes; BOOTSTRAP.md §1.1
-        // drops that, so the call site has to say what it means.
-        $case {$prop tag "tmpl"} ($call err (cx,
-            "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)", n)),
-        $case ft ($call err (cx, $call concat ($call T.show (ft), " is not callable"), n))
-      ) }.out
+$decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl ft   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+  $decl args $call group_items ($call op (n, 1))
+  $decl ret $match ft (
+      $case {$prop tag "func"} {
+        $decl ok $call check_args (cx, e, ft.params, args, n, 1)
+        $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
+            ($call chk_cbs (cx, $call T.tys.val (ft.params), args)) T.t_unit
+        // A `$decl` initializer keeps a reference (§5.4), and `result` is
+        // storage now, so the type has to be taken out of it here.
+        $decl ret2  $if ok ($call T.tval (ft.result)) T.t_bot
+      }.ret2,
+      // §3.6: a call on ⊥ stays ⊥ rather than reporting a second error.
+      $case {$prop tag "bottom"} T.t_bot,
+      // §4.9 would infer `T` from the argument shapes; BOOTSTRAP.md §1.1
+      // drops that, so the call site has to say what it means.
+      $case {$prop tag "tmpl"} ($call err (cx,
+          "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)", n)),
+      $case ft ($call err (cx, $call concat ($call T.show (ft), " is not callable"), n))
+    )
+}.ret
 
 // §2.2: `$if c a b` is sugar for `$match c ($case true a, $case false b)`.
-$decl infer_if $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl c   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
-    $decl chk $if ($call T.sub (c, T.t_bool)) T.t_unit
-              ($if ($call has_free_var (c))
-                  ($call defer_check (cx, c, T.t_bool, "$if condition is ", n))
-                  ($call err (cx, $call concat ("$if condition must be Bool, found ",
-                                  $call T.show (c)), n)))
-    $decl a $call infer (cx, e, $call op (n, 1))
-    $decl b $call infer (cx, e, $call op (n, 2))
-    $decl out $call T.join (a, b) }.out
+$decl infer_if $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl c   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+  $decl chk $if ($call T.sub (c, T.t_bool)) T.t_unit
+            ($if ($call has_free_var (c))
+                ($call defer_check (cx, c, T.t_bool, "$if condition is ", n))
+                ($call err (cx, $call concat ("$if condition must be Bool, found ",
+                                $call T.show (c)), n)))
+  $decl a   $call infer (cx, e, $call op (n, 1))
+  $decl b   $call infer (cx, e, $call op (n, 2))
+  $decl ret $call T.join (a, b)
+}.ret
 
 // §4.8a: the value is the first member; the type is the union of all of them.
 $decl infer_union $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
@@ -1109,47 +1160,51 @@ $decl narrow $func ($decl e env.node, $decl scrut Pa.proto_node, $decl t T.proto
 // Reporting that needs "what the earlier arms left", which is exactly the test that
 // fires on every catch-all — so it is left out rather than made noisy.
 $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.proto_node,
-                        $decl st T.proto_ty, $decl arms Pa.nodes.node, $decl acc T.proto_ty) $match arms (
-  $case {$prop tag "cons"}
-    { $decl a  arms.head
-      // A pattern is a type-only position (§5.7): never evaluated, only its
-      // type used — which is exactly what `infer` returns.
-      $decl pt $call infer (cx, e, $call op (a, 0))
-      $decl rest $call Pa.nodes.val (arms.tail)
-      $decl dead $if ($call Pa.nodes.is_nil (rest)) 0
-          ($if ($call T.same (pt, st))
-               ($do ($call err (cx, "this arm's pattern is the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1", a)) 0)
-               0)
-      // §4.7: narrowed to `type(e) & P` — as a selection, not an intersection.
-      $decl e2 $call narrow (e, scrut, $call T.restrict (st, pt))
-      $decl bt $call infer (cx, e2, $call op (a, 1))
-      $decl out $call infer_arms (cx, e, scrut, st, rest, $call T.join (acc, bt)) }.out,
+                        $decl st T.proto_ty, $decl arms Pa.nodes.node, $decl acc T.proto_ty)
+                            $match arms (
+  $case {$prop tag "cons"} {
+    $decl a  arms.head
+    // A pattern is a type-only position (§5.7): never evaluated, only its
+    // type used — which is exactly what `infer` returns.
+    $decl pt   $call infer (cx, e, $call op (a, 0))
+    $decl rest $call Pa.nodes.val (arms.tail)
+    $decl dead $if ($call Pa.nodes.is_nil (rest)) 0
+        ($if ($call T.same (pt, st))
+             ($do ($call err (cx, "this arm's pattern is the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1", a)) 0)
+             0)
+    // §4.7: narrowed to `type(e) & P` — as a selection, not an intersection.
+    $decl e2  $call narrow (e, scrut, $call T.restrict (st, pt))
+    $decl bt  $call infer (cx, e2, $call op (a, 1))
+    $decl ret $call infer_arms (cx, e, scrut, st, rest, $call T.join (acc, bt))
+  }.ret,
   $case arms acc
 )
 
-$decl infer_match $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl sn   $call op (n, 0)
-    $decl st   $call deref_ty ($call infer (cx, e, sn))
-    $decl arms $call group_items ($call op (n, 1))
-    $decl out  $call infer_arms (cx, e, sn, st, arms, T.t_bot) }.out
+$decl infer_match $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl sn   $call op (n, 0)
+  $decl st   $call deref_ty ($call infer (cx, e, sn))
+  $decl arms $call group_items ($call op (n, 1))
+  $decl ret  $call infer_arms (cx, e, sn, st, arms, T.t_bot)
+}.ret
 
 // §4.15. The error set is inferred, not declared.
-$decl infer_try $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
-    // error." `$try` returns from the nearest enclosing `$func`, and there is none
-    // — so nothing rejected it, and such a program was refused only *incidentally*,
-    // by the backend failing to coerce the matched member into the thunk's result
-    // type. That message named the symptom and not the rule.
-    $decl here $if ($call lt (0, $call ival (cx.fdepth))) T.t_bot
-        ($call err (cx, "$try is only valid inside a $func: it returns from the nearest enclosing one, and a file's top level or a $prop initializer has none (§4.15)", n))
-    $decl vt $call infer (cx, e, $call op (n, 0))
-    $decl pt $call infer (cx, e, $call op (n, 1))
-    $decl added $set cx.tryset
-        ($call T.join (cx.tryset, $call T.restrict ($call deref_ty (vt), pt)))
-    // §4.15: "otherwise the expression's value is `e`, narrowed to
-    // `type(e) & ¬pat`." For a union of tag shapes — which is what every
-    // fallible result is — that is exactly dropping the covered members.
-    $decl out $call T.minus (vt, pt) }.out
+$decl infer_try $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
+  // error." `$try` returns from the nearest enclosing `$func`, and there is none
+  // — so nothing rejected it, and such a program was refused only *incidentally*,
+  // by the backend failing to coerce the matched member into the thunk's result
+  // type. That message named the symptom and not the rule.
+  $decl here $if ($call lt (0, $call ival (cx.fdepth))) T.t_bot
+      ($call err (cx, "$try is only valid inside a $func: it returns from the nearest enclosing one, and a file's top level or a $prop initializer has none (§4.15)", n))
+  $decl vt $call infer (cx, e, $call op (n, 0))
+  $decl pt $call infer (cx, e, $call op (n, 1))
+  $decl added $set cx.tryset
+      ($call T.join (cx.tryset, $call T.restrict ($call deref_ty (vt), pt)))
+  // §4.15: "otherwise the expression's value is `e`, narrowed to
+  // `type(e) & ¬pat`." For a union of tag shapes — which is what every
+  // fallible result is — that is exactly dropping the covered members.
+  $decl ret $call T.minus (vt, pt)
+}.ret
 
 // ------------------------------------------------ $template and $specialize
 
@@ -1187,21 +1242,23 @@ $decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $ma
 //
 // It collapses two modules that share a basename in different directories, which is
 // the trade lowering's `mod_short` already makes for the same reason.
-$decl short_of $func ($decl path "")
-  { $decl sl $call P.last_slash (path, 0, -1)
-    $decl b  $if ($call lt (sl, 0)) path
-                 ($call slice (path, $call add (sl, 1), $call len (path)))
-    $decl n  $call len (b)
-    $decl r  $if ($call lt (4, n))
-        ($if ($call eq_str ($call slice (b, $call sub (n, 4), n), ".mpl"))
-             ($call slice (b, 0, $call sub (n, 4))) b)
-        b }.r
+$decl short_of $func ($decl path "") {
+  $decl sl $call P.last_slash (path, 0, -1)
+  $decl b  $if ($call lt (sl, 0)) path
+               ($call slice (path, $call add (sl, 1), $call len (path)))
+  $decl n  $call len (b)
+  $decl ret  $if ($call lt (4, n))
+      ($if ($call eq_str ($call slice (b, $call sub (n, 4), n), ".mpl"))
+           ($call slice (b, 0, $call sub (n, 4))) b)
+      b
+}.ret
 
-$decl ct_id $func ($decl cx proto_ctx, $decl tag 0, $decl n Pa.proto_node)
-  { $decl sp $call P.span_of (n)
-    $decl h0 $call T.hash_str ($call sval (cx.sctx), 0,
-                 $call T.hash_str ($call short_of ($call sval (cx.file)), 0, tag))
-    $decl r  $call T.hmix ($call T.hmix (h0, sp.line), sp.col) }.r
+$decl ct_id $func ($decl cx proto_ctx, $decl tag 0, $decl n Pa.proto_node) {
+  $decl sp $call P.span_of (n)
+  $decl h0 $call T.hash_str ($call sval (cx.sctx), 0,
+               $call T.hash_str ($call short_of ($call sval (cx.file)), 0, tag))
+  $decl ret  $call T.hmix ($call T.hmix (h0, sp.line), sp.col)
+}.ret
 
 $decl is_var_ty $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "var"} true,
@@ -1216,7 +1273,8 @@ $decl is_var_ty $func ($decl t T.proto_ty) $match t (
 // (`ct_id`, tag 7), not anything its body determines, so it is known before the
 // body is recorded: the name is bound to the template itself, and the knot is
 // tied by §4.9's memo, which hands back the in-progress entry's `R`.
-$decl self_tmpl_env $func ($decl cx proto_ctx, $decl e env.node, $decl nm "", $decl init Pa.proto_node)
+$decl self_tmpl_env $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
+    $decl init Pa.proto_node)
   $call bind (e, nm, $call T.t_tmpl ($call ct_id (cx, 7, init)))
 
 $decl find_tmpl $func ($decl xs tmpl_list.node, $decl i 0) $match xs (
@@ -1231,48 +1289,54 @@ $decl find_tmpl $func ($decl xs tmpl_list.node, $decl i 0) $match xs (
 // at specialisation. The template being declared answers from `cur`, the fixpoint's
 // current guess, since its record does not exist yet.
 $decl ctg_target $func ($decl cx proto_ctx, $decl e env.node, $decl own 0, $decl gs strs.node,
-                        $decl cur Pa.ctgs.node, $decl x Pa.proto_node)
-  { $decl q0   $call bval (cx.quiet)
-    $decl hush $set cx.quiet true
-    $decl tt   $call deref_ty ($call infer (cx, e, x))
-    $decl back $set cx.quiet q0
-    $decl out $match tt (
-        $case {$prop tag "tmpl"}
-          $if ($call eq_int (tt.id, own)) ($call Pa.ctg_mask (gs, cur, Pa.pstrs.nil))
-              { $decl r $call find_tmpl (cx.tmpls, tt.id)
-                $decl m $call Pa.ctg_mask (r.generics, r.ctg, Pa.pstrs.nil) }.m,
-        $case tt Pa.pstrs.nil
-      ) }.out
+                        $decl cur Pa.ctgs.node, $decl x Pa.proto_node) {
+  $decl q0   $call bval (cx.quiet)
+  $decl hush $set cx.quiet true
+  $decl tt   $call deref_ty ($call infer (cx, e, x))
+  $decl back $set cx.quiet q0
+  $decl ret $match tt (
+      $case {$prop tag "tmpl"}
+        $if ($call eq_int (tt.id, own)) ($call Pa.ctg_mask (gs, cur, Pa.pstrs.nil)) {
+          $decl r    $call find_tmpl (cx.tmpls, tt.id)
+          $decl ret2 $call Pa.ctg_mask (r.generics, r.ctg, Pa.pstrs.nil)
+        }.ret2,
+      $case tt Pa.pstrs.nil
+    )
+}.ret
 
 // A self-specialising template passes its own generics to itself, so whether one
 // is compile-time can depend on whether another is: iterate until the set stops
 // growing. It only grows, and it has at most one entry per generic.
 $decl ctg_fix $func ($decl cx proto_ctx, $decl e env.node, $decl own 0, $decl gs strs.node,
-                     $decl body Pa.proto_node, $decl cur Pa.ctgs.node, $decl k 0)
-  { $decl rs  $func ($decl x Pa.proto_node) $call ctg_target (cx, e, own, gs, cur, x)
-    $decl nx  $call Pa.ct_generics (body, gs, rs)
-    $decl out $if ($call or ($call eq_int ($call Pa.ctgs.length (nx, 0), $call Pa.ctgs.length (cur, 0)),
-                            $call lt (k, 1)))
-        nx ($call ctg_fix (cx, e, own, gs, body, nx, $call sub (k, 1))) }.out
+                     $decl body Pa.proto_node, $decl cur Pa.ctgs.node, $decl k 0) {
+  $decl rs $func ($decl x Pa.proto_node) $call ctg_target (cx, e, own, gs, cur, x)
+  $decl nx $call Pa.ct_generics (body, gs, rs)
+  $decl ret $if ($call or ($call eq_int ($call Pa.ctgs.length (nx, 0), $call Pa.ctgs.length (cur,
+      0)),
+                          $call lt (k, 1)))
+      nx ($call ctg_fix (cx, e, own, gs, body, nx, $call sub (k, 1)))
+}.ret
 
 // §4.9: the declaration itself checks nothing. It records what specialization
 // will need and hands back an identity.
-$decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl gs    $call generic_names ($call op (n, 0), strs.nil)
-    // A generic a prop reads is compile-time by definition (§4.9), and every
-    // `$specialize` of this template is held to a constant argument for it — so in
-    // the body, reading one is reading a constant, and `ct_init` may say so.
-    $decl ctg   $set cx.ctnames ($call join_strs (gs, cx.ctnames))
-    $decl id    $call ct_id (cx, 7, n)
-    $decl cg    $call ctg_fix (cx, e, id, gs, $call op (n, 1), Pa.ctgs.nil,
-                    $call strs.length (gs, 0))
-    $decl rec   $call tmpl_rec_c (id, gs, $call op (n, 1), e, $call sval (cx.file), cg)
-    $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
-    $decl out   $call T.t_tmpl (id) }.out
+$decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl gs    $call generic_names ($call op (n, 0), strs.nil)
+  // A generic a prop reads is compile-time by definition (§4.9), and every
+  // `$specialize` of this template is held to a constant argument for it — so in
+  // the body, reading one is reading a constant, and `ct_init` may say so.
+  $decl ctg $set cx.ctnames ($call join_strs (gs, cx.ctnames))
+  $decl id  $call ct_id (cx, 7, n)
+  $decl cg    $call ctg_fix (cx, e, id, gs, $call op (n, 1), Pa.ctgs.nil,
+                  $call strs.length (gs, 0))
+  $decl rec   $call tmpl_rec_c (id, gs, $call op (n, 1), e, $call sval (cx.file), cg)
+  $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
+  $decl ret   $call T.t_tmpl (id)
+}.ret
 
 $decl memo_find $func ($decl xs memo_list.node, $decl k "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.key, k)) ($call found (true, xs.head.ty)) ($call memo_find (xs.tail, k)),
+    $if ($call eq_str (xs.head.key, k)) ($call found (true, xs.head.ty)) ($call memo_find (xs.tail,
+        k)),
   $case xs ($call found (false, T.t_bot))
 )
 
@@ -1309,14 +1373,16 @@ $fwd infer_block
 $decl ct_vals $func ($decl cx proto_ctx, $decl gs strs.node, $decl args Pa.nodes.node,
                      $decl cg Pa.ctgs.node, $decl acc "") $match gs (
   $case {$prop tag "cons"} $match args (
-    $case {$prop tag "cons"}
-      { $decl p  $call Pa.ctg_prop (cg, gs.head)
-        $decl lk $call Pa.lit_key (args.head)
-        $decl v  $if ($call eq_str (p, "")) ""
-                     ($if ($call eq_str (lk, ""))
-                          ($call concat ("=@", $call int_to_str ($call ct_id (cx, 3, args.head))))
-                          ($call concat ("=", lk)))
-        $decl r  $call ct_vals (cx, gs.tail, $call Pa.nodes.val (args.tail), cg, $call concat (acc, v)) }.r,
+    $case {$prop tag "cons"} {
+      $decl p  $call Pa.ctg_prop (cg, gs.head)
+      $decl lk $call Pa.lit_key (args.head)
+      $decl v  $if ($call eq_str (p, "")) ""
+                   ($if ($call eq_str (lk, ""))
+                        ($call concat ("=@", $call int_to_str ($call ct_id (cx, 3, args.head))))
+                        ($call concat ("=", lk)))
+      $decl ret  $call ct_vals (cx, gs.tail, $call Pa.nodes.val (args.tail), cg, $call concat (acc,
+          v))
+    }.ret,
     $case args acc),
   $case gs acc
 )
@@ -1340,78 +1406,86 @@ $decl subst_ct $func ($decl body Pa.proto_node, $decl gs strs.node, $decl args P
 $fwd ct_args_check
 
 $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
-                             $decl argn Pa.proto_node, $decl n Pa.proto_node)
-  { $decl r  $call find_tmpl (cx.tmpls, id)
-    $decl ng $call strs.length (r.generics, 0)
-    // §2.3 again: with one generic the whole operand is the argument; with
-    // several it has to be a group.
-    $decl args $if ($call eq_int (ng, 1))
-        ($call Pa.nodes.cons (argn, Pa.nodes.nil))
-        ($call group_items (argn))
-    $decl na  $call Pa.nodes.length (args, 0)
-    $decl ats $call infer_tys (cx, e, args, T.tys.nil)
-    $decl out $if ($call not ($call eq_int (ng, na)))
-        ($call err (cx, $call concat ("this template has ", $call concat ($call int_to_str (ng),
-            $call concat (" generic parameters, found ", $call int_to_str (na)))), n))
-        { $decl chk $call ct_args_check (cx, e, r.generics, args, r.ctg)
-          $decl key $call concat ($call memo_key (id, ats, ""), $call ct_vals (cx, r.generics, args, r.ctg, ""))
-          $decl hit $call memo_find (cx.memo, key)
-          $decl deep $call lt (63, $call ival (cx.sdepth))
-          $decl rr $if hit.ok
-              ($do ($set cx.sreach ($if ($call is_var_ty (hit.ty))
-                        ($call add ($call ival (cx.sreach), 1)) ($call ival (cx.sreach))))
-                   hit.ty)
-              ($if deep
-              ($call err (cx, "$specialize: the instantiation depth limit (64) is exceeded — a chain of distinct argument types (§4.9)", n))
-              { $decl din   $set cx.sdepth ($call add ($call ival (cx.sdepth), 1))
-                $decl benv  $call bind_generics (r.env, r.generics, ats)
-                // The body's spans are the template's file, not this one.
-                $decl outer   $call sval (cx.file)
-                $decl entered $set cx.file r.file
-                // The body's compile-time identities belong to *this* instantiation.
-                $decl souter  $call sval (cx.sctx)
-                $decl sent    $set cx.sctx key
-                // Memoised *before* the body is typed, with a placeholder, so a
-                // template that reaches itself terminates — §4.9: "hitting an
-                // in-progress entry returns its `R`."
-                $decl ph  $call T.t_var ($call fresh (cx))
-                $decl m0  $set cx.memo ($call memo_list.cons ($call memo_ent (key, ph), $call eval_memo (cx.memo)))
-                $decl r0  $call ival (cx.sreach)
-                // A value, not the cell: `$decl` keeps a reference (§5.4), and
-                // restoring the cell to itself would keep the first pass's errors.
-                $decl e0  $call Pa.diags.val (cx.errs)
-                $decl body  $call subst_ct (r.body, r.generics, args, r.ctg)
-                $decl ty0 $call infer (cx, benv, body)
-                // §5.5 discharges the placeholder if the body reached back.
-                $decl ty1 $call close_rec (cx, ty0, $call var_id (ph), n)
-                // A body that reached itself saw `R` there, and `R` cannot be
-                // projected from — `($specialize box T).mk` inside `box` failed. So it
-                // is typed once more against the first pass's answer, which is what a
-                // block's props do (`infer_block`'s two passes), and only the second
-                // pass speaks. One that did not reach itself is typed once.
-                $decl again $call lt (r0, $call ival (cx.sreach))
-                $decl ty $if again
-                    { $decl back $set cx.errs e0
-                      $decl m2   $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty1),
-                                     $call eval_memo (cx.memo)))
-                      $decl t2   $call infer (cx, benv, body) }.t2
-                    ty1
-                $decl left $set cx.file outer
-                $decl sleft $set cx.sctx souter
-                $decl m1  $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty), $call eval_memo (cx.memo)))
-                $decl dout $set cx.sdepth ($call sub ($call ival (cx.sdepth), 1))
-                $decl res ty }.res) }.rr }.out
+                             $decl argn Pa.proto_node, $decl n Pa.proto_node) {
+  $decl r  $call find_tmpl (cx.tmpls, id)
+  $decl ng $call strs.length (r.generics, 0)
+  // §2.3 again: with one generic the whole operand is the argument; with
+  // several it has to be a group.
+  $decl args $if ($call eq_int (ng, 1))
+      ($call Pa.nodes.cons (argn, Pa.nodes.nil))
+      ($call group_items (argn))
+  $decl na  $call Pa.nodes.length (args, 0)
+  $decl ats $call infer_tys (cx, e, args, T.tys.nil)
+  $decl ret $if ($call not ($call eq_int (ng, na)))
+      ($call err (cx, $call concat ("this template has ", $call concat ($call int_to_str (ng),
+          $call concat (" generic parameters, found ", $call int_to_str (na)))), n)) {
+        $decl chk  $call ct_args_check (cx, e, r.generics, args, r.ctg)
+        $decl key  $call concat ($call memo_key (id, ats, ""), $call ct_vals (cx, r.generics, args,
+            r.ctg, ""))
+        $decl hit  $call memo_find (cx.memo, key)
+        $decl deep $call lt (63, $call ival (cx.sdepth))
+        $decl ret2 $if hit.ok
+            ($do ($set cx.sreach ($if ($call is_var_ty (hit.ty))
+                      ($call add ($call ival (cx.sreach), 1)) ($call ival (cx.sreach))))
+                 hit.ty)
+            ($if deep
+            ($call err (cx, "$specialize: the instantiation depth limit (64) is exceeded — a chain of distinct argument types (§4.9)", n)) {
+              $decl din  $set cx.sdepth ($call add ($call ival (cx.sdepth), 1))
+              $decl benv $call bind_generics (r.env, r.generics, ats)
+              // The body's spans are the template's file, not this one.
+              $decl outer   $call sval (cx.file)
+              $decl entered $set cx.file r.file
+              // The body's compile-time identities belong to *this* instantiation.
+              $decl souter $call sval (cx.sctx)
+              $decl sent   $set cx.sctx key
+              // Memoised *before* the body is typed, with a placeholder, so a
+              // template that reaches itself terminates — §4.9: "hitting an
+              // in-progress entry returns its `R`."
+              $decl ph $call T.t_var ($call fresh (cx))
+              $decl m0 $set cx.memo ($call memo_list.cons ($call memo_ent (key, ph),
+                  $call eval_memo (cx.memo)))
+              $decl r0 $call ival (cx.sreach)
+              // A value, not the cell: `$decl` keeps a reference (§5.4), and
+              // restoring the cell to itself would keep the first pass's errors.
+              $decl e0   $call Pa.diags.val (cx.errs)
+              $decl body $call subst_ct (r.body, r.generics, args, r.ctg)
+              $decl ty0  $call infer (cx, benv, body)
+              // §5.5 discharges the placeholder if the body reached back.
+              $decl ty1 $call close_rec (cx, ty0, $call var_id (ph), n)
+              // A body that reached itself saw `R` there, and `R` cannot be
+              // projected from — `($specialize box T).mk` inside `box` failed. So it
+              // is typed once more against the first pass's answer, which is what a
+              // block's props do (`infer_block`'s two passes), and only the second
+              // pass speaks. One that did not reach itself is typed once.
+              $decl again $call lt (r0, $call ival (cx.sreach))
+              $decl ty $if again {
+                $decl back $set cx.errs e0
+                $decl m2   $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty1),
+                               $call eval_memo (cx.memo)))
+                $decl ret4   $call infer (cx, benv, body)
+              }.ret4
+                  ty1
+              $decl left  $set cx.file outer
+              $decl sleft $set cx.sctx souter
+              $decl m1    $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty),
+                  $call eval_memo (cx.memo)))
+              $decl dout $set cx.sdepth ($call sub ($call ival (cx.sdepth), 1))
+              $decl ret3 ty
+            }.ret3)
+      }.ret2
+}.ret
 
 // §4.9 steps 2 and 3: type the substituted expression with ordinary rules, and
 // have exactly its type.
-$decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl tt $call deref_ty ($call infer (cx, e, $call op (n, 0)))
-    $decl out $match tt (
-        $case {$prop tag "tmpl"}   $call specialize_with (cx, e, tt.id, $call op (n, 1), n),
-        $case {$prop tag "bottom"} T.t_bot,
-        $case tt ($call err (cx, $call concat ("$specialize expects a template, found ",
-                      $call T.show (tt)), n))
-      ) }.out
+$decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl tt $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+  $decl ret $match tt (
+      $case {$prop tag "tmpl"}   $call specialize_with (cx, e, tt.id, $call op (n, 1), n),
+      $case {$prop tag "bottom"} T.t_bot,
+      $case tt ($call err (cx, $call concat ("$specialize expects a template, found ",
+                    $call T.show (tt)), n))
+    )
+}.ret
 
 // -------------------------------------------------------------- $import (§4.14)
 
@@ -1427,12 +1501,13 @@ $decl resolve_path $func ($decl base "", $decl nm "")
 //
 // Kept for the callers that only want the text and have already established the file is
 // there; `load_module` matches the option itself.
-$decl read_module $func ($decl path "")
-  { $decl r $call read_file (path)
-    $decl out $match r (
-        $case {$prop tag "some"} r.v,
-        $case r ""
-      ) }.out
+$decl read_module $func ($decl path "") {
+  $decl r $call read_file (path)
+  $decl ret $match r (
+      $case {$prop tag "some"} r.v,
+      $case r ""
+    )
+}.ret
 
 $decl mod_find $func ($decl xs mod_list.node, $decl k "") $match xs (
   $case {$prop tag "cons"}
@@ -1470,10 +1545,11 @@ $decl import_of $func ($decl n Pa.proto_node)
            "")
 
 $decl imports_of $func ($decl xs Pa.nodes.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"}
-    { $decl nm $call import_of (xs.head)
-      $decl a2 $if ($call eq_str (nm, "")) acc ($call strs.cons (nm, acc))
-      $decl r  $call imports_of ($call Pa.nodes.val (xs.tail), a2) }.r,
+  $case {$prop tag "cons"} {
+    $decl nm  $call import_of (xs.head)
+    $decl a2  $if ($call eq_str (nm, "")) acc ($call strs.cons (nm, acc))
+    $decl ret $call imports_of ($call Pa.nodes.val (xs.tail), a2)
+  }.ret,
   $case xs ($call strs.reverse (acc, strs.nil))
 )
 
@@ -1484,11 +1560,12 @@ $decl iface_file $func ($decl cx proto_ctx, $decl key "", $decl h 0)
       $call concat ($call short_of (key), $call concat (".",
       $call concat ($call int_to_str (h), ".iface")))))
 
-$decl iface_write $func ($decl cx proto_ctx, $decl key "", $decl h 0, $decl str "")
-  { $decl w $call write_file ($call iface_file (cx, key, h), str)
-    // A failed write is not an error: the cache is an optimisation, and a build that
-    // cannot write one must still compile.
-    $decl r $match w ($case {$prop tag "err"} 0, $case w 0) }.r
+$decl iface_write $func ($decl cx proto_ctx, $decl key "", $decl h 0, $decl str "") {
+  $decl w $call write_file ($call iface_file (cx, key, h), str)
+  // A failed write is not an error: the cache is an optimisation, and a build that
+  // cannot write one must still compile.
+  $decl ret $match w ($case {$prop tag "err"} 0, $case w 0)
+}.ret
 
 // What a load produced: the type, the hash of its serialised interface, and whether it
 // came from disk. The hash travels with it so that **`show_ty` is never called twice** —
@@ -1499,14 +1576,15 @@ $decl ires $func ($decl t T.proto_ty, $decl h 0, $decl ok P.boolean)
   { $decl ty t  $decl ifh h  $decl hit ok }
 $decl proto_ires $call ires (T.t_bot, 0, false)
 
-$decl iface_read $func ($decl cx proto_ctx, $decl key "", $decl h 0)
-  { $decl rf $call read_file ($call iface_file (cx, key, h))
-    $decl out $match rf (
-        $case {$prop tag "some"}
-          ($call ires ($call T.tval (($call Y.read_ty (rf.v, 0)).val),
-               $call T.hash_str (rf.v, 0, 19), true)),
-        $case rf proto_ires
-      ) }.out
+$decl iface_read $func ($decl cx proto_ctx, $decl key "", $decl h 0) {
+  $decl rf $call read_file ($call iface_file (cx, key, h))
+  $decl ret $match rf (
+      $case {$prop tag "some"}
+        ($call ires ($call T.tval (($call Y.read_ty (rf.v, 0)).val),
+             $call T.hash_str (rf.v, 0, 19), true)),
+      $case rf proto_ires
+    )
+}.ret
 
 // §10.7 makes a `$template`'s body part of its module's interface, and a type cannot
 // carry a body — so a module exporting one is never cached. `prelude` is the only such
@@ -1521,11 +1599,13 @@ $decl cache_on $func ($decl cx proto_ctx)
 
 // A module's syntax errors are its own: they keep their line and column and
 // carry its path, rather than being folded into a message against the import.
-$decl note_mod_errs $func ($decl cx proto_ctx, $decl xs Pa.diags.node, $decl path "", $decl n Pa.proto_node) $match xs (
-  $case {$prop tag "cons"}
-    { $decl noted $set cx.errs ($call Pa.diags.cons (
-          $call Pa.diag (xs.head.msg, xs.head.line, xs.head.col, path), $call eval_diags (cx.errs)))
-      $decl out   $call note_mod_errs (cx, xs.tail, path, n) }.out,
+$decl note_mod_errs $func ($decl cx proto_ctx, $decl xs Pa.diags.node, $decl path "",
+    $decl n Pa.proto_node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl noted $set cx.errs ($call Pa.diags.cons (
+        $call Pa.diag (xs.head.msg, xs.head.line, xs.head.col, path), $call eval_diags (cx.errs)))
+    $decl ret   $call note_mod_errs (cx, xs.tail, path, n)
+  }.ret,
   $case xs T.t_bot
 )
 
@@ -1536,105 +1616,115 @@ $fwd need_module
 // costs nothing on a warm run, since loading one is reading a few KB.
 $decl key_imports $func ($decl cx proto_ctx, $decl ns strs.node, $decl n Pa.proto_node,
                          $decl acc 0) $match ns (
-  $case {$prop tag "cons"}
-    { $decl k  $call resolve_path (cx.base, ns.head)
-      $decl ld $call need_module (cx, k, ns.head, n)
-      $decl h  ($call mod_find ($call eval_mods (cx.mods), k)).ifh
-      $decl r  $call key_imports (cx, $call strs.val (ns.tail), n, $call T.hmix (acc, h)) }.r,
+  $case {$prop tag "cons"} {
+    $decl k   $call resolve_path (cx.base, ns.head)
+    $decl ld  $call need_module (cx, k, ns.head, n)
+    $decl h   ($call mod_find ($call eval_mods (cx.mods), k)).ifh
+    $decl ret $call key_imports (cx, $call strs.val (ns.tail), n, $call T.hmix (acc, h))
+  }.ret,
   $case ns acc
 )
 
-$decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node)
-  { $decl marked $set cx.mods
-        ($call mod_list.cons ($call mod_ent (key, "loading", T.t_bot), $call eval_mods (cx.mods)))
-    $decl rf $call read_file (key)
-    // On the option, not on the text: an empty file is a valid empty module (§3.3).
-    // Matched on `some` rather than on a catch-all, because §4.7's catch-all pattern is
-    // a *name* and so denotes the whole scrutinee — it does not narrow, and `rf.v` is
-    // not reachable through it.
-    $decl ty $match rf (
-        $case {$prop tag "some"}
-        { $decl src rf.v
-          $decl p $call Pa.parse (src)
-          // A module's own syntax errors are reported against the import site,
-          // tagged with the module's path: the diagnostic type carries a line
-          // and column but not a file.
-          $decl r $if ($call Pa.diags.is_nil (p.errs))
-              // §4.14: "A file sees the root block plus what it imports,
-              // nothing else" — so the module is typed in the root
-              // environment, never in the importer's.
-              //
-              // Or not typed at all: with the cache on, a fingerprint that names an
-              // interface already on disk is loaded instead, and this module's body is
-              // never inferred. A miss infers it and writes the interface for next
-              // time. `cacheable` excludes `prelude`, whose `$template` makes its
-              // interface its body (§10.7).
-              { $decl ok  $call and ($call cache_on (cx), $call cacheable (key))
-                // The imports first, whether or not this module is cacheable: they are
-                // what the key is made of, and inferring this body would load them
-                // anyway.
-                $decl ih  $if ($call cache_on (cx))
-                              ($call key_imports (cx, $call imports_of (p.exprs, strs.nil), n,
-                                   $call T.hash_str (src, 0, 17)))
-                              0
-                $decl got $if ok ($call iface_read (cx, key, ih)) proto_ires
-                $decl cnt $if got.hit ($set cx.nhit ($call add ($call ival (cx.nhit), 1)))
-                              ($if ok ($set cx.nmiss ($call add ($call ival (cx.nmiss), 1))) 0)
-                $decl res $if got.hit got
-                    { $decl outer   $call sval (cx.file)
-                      $decl entered $set cx.file key
-                      $decl t       $call infer_block (cx, root_env, p.exprs, P.proto_span)
-                      $decl left    $set cx.file outer
-                      // Serialised once: written if this module is cacheable, and hashed
-                      // either way, because an importer's key needs the hash even for a
-                      // module whose interface is not stored. A module that is not
-                      // cacheable falls back to its *source* hash, which is
-                      // conservative — a comment in `prelude` invalidates everything —
-                      // and right, since §10.7 makes a prelude change whole-program.
-                      $decl str     $if ok ($call Y.show_ty (t)) ""
-                      $decl wrote   $if ok ($call iface_write (cx, key, ih, str)) 0
-                      $decl h       $if ok ($call T.hash_str (str, 0, 19))
-                                        ($call T.hash_str (src, 0, 23))
-                      $decl z       $call ires (t, h, false) }.z
-                $decl z res }.z
-              { $decl e $call note_mod_errs (cx, p.errs, key, n)
-                $decl z $call ires ($call T.tval (e), 0, false) }.z
-          $decl q r }.q,
-        $case rf
-          { $decl e $call err (cx, $call concat ("cannot read the file for $import \"",
-                $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n)
-            $decl z $call ires ($call T.tval (e), 0, false) }.z
-      )
-    $decl done $set cx.mods
-        ($call mod_list.cons ($call mod_ent_h (key, "done", $call T.tval (ty.ty), ty.ifh),
-             $call eval_mods (cx.mods)))
-    $decl out $call T.tval (ty.ty) }.out
+$decl load_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node) {
+  $decl marked $set cx.mods
+      ($call mod_list.cons ($call mod_ent (key, "loading", T.t_bot), $call eval_mods (cx.mods)))
+  $decl rf $call read_file (key)
+  // On the option, not on the text: an empty file is a valid empty module (§3.3).
+  // Matched on `some` rather than on a catch-all, because §4.7's catch-all pattern is
+  // a *name* and so denotes the whole scrutinee — it does not narrow, and `rf.v` is
+  // not reachable through it.
+  $decl ty $match rf (
+      $case {$prop tag "some"} {
+        $decl src rf.v
+        $decl p   $call Pa.parse (src)
+        // A module's own syntax errors are reported against the import site,
+        // tagged with the module's path: the diagnostic type carries a line
+        // and column but not a file.
+        $decl r $if ($call Pa.diags.is_nil (p.errs)) {
+          // §4.14: "A file sees the root block plus what it imports,
+          // nothing else" — so the module is typed in the root
+          // environment, never in the importer's.
+          //
+          // Or not typed at all: with the cache on, a fingerprint that names an
+          // interface already on disk is loaded instead, and this module's body is
+          // never inferred. A miss infers it and writes the interface for next
+          // time. `cacheable` excludes `prelude`, whose `$template` makes its
+          // interface its body (§10.7).
+          $decl ok  $call and ($call cache_on (cx), $call cacheable (key))
+          // The imports first, whether or not this module is cacheable: they are
+          // what the key is made of, and inferring this body would load them
+          // anyway.
+          $decl ih  $if ($call cache_on (cx))
+                        ($call key_imports (cx, $call imports_of (p.exprs, strs.nil), n,
+                             $call T.hash_str (src, 0, 17)))
+                        0
+          $decl got $if ok ($call iface_read (cx, key, ih)) proto_ires
+          $decl cnt $if got.hit ($set cx.nhit ($call add ($call ival (cx.nhit), 1)))
+                        ($if ok ($set cx.nmiss ($call add ($call ival (cx.nmiss), 1))) 0)
+          $decl res $if got.hit got {
+            $decl outer   $call sval (cx.file)
+            $decl entered $set cx.file key
+            $decl t       $call infer_block (cx, root_env, p.exprs, P.proto_span)
+            $decl left    $set cx.file outer
+            // Serialised once: written if this module is cacheable, and hashed
+            // either way, because an importer's key needs the hash even for a
+            // module whose interface is not stored. A module that is not
+            // cacheable falls back to its *source* hash, which is
+            // conservative — a comment in `prelude` invalidates everything —
+            // and right, since §10.7 makes a prelude change whole-program.
+            $decl str   $if ok ($call Y.show_ty (t)) ""
+            $decl wrote $if ok ($call iface_write (cx, key, ih, str)) 0
+            $decl h       $if ok ($call T.hash_str (str, 0, 19))
+                              ($call T.hash_str (src, 0, 23))
+            $decl ret4       $call ires (t, h, false)
+          }.ret4
+          $decl ret3 res
+        }.ret3 {
+          $decl e    $call note_mod_errs (cx, p.errs, key, n)
+          $decl ret3 $call ires ($call T.tval (e), 0, false)
+        }.ret3
+        $decl ret2 r
+      }.ret2,
+      $case rf {
+        $decl e $call err (cx, $call concat ("cannot read the file for $import \"",
+            $call concat (nm, $call concat ("\" (", $call concat (key, ")")))), n)
+        $decl ret2 $call ires ($call T.tval (e), 0, false)
+      }.ret2
+    )
+  $decl done $set cx.mods
+      ($call mod_list.cons ($call mod_ent_h (key, "done", $call T.tval (ty.ty), ty.ifh),
+           $call eval_mods (cx.mods)))
+  $decl ret $call T.tval (ty.ty)
+}.ret
 
 // §4.14: "Loads a source file as a block ... the type is that block's type."
 // Loaded once, keyed on the resolved path (§4.14). Shared by the import expression and
 // by `key_imports`, which needs an import's interface before the importer has a key.
-$decl need_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node)
-  { $decl hit $call mod_find ($call eval_mods (cx.mods), key)
-    $decl out $if ($call eq_str (hit.state, "done")) ($call T.tval (hit.ty))
-             ($if ($call eq_str (hit.state, "loading"))
-                  ($call err (cx, $call concat ("import cycle: \"", $call concat (nm,
-                      "\" is already being loaded; make one module a $template over the other")), n))
-                  ($call load_module (cx, key, nm, n))) }.out
+$decl need_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n Pa.proto_node) {
+  $decl hit $call mod_find ($call eval_mods (cx.mods), key)
+  $decl ret $if ($call eq_str (hit.state, "done")) ($call T.tval (hit.ty))
+           ($if ($call eq_str (hit.state, "loading"))
+                ($call err (cx, $call concat ("import cycle: \"", $call concat (nm,
+                    "\" is already being loaded; make one module a $template over the other")), n))
+                ($call load_module (cx, key, nm, n)))
+}.ret
 
-$decl infer_import $func ($decl cx proto_ctx, $decl n proto_form)
-  { $decl nm  $call str_of ($call op (n, 0))
-    $decl key $call resolve_path (cx.base, nm)
-    $decl out $call need_module (cx, key, nm, n) }.out
+$decl infer_import $func ($decl cx proto_ctx, $decl n proto_form) {
+  $decl nm  $call str_of ($call op (n, 0))
+  $decl key $call resolve_path (cx.base, nm)
+  $decl ret $call need_module (cx, key, nm, n)
+}.ret
 
 // ------------------------------------------------------------------- blocks
 
-$decl bst $func ($decl e0 env.node)
-  { $decl env  $mut $alloc e0
-    $decl flds $mut $alloc T.fields.node
-    $decl prps $mut $alloc T.props.node
-    // §5.5: "`$fwd` slots share one system of equations."
-    $decl fwds $mut $alloc fwd_list.node
-    $decl res  $mut $alloc res_list.node }
+$decl bst $func ($decl e0 env.node) {
+  $decl env  $mut $alloc e0
+  $decl flds $mut $alloc T.fields.node
+  $decl prps $mut $alloc T.props.node
+  // §5.5: "`$fwd` slots share one system of equations."
+  $decl fwds $mut $alloc fwd_list.node
+  $decl res  $mut $alloc res_list.node
+}
 
 $decl proto_bst $call bst (env.nil)
 
@@ -1678,68 +1768,72 @@ $decl const_of $func ($decl cx proto_ctx, $decl n Pa.proto_node) $match n (
 // §4.10: props are visible throughout their block regardless of order, so every
 // prop name is bound before any of them is typed. Each starts as a recursion
 // placeholder, discharged when its own initializer has been typed.
-$decl prebind_props $func ($decl cx proto_ctx, $decl items Pa.nodes.node, $decl acc env.node) $match items (
-  $case {$prop tag "cons"}
-    { $decl it items.head
-      $decl nm $call name_of ($call op (it, 0))
-      $decl ct $if ($call is_form (it, "prop"))
-          ($set cx.ctnames ($call strs.cons (nm, cx.ctnames))) ()
-      $decl e2 $if ($call is_form (it, "prop"))
-          ($call bind (acc, nm, $call T.t_var ($call fresh (cx))))
-          acc
-      $decl out $call prebind_props (cx, items.tail, e2) }.out,
+$decl prebind_props $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
+    $decl acc env.node) $match items (
+  $case {$prop tag "cons"} {
+    $decl it items.head
+    $decl nm $call name_of ($call op (it, 0))
+    $decl ct $if ($call is_form (it, "prop"))
+        ($set cx.ctnames ($call strs.cons (nm, cx.ctnames))) ()
+    $decl e2 $if ($call is_form (it, "prop"))
+        ($call bind (acc, nm, $call T.t_var ($call fresh (cx))))
+        acc
+    $decl ret $call prebind_props (cx, items.tail, e2)
+  }.ret,
   $case items acc
 )
 
 
-$decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node)
-  { $decl nm   $call name_of ($call op (it, 0))
-    $decl init $call op (it, 1)
-    // §4.1: the name is in scope inside its own initializer, standing for
-    // §5.5's placeholder `R`. A `$func` initializer gets the sharper treatment
-    // in `infer_rec_func`, because a bare `R` is not callable.
-    // A `$fwd` for this name already bound it to `[params] -> R` (§5.5), so the
-    // body is typed against that placeholder and its resolution recorded as one
-    // equation of the group's system.
-    $decl fe $call find_fwd (s.fwds, nm)
-    $decl ty $if ($call lt (-1, fe.id))
-        ($call infer_fwd_body (cx, s.env, init, fe.id))
-        ($if ($call is_form (init, "func"))
-            ($call infer_rec_func (cx, s.env, nm, init))
-        ($if ($call is_form (init, "template"))
-            ($call infer (cx, $call self_tmpl_env (cx, s.env, nm, init), init))
-            { $decl id  $call fresh (cx)
-              $decl e1  $call bind (s.env, nm, $call T.t_var (id))
-              $decl raw $call infer (cx, e1, init)
-              $decl r   $call close_rec (cx, raw, id, it) }.r))
-    $decl eqn $if ($call lt (-1, fe.id))
-        ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
-                                          $call eval_res (s.res))))
-        ()
-    // §4.16 rule 2's three sets — see `ctx`. `topnames` is guarded on `fdepth`
-    // because a `$decl` inside a `$func` body takes a frame slot (§7.2) and
-    // reading it *is* a capture, while a file top-level one is lifted to a global.
-    //
-    // The condition is inside the `$set`, not around it, and that is not a style
-    // choice. `$if c ($set …) ()` has arms of two *different* types, so §3.6 joins
-    // them into a union and §7.5 gives the slot a discriminator and a payload — for
-    // a value nothing reads, since these three exist only for the store. Worse, the
-    // block copies every slot into its result, so the unit path copies a payload it
-    // never wrote: `cc -Wall` reports exactly that, and it was the only warning in
-    // the compiler's own C. Storing unconditionally — the same list back when the
-    // test fails — makes both arms one type, and the union, the tag and the copy
-    // all go away.
-    $decl xn $set cx.extnames ($if ($call is_form (init, "extern"))
-        ($call strs.cons (nm, cx.extnames)) ($call strs.val (cx.extnames)))
-    $decl cf $set cx.cffns ($if ($call is_form (init, "func"))
-        ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))
-        ($call fnlit_list.val (cx.cffns)))
-    $decl tn $set cx.topnames ($if ($call eq_int ($call ival (cx.fdepth), 0))
-        ($call strs.cons (nm, cx.topnames)) ($call strs.val (cx.topnames)))
-    $decl bound $set s.env ($call bind (s.env, nm, ty))
-    // A `$fwd` already reserved this slot at its own position (§4.11), so
-    // complete that one rather than appending a second.
-    $decl added $set s.flds ($call put_field (s.flds, nm, ty)) }
+$decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node) {
+  $decl nm   $call name_of ($call op (it, 0))
+  $decl init $call op (it, 1)
+  // §4.1: the name is in scope inside its own initializer, standing for
+  // §5.5's placeholder `R`. A `$func` initializer gets the sharper treatment
+  // in `infer_rec_func`, because a bare `R` is not callable.
+  // A `$fwd` for this name already bound it to `[params] -> R` (§5.5), so the
+  // body is typed against that placeholder and its resolution recorded as one
+  // equation of the group's system.
+  $decl fe $call find_fwd (s.fwds, nm)
+  $decl ty $if ($call lt (-1, fe.id))
+      ($call infer_fwd_body (cx, s.env, init, fe.id))
+      ($if ($call is_form (init, "func"))
+          ($call infer_rec_func (cx, s.env, nm, init))
+      ($if ($call is_form (init, "template"))
+          ($call infer (cx, $call self_tmpl_env (cx, s.env, nm, init), init)) {
+            $decl id  $call fresh (cx)
+            $decl e1  $call bind (s.env, nm, $call T.t_var (id))
+            $decl raw $call infer (cx, e1, init)
+            $decl ret $call close_rec (cx, raw, id, it)
+          }.ret))
+  $decl eqn $if ($call lt (-1, fe.id))
+      ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
+                                        $call eval_res (s.res))))
+      ()
+  // §4.16 rule 2's three sets — see `ctx`. `topnames` is guarded on `fdepth`
+  // because a `$decl` inside a `$func` body takes a frame slot (§7.2) and
+  // reading it *is* a capture, while a file top-level one is lifted to a global.
+  //
+  // The condition is inside the `$set`, not around it, and that is not a style
+  // choice. `$if c ($set …) ()` has arms of two *different* types, so §3.6 joins
+  // them into a union and §7.5 gives the slot a discriminator and a payload — for
+  // a value nothing reads, since these three exist only for the store. Worse, the
+  // block copies every slot into its result, so the unit path copies a payload it
+  // never wrote: `cc -Wall` reports exactly that, and it was the only warning in
+  // the compiler's own C. Storing unconditionally — the same list back when the
+  // test fails — makes both arms one type, and the union, the tag and the copy
+  // all go away.
+  $decl xn $set cx.extnames ($if ($call is_form (init, "extern"))
+      ($call strs.cons (nm, cx.extnames)) ($call strs.val (cx.extnames)))
+  $decl cf $set cx.cffns ($if ($call is_form (init, "func"))
+      ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))
+      ($call fnlit_list.val (cx.cffns)))
+  $decl tn $set cx.topnames ($if ($call eq_int ($call ival (cx.fdepth), 0))
+      ($call strs.cons (nm, cx.topnames)) ($call strs.val (cx.topnames)))
+  $decl bound $set s.env ($call bind (s.env, nm, ty))
+  // A `$fwd` already reserved this slot at its own position (§4.11), so
+  // complete that one rather than appending a second.
+  $decl added $set s.flds ($call put_field (s.flds, nm, ty))
+}
 
 $decl mem_str $func ($decl xs strs.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
@@ -1776,21 +1870,23 @@ $decl props_only $func ($decl items Pa.nodes.node) $match items (
 // §4.10's "never a block with a `$decl`", applied through a `$specialize`: the
 // template's body, if the target names one. Asked quietly, like `ctg_target` — the
 // `$specialize` itself is typed, and reports, as the prop's initializer.
-$decl spec_runtime_body $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node)
-  { $decl q0   $call bval (cx.quiet)
-    $decl hush $set cx.quiet true
-    $decl tt   $call deref_ty ($call infer (cx, e, x))
-    $decl back $set cx.quiet q0
-    $decl out $match tt (
-        $case {$prop tag "tmpl"}
-          { $decl r $call find_tmpl (cx.tmpls, tt.id)
-            $decl b r.body
-            $decl q $match b (
-                $case {$prop tag "block"} ($call not ($call props_only ($call Pa.nodes.val (b.items)))),
-                $case b false
-              ) }.q,
-        $case tt false
-      ) }.out
+$decl spec_runtime_body $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node) {
+  $decl q0   $call bval (cx.quiet)
+  $decl hush $set cx.quiet true
+  $decl tt   $call deref_ty ($call infer (cx, e, x))
+  $decl back $set cx.quiet q0
+  $decl ret $match tt (
+      $case {$prop tag "tmpl"} {
+        $decl r $call find_tmpl (cx.tmpls, tt.id)
+        $decl b r.body
+        $decl ret2 $match b (
+            $case {$prop tag "block"} ($call not ($call props_only ($call Pa.nodes.val (b.items)))),
+            $case b false
+          )
+      }.ret2,
+      $case tt false
+    )
+}.ret
 
 // §4.10's constant expressions, as a reason: "" when `n` is one, and otherwise what
 // to say it is not. Judged after specialisation, so a `$specialize` is constant when
@@ -1798,9 +1894,10 @@ $decl spec_runtime_body $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.
 $fwd ct_why
 
 $decl ct_why_list $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.nodes.node) $match xs (
-  $case {$prop tag "cons"}
-    { $decl w $call ct_why (cx, pe, xs.head)
-      $decl r $if ($call eq_str (w, "")) ($call ct_why_list (cx, pe, $call Pa.nodes.val (xs.tail))) w }.r,
+  $case {$prop tag "cons"} {
+    $decl w   $call ct_why (cx, pe, xs.head)
+    $decl ret $if ($call eq_str (w, "")) ($call ct_why_list (cx, pe, $call Pa.nodes.val (xs.tail))) w
+  }.ret,
   $case xs ""
 )
 
@@ -1809,27 +1906,29 @@ $decl ct_why_list $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.node
 // nothing, and its value cannot reach the prop unless the generic it is passed to is
 // compile-time — and then that `$specialize`'s own check holds it to a constant.
 $decl ct_args_why $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.nodes.node) $match xs (
-  $case {$prop tag "cons"}
-    { $decl x xs.head
-      $decl w $match x ($case {$prop tag "name"} "", $case x ($call ct_why (cx, pe, x)))
-      $decl r $if ($call eq_str (w, "")) ($call ct_args_why (cx, pe, $call Pa.nodes.val (xs.tail))) w }.r,
+  $case {$prop tag "cons"} {
+    $decl x   xs.head
+    $decl w   $match x ($case {$prop tag "name"} "", $case x ($call ct_why (cx, pe, x)))
+    $decl ret $if ($call eq_str (w, "")) ($call ct_args_why (cx, pe, $call Pa.nodes.val (xs.tail))) w
+  }.ret,
   $case xs ""
 )
 
-$decl ct_form_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n proto_form)
-  { $decl k n.keyword
-    $decl r $if ($call or ($call eq_str (k, "func"), $call eq_str (k, "template"))) ""
-      // §4.8a: the first member is the value; the rest are type-only (§5.7).
-      ($if ($call eq_str (k, "union"))
-           ($call ct_why (cx, pe, $call Pa.nodes.nth ($call Pa.group_list ($call op (n, 0)), 0)))
-      ($if ($call eq_str (k, "overload"))
-           ($call ct_why_list (cx, pe, $call Pa.group_list ($call op (n, 0))))
-      ($if ($call eq_str (k, "specialize"))
-           ($if ($call spec_runtime_body (cx, pe, $call op (n, 0)))
-                "a $specialize of a template whose body has a $decl"
-                ($call ct_args_why (cx, pe, $call Pa.group_list ($call op (n, 1)))))
-      ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof"))) ""
-           ($call concat ("$", k)))))) }.r
+$decl ct_form_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n proto_form) {
+  $decl k n.keyword
+  $decl ret $if ($call or ($call eq_str (k, "func"), $call eq_str (k, "template"))) ""
+    // §4.8a: the first member is the value; the rest are type-only (§5.7).
+    ($if ($call eq_str (k, "union"))
+         ($call ct_why (cx, pe, $call Pa.nodes.nth ($call Pa.group_list ($call op (n, 0)), 0)))
+    ($if ($call eq_str (k, "overload"))
+         ($call ct_why_list (cx, pe, $call Pa.group_list ($call op (n, 0))))
+    ($if ($call eq_str (k, "specialize"))
+         ($if ($call spec_runtime_body (cx, pe, $call op (n, 0)))
+              "a $specialize of a template whose body has a $decl"
+              ($call ct_args_why (cx, pe, $call Pa.group_list ($call op (n, 1)))))
+    ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof"))) ""
+         ($call concat ("$", k))))))
+}.ret
 
 $decl ct_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node) $match n (
   $case {$prop tag "int"}   "",
@@ -1863,35 +1962,38 @@ $decl ct_init $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_nod
 $decl ct_args_check $func ($decl cx proto_ctx, $decl e env.node, $decl gs strs.node,
                            $decl args Pa.nodes.node, $decl cg Pa.ctgs.node) $match gs (
   $case {$prop tag "cons"} $match args (
-    $case {$prop tag "cons"}
-      { $decl p  $call Pa.ctg_prop (cg, gs.head)
-        $decl w  $if ($call eq_str (p, "")) "" ($call ct_why (cx, e, args.head))
-        $decl rp $if ($call eq_str (w, "")) T.t_bot
-            ($call err (cx, $call concat ("'", $call concat (gs.head, $call concat ("' reaches $prop ",
-                $call concat (p, $call concat (", so its argument must be a constant expression (§4.9), and ",
-                $call concat (w, " is not")))))), args.head))
-        $decl r  $call ct_args_check (cx, e, gs.tail, $call Pa.nodes.val (args.tail), cg) }.r,
+    $case {$prop tag "cons"} {
+      $decl p $call Pa.ctg_prop (cg, gs.head)
+      $decl w $if ($call eq_str (p, "")) "" ($call ct_why (cx, e, args.head))
+      $decl rp $if ($call eq_str (w, "")) T.t_bot
+          ($call err (cx, $call concat ("'", $call concat (gs.head, $call concat ("' reaches $prop ",
+              $call concat (p, $call concat (", so its argument must be a constant expression (§4.9), and ",
+              $call concat (w, " is not")))))), args.head))
+      $decl ret  $call ct_args_check (cx, e, gs.tail, $call Pa.nodes.val (args.tail), cg)
+    }.ret,
     $case args 0),
   $case gs 0
 )
 
 // The type of one prop. §4.10: the initializer sees other props and enclosing
 // scopes, but *not* ordered siblings — hence the prop-only environment.
-$decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl it Pa.proto_node)
-  { $decl init $call op (it, 1)
-    // Reported here, at the `$prop`, with its span — not at each projection that
-    // later fails to reach the value. `err` is quiet during the first of the two
-    // prop passes, so this is said once.
-    $decl why  $call ct_why (cx, pe, init)
-    $decl ct   $if ($call eq_str (why, "")) T.t_bot
-        ($call err (cx, $call concat ("a $prop must be a constant expression (§4.10), and ",
-            $call concat (why, " is not")), it))
-    $decl id   $call var_id ($call lookup (pe, nm)).ty
-    $decl out $if ($call is_form (init, "func"))
-        ($call infer_rec_func (cx, pe, nm, init))
-        { $decl raw $call infer (cx, $if ($call is_form (init, "template"))
-                                          ($call self_tmpl_env (cx, pe, nm, init)) pe, init)
-          $decl r   $if ($call lt (-1, id)) ($call close_rec (cx, raw, id, it)) raw }.r }.out
+$decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl it Pa.proto_node) {
+  $decl init $call op (it, 1)
+  // Reported here, at the `$prop`, with its span — not at each projection that
+  // later fails to reach the value. `err` is quiet during the first of the two
+  // prop passes, so this is said once.
+  $decl why  $call ct_why (cx, pe, init)
+  $decl ct   $if ($call eq_str (why, "")) T.t_bot
+      ($call err (cx, $call concat ("a $prop must be a constant expression (§4.10), and ",
+          $call concat (why, " is not")), it))
+  $decl id   $call var_id ($call lookup (pe, nm)).ty
+  $decl ret $if ($call is_form (init, "func"))
+      ($call infer_rec_func (cx, pe, nm, init)) {
+        $decl raw $call infer (cx, $if ($call is_form (init, "template"))
+                                        ($call self_tmpl_env (cx, pe, nm, init)) pe, init)
+        $decl ret2   $if ($call lt (-1, id)) ($call close_rec (cx, raw, id, it)) raw
+      }.ret2
+}.ret
 
 // §4.10 says props are "typed together as one system", which is the one place
 // the subset genuinely needs a fixpoint: a prop may name a *later* prop, so one
@@ -1899,35 +2001,42 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
 // resolve it — the first computes types with placeholders, the second retypes
 // with the first pass's answers in scope. Each prop is still typed with its own
 // name bound to its placeholder, so self-recursion still closes with μ (§5.5).
-$decl prop_pass $func ($decl cx proto_ctx, $decl pe0 env.node, $decl items Pa.nodes.node, $decl acc env.node) $match items (
-  $case {$prop tag "cons"}
-    { $decl it items.head
-      $decl nm $call name_of ($call op (it, 0))
-      $decl e2 $if ($call is_form (it, "prop"))
-          ($call bind (acc, nm,
-              $call prop_ty (cx, $call bind (acc, nm, ($call lookup (pe0, nm)).ty), nm, it)))
-          acc
-      $decl out $call prop_pass (cx, pe0, items.tail, e2) }.out,
+$decl prop_pass $func ($decl cx proto_ctx, $decl pe0 env.node, $decl items Pa.nodes.node,
+    $decl acc env.node) $match items (
+  $case {$prop tag "cons"} {
+    $decl it items.head
+    $decl nm $call name_of ($call op (it, 0))
+    $decl e2 $if ($call is_form (it, "prop"))
+        ($call bind (acc, nm,
+            $call prop_ty (cx, $call bind (acc, nm, ($call lookup (pe0, nm)).ty), nm, it)))
+        acc
+    $decl ret $call prop_pass (cx, pe0, items.tail, e2)
+  }.ret,
   $case items acc
 )
 
 // By the time this runs the prop's type is already resolved, so it only records
 // the entry — §4.10's value for identity, plus the type for projection.
-$decl infer_prop_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node, $decl it Pa.proto_node)
-  { $decl nm $call name_of ($call op (it, 0))
-    $decl f  $call lookup (pe, nm)
-    $decl cv $call const_of (cx, $call op (it, 1))
-    $decl added $set s.prps ($call T.props.cons ($call T.prop_typed (nm, cv, f.ty), $call eval_prps (s.prps)))
-    $decl bound $set s.env ($call bind (s.env, nm, f.ty)) }
+$decl infer_prop_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node,
+    $decl it Pa.proto_node) {
+  $decl nm $call name_of ($call op (it, 0))
+  $decl f  $call lookup (pe, nm)
+  $decl cv $call const_of (cx, $call op (it, 1))
+  $decl added $set s.prps ($call T.props.cons ($call T.prop_typed (nm, cv, f.ty),
+      $call eval_prps (s.prps)))
+  $decl bound $set s.env ($call bind (s.env, nm, f.ty))
+}
 
 // §4.11: reserves an ordered slot *at this position*. The type was decided by
 // `prebind_fwds` before the block was walked, so this only claims the slot —
 // which is what keeps the layout position at the `$fwd`, not at the `$decl`.
-$decl infer_fwd_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl all Pa.nodes.node, $decl it Pa.proto_node)
-  { $decl bound $call prebind_one (cx, s, all, it)
-    $decl nm    $call name_of ($call op (it, 0))
-    $decl f     $call lookup (s.env, nm)
-    $decl added $set s.flds ($call put_field (s.flds, nm, f.ty)) }
+$decl infer_fwd_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl all Pa.nodes.node,
+    $decl it Pa.proto_node) {
+  $decl bound $call prebind_one (cx, s, all, it)
+  $decl nm    $call name_of ($call op (it, 0))
+  $decl f     $call lookup (s.env, nm)
+  $decl added $set s.flds ($call put_field (s.flds, nm, f.ty))
+}
 
 
 $decl find_completing $func ($decl items Pa.nodes.node, $decl nm "") $match items (
@@ -1948,47 +2057,50 @@ $decl find_completing $func ($decl items Pa.nodes.node, $decl nm "") $match item
 // `[params] -> R`, leaving only the results unknown — the same shape that makes
 // self-recursion work in `infer_rec_func`.
 $decl prebind_one $func ($decl cx proto_ctx, $decl s proto_bst,
-                         $decl all Pa.nodes.node, $decl it Pa.proto_node)
-  { $decl pe   $call eval_env (s.env)
-    $decl nm   $call name_of ($call op (it, 0))
-    $decl comp $call find_completing (all, nm)
-    $decl id   $call fresh (cx)
-    $decl init $if ($call is_form (comp, "decl")) ($call op (comp, 1)) comp
-    $decl ty $if ($call is_form (init, "func"))
-        ($call T.t_func (($call infer_params (cx, pe, $call group_items ($call op (init, 0)),
-                                              T.tys.nil, pe)).tys,
-                         $call T.t_var (id)))
-        ($call T.t_var (id))
-    $decl bound $set s.env ($call bind (s.env, nm, ty))
-    $decl noted $set s.fwds ($call fwd_list.cons ($call fwd_ent (nm, id), $call eval_fwds (s.fwds)))
-    // §4.11: "A `$fwd` not completed by the end of its block is an error."
-    $decl checked $if ($call is_form (comp, "decl")) T.t_unit
-        ($call err (cx, $call concat ("$fwd '", $call concat (nm,
-            "' is never completed by a $decl in this block")), it)) }
+                         $decl all Pa.nodes.node, $decl it Pa.proto_node) {
+  $decl pe   $call eval_env (s.env)
+  $decl nm   $call name_of ($call op (it, 0))
+  $decl comp $call find_completing (all, nm)
+  $decl id   $call fresh (cx)
+  $decl init $if ($call is_form (comp, "decl")) ($call op (comp, 1)) comp
+  $decl ty $if ($call is_form (init, "func"))
+      ($call T.t_func (($call infer_params (cx, pe, $call group_items ($call op (init, 0)),
+                                            T.tys.nil, pe)).tys,
+                       $call T.t_var (id)))
+      ($call T.t_var (id))
+  $decl bound $set s.env ($call bind (s.env, nm, ty))
+  $decl noted $set s.fwds ($call fwd_list.cons ($call fwd_ent (nm, id), $call eval_fwds (s.fwds)))
+  // §4.11: "A `$fwd` not completed by the end of its block is an error."
+  $decl checked $if ($call is_form (comp, "decl")) T.t_unit
+      ($call err (cx, $call concat ("$fwd '", $call concat (nm,
+          "' is never completed by a $decl in this block")), it))
+}
 
 // The completing `$decl` for a `$fwd` name. The name is already bound to
 // `[params] -> R` in `e`, so the body is typed without rebinding it, and `R` is
 // closed over the result exactly as in `infer_rec_func`.
 $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node, $decl id 0)
   $if ($call not ($call is_form (n, "func")))
-      ($call close_rec (cx, $call infer (cx, e, n), id, n))
-      { $decl ps $call group_items ($call op (n, 0))
-        $decl r  $call infer_params (cx, e, ps, T.tys.nil, e)
+      ($call close_rec (cx, $call infer (cx, e, n), id, n)) {
+        $decl ps       $call group_items ($call op (n, 0))
+        $decl r        $call infer_params (cx, e, ps, T.tys.nil, e)
         $decl saved    $call tval (cx.tryset)
         $decl cleared  $set cx.tryset T.t_bot
-        $decl din  $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
+        $decl din      $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
         $decl body     $call infer (cx, r.env, $call op (n, 1))
-        $decl dout    $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
+        $decl dout     $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
         $decl tries    $call tval (cx.tryset)
         $decl restored $set cx.tryset saved
-        $decl res0 $call T.join (body, tries)
-        $decl res  $if ($call T.same (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx, res0, id, n))
+        $decl res0     $call T.join (body, tries)
+        $decl res      $if ($call T.same (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx,
+            res0, id, n))
         // §5.3a's first clause, for a `$fwd`-completing `$decl`.
         $decl esc  $call escapes (cx, res, "this function's result", n)
         $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
         $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
         $decl capf $call caps_frame (cx, e, free, shad)
-        $decl out  $call T.t_func_fr (r.tys, res, capf) }.out
+        $decl ret  $call T.t_func_fr (r.tys, res, capf)
+      }.ret
 
 
 // Solving the system. Each equation is substituted into the others — never into
@@ -2001,16 +2113,19 @@ $decl subst_all $func ($decl t T.proto_ty, $decl rs res_list.node) $match rs (
 
 $decl subst_others $func ($decl t T.proto_ty, $decl rs res_list.node, $decl self 0) $match rs (
   $case {$prop tag "cons"}
-    $call subst_others ($if ($call eq_int (rs.head.id, self)) t ($call T.subst (t, rs.head.id, rs.head.ty)),
+    $call subst_others ($if ($call eq_int (rs.head.id, self)) t ($call T.subst (t, rs.head.id,
+        rs.head.ty)),
                         rs.tail, self),
   $case rs t
 )
 
 $decl solve_once $func ($decl cx proto_ctx, $decl rs res_list.node, $decl all res_list.node,
                         $decl acc res_list.node, $decl x P.proto_span) $match rs (
-  $case {$prop tag "cons"}
-    { $decl t2 $call close_rec (cx, $call subst_others (rs.head.ty, all, rs.head.id), rs.head.id, x)
-      $decl out $call solve_once (cx, rs.tail, all, $call res_list.cons ($call res_ent (rs.head.id, t2), acc), x) }.out,
+  $case {$prop tag "cons"} {
+    $decl t2  $call close_rec (cx, $call subst_others (rs.head.ty, all, rs.head.id), rs.head.id, x)
+    $decl ret $call solve_once (cx, rs.tail, all, $call res_list.cons ($call res_ent (rs.head.id,
+        t2), acc), x)
+  }.ret,
   $case rs ($call res_list.reverse (acc, res_list.nil))
 )
 
@@ -2018,7 +2133,8 @@ $decl solve $func ($decl cx proto_ctx, $decl rs res_list.node, $decl n 0, $decl 
   $if ($call eq_int (n, 0)) rs
       ($call solve (cx, $call solve_once (cx, rs, rs, res_list.nil, x), $call sub (n, 1), x))
 
-$decl apply_res_fields $func ($decl fs T.fields.node, $decl rs res_list.node, $decl acc T.fields.node) $match fs (
+$decl apply_res_fields $func ($decl fs T.fields.node, $decl rs res_list.node,
+    $decl acc T.fields.node) $match fs (
   $case {$prop tag "cons"}
     $call apply_res_fields (fs.tail, rs,
         $call T.fields.cons ($call T.field (fs.head.name, $call subst_all (fs.head.ty, rs)), acc)),
@@ -2041,49 +2157,54 @@ $decl infer_items $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.nod
   $case items ()
 )
 
-$decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs res_list.node)
-  { $decl a $call subst_all (d.sub, rs)
-    $decl b $call subst_all (d.sup, rs)
-    $decl out $if ($call or ($call has_free_var (a), $call has_free_var (b)))
-        // Still unresolved: it belongs to an enclosing knot, so hand it on.
-        ($set cx.defer ($call def_list.cons ($call def_ent (d.line, d.col, d.msg, a, b),
-                                             $call eval_defer (cx.defer))))
-        ($if ($call T.sub (a, b)) T.t_unit
-             ($do ($call T.explain (a, b))
-                  ($call err (cx, $call concat (d.msg, $call concat ($call T.show (a),
-                       $call concat (", expected ", $call T.show (b)))), d)))) }.out
+$decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs res_list.node) {
+  $decl a $call subst_all (d.sub, rs)
+  $decl b $call subst_all (d.sup, rs)
+  $decl ret $if ($call or ($call has_free_var (a), $call has_free_var (b)))
+      // Still unresolved: it belongs to an enclosing knot, so hand it on.
+      ($set cx.defer ($call def_list.cons ($call def_ent (d.line, d.col, d.msg, a, b),
+                                           $call eval_defer (cx.defer))))
+      ($if ($call T.sub (a, b)) T.t_unit
+           ($do ($call T.explain (a, b))
+                ($call err (cx, $call concat (d.msg, $call concat ($call T.show (a),
+                     $call concat (", expected ", $call T.show (b)))), d))))
+}.ret
 
-$decl recheck_list $func ($decl cx proto_ctx, $decl ds def_list.node, $decl rs res_list.node) $match ds (
-  $case {$prop tag "cons"} $do ($call recheck_one (cx, ds.head, rs)) ($call recheck_list (cx, ds.tail, rs)),
+$decl recheck_list $func ($decl cx proto_ctx, $decl ds def_list.node,
+    $decl rs res_list.node) $match ds (
+  $case {$prop tag "cons"} $do ($call recheck_one (cx, ds.head, rs)) ($call recheck_list (cx,
+      ds.tail, rs)),
   $case ds ()
 )
 
-$decl recheck_defers $func ($decl cx proto_ctx, $decl rs res_list.node)
-  { $decl ds      $call eval_defer (cx.defer)
-    $decl cleared $set cx.defer def_list.nil
-    $decl out     $call recheck_list (cx, ds, rs) }.out
+$decl recheck_defers $func ($decl cx proto_ctx, $decl rs res_list.node) {
+  $decl ds      $call eval_defer (cx.defer)
+  $decl cleared $set cx.defer def_list.nil
+  $decl ret     $call recheck_list (cx, ds, rs)
+}.ret
 
 // §3.3: a block's type is the ordered list of its `$decl` slots plus its props.
 $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.nodes.node,
-                         $decl x P.proto_span)
-  { $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
-    $decl fwdr   $call check_fwd_reads (cx, items)
-    $decl pe0    $call prebind_props (cx, items, e0)
-    $decl hushed $set cx.quiet true
-    $decl peA    $call prop_pass (cx, pe0, items, pe0)
-    $decl heard  $set cx.quiet false
-    $decl pe     $call prop_pass (cx, pe0, items, peA)
-    $decl s      $call bst (pe)
-    $decl walked $call infer_items (cx, s, pe, items, items)
-    // §5.5: the group is solved as one system, then its answers are substituted
-    // everywhere — a sibling typed before the group closed still mentions the
-    // placeholders.
-    $decl eqns   $call eval_res (s.res)
-    $decl solved $call solve (cx, eqns, $call res_list.length (eqns, 0), x)
-    $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil),
-                                         solved, T.fields.nil)
-    $decl late   $call recheck_defers (cx, solved)
-    $decl out    $call T.t_block (flds, s.prps) }.out
+                         $decl x P.proto_span) {
+  $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
+  $decl fwdr   $call check_fwd_reads (cx, items)
+  $decl pe0    $call prebind_props (cx, items, e0)
+  $decl hushed $set cx.quiet true
+  $decl peA    $call prop_pass (cx, pe0, items, pe0)
+  $decl heard  $set cx.quiet false
+  $decl pe     $call prop_pass (cx, pe0, items, peA)
+  $decl s      $call bst (pe)
+  $decl walked $call infer_items (cx, s, pe, items, items)
+  // §5.5: the group is solved as one system, then its answers are substituted
+  // everywhere — a sibling typed before the group closed still mentions the
+  // placeholders.
+  $decl eqns   $call eval_res (s.res)
+  $decl solved $call solve (cx, eqns, $call res_list.length (eqns, 0), x)
+  $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil),
+                                       solved, T.fields.nil)
+  $decl late $call recheck_defers (cx, solved)
+  $decl ret  $call T.t_block (flds, s.prps)
+}.ret
 
 // §4.16: `$extern "symbol" sig` binds a C function and "evaluates to a callable
 // value". `sig` is a type-only position (§5.7) whose type — an example `$func` —
@@ -2096,52 +2217,55 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
 // treats every extern call as opaque", so there is nothing further to check on
 // this side — the signature is taken on trust, exactly as a `$decl`'s parameter
 // default is.
-$decl infer_extern $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl t $call T.tval ($call infer (cx, e, $call op (n, 1)))
-    // §4.7's catch-all idiom needs a *name* to narrow, so the unrolling is bound
-    // first — and it has to be unrolled at all because §5.5's `μ` would read as
-    // opaque otherwise.
-    $decl u $call T.unroll (t)
-    $decl r $match u (
-        $case {$prop tag "func"} t,
-        $case u ($call err (cx, $call concat (
-            "$extern's signature must be an example $func (§4.16), found ",
-            $call T.show (t)), n))
-      ) }.r
+$decl infer_extern $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl t $call T.tval ($call infer (cx, e, $call op (n, 1)))
+  // §4.7's catch-all idiom needs a *name* to narrow, so the unrolling is bound
+  // first — and it has to be unrolled at all because §5.5's `μ` would read as
+  // opaque otherwise.
+  $decl u $call T.unroll (t)
+  $decl ret $match u (
+      $case {$prop tag "func"} t,
+      $case u ($call err (cx, $call concat (
+          "$extern's signature must be an example $func (§4.16), found ",
+          $call T.show (t)), n))
+    )
+}.ret
 
 // ------------------------------------------------------------------ dispatch
 
-$decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
-  { $decl k n.keyword
-    $decl out
-      $if ($call eq_str (k, "decl"))  ($call infer (cx, e, $call op (n, 1)))
-      ($if ($call eq_str (k, "new"))   ($call T.t_ref ("", $call deref_ty ($call infer (cx, e, $call op (n, 0)))))
-      // §4.2a: the same shape as `$new`, and the other storage kind (§3.5).
-      // Where it comes from is the `allocator` in lexical scope (§7.6), which
-      // is a runtime matter; the type records only that it outlives scopes.
-      ($if ($call eq_str (k, "alloc"))
-        { $decl v $call deref_ty ($call infer (cx, e, $call op (n, 0)))
-          // §5.3a again: allocated storage is exactly "storage that is not
-          // itself frame-bound", so putting a frame reference in one escapes.
-          $decl esc $call escapes (cx, v, "this value", n)
-          $decl r $call T.t_ref_k ("", v, T.k_alloc) }.r
-      ($if ($call eq_str (k, "mut"))   ($call infer_mut (cx, e, n))
-      ($if ($call eq_str (k, "set"))   ($call infer_set (cx, e, n))
-      ($if ($call eq_str (k, "func"))  ($call infer_func (cx, e, n))
-      ($if ($call eq_str (k, "call"))  ($call infer_call (cx, e, n))
-      ($if ($call eq_str (k, "if"))    ($call infer_if (cx, e, n))
-      ($if ($call eq_str (k, "do"))    ($do ($call infer (cx, e, $call op (n, 0)))
-                                            ($call infer (cx, e, $call op (n, 1))))
-      ($if ($call eq_str (k, "union")) ($call infer_union (cx, e, n))
-      ($if ($call eq_str (k, "match")) ($call infer_match (cx, e, n))
-      ($if ($call eq_str (k, "try"))   ($call infer_try (cx, e, n))
-      ($if ($call eq_str (k, "template"))   ($call infer_template (cx, e, n))
-      ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
-      ($if ($call eq_str (k, "import"))     ($call infer_import (cx, n))
-      ($if ($call eq_str (k, "extern"))     ($call infer_extern (cx, e, n))
-           ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-      )))))))))))))))
-  }.out
+$decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl k n.keyword
+  $decl ret
+    $if ($call eq_str (k, "decl"))  ($call infer (cx, e, $call op (n, 1)))
+    ($if ($call eq_str (k, "new"))   ($call T.t_ref ("", $call deref_ty ($call infer (cx, e,
+        $call op (n, 0)))))
+    // §4.2a: the same shape as `$new`, and the other storage kind (§3.5).
+    // Where it comes from is the `allocator` in lexical scope (§7.6), which
+    // is a runtime matter; the type records only that it outlives scopes.
+    ($if ($call eq_str (k, "alloc")) {
+      $decl v $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+      // §5.3a again: allocated storage is exactly "storage that is not
+      // itself frame-bound", so putting a frame reference in one escapes.
+      $decl esc  $call escapes (cx, v, "this value", n)
+      $decl ret2 $call T.t_ref_k ("", v, T.k_alloc)
+    }.ret2
+    ($if ($call eq_str (k, "mut"))   ($call infer_mut (cx, e, n))
+    ($if ($call eq_str (k, "set"))   ($call infer_set (cx, e, n))
+    ($if ($call eq_str (k, "func"))  ($call infer_func (cx, e, n))
+    ($if ($call eq_str (k, "call"))  ($call infer_call (cx, e, n))
+    ($if ($call eq_str (k, "if"))    ($call infer_if (cx, e, n))
+    ($if ($call eq_str (k, "do"))    ($do ($call infer (cx, e, $call op (n, 0)))
+                                          ($call infer (cx, e, $call op (n, 1))))
+    ($if ($call eq_str (k, "union")) ($call infer_union (cx, e, n))
+    ($if ($call eq_str (k, "match")) ($call infer_match (cx, e, n))
+    ($if ($call eq_str (k, "try"))   ($call infer_try (cx, e, n))
+    ($if ($call eq_str (k, "template"))   ($call infer_template (cx, e, n))
+    ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
+    ($if ($call eq_str (k, "import"))     ($call infer_import (cx, n))
+    ($if ($call eq_str (k, "extern"))     ($call infer_extern (cx, e, n))
+         ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
+    )))))))))))))))
+}.ret
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (
   // §3.1: "Literals have their base type." There are no singleton literal types.
@@ -2152,10 +2276,11 @@ $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) 
   // so a boolean literal's type is narrower than Bool.
   $case {$prop tag "bool"}  $if n.value T.t_true T.t_false,
   $case {$prop tag "unit"}  T.t_unit,
-  $case {$prop tag "name"}
-    { $decl f $call lookup (e, n.text)
-      $decl out $if f.ok f.ty
-          ($call err (cx, $call concat ("unknown name '", $call concat (n.text, "'")), n)) }.out,
+  $case {$prop tag "name"} {
+    $decl f $call lookup (e, n.text)
+    $decl ret $if f.ok f.ty
+        ($call err (cx, $call concat ("unknown name '", $call concat (n.text, "'")), n))
+  }.ret,
   $case {$prop tag "group"} $call T.t_group ($call infer_tys (cx, e, n.items, T.tys.nil)),
   $case {$prop tag "block"} $call infer_block (cx, e, n.items, n),
   $case {$prop tag "proj_name"}  $call infer_proj_name (cx, e, n),
@@ -2178,12 +2303,13 @@ $decl stamp_file $func ($decl xs Pa.diags.node, $decl path "", $decl acc Pa.diag
 )
 
 // §3.3: "A source file is a block."
-$decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base "", $decl path "")
-  { $decl cx     $call ctx ()
-    $decl rooted $set cx.base base
-    $decl named  $set cx.file path
-    $decl t      $call infer_block (cx, e0, items, P.proto_span)
-    $decl out $call result (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil)) }.out
+$decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base "", $decl path "") {
+  $decl cx     $call ctx ()
+  $decl rooted $set cx.base base
+  $decl named  $set cx.file path
+  $decl t      $call infer_block (cx, e0, items, P.proto_span)
+  $decl ret    $call result (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil))
+}.ret
 
 // `base` is the directory `$import` resolves from; it defaults to the working
 // directory so that existing single-file callers are unaffected (§3.4).
@@ -2195,26 +2321,30 @@ $decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base
 $decl cached_res $func ($decl t T.proto_ty, $decl ds Pa.diags.node, $decl h 0, $decl m 0)
   { $decl ty t  $decl errs ds  $decl hits h  $decl misses m }
 
-$decl check_cached $func ($decl src "", $decl base "", $decl path "", $decl dir "")
-  { $decl p $call Pa.parse (src)
-    $decl out $if ($call Pa.diags.is_nil (p.errs))
-        { $decl cx     $call ctx ()
-          $decl rooted $set cx.base base
-          $decl named  $set cx.file path
-          $decl cached $set cx.cdir dir
-          $decl t      $call infer_block (cx, root_env, p.exprs, P.proto_span)
-          $decl z $call cached_res (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil),
-                      $call ival (cx.nhit), $call ival (cx.nmiss)) }.z
-        ($call cached_res (T.t_bot, $call stamp_file (p.errs, path, Pa.diags.nil), 0, 0)) }.out
+$decl check_cached $func ($decl src "", $decl base "", $decl path "", $decl dir "") {
+  $decl p $call Pa.parse (src)
+  $decl ret $if ($call Pa.diags.is_nil (p.errs)) {
+    $decl cx     $call ctx ()
+    $decl rooted $set cx.base base
+    $decl named  $set cx.file path
+    $decl cached $set cx.cdir dir
+    $decl t      $call infer_block (cx, root_env, p.exprs, P.proto_span)
+    $decl ret2 $call cached_res (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil),
+                $call ival (cx.nhit), $call ival (cx.nmiss))
+  }.ret2
+      ($call cached_res (T.t_bot, $call stamp_file (p.errs, path, Pa.diags.nil), 0, 0))
+}.ret
 
-$decl check_source $func ($decl src "", $decl base "", $decl path "")
-  { $decl p $call Pa.parse (src)
-    $decl out $if ($call Pa.diags.is_nil (p.errs))
-        ($call infer_file (p.exprs, root_env, base, path))
-        ($call result (T.t_bot, $call stamp_file (p.errs, path, Pa.diags.nil))) }.out
+$decl check_source $func ($decl src "", $decl base "", $decl path "") {
+  $decl p $call Pa.parse (src)
+  $decl ret $if ($call Pa.diags.is_nil (p.errs))
+      ($call infer_file (p.exprs, root_env, base, path))
+      ($call result (T.t_bot, $call stamp_file (p.errs, path, Pa.diags.nil)))
+}.ret
 
 // Imports resolve relative to the entry file, so that a module's imports mean
 // the same thing however the checker was invoked.
-$decl check_file $func ($decl path "")
-  { $decl src $call read_module (path)
-    $decl out $call check_source (src, $call P.dirname (path), path) }.out
+$decl check_file $func ($decl path "") {
+  $decl src $call read_module (path)
+  $decl ret $call check_source (src, $call P.dirname (path), path)
+}.ret

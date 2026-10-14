@@ -16,12 +16,12 @@ $decl base $call add (20, 1)
 
 // Building a closure that names it runs nothing: `mk`'s body is a `$func`
 // literal, so calling `mk` here evaluates no read of `even`.
-$decl mk $func ($decl k 0) $func ($decl n 0) $if ($call even (n)) k 0
+$decl mk    $func ($decl k 0) $func ($decl n 0) $if ($call even (n)) k 0
 $decl later $call mk (base)
 
 // A parameter that shares the name is not the slot.
 $decl shadow $func ($decl even 0) $call add (even, 1)
-$decl s1 $call shadow (4)
+$decl s1     $call shadow (4)
 
 $decl even $func ($decl n 0) $if ($call eq_int (n, 0)) true ($call odd ($call sub (n, 1)))
 

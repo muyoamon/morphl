@@ -19,11 +19,11 @@ $decl ok $match wrote ($case {$prop tag "err"} 0, $case wrote 1)
 
 // What came back: the length of the contents, or -1 if it could not be read.
 $decl back $call read_file (path)
-$decl n $match back ($case {$prop tag "some"} ($call len (back.v)), $case back -1)
+$decl n    $match back ($case {$prop tag "some"} ($call len (back.v)), $case back -1)
 
 // A path that cannot be created must report `err`, not panic — a directory that does
 // not exist is the cheapest way to ask for one.
-$decl bad $call write_file ("/nonexistent-dir-mpl/x", "y")
+$decl bad   $call write_file ("/nonexistent-dir-mpl/x", "y")
 $decl badok $match bad ($case {$prop tag "err"} 1, $case bad 0)
 
 // 1 + 60 + 100 = 161, and each digit is one of the three claims: the write reported

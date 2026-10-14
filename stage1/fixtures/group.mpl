@@ -11,7 +11,8 @@ $decl pair $func ($decl a 0, $decl b 0) (a, b)
 // Nested, and of mixed element type, so the layout is not just two words.
 $decl tagged $func ($decl n 0, $decl s "") (n, s, $call pair (n, 7))
 
-$decl main $func ()
-  { $decl p $call pair (40, 2)
-    $decl t $call tagged (1, "x")
-    $decl r $call add ($call add (p.1, p.2), (t.3).2) }.r
+$decl main $func () {
+  $decl p   $call pair (40, 2)
+  $decl t   $call tagged (1, "x")
+  $decl ret $call add ($call add (p.1, p.2), (t.3).2)
+}.ret

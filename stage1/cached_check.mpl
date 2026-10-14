@@ -19,7 +19,7 @@ $decl src  $match rf (
     $case {$prop tag "some"} rf.v,
     $case rf ($call panic ($call concat ("cannot read ", path)))
   )
-$decl r    $call I.check_cached (src, $call P.dirname (path), path, dir)
-$decl e1   $call nl ($call concat ("errors: ", $call int_to_str ($call Pa.diags.length (r.errs, 0))))
-$decl e2   $call nl ($call concat ("cache hits: ", $call int_to_str (r.hits)))
-$decl e3   $call nl ($call concat ("cache misses: ", $call int_to_str (r.misses)))
+$decl r  $call I.check_cached (src, $call P.dirname (path), path, dir)
+$decl e1 $call nl ($call concat ("errors: ", $call int_to_str ($call Pa.diags.length (r.errs, 0))))
+$decl e2 $call nl ($call concat ("cache hits: ", $call int_to_str (r.hits)))
+$decl e3 $call nl ($call concat ("cache misses: ", $call int_to_str (r.misses)))

@@ -5,6 +5,6 @@
 // file that was read perfectly well.
 //
 // Answer 9. A missing module is still reported — that half was never broken.
-$decl E $import "empty_util"
-$decl P $import "../prelude"
+$decl E    $import "empty_util"
+$decl P    $import "../prelude"
 $decl main $func () $if ($call P.not (false)) 9 0

@@ -30,23 +30,25 @@ $decl check_str $func ($decl name "", $decl got "", $decl want "")
            ($call panic (name))))))
 
 // The type of the last `$decl` in a fragment, rendered.
-$decl field_ty $func ($decl src "", $decl nm "")
-  { $decl r $call I.check_source (src)
-    $decl rty r.ty
-    $decl f $match rty (
-      $case {$prop tag "block"} ($call T.find_field ($call T.fields.val (rty.fields), nm)),
-      $case rty T.proto_field
-    )
-    $decl out $if ($call eq_str (f.name, "")) "<no such field>" ($call T.show (f.ty)) }.out
+$decl field_ty $func ($decl src "", $decl nm "") {
+  $decl r   $call I.check_source (src)
+  $decl rty r.ty
+  $decl f $match rty (
+    $case {$prop tag "block"} ($call T.find_field ($call T.fields.val (rty.fields), nm)),
+    $case rty T.proto_field
+  )
+  $decl ret $if ($call eq_str (f.name, "")) "<no such field>" ($call T.show (f.ty))
+}.ret
 
-$decl errs_of $func ($decl src "")
-  { $decl r $call I.check_source (src)
-    // `$if` does not narrow (§4.7 narrows a `$match` scrutinee, by its name).
-    $decl es $call Pa.diags.val (r.errs)
-    $decl out $match es (
-        $case {$prop tag "cons"} es.head.msg,
-        $case es ""
-      ) }.out
+$decl errs_of $func ($decl src "") {
+  $decl r $call I.check_source (src)
+  // `$if` does not narrow (§4.7 narrows a `$match` scrutinee, by its name).
+  $decl es $call Pa.diags.val (r.errs)
+  $decl ret $match es (
+      $case {$prop tag "cons"} es.head.msg,
+      $case es ""
+    )
+}.ret
 
 // Whether `m` is among the diagnostics, answering `m` if so — for a check whose
 // own report is followed by the cascade it causes, so it is not the newest.
@@ -56,13 +58,15 @@ $decl has_err_in $func ($decl es Pa.diags.node, $decl m "") $match es (
   $case es ""
 )
 
-$decl has_err $func ($decl src "", $decl m "")
-  { $decl r   $call I.check_source (src)
-    $decl out $call has_err_in ($call Pa.diags.val (r.errs), m) }.out
+$decl has_err $func ($decl src "", $decl m "") {
+  $decl r   $call I.check_source (src)
+  $decl ret $call has_err_in ($call Pa.diags.val (r.errs), m)
+}.ret
 
-$decl n_errs $func ($decl src "")
-  { $decl r $call I.check_source (src)
-    $decl out $call Pa.diags.length (r.errs, 0) }.out
+$decl n_errs $func ($decl src "") {
+  $decl r   $call I.check_source (src)
+  $decl ret $call Pa.diags.length (r.errs, 0)
+}.ret
 
 // ------------------------------------------------------------------- literals
 
@@ -549,14 +553,15 @@ $decl unguarded_src $call concat (
 $decl t68c $call check ("a recursive type that does not pass through storage is rejected",
   $call lt (0, $call n_errs (unguarded_src)))
 // The raw type, for assertions that should not pin a variable's number.
-$decl ty_of $func ($decl src "", $decl nm "")
-  { $decl r $call I.check_source (src)
-    $decl rty r.ty
-    $decl f $match rty (
-      $case {$prop tag "block"} ($call T.find_field ($call T.fields.val (rty.fields), nm)),
-      $case rty T.proto_field
-    )
-    $decl out f.ty }.out
+$decl ty_of $func ($decl src "", $decl nm "") {
+  $decl r   $call I.check_source (src)
+  $decl rty r.ty
+  $decl f $match rty (
+    $case {$prop tag "block"} ($call T.find_field ($call T.fields.val (rty.fields), nm)),
+    $case rty T.proto_field
+  )
+  $decl ret f.ty
+}.ret
 
 // §5.5's knot, asserted by what it means rather than by how it renders: a cell
 // built by `cons` is a member of the recursive type `node` names.

@@ -14,14 +14,15 @@
 // 3 + 2 + 2 + 5 + 0 = 12.
 $decl P $import "../prelude"
 
-$decl main $func ()
-  { $decl a  $call array (3, "ab")
-    $decl n  $call alen (a)
-    // §5.4: a call argument is a value position, so the reference `at` answers
-    // is read through here with no explicit deref.
-    $decl w0 $call len ($call P.sval ($call at (a, 0)))
-    $decl w2 $call len ($call P.sval ($call at (a, 2)))
-    $decl b  $call array (5, "")
-    $decl m  $call alen (b)
-    $decl z  $call len ($call P.sval ($call at (b, 4)))
-    $decl r  $call add (n, $call add (w0, $call add (w2, $call add (m, z)))) }.r
+$decl main $func () {
+  $decl a $call array (3, "ab")
+  $decl n $call alen (a)
+  // §5.4: a call argument is a value position, so the reference `at` answers
+  // is read through here with no explicit deref.
+  $decl w0  $call len ($call P.sval ($call at (a, 0)))
+  $decl w2  $call len ($call P.sval ($call at (a, 2)))
+  $decl b   $call array (5, "")
+  $decl m   $call alen (b)
+  $decl z   $call len ($call P.sval ($call at (b, 4)))
+  $decl ret $call add (n, $call add (w0, $call add (w2, $call add (m, z))))
+}.ret

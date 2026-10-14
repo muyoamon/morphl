@@ -31,5 +31,5 @@ $decl show_errs $func ($decl xs Pa.diags.node, $decl p "") $match xs (
   $case xs ()
 )
 $decl ds $call Pa.diags.val (r.diagnostics)
-$decl a $call show_errs (ds, path)
-$decl b $call nl ($call concat ("errors: ", $call int_to_str ($call Pa.diags.length (ds, 0))))
+$decl a  $call show_errs (ds, path)
+$decl b  $call nl ($call concat ("errors: ", $call int_to_str ($call Pa.diags.length (ds, 0))))

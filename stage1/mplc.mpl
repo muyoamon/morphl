@@ -59,18 +59,19 @@ $decl warn_all $func ($decl ds Pa.diags.node) $match ds (
   $case ds ()
 )
 
-$decl main $func ()
-  { $decl ckd $call C.check ($call C.parse (src, path))
-    $decl cd  $call Pa.diags.val (ckd.diagnostics)
-    $decl nc  $call Pa.diags.length (cd, 0)
-    $decl g1  $if ($call lt (0, nc)) ($call panic ($call first_msg (cd, "check", nc))) ""
-    $decl bad $call C.verify (ckd.program)
-    $decl nv  $call Pa.diags.length (bad, 0)
-    $decl g2  $if ($call lt (0, nv)) ($call panic ($call first_msg (bad, "verify", nv))) ""
-    $decl out $call C.emit (ckd.program)
-    // Emit's diagnostics are not fatal — "no top-level $decl named 'main'" is not an
-    // error for a library, which is most of what this compiles — and they used to be
-    // invisible here, because §8 gave a program stdout (the C) and `panic` (fatal)
-    // and nothing between. BOOTSTRAP §2's `eprint` is the between.
-    $decl w   $call warn_all ($call Pa.diags.val (out.diagnostics))
-    $decl r   $call C.sole_text (out) }.r
+$decl main $func () {
+  $decl ckd $call C.check ($call C.parse (src, path))
+  $decl cd  $call Pa.diags.val (ckd.diagnostics)
+  $decl nc  $call Pa.diags.length (cd, 0)
+  $decl g1  $if ($call lt (0, nc)) ($call panic ($call first_msg (cd, "check", nc))) ""
+  $decl bad $call C.verify (ckd.program)
+  $decl nv  $call Pa.diags.length (bad, 0)
+  $decl g2  $if ($call lt (0, nv)) ($call panic ($call first_msg (bad, "verify", nv))) ""
+  $decl out $call C.emit (ckd.program)
+  // Emit's diagnostics are not fatal — "no top-level $decl named 'main'" is not an
+  // error for a library, which is most of what this compiles — and they used to be
+  // invisible here, because §8 gave a program stdout (the C) and `panic` (fatal)
+  // and nothing between. BOOTSTRAP §2's `eprint` is the between.
+  $decl w   $call warn_all ($call Pa.diags.val (out.diagnostics))
+  $decl ret $call C.sole_text (out)
+}.ret

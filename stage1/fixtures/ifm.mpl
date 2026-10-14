@@ -4,4 +4,4 @@
 $decl P $import "../prelude"
 $prop mk $func ($decl v 0) { $decl val v }
 $decl pair $template T { $prop of $func ($decl a T) { $decl v a } }
-$decl two $func () 2
+$decl two  $func () 2

@@ -26,4 +26,4 @@ $decl seen $call P.ival (slot)
 
 // 4 + 6 + 36 = 46.
 $decl main $func ()
-  { $decl r $call add (seen, $call add (U.snapshot, $call U.total ())) }.r
+  { $decl ret $call add (seen, $call add (U.snapshot, $call U.total ())) }.ret

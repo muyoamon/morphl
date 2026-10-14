@@ -22,7 +22,7 @@ $decl P $import "../prelude"
 //    environment struct that was never declared.
 $decl cell $mut $alloc $func ($decl n 0) 0
 $decl down $func ($decl n 0) $if ($call eq_int (n, 0)) 7 ($call cell ($call sub (n, 1)))
-$decl w0 $set cell down
+$decl w0   $set cell down
 
 // 2. A chain that changes signature at every hop, so the driver has to choose the
 //    C signature per hop rather than once — which is why the pending block

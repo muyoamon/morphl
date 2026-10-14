@@ -46,18 +46,19 @@ $decl and P.and
 // member, so this is `false` with room for `true` (§3.2 makes the two literals
 // distinct types, so plain `false` would be storage only `false` fits).
 $decl bfalse $union (false, true)
-$decl bval $func ($decl b P.boolean) b
+$decl bval   $func ($decl b P.boolean) b
 
 // ------------------------------------------------------------------- state
 
-$decl vstate $func ()
-  { $decl errs    $mut $alloc Pa.diags.node
-    // Every node's index, in visit order; sorted at the end (§9.3 forbids
-    // reading anything into the order they were handed out in, so they are
-    // sorted rather than assumed).
-    $decl ids     $mut $alloc IR.ints.node
-    // Whether the function being walked tail-calls itself directly.
-    $decl selfhit $mut $alloc bfalse }
+$decl vstate $func () {
+  $decl errs    $mut $alloc Pa.diags.node
+  // Every node's index, in visit order; sorted at the end (§9.3 forbids
+  // reading anything into the order they were handed out in, so they are
+  // sorted rather than assumed).
+  $decl ids     $mut $alloc IR.ints.node
+  // Whether the function being walked tail-calls itself directly.
+  $decl selfhit $mut $alloc bfalse
+}
 
 $decl proto_vst $call vstate ()
 
@@ -68,16 +69,17 @@ $decl eval_ids   $func ($decl x IR.ints.node) x
 // index of the function itself, so a call can be recognised as a self call;
 // it is -1 while checking the program rather than a function.
 $decl vcx $func ($decl a 0, $decl b 0, $decl c 0, $decl d 0, $decl e 0, $decl f "",
-                 $decl g IR.fns.node, $decl h 0, $decl k P.boolean)
-  { $decl ntypes a  $decl nfuncs b  $decl nslots c  $decl nenv d  $decl self e  $decl fname f
-    // The whole table, because a call has to be checked against the callee's
-    // arity and a closure against its function's environment.
-    $decl funcs g
-    // §4.10's initialisation order, which the tree also asserts. `fnbase` is
-    // where the entry file's globals end, and `early` says this function is a
-    // thunk above that boundary — so `mpl_init` runs it in the first pass,
-    // before the entry file's own statics are assigned.
-    $decl fnbase h  $decl early k }
+                 $decl g IR.fns.node, $decl h 0, $decl k P.boolean) {
+  $decl ntypes a  $decl nfuncs b  $decl nslots c  $decl nenv d  $decl self e  $decl fname f
+  // The whole table, because a call has to be checked against the callee's
+  // arity and a closure against its function's environment.
+  $decl funcs g
+  // §4.10's initialisation order, which the tree also asserts. `fnbase` is
+  // where the entry file's globals end, and `early` says this function is a
+  // thunk above that boundary — so `mpl_init` runs it in the first pass,
+  // before the entry file's own statics are assigned.
+  $decl fnbase h  $decl early k
+}
 
 $decl proto_vcx $call vcx (0, 0, 0, 0, 0, "", IR.fns.nil, 0, bfalse)
 
@@ -85,11 +87,12 @@ $decl where_of $func ($decl cx proto_vcx, $decl id 0)
   $if ($call lt (id, 0)) cx.fname
       ($call concat (cx.fname, $call concat (" node ", $call int_to_str (id))))
 
-$decl err $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0, $decl m "")
-  { $decl noted $set st.errs ($call Pa.diags.cons (
-        $call Pa.diag ($call concat ($call where_of (cx, id), $call concat (": ", m)), 0, 0, ""),
-        $call eval_diags (st.errs)))
-    $decl out 0 }.out
+$decl err $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0, $decl m "") {
+  $decl noted $set st.errs ($call Pa.diags.cons (
+      $call Pa.diag ($call concat ($call where_of (cx, id), $call concat (": ", m)), 0, 0, ""),
+      $call eval_diags (st.errs)))
+  $decl ret 0
+}.ret
 
 $decl need $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0,
                   $decl i 0, $decl n 0, $decl what "")
@@ -139,12 +142,13 @@ $decl mpass $func ($decl ls ilists.node, $decl pend IR.ints.node, $decl has P.bo
 // The rounds themselves: `log n` of them, so the block a two-deep match needs
 // costs `log n` frames rather than `n`.
 $decl msort_loop $func ($decl ls ilists.node) $match ls (
-  $case {$prop tag "cons"}
-    { $decl t   $call ilists.val (ls.tail)
-      $decl out $match t (
-        $case {$prop tag "cons"}
-          $call msort_loop ($call mpass (ls, IR.ints.nil, bfalse, ilists.nil)),
-        $case t ls.head) }.out,
+  $case {$prop tag "cons"} {
+    $decl t   $call ilists.val (ls.tail)
+    $decl ret $match t (
+      $case {$prop tag "cons"}
+        $call msort_loop ($call mpass (ls, IR.ints.nil, bfalse, ilists.nil)),
+      $case t ls.head)
+  }.ret,
   $case ls IR.ints.nil
 )
 
@@ -216,10 +220,12 @@ $decl callee_fn $func ($decl e IR.proto_expr) $match e (
 )
 
 $decl arity_of $func ($decl cx proto_vcx, $decl i 0)
-  $call IR.ints.length ($call IR.ints.val (($call IR.fns.nth ($call IR.fns.val (cx.funcs), i)).params), 0)
+  $call IR.ints.length ($call IR.ints.val (($call IR.fns.nth ($call IR.fns.val (cx.funcs),
+      i)).params), 0)
 
 $decl env_of $func ($decl cx proto_vcx, $decl i 0)
-  $call IR.ints.length ($call IR.ints.val (($call IR.fns.nth ($call IR.fns.val (cx.funcs), i)).env), 0)
+  $call IR.ints.length ($call IR.ints.val (($call IR.fns.nth ($call IR.fns.val (cx.funcs), i)).env),
+      0)
 
 $decl in_funcs $func ($decl cx proto_vcx, $decl i 0)
   $call and ($call not ($call lt (i, 0)), $call lt (i, cx.nfuncs))
@@ -241,9 +247,10 @@ $decl vcount $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0,
 
 // A direct call: arity against the callee, and whether it is the self tail call
 // §6a's cheap case turns into a loop.
-$decl mark_self $func ($decl st proto_vst)
-  { $decl m   $set st.selfhit true
-    $decl out 0 }.out
+$decl mark_self $func ($decl st proto_vst) {
+  $decl m   $set st.selfhit true
+  $decl ret 0
+}.ret
 
 $decl vcallee $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0, $decl fn 0,
                      $decl nargs 0, $decl marked P.boolean)
@@ -367,29 +374,31 @@ $decl vprefix $func ($decl st proto_vst, $decl cx proto_vcx, $decl ps IR.ints.no
 // itself makes §6a emit a loop nothing ever re-enters; one left unset on a
 // function that does makes the backend emit a real call, and §7.7 says a loop
 // written as recursion runs in constant space.
-$decl vself $func ($decl st proto_vst, $decl cx proto_vcx, $decl flag P.boolean)
-  { $decl hit $call bval (st.selfhit)
-    $decl out $if hit
-        ($if flag 0 ($call err (st, cx, -1,
-            "a direct self tail call is not marked self_tail (§7.7, §6a)")))
-        ($if flag ($call err (st, cx, -1,
-            "self_tail is set, but no call in the body is a direct self tail call")) 0) }.out
+$decl vself $func ($decl st proto_vst, $decl cx proto_vcx, $decl flag P.boolean) {
+  $decl hit $call bval (st.selfhit)
+  $decl ret $if hit
+      ($if flag 0 ($call err (st, cx, -1,
+          "a direct self tail call is not marked self_tail (§7.7, §6a)")))
+      ($if flag ($call err (st, cx, -1,
+          "self_tail is set, but no call in the body is a direct self tail call")) 0)
+}.ret
 
-$decl vfn $func ($decl st proto_vst, $decl cx0 proto_vcx, $decl f IR.proto_fn, $decl idx 0)
-  { $decl slots $call IR.ints.val (f.slots)
-    $decl envs  $call IR.ints.val (f.env)
-    $decl early $if ($call lt (idx, cx0.fnbase)) bfalse f.thunk
-    $decl cx $call vcx (cx0.ntypes, cx0.nfuncs,
-                 $call IR.ints.length (slots, 0), $call IR.ints.length (envs, 0),
-                 idx, f.name, $call IR.fns.val (cx0.funcs), cx0.fnbase, early)
-    $decl a $call vints (st, cx, slots, "slot type")
-    $decl b $call vints (st, cx, envs, "capture type")
-    $decl c $call need (st, cx, -1, f.result, cx.ntypes, "result type")
-    $decl d $call vprefix (st, cx, $call IR.ints.val (f.params), slots)
-    $decl e $set st.selfhit bfalse
-    $decl g $call vexpr (st, cx, f.body, true)
-    $decl h $call vself (st, cx, f.self_tail)
-    $decl out 0 }.out
+$decl vfn $func ($decl st proto_vst, $decl cx0 proto_vcx, $decl f IR.proto_fn, $decl idx 0) {
+  $decl slots $call IR.ints.val (f.slots)
+  $decl envs  $call IR.ints.val (f.env)
+  $decl early $if ($call lt (idx, cx0.fnbase)) bfalse f.thunk
+  $decl cx $call vcx (cx0.ntypes, cx0.nfuncs,
+               $call IR.ints.length (slots, 0), $call IR.ints.length (envs, 0),
+               idx, f.name, $call IR.fns.val (cx0.funcs), cx0.fnbase, early)
+  $decl a   $call vints (st, cx, slots, "slot type")
+  $decl b   $call vints (st, cx, envs, "capture type")
+  $decl c   $call need (st, cx, -1, f.result, cx.ntypes, "result type")
+  $decl d   $call vprefix (st, cx, $call IR.ints.val (f.params), slots)
+  $decl e   $set st.selfhit bfalse
+  $decl g   $call vexpr (st, cx, f.body, true)
+  $decl h   $call vself (st, cx, f.self_tail)
+  $decl ret 0
+}.ret
 
 $decl vfns $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.fns.node, $decl i 0)
   $match xs (
@@ -420,11 +429,12 @@ $decl vgroups $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.groups.
 // §9.3's rule, and the one a pass actually breaks: inlining a call copies the
 // callee's subtree, ids and all, and every side table keyed on them then
 // aliases two different nodes.
-$decl vids $func ($decl st proto_vst, $decl cx proto_vcx)
-  { $decl d $call first_dup ($call msort (st.ids), -1, bfalse)
-    $decl out $if ($call lt (d, 0)) 0
-        ($call err (st, cx, d,
-            "two nodes share this index; §9.3 makes a node's index distinct in a program")) }.out
+$decl vids $func ($decl st proto_vst, $decl cx proto_vcx) {
+  $decl d $call first_dup ($call msort (st.ids), -1, bfalse)
+  $decl ret $if ($call lt (d, 0)) 0
+      ($call err (st, cx, d,
+          "two nodes share this index; §9.3 makes a node's index distinct in a program"))
+}.ret
 
 // §3.3's top-level effects. Two things the tree asserts about each: the
 // function it names exists, and that function takes no arguments — `mpl_init`
@@ -465,14 +475,16 @@ $decl veffects $func ($decl st proto_vst, $decl cx proto_vcx, $decl es IR.effect
 //
 // Only *direct* calls are followed: a call through a function value has no knowable
 // target, so this can miss but cannot accuse.
-$decl ofo $func ($decl i 0, $decl r P.boolean, $decl cs IR.ints.node) { $decl idx i  $decl reads r  $decl calls cs }
-$decl proto_ofo $call ofo (0, bfalse, IR.ints.nil)
-$decl ofos $specialize P.list proto_ofo
-$decl osum $func ($decl r P.boolean, $decl cs IR.ints.node) { $decl reads r  $decl calls cs }
+$decl ofo        $func ($decl i 0, $decl r P.boolean,
+    $decl cs IR.ints.node) { $decl idx i  $decl reads r  $decl calls cs }
+$decl proto_ofo  $call ofo (0, bfalse, IR.ints.nil)
+$decl ofos       $specialize P.list proto_ofo
+$decl osum       $func ($decl r P.boolean, $decl cs IR.ints.node) { $decl reads r  $decl calls cs }
 $decl proto_osum $call osum (bfalse, IR.ints.nil)
 
 $decl has_int $func ($decl xs IR.ints.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call eq_int (xs.head, i)) true ($call has_int ($call IR.ints.val (xs.tail), i)),
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head,
+      i)) true ($call has_int ($call IR.ints.val (xs.tail), i)),
   $case xs false
 )
 
@@ -483,12 +495,14 @@ $decl entry_static $func ($decl cx proto_vcx, $decl i 0)
 $fwd osum_of
 
 $decl osum_list $func ($decl cx proto_vcx, $decl xs IR.exprs.node, $decl a proto_osum) $match xs (
-  $case {$prop tag "cons"} $call osum_list (cx, $call IR.exprs.val (xs.tail), $call osum_of (cx, xs.head, a)),
+  $case {$prop tag "cons"} $call osum_list (cx, $call IR.exprs.val (xs.tail), $call osum_of (cx,
+      xs.head, a)),
   $case xs a
 )
 
 $decl osum_slots $func ($decl cx proto_vcx, $decl xs IR.bslots.node, $decl a proto_osum) $match xs (
-  $case {$prop tag "cons"} $call osum_slots (cx, $call IR.bslots.val (xs.tail), $call osum_of (cx, xs.head.init, a)),
+  $case {$prop tag "cons"} $call osum_slots (cx, $call IR.bslots.val (xs.tail), $call osum_of (cx,
+      xs.head.init, a)),
   $case xs a
 )
 
@@ -501,7 +515,8 @@ $decl osum_arms $func ($decl cx proto_vcx, $decl xs IR.arms.node, $decl a proto_
 $decl osum_callee $func ($decl cx proto_vcx, $decl c IR.proto_expr, $decl a proto_osum) $match c (
   $case {$prop tag "global"}
     $if ($call and ($call in_funcs (cx, c.fn), $call not ($call IR.fns.nth (cx.funcs, c.fn)).thunk))
-        ($call osum (a.reads, $if ($call has_int (a.calls, c.fn)) a.calls ($call IR.ints.cons (c.fn, a.calls))))
+        ($call osum (a.reads, $if ($call has_int (a.calls, c.fn)) a.calls ($call IR.ints.cons (c.fn,
+            a.calls))))
         a,
   $case c a
 )
@@ -514,37 +529,46 @@ $decl osum_of $func ($decl cx proto_vcx, $decl e IR.proto_expr, $decl a proto_os
   $case {$prop tag "new"}     ($call osum_of (cx, $call IR.eval (e.init), a)),
   $case {$prop tag "deref"}   ($call osum_of (cx, $call IR.eval (e.src), a)),
   $case {$prop tag "copy"}    ($call osum_of (cx, $call IR.eval (e.src), a)),
-  $case {$prop tag "set"}     ($call osum_of (cx, $call IR.eval (e.value), $call osum_of (cx, $call IR.eval (e.target), a))),
+  $case {$prop tag "set"}     ($call osum_of (cx, $call IR.eval (e.value), $call osum_of (cx,
+      $call IR.eval (e.target), a))),
   $case {$prop tag "block"}   ($call osum_slots (cx, $call IR.bslots.val (e.slots), a)),
   $case {$prop tag "group"}   ($call osum_list (cx, $call IR.exprs.val (e.items), a)),
-  $case {$prop tag "call"}
-    { $decl c $call IR.eval (e.callee)
-      $decl r $call osum_list (cx, $call IR.exprs.val (e.args),
-                  $call osum_callee (cx, c, $call osum_of (cx, c, a))) }.r,
-  $case {$prop tag "if"}      ($call osum_of (cx, $call IR.eval (e.els), $call osum_of (cx, $call IR.eval (e.then),
+  $case {$prop tag "call"} {
+    $decl c $call IR.eval (e.callee)
+    $decl ret $call osum_list (cx, $call IR.exprs.val (e.args),
+                $call osum_callee (cx, c, $call osum_of (cx, c, a)))
+  }.ret,
+  $case {$prop tag "if"}      ($call osum_of (cx, $call IR.eval (e.els), $call osum_of (cx,
+      $call IR.eval (e.then),
                                   $call osum_of (cx, $call IR.eval (e.cond), a)))),
-  $case {$prop tag "switch"}  ($call osum_of (cx, $call IR.eval (e.default), $call osum_arms (cx, $call IR.arms.val (e.arms),
+  $case {$prop tag "switch"}  ($call osum_of (cx, $call IR.eval (e.default), $call osum_arms (cx,
+      $call IR.arms.val (e.arms),
                                   $call osum_of (cx, $call IR.eval (e.scrut), a)))),
-  $case {$prop tag "do"}      ($call osum_of (cx, $call IR.eval (e.then), $call osum_of (cx, $call IR.eval (e.first), a))),
+  $case {$prop tag "do"}      ($call osum_of (cx, $call IR.eval (e.then), $call osum_of (cx,
+      $call IR.eval (e.first), a))),
   $case {$prop tag "try"}     ($call osum_of (cx, $call IR.eval (e.value), a)),
   $case e a
 )
 
-$decl summarise $func ($decl cx proto_vcx, $decl fs IR.fns.node, $decl i 0, $decl acc ofos.node) $match fs (
-  $case {$prop tag "cons"}
-    { $decl s $call osum_of (cx, $call IR.eval (fs.head.body), proto_osum)
-      $decl r $call summarise (cx, $call IR.fns.val (fs.tail), $call add (i, 1),
-                  $call ofos.cons ($call ofo (i, s.reads, s.calls), acc)) }.r,
+$decl summarise $func ($decl cx proto_vcx, $decl fs IR.fns.node, $decl i 0,
+    $decl acc ofos.node) $match fs (
+  $case {$prop tag "cons"} {
+    $decl s $call osum_of (cx, $call IR.eval (fs.head.body), proto_osum)
+    $decl ret $call summarise (cx, $call IR.fns.val (fs.tail), $call add (i, 1),
+                $call ofos.cons ($call ofo (i, s.reads, s.calls), acc))
+  }.ret,
   $case fs acc
 )
 
 $decl any_in $func ($decl xs IR.ints.node, $decl ys IR.ints.node) $match xs (
-  $case {$prop tag "cons"} $if ($call has_int (ys, xs.head)) true ($call any_in ($call IR.ints.val (xs.tail), ys)),
+  $case {$prop tag "cons"} $if ($call has_int (ys,
+      xs.head)) true ($call any_in ($call IR.ints.val (xs.tail), ys)),
   $case xs false
 )
 
 $decl first_in $func ($decl xs IR.ints.node, $decl ys IR.ints.node) $match xs (
-  $case {$prop tag "cons"} $if ($call has_int (ys, xs.head)) xs.head ($call first_in ($call IR.ints.val (xs.tail), ys)),
+  $case {$prop tag "cons"} $if ($call has_int (ys,
+      xs.head)) xs.head ($call first_in ($call IR.ints.val (xs.tail), ys)),
   $case xs -1
 )
 
@@ -557,48 +581,55 @@ $decl reach_round $func ($decl os ofos.node, $decl r IR.ints.node) $match os (
   $case os r
 )
 
-$decl reach_fix $func ($decl os ofos.node, $decl r IR.ints.node, $decl n 0)
-  { $decl r2 $call reach_round (os, r)
-    $decl out $if ($call eq_int ($call IR.ints.length (r2, 0), n)) r2
-                  ($call reach_fix (os, r2, $call IR.ints.length (r2, 0))) }.out
+$decl reach_fix $func ($decl os ofos.node, $decl r IR.ints.node, $decl n 0) {
+  $decl r2 $call reach_round (os, r)
+  $decl ret $if ($call eq_int ($call IR.ints.length (r2, 0), n)) r2
+                ($call reach_fix (os, r2, $call IR.ints.length (r2, 0)))
+}.ret
 
 $decl readers $func ($decl os ofos.node, $decl acc IR.ints.node) $match os (
   $case {$prop tag "cons"}
-    $call readers ($call ofos.val (os.tail), $if os.head.reads ($call IR.ints.cons (os.head.idx, acc)) acc),
+    $call readers ($call ofos.val (os.tail), $if os.head.reads ($call IR.ints.cons (os.head.idx,
+        acc)) acc),
   $case os acc
 )
 
-$decl order_report $func ($decl st proto_vst, $decl cx proto_vcx, $decl os ofos.node, $decl r IR.ints.node) $match os (
-  $case {$prop tag "cons"}
-    { $decl o  os.head
-      $decl f  $call IR.fns.nth (cx.funcs, o.idx)
-      $decl c  $if ($call and (f.thunk, $call not ($call lt (o.idx, cx.fnbase)))) ($call first_in (o.calls, r)) -1
-      $decl fx $call vcx (cx.ntypes, cx.nfuncs, 0, 0, o.idx, f.name, cx.funcs, cx.fnbase, bfalse)
-      $decl e  $if ($call lt (c, 0)) 0
-          ($call err (st, fx, -1, $call concat ("a lifted thunk calls '", $call concat (($call IR.fns.nth (cx.funcs, c)).name,
-              "', which reads a static of the entry file, directly or through further calls; §4.10 initialises the lifted region first, so it runs before that static is assigned"))))
-      $decl r2 $call order_report (st, cx, $call ofos.val (os.tail), r) }.r2,
+$decl order_report $func ($decl st proto_vst, $decl cx proto_vcx, $decl os ofos.node,
+    $decl r IR.ints.node) $match os (
+  $case {$prop tag "cons"} {
+    $decl o os.head
+    $decl f $call IR.fns.nth (cx.funcs, o.idx)
+    $decl c  $if ($call and (f.thunk, $call not ($call lt (o.idx,
+        cx.fnbase)))) ($call first_in (o.calls, r)) -1
+    $decl fx $call vcx (cx.ntypes, cx.nfuncs, 0, 0, o.idx, f.name, cx.funcs, cx.fnbase, bfalse)
+    $decl e  $if ($call lt (c, 0)) 0
+        ($call err (st, fx, -1, $call concat ("a lifted thunk calls '", $call concat (($call IR.fns.nth (cx.funcs, c)).name,
+            "', which reads a static of the entry file, directly or through further calls; §4.10 initialises the lifted region first, so it runs before that static is assigned"))))
+    $decl ret $call order_report (st, cx, $call ofos.val (os.tail), r)
+  }.ret,
   $case os 0
 )
 
-$decl vorder $func ($decl st proto_vst, $decl cx proto_vcx, $decl fs IR.fns.node)
-  { $decl os $call summarise (cx, fs, 0, ofos.nil)
-    $decl r0 $call readers (os, IR.ints.nil)
-    $decl out $if ($call IR.ints.is_nil (r0)) 0
-        ($call order_report (st, cx, os, $call reach_fix (os, r0, $call IR.ints.length (r0, 0)))) }.out
+$decl vorder $func ($decl st proto_vst, $decl cx proto_vcx, $decl fs IR.fns.node) {
+  $decl os $call summarise (cx, fs, 0, ofos.nil)
+  $decl r0 $call readers (os, IR.ints.nil)
+  $decl ret $if ($call IR.ints.is_nil (r0)) 0
+      ($call order_report (st, cx, os, $call reach_fix (os, r0, $call IR.ints.length (r0, 0))))
+}.ret
 
-$decl verify $func ($decl p IR.proto_program)
-  { $decl st $call vstate ()
-    $decl fs $call IR.fns.val (p.funcs)
-    $decl cx $call vcx ($call T.tys.length ($call T.tys.val (p.types), 0),
-                 $call IR.fns.length (fs, 0), 0, 0, -1, "program", fs, p.fnbase, bfalse)
-    // A program with no functions has no entry — which is what `check` returns
-    // when it could not build one, and not something to report twice.
-    $decl a $if ($call eq_int (cx.nfuncs, 0)) 0
-                ($call need (st, cx, -1, p.entry, cx.nfuncs, "entry"))
-    $decl b $call vgroups (st, cx, $call IR.groups.val (p.groups))
-    $decl c $call vfns (st, cx, fs, 0)
-    $decl o $call vorder (st, cx, fs)
-    $decl e $call veffects (st, cx, $call IR.effects.val (p.effs))
-    $decl d $call vids (st, cx)
-    $decl out $call Pa.diags.reverse (st.errs, Pa.diags.nil) }.out
+$decl verify $func ($decl p IR.proto_program) {
+  $decl st $call vstate ()
+  $decl fs $call IR.fns.val (p.funcs)
+  $decl cx $call vcx ($call T.tys.length ($call T.tys.val (p.types), 0),
+               $call IR.fns.length (fs, 0), 0, 0, -1, "program", fs, p.fnbase, bfalse)
+  // A program with no functions has no entry — which is what `check` returns
+  // when it could not build one, and not something to report twice.
+  $decl a $if ($call eq_int (cx.nfuncs, 0)) 0
+              ($call need (st, cx, -1, p.entry, cx.nfuncs, "entry"))
+  $decl b   $call vgroups (st, cx, $call IR.groups.val (p.groups))
+  $decl c   $call vfns (st, cx, fs, 0)
+  $decl o   $call vorder (st, cx, fs)
+  $decl e   $call veffects (st, cx, $call IR.effects.val (p.effs))
+  $decl d   $call vids (st, cx)
+  $decl ret $call Pa.diags.reverse (st.errs, Pa.diags.nil)
+}.ret

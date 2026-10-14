@@ -20,10 +20,11 @@ $decl src $match rf (
   $case rf ($call panic ("cannot read stage1/lexer.mpl"))
 )
 
-$decl emit_it $func ($decl s "")
-  { $decl ckd $call C.check ($call C.parse (s, path))
-    $decl bad $call C.verify (ckd.program)
-    $decl out $call C.emit (ckd.program)
-    $decl r   $call C.sole_text (out) }.r
+$decl emit_it $func ($decl s "") {
+  $decl ckd $call C.check ($call C.parse (s, path))
+  $decl bad $call C.verify (ckd.program)
+  $decl out $call C.emit (ckd.program)
+  $decl ret $call C.sole_text (out)
+}.ret
 
 $decl main $func () $call emit_it (src)

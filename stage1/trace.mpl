@@ -10,5 +10,5 @@ $decl on $call T.enable_trace ()
 
 $decl argv $call args ()
 $decl path $call at (argv, 0)
-$decl r $call I.check_file (path)
-$decl out $call nl ($call concat ("errors: ", $call int_to_str ($call Pa.diags.length (r.errs, 0))))
+$decl r    $call I.check_file (path)
+$decl out  $call nl ($call concat ("errors: ", $call int_to_str ($call Pa.diags.length (r.errs, 0))))

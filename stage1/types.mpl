@@ -23,9 +23,9 @@
 
 $decl P $import "prelude"
 
-$decl not  P.not
-$decl and  P.and
-$decl or   P.or
+$decl not P.not
+$decl and P.and
+$decl or  P.or
 
 $decl strs $specialize P.list ""
 
@@ -59,7 +59,7 @@ $decl isub sub
 $decl want_trace $mut $alloc ($union (false, true))
 $decl trace_on   $mut $alloc ($union (false, true))
 $decl tbudget    $mut $alloc 0
-$decl bval $func ($decl b P.boolean) b
+$decl bval       $func ($decl b P.boolean) b
 
 $decl spaces $func ($decl n 0, $decl acc "")
   $if ($call lt (n, 1)) acc ($call spaces ($call isub (n, 1), $call concat (acc, ". ")))
@@ -94,12 +94,12 @@ $decl mem_str $func ($decl xs strs.node, $decl s "") $match xs (
 // and templates are opaque: they get an identity number from whoever builds the
 // type, since two distinct function-valued props are distinct types.
 
-$decl cv_int    $func ($decl x 0)    { $prop tag "cint"    $decl v x }
-$decl cv_str    $func ($decl x "")   { $prop tag "cstr"    $decl v x }
+$decl cv_int $func ($decl x 0)    { $prop tag "cint"    $decl v x }
+$decl cv_str $func ($decl x "")   { $prop tag "cstr"    $decl v x }
 // §3.2: `true` and `false` are distinct types, so a parameter defaulted `true`
 // takes only `true`. This one holds either.
 $decl cv_bool   $func ($decl x P.boolean) { $prop tag "cbool"   $decl v x }
-$decl cv_unit                        { $prop tag "cunit" }
+$decl cv_unit   { $prop tag "cunit" }
 $decl cv_opaque $func ($decl i 0)    { $prop tag "copaque" $decl id i }
 
 $decl proto_cv $union (
@@ -198,10 +198,12 @@ $decl hmod 100000000000000003
 // Scrambling at every step, rather than once at the end, is what breaks the cancellation —
 // a linear inner sum scrambled afterwards would still collide wherever the sums do.
 $decl hsplit 1000000000
-$decl hscramble $func ($decl x 0)
-  { $decl lo $call mod (x, hsplit)
-    $decl hi $call div (x, hsplit)
-    $decl r  $call mod ($call add ($call add ($call mul (lo, lo), lo), $call mul (hi, 1000003)), hmod) }.r
+$decl hscramble $func ($decl x 0) {
+  $decl lo  $call mod (x, hsplit)
+  $decl hi  $call div (x, hsplit)
+  $decl ret $call mod ($call add ($call add ($call mul (lo, lo), lo), $call mul (hi, 1000003)),
+      hmod)
+}.ret
 
 $decl hmix $func ($decl a 0, $decl b 0)
   $call hscramble ($call mod ($call add ($call mul (a, 31), $call mod (b, hmod)), hmod))
@@ -239,30 +241,49 @@ $decl proto_ty $union (
   t_int, t_float, t_str, t_true, t_false, t_unit, t_bot,
   $call t_var (0),
   $call t_bnd (0),
-  // §5.5: every field that reaches a type again goes through storage. A list
-  // is boxed as a whole — a cons cell holds its element inline, so its size
-  // needs the element's — while a `field`'s own `ty` stays inline, since by
-  // then the type it names already has a size.
-  { $prop tag "block"
-    $decl fields $alloc ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
-    // `value` is any compile-time value, not just unit: a prop holding a
-    // function renders as `copaque`, and writing `cv_unit` here said no block
-    // with such a prop was a type at all.
-    $decl props $alloc ($specialize P.list { $decl name ""  $decl value proto_cv  $decl ty proto_ty }).node
-    $decl h 0  $decl cid -1  $decl pv P.boolean },
-  { $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
-  { $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node  $decl result $alloc proto_ty
-    $decl frame P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean },
-  // §3.5: storage has a **kind** as well as a qualifier, and the two are
-  // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
-  // `""` and allocated is `"alloc"`, so a reference built without saying is
-  // frame, which is what `$new` makes.
-  { $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0  $decl cid -1  $decl pv P.boolean },
+ {  // §5.5: every field that reaches a type again goes through storage. A list
+   // is boxed as a whole — a cons cell holds its element inline, so its size
+   // needs the element's — while a `field`'s own `ty` stays inline, since by
+   // then the type it names already has a size.
+   $prop tag "block"
+   $decl fields $alloc ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
+   // `value` is any compile-time value, not just unit: a prop holding a
+   // function renders as `copaque`, and writing `cv_unit` here said no block
+   // with such a prop was a type at all.
+   $decl props $alloc ($specialize P.list {
+     $decl name ""  $decl value proto_cv  $decl ty proto_ty
+   }).node
+   $decl h 0  $decl cid -1  $decl pv P.boolean
+ },
+  {
+    $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0
+    $decl cid -1  $decl pv P.boolean
+  },
+  {
+    $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node  $decl result $alloc proto_ty
+    $decl frame P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
+  },
+ {  // §3.5: storage has a **kind** as well as a qualifier, and the two are
+   // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
+   // `""` and allocated is `"alloc"`, so a reference built without saying is
+   // frame, which is what `$new` makes.
+   $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0
+   $decl cid -1  $decl pv P.boolean
+ },
   { $prop tag "array" $decl elem $alloc proto_ty  $decl h 0  $decl cid -1  $decl pv P.boolean },
-  { $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
-  { $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  {
+    $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0
+    $decl cid -1  $decl pv P.boolean
+  },
+  {
+    $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0
+    $decl cid -1  $decl pv P.boolean
+  },
   { $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0  $decl cid -1  $decl pv P.boolean },
-  { $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  {
+    $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0
+    $decl cid -1  $decl pv P.boolean
+  },
   { $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1  $decl pv P.boolean }
 )
 
@@ -407,12 +428,14 @@ $decl has_var $func ($decl t proto_ty, $decl i 0) $match t (
 )
 
 $decl has_var_tys $func ($decl xs tys.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call has_var ($call tval (xs.head), 0)) true ($call has_var_tys (xs.tail, 0)),
+  $case {$prop tag "cons"} $if ($call has_var ($call tval (xs.head),
+      0)) true ($call has_var_tys (xs.tail, 0)),
   $case xs false
 )
 
 $decl has_var_fields $func ($decl xs fields.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"} $if ($call has_var ($call tval (xs.head.ty), 0)) true ($call has_var_fields (xs.tail, 0)),
+  $case {$prop tag "cons"} $if ($call has_var ($call tval (xs.head.ty),
+      0)) true ($call has_var_fields (xs.tail, 0)),
   $case xs false
 )
 
@@ -460,29 +483,33 @@ $decl cid_of $func ($decl t proto_ty) $match t (
 $decl cints $specialize P.list 0
 $decl cvals $specialize P.list proto_cv
 $decl ckey $func ($decl t 0, $decl a "", $decl b "", $decl ks cints.node, $decl ns strs.node,
-                  $decl pn strs.node, $decl pv cvals.node, $decl n 0)
-  { $decl tag t  $decl s1 a  $decl s2 b  $decl kids $alloc ks  $decl names $alloc ns
-    $decl pnames $alloc pn  $decl pvals $alloc pv  $decl num n }
+                  $decl pn strs.node, $decl pv cvals.node, $decl n 0) {
+  $decl tag    t  $decl s1 a  $decl s2 b  $decl kids $alloc ks  $decl names $alloc ns
+  $decl pnames $alloc pn  $decl pvals $alloc pv  $decl num n
+}
 $decl proto_ckey $call ckey (0, "", "", cints.nil, strs.nil, strs.nil, cvals.nil, 0)
-$decl cent $func ($decl k proto_ckey, $decl c 0) { $decl key k  $decl cid c }
+$decl cent       $func ($decl k proto_ckey, $decl c 0) { $decl key k  $decl cid c }
 $decl proto_cent $call cent (proto_ckey, 0)
-$decl cents $specialize P.list proto_cent
+$decl cents      $specialize P.list proto_cent
 
 $decl ci_eq $func ($decl xs cints.node, $decl ys cints.node) $match xs (
   $case {$prop tag "cons"} $match ys (
-      $case {$prop tag "cons"} $if ($call eq_int (xs.head, ys.head)) ($call ci_eq ($call cints.val (xs.tail), $call cints.val (ys.tail))) false,
+      $case {$prop tag "cons"} $if ($call eq_int (xs.head,
+          ys.head)) ($call ci_eq ($call cints.val (xs.tail), $call cints.val (ys.tail))) false,
       $case ys false),
   $case xs ($call cints.is_nil (ys))
 )
 $decl cs_eq $func ($decl xs strs.node, $decl ys strs.node) $match xs (
   $case {$prop tag "cons"} $match ys (
-      $case {$prop tag "cons"} $if ($call eq_str (xs.head, ys.head)) ($call cs_eq ($call strs.val (xs.tail), $call strs.val (ys.tail))) false,
+      $case {$prop tag "cons"} $if ($call eq_str (xs.head,
+          ys.head)) ($call cs_eq ($call strs.val (xs.tail), $call strs.val (ys.tail))) false,
       $case ys false),
   $case xs ($call strs.is_nil (ys))
 )
 $decl cv_list_eq $func ($decl xs cvals.node, $decl ys cvals.node) $match xs (
   $case {$prop tag "cons"} $match ys (
-      $case {$prop tag "cons"} $if ($call cv_eq (xs.head, ys.head)) ($call cv_list_eq ($call cvals.val (xs.tail), $call cvals.val (ys.tail))) false,
+      $case {$prop tag "cons"} $if ($call cv_eq (xs.head,
+          ys.head)) ($call cv_list_eq ($call cvals.val (xs.tail), $call cvals.val (ys.tail))) false,
       $case ys false),
   $case xs ($call cvals.is_nil (ys))
 )
@@ -504,16 +531,21 @@ $decl ctrie $union (
   { $prop tag "branch" $decl lo $alloc ctrie  $decl hi $alloc ctrie }
 )
 $decl ct_leaf $func ($decl xs cents.node) { $prop tag "leaf" $decl items $alloc xs }
-$decl ct_branch $func ($decl l ctrie, $decl h ctrie) { $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h }
-$decl ct_val $func ($decl x ctrie) x
-$decl ct_items $func ($decl tr ctrie) $match tr ($case {$prop tag "leaf"} ($call cents.val (tr.items)), $case tr cents.nil)
+$decl ct_branch $func ($decl l ctrie, $decl h ctrie) {
+  $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h
+}
+$decl ct_val   $func ($decl x ctrie) x
+$decl ct_items $func ($decl tr ctrie)
+    $match tr ($case {$prop tag "leaf"} ($call cents.val (tr.items)), $case tr cents.nil)
 $decl ct_scan $func ($decl xs cents.node, $decl k proto_ckey) $match xs (
-  $case {$prop tag "cons"} $if ($call ckey_eq (xs.head.key, k)) xs.head.cid ($call ct_scan ($call cents.val (xs.tail), k)),
+  $case {$prop tag "cons"} $if ($call ckey_eq (xs.head.key,
+      k)) xs.head.cid ($call ct_scan ($call cents.val (xs.tail), k)),
   $case xs -1
 )
 $decl ct_find $func ($decl tr ctrie, $decl b 0, $decl k proto_ckey) $match tr (
   $case {$prop tag "branch"}
-    $if ($call eq_int ($call mod (b, 2), 0)) ($call ct_find ($call ct_val (tr.lo), $call div (b, 2), k))
+    $if ($call eq_int ($call mod (b, 2), 0)) ($call ct_find ($call ct_val (tr.lo), $call div (b, 2),
+        k))
         ($call ct_find ($call ct_val (tr.hi), $call div (b, 2), k)),
   $case tr ($call ct_scan ($call ct_items (tr), k))
 )
@@ -522,18 +554,20 @@ $decl ct_kid $func ($decl tr ctrie, $decl hi P.boolean) $match tr (
   $case tr ($call ct_leaf (cents.nil))
 )
 $decl ct_add $func ($decl tr ctrie, $decl b 0, $decl d 0, $decl e proto_cent)
-  $if ($call not ($call lt (d, 14))) ($call ct_leaf ($call cents.cons (e, $call ct_items (tr))))
-      { $decl lo $call ct_kid (tr, false)
-        $decl hi $call ct_kid (tr, true)
-        $decl up $call eq_int ($call mod (b, 2), 0)
-        $decl r  $if up ($call ct_branch ($call ct_add (lo, $call div (b, 2), $call add (d, 1), e), hi))
-                        ($call ct_branch (lo, $call ct_add (hi, $call div (b, 2), $call add (d, 1), e))) }.r
+  $if ($call not ($call lt (d, 14))) ($call ct_leaf ($call cents.cons (e, $call ct_items (tr)))) {
+    $decl lo $call ct_kid (tr, false)
+    $decl hi $call ct_kid (tr, true)
+    $decl up $call eq_int ($call mod (b, 2), 0)
+    $decl ret  $if up ($call ct_branch ($call ct_add (lo, $call div (b, 2), $call add (d, 1), e),
+        hi))
+                    ($call ct_branch (lo, $call ct_add (hi, $call div (b, 2), $call add (d, 1), e)))
+  }.ret
 
 // Declared above every constructor on purpose: a module initialises in source order and
 // the constructors run during `types`' own initialisation.
 $decl ctable $mut $alloc ctrie
 $decl cnext  $mut $alloc 0
-$decl cival $func ($decl x 0) x
+$decl cival  $func ($decl x 0) x
 
 // How many classes exist, for measuring (INTERNING.md, step 1).
 $decl cid_count $func () $call cival (cnext)
@@ -555,7 +589,8 @@ $decl cs_hash $func ($decl xs strs.node, $decl acc 0) $match xs (
   $case xs acc
 )
 $decl cv_hash $func ($decl xs cvals.node, $decl acc 0) $match xs (
-  $case {$prop tag "cons"} $call cv_hash ($call cvals.val (xs.tail), $call hmix (acc, $call cv_tag_h (xs.head))),
+  $case {$prop tag "cons"} $call cv_hash ($call cvals.val (xs.tail), $call hmix (acc,
+      $call cv_tag_h (xs.head))),
   $case xs acc
 )
 $decl ckey_hash $func ($decl k proto_ckey)
@@ -568,17 +603,20 @@ $decl ckey_hash $func ($decl k proto_ckey)
 // The class of a key, made if it is new. `ok` false — a child was not interned — gives -1.
 // `hv` is unused now; it is kept so each constructor's call stays a one-line change.
 $decl cid_for $func ($decl ok P.boolean, $decl hv 0, $decl k proto_ckey)
-  $if ($call not (ok)) -1
-      { $decl b $call cbucket ($call ckey_hash (k))
-        $decl f $call ct_find ($call ct_val (ctable), b, k)
-        $decl r $if ($call lt (-1, f)) f
-            { $decl c $call mul ($call cival (cnext), 4)
-              $decl n $set cnext ($call add ($call cival (cnext), 1))
-              $decl a $set ctable ($call ct_add ($call ct_val (ctable), b, 0, $call cent (k, c)))
-              $decl z c }.z }.r
+  $if ($call not (ok)) -1 {
+    $decl b $call cbucket ($call ckey_hash (k))
+    $decl f $call ct_find ($call ct_val (ctable), b, k)
+    $decl ret $if ($call lt (-1, f)) f {
+      $decl c    $call mul ($call cival (cnext), 4)
+      $decl n    $set cnext ($call add ($call cival (cnext), 1))
+      $decl a    $set ctable ($call ct_add ($call ct_val (ctable), b, 0, $call cent (k, c)))
+      $decl ret2 c
+    }.ret2
+  }.ret
 
 $decl kids_of $func ($decl xs tys.node, $decl acc cints.node) $match xs (
-  $case {$prop tag "cons"} $call kids_of ($call tys.val (xs.tail), $call cints.cons ($call cid_of ($call tval (xs.head)), acc)),
+  $case {$prop tag "cons"} $call kids_of ($call tys.val (xs.tail),
+      $call cints.cons ($call cid_of ($call tval (xs.head)), acc)),
   $case xs ($call cints.reverse (acc, cints.nil))
 )
 $decl kids_ok $func ($decl xs cints.node) $match xs (
@@ -586,19 +624,23 @@ $decl kids_ok $func ($decl xs cints.node) $match xs (
   $case xs true
 )
 $decl fkids_of $func ($decl xs fields.node, $decl acc cints.node) $match xs (
-  $case {$prop tag "cons"} $call fkids_of ($call fields.val (xs.tail), $call cints.cons ($call cid_of ($call tval (xs.head.ty)), acc)),
+  $case {$prop tag "cons"} $call fkids_of ($call fields.val (xs.tail),
+      $call cints.cons ($call cid_of ($call tval (xs.head.ty)), acc)),
   $case xs ($call cints.reverse (acc, cints.nil))
 )
 $decl fnames_of $func ($decl xs fields.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call fnames_of ($call fields.val (xs.tail), $call strs.cons (xs.head.name, acc)),
+  $case {$prop tag "cons"} $call fnames_of ($call fields.val (xs.tail),
+      $call strs.cons (xs.head.name, acc)),
   $case xs ($call strs.reverse (acc, strs.nil))
 )
 $decl pnames_of $func ($decl xs props.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call pnames_of ($call props.val (xs.tail), $call strs.cons (xs.head.name, acc)),
+  $case {$prop tag "cons"} $call pnames_of ($call props.val (xs.tail),
+      $call strs.cons (xs.head.name, acc)),
   $case xs ($call strs.reverse (acc, strs.nil))
 )
 $decl pvals_of $func ($decl xs props.node, $decl acc cvals.node) $match xs (
-  $case {$prop tag "cons"} $call pvals_of ($call props.val (xs.tail), $call cvals.cons (xs.head.value, acc)),
+  $case {$prop tag "cons"} $call pvals_of ($call props.val (xs.tail),
+      $call cvals.cons (xs.head.value, acc)),
   $case xs ($call cvals.reverse (acc, cvals.nil))
 )
 // An intersection is a set (`same_set`), so its key is its members' `cid`s sorted.
@@ -616,52 +658,66 @@ $decl kid1 $func ($decl t proto_ty) $call cints.cons ($call cid_of (t), cints.ni
 
 // Raw constructors. `raw_union`/`raw_inter` are not for general use — build
 // unions with `t_union`, which normalises.
-$decl raw_block $func ($decl fs fields.node, $decl ps props.node)
-  { $decl hv $call hmix ($call hmix (13, $call hash_fields (fs, 0)), $call hash_props (ps, 0))
-    $decl ks $call fkids_of (fs, cints.nil)
-    $decl c  $call cid_for ($call kids_ok (ks), hv,
-                 $call ckey (1, "", "", ks, $call fnames_of (fs, strs.nil), $call pnames_of (ps, strs.nil),
-                             $call pvals_of (ps, cvals.nil), 0))
-    $decl pvv $if ($call has_var_fields (fs, 0)) true false
-    $decl n  { $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
+$decl raw_block $func ($decl fs fields.node, $decl ps props.node) {
+  $decl hv $call hmix ($call hmix (13, $call hash_fields (fs, 0)), $call hash_props (ps, 0))
+  $decl ks $call fkids_of (fs, cints.nil)
+  $decl c  $call cid_for ($call kids_ok (ks), hv,
+               $call ckey (1, "", "", ks, $call fnames_of (fs, strs.nil), $call pnames_of (ps,
+                   strs.nil),
+                           $call pvals_of (ps, cvals.nil), 0))
+  $decl pvv $if ($call has_var_fields (fs, 0)) true false
+  $decl n  {
+    $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c  $decl pv pvv
+  }
+  $decl ret  n
+}.ret
 
-$decl raw_union $func ($decl ms tys.node)
-  { $decl hv $call hmix (18, $call hash_tys (ms, 0))
-    $decl ks $call kids_of (ms, cints.nil)
-    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (6, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($call has_var_tys (ms, 0)) true false
-    $decl n  { $prop tag "union" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
-$decl raw_inter $func ($decl ms tys.node)
-  { $decl hv $call hmix (19, $call hash_tys_comm (ms, 0))
-    $decl ks $call kids_of (ms, cints.nil)
-    $decl c  $call cid_for ($call kids_ok (ks), hv,
-                 $call ckey (7, "", "", $call ci_sort (ks, cints.nil), strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($call has_var_tys (ms, 0)) true false
-    $decl n  { $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
+$decl raw_union $func ($decl ms tys.node) {
+  $decl hv $call hmix (18, $call hash_tys (ms, 0))
+  $decl ks $call kids_of (ms, cints.nil)
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (6, "", "", ks, strs.nil, strs.nil,
+      cvals.nil, 0))
+  $decl pvv $if ($call has_var_tys (ms, 0)) true false
+  $decl n   { $prop tag "union" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl ret n
+}.ret
+$decl raw_inter $func ($decl ms tys.node) {
+  $decl hv $call hmix (19, $call hash_tys_comm (ms, 0))
+  $decl ks $call kids_of (ms, cints.nil)
+  $decl c  $call cid_for ($call kids_ok (ks), hv,
+               $call ckey (7, "", "", $call ci_sort (ks, cints.nil), strs.nil, strs.nil, cvals.nil, 0))
+  $decl pvv $if ($call has_var_tys (ms, 0)) true false
+  $decl n   { $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl ret n
+}.ret
 
-$decl t_group $func ($decl xs tys.node)
-  { $decl hv $call hmix (14, $call hash_tys (xs, 0))
-    $decl ks $call kids_of (xs, cints.nil)
-    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (2, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($call has_var_tys (xs, 0)) true false
-    $decl n  { $prop tag "group" $decl items $alloc xs  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
+$decl t_group $func ($decl xs tys.node) {
+  $decl hv $call hmix (14, $call hash_tys (xs, 0))
+  $decl ks $call kids_of (xs, cints.nil)
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (2, "", "", ks, strs.nil, strs.nil,
+      cvals.nil, 0))
+  $decl pvv $if ($call has_var_tys (xs, 0)) true false
+  $decl n   { $prop tag "group" $decl items $alloc xs  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl ret n
+}.ret
 // `frame` is §5.3a's closure clause. §7.3 keeps a closure's captures out of its
 // *type* — that is what makes every function value two words — so a `$func`
 // literal that captured a frame reference has to record that it did somewhere,
 // and this is it. It is not about the parameters or the result: those are
 // frame-bound or not on their own.
-$decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean)
-  { $decl hv $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r))
-    // The result first, then the parameters; `frame` is not in the key (see `ckey`).
-    $decl ks $call cints.cons ($call cid_of (r), $call kids_of (ps, cints.nil))
-    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (3, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($if ($call has_var_tys (ps, 0)) true ($call has_var (r, 0))) true false
-    $decl n  { $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl out n }.out
+$decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean) {
+  $decl hv $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r))
+  // The result first, then the parameters; `frame` is not in the key (see `ckey`).
+  $decl ks  $call cints.cons ($call cid_of (r), $call kids_of (ps, cints.nil))
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (3, "", "", ks, strs.nil, strs.nil,
+      cvals.nil, 0))
+  $decl pvv $if ($if ($call has_var_tys (ps, 0)) true ($call has_var (r, 0))) true false
+  $decl n  {
+    $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl h hv
+    $decl cid c  $decl pv pvv
+  }
+  $decl ret n
+}.ret
 
 $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r, false)
 
@@ -671,52 +727,65 @@ $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r
 // parameter's type, not its presence) but lowering emits exactly the arguments
 // written and `verify` rejects the mismatch. So the common case keeps its
 // arity and the kinded case gets a name.
-$decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "")
-  { $decl hv $call hmix ($call hash_str (k, 0, $call hash_str (q, 0, 16)), $call hash_of (t))
-    $decl ks $call kid1 (t)
-    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (4, q, k, ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($call has_var (t, 0)) true false
-    $decl n  { $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
+$decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "") {
+  $decl hv $call hmix ($call hash_str (k, 0, $call hash_str (q, 0, 16)), $call hash_of (t))
+  $decl ks $call kid1 (t)
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (4, q, k, ks, strs.nil, strs.nil,
+      cvals.nil, 0))
+  $decl pvv $if ($call has_var (t, 0)) true false
+  $decl n  {
+    $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k  $decl h hv  $decl cid c
+    $decl pv pvv
+  }
+  $decl ret  n
+}.ret
 
 $decl t_ref   $func ($decl q "", $decl t proto_ty) $call t_ref_k (q, t, "")
 
 // §4.2a's kind. Named rather than spelled out at each site, so the one string
 // that means "allocated" lives in one place.
-$decl k_alloc "alloc"
+$decl k_alloc  "alloc"
 $decl is_alloc $func ($decl k "") $call eq_str (k, k_alloc)
-$decl t_array $func ($decl e proto_ty)
-  { $decl hv $call hmix (17, $call hash_of (e))
-    $decl ks $call kid1 (e)
-    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (5, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($call has_var (e, 0)) true false
-    $decl n  { $prop tag "array" $decl elem $alloc e  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
-$decl t_rec   $func ($decl b proto_ty)
-  { $decl hv $call hmix (20, $call hash_of (b))
-    $decl ks $call kid1 (b)
-    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (8, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($call has_var (b, 0)) true false
-    $decl n  { $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
-$decl t_over  $func ($decl cs tys.node)
-  { $decl hv $call hmix (21, $call hash_tys (cs, 0))
-    $decl ks $call kids_of (cs, cints.nil)
-    $decl c  $call cid_for ($call kids_ok (ks), hv, $call ckey (9, "", "", ks, strs.nil, strs.nil, cvals.nil, 0))
-    $decl pvv $if ($call has_var_tys (cs, 0)) true false
-    $decl n  { $prop tag "over" $decl cands $alloc cs  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
+$decl t_array $func ($decl e proto_ty) {
+  $decl hv $call hmix (17, $call hash_of (e))
+  $decl ks $call kid1 (e)
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (5, "", "", ks, strs.nil, strs.nil,
+      cvals.nil, 0))
+  $decl pvv $if ($call has_var (e, 0)) true false
+  $decl n   { $prop tag "array" $decl elem $alloc e  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl ret n
+}.ret
+$decl t_rec   $func ($decl b proto_ty) {
+  $decl hv $call hmix (20, $call hash_of (b))
+  $decl ks $call kid1 (b)
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (8, "", "", ks, strs.nil, strs.nil,
+      cvals.nil, 0))
+  $decl pvv $if ($call has_var (b, 0)) true false
+  $decl n   { $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl ret n
+}.ret
+$decl t_over  $func ($decl cs tys.node) {
+  $decl hv $call hmix (21, $call hash_tys (cs, 0))
+  $decl ks $call kids_of (cs, cints.nil)
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (9, "", "", ks, strs.nil, strs.nil,
+      cvals.nil, 0))
+  $decl pvv $if ($call has_var_tys (cs, 0)) true false
+  $decl n   { $prop tag "over" $decl cands $alloc cs  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl ret n
+}.ret
 
 // A template (§4.9). Its body is *not* type-checked at declaration, so there is
 // nothing structural to record here: the type is an identity, and whoever built
 // it keeps the body and the environment it was written in. Two templates are
 // the same type when they are the same template.
-$decl t_tmpl  $func ($decl i 0)
-  { $decl hv $call hmix (12, i)
-    $decl c  $call cid_for (true, hv, $call ckey (10, "", "", cints.nil, strs.nil, strs.nil, cvals.nil, i))
-    $decl pvv $if (false) true false
-    $decl n  { $prop tag "tmpl" $decl id i  $decl h hv  $decl cid c  $decl pv pvv }
-    $decl r  n }.r
+$decl t_tmpl  $func ($decl i 0) {
+  $decl hv  $call hmix (12, i)
+  $decl c   $call cid_for (true, hv, $call ckey (10, "", "", cints.nil, strs.nil, strs.nil,
+      cvals.nil, i))
+  $decl pvv $if (false) true false
+  $decl n   { $prop tag "tmpl" $decl id i  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl ret n
+}.ret
 
 // Props have no layout (§4.10), so their order is not part of the type.
 // Sorting them at construction is what makes the rendering below canonical.
@@ -788,10 +857,11 @@ $decl show_props $func ($decl xs props.node, $decl acc "") $match xs (
 )
 
 // §3.5: "written `&T` for frame and `&^T` for allocated *in diagnostics only*".
-$decl show_qual $func ($decl q "", $decl k "")
-  { $decl amp $if ($call is_alloc (k)) "&^" "&"
-    $decl r $if ($call eq_str (q, "")) amp
-                ($call concat (amp, $if ($call eq_str (q, "mut")) "mut " "const ")) }.r
+$decl show_qual $func ($decl q "", $decl k "") {
+  $decl amp $if ($call is_alloc (k)) "&^" "&"
+  $decl ret $if ($call eq_str (q, "")) amp
+              ($call concat (amp, $if ($call eq_str (q, "mut")) "mut " "const "))
+}.ret
 
 $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "int"}    "Int",
@@ -852,7 +922,8 @@ $decl same_props $func ($decl xs props.node, $decl ys props.node) $match xs (
   $case {$prop tag "cons"} $match ys (
       $case {$prop tag "cons"}
         $if ($call eq_str (xs.head.name, ys.head.name))
-            ($if ($call cv_eq (xs.head.value, ys.head.value)) ($call same_props (xs.tail, ys.tail)) false)
+            ($if ($call cv_eq (xs.head.value, ys.head.value)) ($call same_props (xs.tail,
+                ys.tail)) false)
             false,
       $case ys false
     ),
@@ -984,43 +1055,47 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
 // honest. Off, it costs one read of a cell per comparison. `stage1/paranoid.mpl` runs a
 // whole compile with it on, and `zig build test-paranoid` runs that over the compiler.
 // Rerun it after touching a constructor's key or adding a type kind.
-$decl paranoid  $mut $alloc ($union (false, true))
-$decl pz_class  $mut $alloc 0
-$decl pz_fall   $mut $alloc 0
-$decl pz_merge  $mut $alloc 0
-$decl pz_split  $mut $alloc 0
-$decl pz_val $func ($decl x 0) x
-$decl pz_bump $func ($decl c $mut $alloc 0) $set c ($call add ($call pz_val (c), 1))
+$decl paranoid $mut $alloc ($union (false, true))
+$decl pz_class $mut $alloc 0
+$decl pz_fall  $mut $alloc 0
+$decl pz_merge $mut $alloc 0
+$decl pz_split $mut $alloc 0
+$decl pz_val   $func ($decl x 0) x
+$decl pz_bump  $func ($decl c $mut $alloc 0) $set c ($call add ($call pz_val (c), 1))
 
 $decl set_paranoid $func ($decl on ($union (false, true))) $set paranoid on
 
 // The counts so far: comparisons answered by class, fallbacks (a side had no class),
 // class-equal pairs `same_deep` calls different — a **merge**, the direction that would
 // miscompile — and `same` pairs in different classes — a **split**, slow but harmless.
-$decl pz_counts $func ()
-  { $decl class $call pz_val (pz_class)  $decl fallbacks $call pz_val (pz_fall)
-    $decl merges $call pz_val (pz_merge)  $decl splits $call pz_val (pz_split) }
+$decl pz_counts $func () {
+  $decl class  $call pz_val (pz_class)  $decl fallbacks $call pz_val (pz_fall)
+  $decl merges $call pz_val (pz_merge)  $decl splits $call pz_val (pz_split)
+}
 
 $decl same_ref $func ($decl a proto_ty, $decl b proto_ty)
   $if ($call eq_int ($call hash_of (a), $call hash_of (b))) ($call same_deep (a, b)) false
 
-$decl same_checked $func ($decl ca 0, $decl cb 0, $decl a proto_ty, $decl b proto_ty)
-  { $decl ref  $call same_ref (a, b)
-    $decl both $call and ($call lt (-1, ca), $call lt (-1, cb))
-    $decl k    $if both
-        { $decl n  $call pz_bump (pz_class)
-          $decl eq $call eq_int (ca, cb)
-          $decl d  $if eq ($if ref 0 ($call pz_bump (pz_merge))) ($if ref ($call pz_bump (pz_split)) 0)
-          $decl z  0 }.z
-        ($call pz_bump (pz_fall))
-    $decl r ref }.r
+$decl same_checked $func ($decl ca 0, $decl cb 0, $decl a proto_ty, $decl b proto_ty) {
+  $decl ref  $call same_ref (a, b)
+  $decl both $call and ($call lt (-1, ca), $call lt (-1, cb))
+  $decl k    $if both {
+    $decl n    $call pz_bump (pz_class)
+    $decl eq   $call eq_int (ca, cb)
+    $decl d    $if eq ($if ref 0 ($call pz_bump (pz_merge))) ($if ref ($call pz_bump (pz_split)) 0)
+    $decl ret2 0
+  }.ret2
+      ($call pz_bump (pz_fall))
+  $decl ret ref
+}.ret
 
-$decl same $func ($decl a proto_ty, $decl b proto_ty)
-  { $decl ca $call cid_of (a)
-    $decl cb $call cid_of (b)
-    $decl r  $if ($call P.bval (paranoid)) ($call same_checked (ca, cb, a, b))
-        ($if ($call and ($call lt (-1, ca), $call lt (-1, cb))) ($call eq_int (ca, cb))
-             ($call same_ref (a, b))) }.r
+$decl same $func ($decl a proto_ty, $decl b proto_ty) {
+  $decl ca $call cid_of (a)
+  $decl cb $call cid_of (b)
+  $decl ret  $if ($call P.bval (paranoid)) ($call same_checked (ca, cb, a, b))
+      ($if ($call and ($call lt (-1, ca), $call lt (-1, cb))) ($call eq_int (ca, cb))
+           ($call same_ref (a, b)))
+}.ret
 
 $decl ty_eq $func ($decl a proto_ty, $decl b proto_ty) $call same (a, b)
 
@@ -1084,9 +1159,9 @@ $decl union_add $func ($decl t proto_ty, $decl acc tys.node) $match t (
 // of `same` exactly, and a single case answering "equal" for types that are not
 // would lose canonicity silently. Correct and measured beats fast and subtle;
 // swap it for `ty_cmp` if a profile ever asks.
-$decl shty $func ($decl k "", $decl t proto_ty) { $decl key k  $decl ty t }
+$decl shty       $func ($decl k "", $decl t proto_ty) { $decl key k  $decl ty t }
 $decl proto_shty $call shty ("", t_bot)
-$decl shtys $specialize P.list proto_shty
+$decl shtys      $specialize P.list proto_shty
 
 $decl shty_ins $func ($decl p proto_shty, $decl xs shtys.node) $match xs (
   $case {$prop tag "cons"}
@@ -1111,12 +1186,13 @@ $decl shty_tys $func ($decl xs shtys.node, $decl acc tys.node) $match xs (
 $decl sort_tys $func ($decl xs tys.node)
   $call shty_tys ($call shty_addall (xs, shtys.nil), tys.nil)
 
-$decl t_union $func ($decl xs tys.node)
-  { $decl m0 $call union_addall (xs, tys.nil)
-    $decl n  $call tys.length (m0, 0)
-    $decl out $if ($call eq_int (n, 0)) t_bot
-             ($if ($call eq_int (n, 1)) ($call tys.nth (m0, 0))
-                  ($call raw_union ($call sort_tys (m0)))) }.out
+$decl t_union $func ($decl xs tys.node) {
+  $decl m0 $call union_addall (xs, tys.nil)
+  $decl n  $call tys.length (m0, 0)
+  $decl ret $if ($call eq_int (n, 0)) t_bot
+           ($if ($call eq_int (n, 1)) ($call tys.nth (m0, 0))
+                ($call raw_union ($call sort_tys (m0))))
+}.ret
 
 $decl union2 $func ($decl a proto_ty, $decl b proto_ty)
   $call t_union ($call tys.cons (a, $call tys.cons (b, tys.nil)))
@@ -1139,12 +1215,13 @@ $decl has_bottom $func ($decl xs tys.node) $match xs (
   $case xs false
 )
 
-$decl t_inter $func ($decl xs tys.node)
-  { $decl m $call inter_addall (xs, tys.nil)
-    $decl n $call tys.length (m, 0)
-    $decl out $if ($call has_bottom (m)) t_bot
-             ($if ($call eq_int (n, 0)) t_bot
-             ($if ($call eq_int (n, 1)) ($call tys.nth (m, 0)) ($call raw_inter (m)))) }.out
+$decl t_inter $func ($decl xs tys.node) {
+  $decl m $call inter_addall (xs, tys.nil)
+  $decl n $call tys.length (m, 0)
+  $decl ret $if ($call has_bottom (m)) t_bot
+           ($if ($call eq_int (n, 0)) t_bot
+           ($if ($call eq_int (n, 1)) ($call tys.nth (m, 0)) ($call raw_inter (m))))
+}.ret
 
 // §3.2: `Bool` is the union `true | false`. It is derived, not primitive.
 $decl t_bool $call union2 (t_true, t_false)
@@ -1216,13 +1293,15 @@ $decl proto_rop $call rop ("", 0, t_bot)
 
 $fwd remap
 
-$decl remap_tys $func ($decl xs tys.node, $decl o proto_rop, $decl d 0, $decl acc tys.node) $match xs (
+$decl remap_tys $func ($decl xs tys.node, $decl o proto_rop, $decl d 0,
+    $decl acc tys.node) $match xs (
   $case {$prop tag "cons"}
     $call remap_tys (xs.tail, o, d, $call tys.cons ($call remap (xs.head, o, d), acc)),
   $case xs ($call tys.reverse (acc, tys.nil))
 )
 
-$decl remap_fields $func ($decl xs fields.node, $decl o proto_rop, $decl d 0, $decl acc fields.node) $match xs (
+$decl remap_fields $func ($decl xs fields.node, $decl o proto_rop, $decl d 0,
+    $decl acc fields.node) $match xs (
   $case {$prop tag "cons"}
     $call remap_fields (xs.tail, o, d,
         $call fields.cons ($call field (xs.head.name, $call remap (xs.head.ty, o, d)), acc)),
@@ -1249,7 +1328,8 @@ $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "block"} $call raw_block ($call remap_fields (t.fields, o, d, fields.nil), t.props),
   $case {$prop tag "group"} $call t_group ($call remap_tys (t.items, o, d, tys.nil)),
   $case {$prop tag "func"}
-    $call t_func_fr ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d), t.frame),
+    $call t_func_fr ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d),
+        t.frame),
   $case {$prop tag "ref"}   $call t_ref_k (t.qual, $call remap (t.inner, o, d), t.kind),
   $case {$prop tag "array"} $call t_array ($call remap (t.elem, o, d)),
   $case {$prop tag "union"} $call t_union ($call remap_tys (t.members, o, d, tys.nil)),
@@ -1315,16 +1395,18 @@ $decl frame_bound $func ($decl t proto_ty, $decl i 0) $match t (
 $fwd first_frame
 
 $decl first_frame_tys $func ($decl xs tys.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"}
-    { $decl f $call first_frame (xs.head, 0)
-      $decl r $if ($call same (f, t_bot)) ($call first_frame_tys (xs.tail, 0)) f }.r,
+  $case {$prop tag "cons"} {
+    $decl f   $call first_frame (xs.head, 0)
+    $decl ret $if ($call same (f, t_bot)) ($call first_frame_tys (xs.tail, 0)) f
+  }.ret,
   $case xs t_bot
 )
 
 $decl first_frame_fields $func ($decl xs fields.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"}
-    { $decl f $call first_frame (xs.head.ty, 0)
-      $decl r $if ($call same (f, t_bot)) ($call first_frame_fields (xs.tail, 0)) f }.r,
+  $case {$prop tag "cons"} {
+    $decl f   $call first_frame (xs.head.ty, 0)
+    $decl ret $if ($call same (f, t_bot)) ($call first_frame_fields (xs.tail, 0)) f
+  }.ret,
   $case xs t_bot
 )
 
@@ -1359,9 +1441,9 @@ $decl close_var $func ($decl t proto_ty, $decl i 0)
 // which is what type identity means here anyway (§5.5 makes alpha-equivalence
 // structural), so handing back the entry built for a structurally equal `rec`
 // is handing back the same type.
-$decl unroll_ent $func ($decl k proto_ty, $decl v proto_ty) { $decl key k  $decl val v }
+$decl unroll_ent   $func ($decl k proto_ty, $decl v proto_ty) { $decl key k  $decl val v }
 $decl proto_unroll_ent $call unroll_ent (t_bot, t_bot)
-$decl unrolls $specialize P.list proto_unroll_ent
+$decl unrolls      $specialize P.list proto_unroll_ent
 $decl unroll_cache $mut $alloc unrolls.node
 
 $decl unroll_hit $func ($decl ok P.boolean, $decl v proto_ty) { $decl hit ok  $decl val v }
@@ -1375,13 +1457,15 @@ $decl unroll_find $func ($decl xs unrolls.node, $decl k proto_ty) $match xs (
 )
 
 $decl unroll $func ($decl t proto_ty) $match t (
-  $case {$prop tag "rec"}
-    { $decl f $call unroll_find (unroll_cache, t)
-      $decl r $if f.hit ($call tval (f.val))
-          { $decl u $call subst_bnd (t.body, 0, t)
-            $decl s $set unroll_cache ($call unrolls.cons ($call unroll_ent (t, u),
-                        $call unrolls.val (unroll_cache)))
-            $decl z u }.z }.r,
+  $case {$prop tag "rec"} {
+    $decl f $call unroll_find (unroll_cache, t)
+    $decl ret $if f.hit ($call tval (f.val)) {
+      $decl u $call subst_bnd (t.body, 0, t)
+      $decl s $set unroll_cache ($call unrolls.cons ($call unroll_ent (t, u),
+                  $call unrolls.val (unroll_cache)))
+      $decl ret2 u
+    }.ret2
+  }.ret,
   $case t t
 )
 
@@ -1440,9 +1524,9 @@ $decl unguarded_rec $func ($decl t proto_ty) $match t (
 // A pair is only recorded where a goal can recur, which is only under a `rec`.
 // Recording on every step was measured as the checker's dominant cost.
 
-$decl goal_ent $func ($decl x proto_ty, $decl y proto_ty) { $decl l x  $decl r y }
+$decl goal_ent   $func ($decl x proto_ty, $decl y proto_ty) { $decl l x  $decl r y }
 $decl proto_goal $call goal_ent (t_bot, t_bot)
-$decl goal_list $specialize P.list proto_goal
+$decl goal_list  $specialize P.list proto_goal
 
 $decl actx $func ($decl gs goal_list.node) { $decl goals gs }
 
@@ -1471,7 +1555,8 @@ $decl mem_goal $func ($decl gs goal_list.node, $decl x proto_ty, $decl y proto_t
 // now, but `e.name` still looks a field up by name (§4.6).
 $decl find_field $func ($decl xs fields.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.name, n)) ($call field (n, xs.head.ty)) ($call find_field (xs.tail, n)),
+    $if ($call eq_str (xs.head.name, n)) ($call field (n, xs.head.ty)) ($call find_field (xs.tail,
+        n)),
   $case xs ($call field ("", t_bot))
 )
 
@@ -1494,13 +1579,14 @@ $decl subs_all_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_a
 // is decidable by reading one prop. Without this, matching a block against a
 // seventeen-member union descends into all seventeen.
 $decl tag_of $func ($decl t proto_ty) $match t (
-  $case {$prop tag "block"}
-    { $decl p  $call find_prop (t.props, "tag")
-      $decl cv p.value
-      $decl out $match cv (
-          $case {$prop tag "cstr"} cv.v,
-          $case cv ""
-        ) }.out,
+  $case {$prop tag "block"} {
+    $decl p  $call find_prop (t.props, "tag")
+    $decl cv p.value
+    $decl ret $match cv (
+        $case {$prop tag "cstr"} cv.v,
+        $case cv ""
+      )
+  }.ret,
   $case t ""
 )
 
@@ -1519,11 +1605,12 @@ $decl kind_of $func ($decl t proto_ty) $match t (
   $case t ($call show (t))
 )
 
-$decl desc $func ($decl t proto_ty)
-  { $decl k  $call kind_of (t)
-    $decl tg $call tag_of (t)
-    $decl out $if ($call eq_str (tg, "")) k
-                  ($call concat (k, $call concat ("[", $call concat (tg, "]")))) }.out
+$decl desc $func ($decl t proto_ty) {
+  $decl k  $call kind_of (t)
+  $decl tg $call tag_of (t)
+  $decl ret $if ($call eq_str (tg, "")) k
+                ($call concat (k, $call concat ("[", $call concat (tg, "]"))))
+}.ret
 
 // `&` plus a one-word description of what it points at — enough to recognise
 // the storage without rendering the whole type.
@@ -1534,12 +1621,13 @@ $decl show_frame $func ($decl t proto_ty) $match t (
   $case t ($call desc (t))
 )
 
-$decl tags_differ $func ($decl a proto_ty, $decl b proto_ty)
-  { $decl ta $call tag_of (a)
-    $decl tb $call tag_of (b)
-    $decl out $call and ($call and ($call not ($call eq_str (ta, "")),
-                                    $call not ($call eq_str (tb, ""))),
-                         $call not ($call eq_str (ta, tb))) }.out
+$decl tags_differ $func ($decl a proto_ty, $decl b proto_ty) {
+  $decl ta $call tag_of (a)
+  $decl tb $call tag_of (b)
+  $decl ret $call and ($call and ($call not ($call eq_str (ta, "")),
+                                  $call not ($call eq_str (tb, ""))),
+                       $call not ($call eq_str (ta, tb)))
+}.ret
 
 $decl subst_members $func ($decl xs tys.node, $decl r proto_ty, $decl acc tys.node) $match xs (
   $case {$prop tag "cons"}
@@ -1580,7 +1668,8 @@ $decl subs_zip $func ($decl xs tys.node, $decl ys tys.node, $decl st proto_actx)
 $decl subs_zip_flipped $func ($decl xs tys.node, $decl ys tys.node, $decl st proto_actx) $match xs (
   $case {$prop tag "cons"} $match ys (
       $case {$prop tag "cons"}
-        $if ($call sub_seen (ys.head, xs.head, st)) ($call subs_zip_flipped (xs.tail, ys.tail, st)) false,
+        $if ($call sub_seen (ys.head, xs.head, st)) ($call subs_zip_flipped (xs.tail, ys.tail,
+            st)) false,
       $case ys false
     ),
   $case xs ($call tys.is_nil (ys))
@@ -1590,7 +1679,8 @@ $decl subs_zip_flipped $func ($decl xs tys.node, $decl ys tys.node, $decl st pro
 // same names at the same positions, each at a subtype. Running out of required
 // fields means the prefix is satisfied; running out of `S`'s fields first means
 // `T` demands more than `S` has.
-$decl sub_fields $func ($decl s fields.node, $decl want fields.node, $decl st proto_actx) $match want (
+$decl sub_fields $func ($decl s fields.node, $decl want fields.node,
+    $decl st proto_actx) $match want (
   $case {$prop tag "cons"} $match s (
       $case {$prop tag "cons"}
         $if ($call eq_str (s.head.name, want.head.name))
@@ -1606,11 +1696,12 @@ $decl sub_fields $func ($decl s fields.node, $decl want fields.node, $decl st pr
 // §5.1: "for every prop of `T`, `S` has the same prop with the **same value**."
 // This is the tag test, at the type level.
 $decl sub_props $func ($decl s props.node, $decl want props.node) $match want (
-  $case {$prop tag "cons"}
-    { $decl p $call find_prop (s, want.head.name)
-      $decl out $if ($call eq_str (p.name, ""))
-          false
-          ($if ($call cv_eq (p.value, want.head.value)) ($call sub_props (s, want.tail)) false) }.out,
+  $case {$prop tag "cons"} {
+    $decl p $call find_prop (s, want.head.name)
+    $decl ret $if ($call eq_str (p.name, ""))
+        false
+        ($if ($call cv_eq (p.value, want.head.value)) ($call sub_props (s, want.tail)) false)
+  }.ret,
   $case want true
 )
 
@@ -1691,13 +1782,14 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
 // Indented by the number of assumptions in scope, which is how deep into
 // recursive types the goal sits — and needs no counter to restore afterwards,
 // which is what let the trace keep its tail calls.
-$decl trace_line $func ($decl s "", $decl ind 0)
-  { $decl n $call P.ival (tbudget)
-    $decl out $if ($call lt (0, n))
-        ($do ($set tbudget ($call isub (n, 1)))
-             ($do ($call print ($call concat ($call spaces (ind, ""), s)))
-                  ($call print "\n")))
-        () }.out
+$decl trace_line $func ($decl s "", $decl ind 0) {
+  $decl n $call P.ival (tbudget)
+  $decl ret $if ($call lt (0, n))
+      ($do ($set tbudget ($call isub (n, 1)))
+           ($do ($call print ($call concat ($call spaces (ind, ""), s)))
+                ($call print "\n")))
+      ()
+}.ret
 
 $decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
   // §4.8b: `$do` runs the trace line for effect and leaves the check itself in
@@ -1720,17 +1812,18 @@ $decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, proto
 // Re-run a check that has already failed, printing the goal tree. A no-op
 // unless the driver asked for it.
 $decl explain $func ($decl a proto_ty, $decl b proto_ty)
-  $if ($call not ($call bval (want_trace))) ()
-      // Every level is printed now, under a line budget: with the recursion's
-      // tail calls intact the trace costs no stack, so there is no reason to
-      // stop at the shallow goals. The innermost failing goal is the deepest
-      // indented line the tree reaches.
-      { $decl hdr $call print "--- why not a subtype:\n"
-        $decl b1  $set tbudget 400
-        $decl on  $set trace_on true
-        $decl r   $call sub (a, b)
-        $decl off $set trace_on false
-        $decl out () }.out
+  $if ($call not ($call bval (want_trace))) () {
+    // Every level is printed now, under a line budget: with the recursion's
+    // tail calls intact the trace costs no stack, so there is no reason to
+    // stop at the shallow goals. The innermost failing goal is the deepest
+    // indented line the tree reaches.
+    $decl hdr $call print "--- why not a subtype:\n"
+    $decl b1  $set tbudget 400
+    $decl on  $set trace_on true
+    $decl r   $call sub (a, b)
+    $decl off $set trace_on false
+    $decl ret ()
+  }.ret
 
 // ------------------------------------------------------ lattice operations
 //
@@ -1796,18 +1889,21 @@ $decl restrict_at $func ($decl t proto_ty, $decl pat proto_ty) $match t (
   // §5.1 compares a block's *props* — which every member carries as it stands.
   // Unrolling first would rebuild the whole type on every `$match` arm, which
   // is quadratic in a checker that matches on a recursive type constantly.
-  $case {$prop tag "rec"}
-    { $decl bd t.body
-      $decl out $match bd (
-          $case {$prop tag "union"}
-            { $decl kept $call keep_covered (bd.members, pat, tys.nil)
-              $decl r $if ($call tys.is_nil (kept)) ($call meet ($call unroll (t), pat))
-                          ($call t_union ($call subst_members (kept, t, tys.nil))) }.r,
-          $case bd ($call meet ($call unroll (t), pat))
-        ) }.out,
-  $case {$prop tag "union"}
-    { $decl kept $call keep_covered (t.members, pat, tys.nil)
-      $decl r $if ($call tys.is_nil (kept)) ($call meet (t, pat)) ($call t_union (kept)) }.r,
+  $case {$prop tag "rec"} {
+    $decl bd t.body
+    $decl ret $match bd (
+        $case {$prop tag "union"} {
+          $decl kept $call keep_covered (bd.members, pat, tys.nil)
+          $decl ret2 $if ($call tys.is_nil (kept)) ($call meet ($call unroll (t), pat))
+                      ($call t_union ($call subst_members (kept, t, tys.nil)))
+        }.ret2,
+        $case bd ($call meet ($call unroll (t), pat))
+      )
+  }.ret,
+  $case {$prop tag "union"} {
+    $decl kept $call keep_covered (t.members, pat, tys.nil)
+    $decl ret  $if ($call tys.is_nil (kept)) ($call meet (t, pat)) ($call t_union (kept))
+  }.ret,
   $case t ($call meet (t, pat))
 )
 

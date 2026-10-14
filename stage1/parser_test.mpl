@@ -32,28 +32,32 @@ $decl check_str $func ($decl name "", $decl got "", $decl want "")
            ($call panic (name))))))
 
 // The dump of the first top-level expression.
-$decl dump1 $func ($decl src "")
-  { $decl p $call Pa.parse (src)
-    $decl out $call Pa.dump ($call Pa.nodes.nth (p.exprs, 0)) }.out
+$decl dump1 $func ($decl src "") {
+  $decl p   $call Pa.parse (src)
+  $decl ret $call Pa.dump ($call Pa.nodes.nth (p.exprs, 0))
+}.ret
 
 // The whole file, newline separated, as `parse_dump.mpl` prints it.
-$decl dump_all $func ($decl src "")
-  { $decl p $call Pa.parse (src)
-    $decl out $call Pa.dump_file (p.exprs, "") }.out
+$decl dump_all $func ($decl src "") {
+  $decl p   $call Pa.parse (src)
+  $decl ret $call Pa.dump_file (p.exprs, "")
+}.ret
 
-$decl first_err $func ($decl src "")
-  { $decl p $call Pa.parse (src)
-    // Narrowing is by the scrutinee's name (§4.7), and `$if` does not narrow
-    // at all — so the list is bound and matched.
-    $decl es $call Pa.diags.val (p.errs)
-    $decl out $match es (
-        $case {$prop tag "cons"} es.head.msg,
-        $case es ""
-      ) }.out
+$decl first_err $func ($decl src "") {
+  $decl p $call Pa.parse (src)
+  // Narrowing is by the scrutinee's name (§4.7), and `$if` does not narrow
+  // at all — so the list is bound and matched.
+  $decl es $call Pa.diags.val (p.errs)
+  $decl ret $match es (
+      $case {$prop tag "cons"} es.head.msg,
+      $case es ""
+    )
+}.ret
 
-$decl err_count $func ($decl src "")
-  { $decl p $call Pa.parse (src)
-    $decl out $call Pa.diags.length (p.errs, 0) }.out
+$decl err_count $func ($decl src "") {
+  $decl p   $call Pa.parse (src)
+  $decl ret $call Pa.diags.length (p.errs, 0)
+}.ret
 
 // ------------------------------------------------------- arity drives the parse
 
@@ -165,16 +169,18 @@ $decl t49 $call check_str ("the lexer's message survives",
 
 // ------------------------------------------------ the one that actually matters
 
-$decl load $func ($decl p "")
-  { $decl c $call read_file (p)
-    $decl out $match c (
-        $case {$prop tag "some"} c.v,
-        $case c ($call panic ($call concat ("cannot read ", p)))
-      ) }.out
+$decl load $func ($decl p "") {
+  $decl c $call read_file (p)
+  $decl ret $match c (
+      $case {$prop tag "some"} c.v,
+      $case c ($call panic ($call concat ("cannot read ", p)))
+    )
+}.ret
 
-$decl parse_clean $func ($decl p "")
-  { $decl src $call load (p)
-    $decl n   $call err_count (src) }.n
+$decl parse_clean $func ($decl p "") {
+  $decl src $call load (p)
+  $decl ret $call err_count (src)
+}.ret
 
 $decl t50 $call check ("it parses the prelude with no errors",
   $call eq_int ($call parse_clean ("stage1/prelude.mpl"), 0))
@@ -185,6 +191,6 @@ $decl t52 $call check ("it parses its own source with no errors",
 
 $decl self_p $call Pa.parse ($call load ("stage1/parser.mpl"))
 $decl n_top  $call Pa.nodes.length (self_p.exprs, 0)
-$decl r1 $call nl ($call concat ("      top-level expressions in parser.mpl: ", $call int_to_str (n_top)))
+$decl r1     $call nl ($call concat ("      top-level expressions in parser.mpl: ", $call int_to_str (n_top)))
 
 $decl done $call nl ("all parser tests passed")

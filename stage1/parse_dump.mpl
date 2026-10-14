@@ -33,7 +33,8 @@ $decl parsed $call Pa.parse (text)
 
 $decl show_errs $func ($decl xs Pa.diags.node, $decl p "") $match xs (
   $case {$prop tag "cons"}
-    $do ($call print ($call concat (p, $call concat (":", $call concat ($call int_to_str (xs.head.line),
+    $do ($call print ($call concat (p, $call concat (":",
+        $call concat ($call int_to_str (xs.head.line),
          $call concat (":", $call concat ($call int_to_str (xs.head.col),
          $call concat (": error: ", $call concat (xs.head.msg, "\n")))))))))
         ($call show_errs (xs.tail, p)),

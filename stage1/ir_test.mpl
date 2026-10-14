@@ -29,8 +29,8 @@ $decl check $func ($decl name "", $decl ok P.boolean)
       ($do ($call print ("FAIL ")) ($do ($call nl (name)) ($call panic (name))))
 
 // Type ids, as the interning table would hand them out.
-$decl t_int 0
-$decl t_ref 1
+$decl t_int  0
+$decl t_ref  1
 $decl t_bool 2
 
 // §12, "Counter and aliasing":
@@ -104,12 +104,16 @@ $decl t5 $call check_str ("a closure carries its captures, not its type",
 $decl table $call T.tys.cons (T.t_int, $call T.tys.cons (T.t_str, T.tys.nil))
 
 $decl t6 $call check ("interning finds a type already in the table",
-  { $decl f $call IR.find_ty (table, T.t_str)
-    $decl out $if f.hit ($call eq_int (f.id, 1)) false }.out)
+  {
+    $decl f   $call IR.find_ty (table, T.t_str)
+    $decl ret $if f.hit ($call eq_int (f.id, 1)) false
+  }.ret)
 
 $decl t7 $call check ("...and reports a miss with the next free index",
-  { $decl f $call IR.find_ty (table, T.t_float)
-    $decl out $if f.hit false ($call eq_int (f.id, 2)) }.out)
+  {
+    $decl f   $call IR.find_ty (table, T.t_float)
+    $decl ret $if f.hit false ($call eq_int (f.id, 2))
+  }.ret)
 
 // A recursive type interns as one entry however it was built, which is what
 // makes an index a C struct name.
@@ -119,8 +123,10 @@ $decl list_b $call T.close_var ($call T.union2 (T.t_unit,
   $call T.t_block ($call T.f1 ("next", $call T.t_ref ("", $call T.t_var (99))), T.props.nil)), 99)
 
 $decl t8 $call check ("two spellings of one recursive type intern to one entry",
-  { $decl f $call IR.find_ty ($call T.tys.cons (list_a, T.tys.nil), list_b)
-    $decl out $if f.hit ($call eq_int (f.id, 0)) false }.out)
+  {
+    $decl f   $call IR.find_ty ($call T.tys.cons (list_a, T.tys.nil), list_b)
+    $decl ret $if f.hit ($call eq_int (f.id, 0)) false
+  }.ret)
 
 // §9.3: every node carries an index of its own. A pass keys a side table on it
 // — which it has to, because §7.4 makes a node extended with an extra field a
