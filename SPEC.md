@@ -255,11 +255,17 @@ A template is a compile-time abstraction. `T` (or each name in a group) denotes 
 
 `$specialize t args`:
 
-1. Evaluates each argument **once** and binds it to the corresponding generic name, as if `$decl T arg` were prepended to `body` (substitution by reference, never textual — side effects happen once).
+1. Evaluates each argument **once** and binds it to the corresponding generic name, as if `$decl T arg` were prepended to `body` (substitution by reference, never textual — an argument's side effects happen once per evaluation of the `$specialize`).
 2. Types the resulting expression with ordinary rules.
 3. Has exactly the type of that expression.
 
-Typing is memoized per **argument type**; instantiation (value binding) is per specialization. Two specializations with the same argument type share typing but not necessarily values.
+**Typing is memoized per argument type; values are not.** Two specializations whose arguments have the same types have the same type and share the same code. A `$specialize` expression is evaluated where it stands, like a block literal written there: each evaluation evaluates the arguments once, binds them, and evaluates the body's `$decl`s in source order (§4.10), producing a new value.
+
+- **An instance is an evaluation.** Two `$specialize t Int` written in two places are two instances. One written inside a `$func` is a new instance each time that `$func` runs. One bound by a top-level `$decl` is evaluated once, in §4.10's order, and every use of that name sees the same instance.
+- **Storage belongs to the instance.** A `$new` in the body is frame storage of the scope the `$specialize` is evaluated in, and §5.3a applies to it exactly as to a block literal there. A specialization that must outlive that scope is built with `$alloc`. A `$decl $func` member's code is shared, and its environment is its own instance's (§7.3).
+- **Props are shared.** A prop is compile-time and part of the type (§4.10), so every instance with the same argument types has the same props. A prop-only body therefore has exactly one value per argument type, and how many times it is evaluated cannot be observed.
+
+**A generic's value is not compile-time.** An argument is evaluated where the `$specialize` stands, so the value a generic is bound to is a runtime value even when its type is known. In a `$prop` initializer a generic may appear only in a type-only position (§5.7), such as a parameter's default, a `$union` member after the first, or a bound. A prop that read a generic's *value* would differ between two instances whose arguments have one type, which typing per argument type cannot represent. (This is §4.10's "fully evaluable" rule applied to generics.)
 
 **Bounds.** A generic name may carry an example: `$template (T bound) body`. The bound is a type-only position (§5.7), so it may mention `T` itself — `$template (K ($specialize equatable K))` is the F-bounded form. At specialization, `type(arg) <: type(bound)` is checked first and reported as such. The body is still typed *after* substitution; the bound is a precondition, not a proof that all conforming arguments typecheck.
 
@@ -272,17 +278,19 @@ Nothing deeper is inferred (no unification through arbitrary expressions); use `
 
 **Self-specialization** (`$decl list $template T { … $specialize list T … }`) ties the recursion knot via memoization on the argument type (§5.5). A chain of *distinct* argument types is unbounded; there is a fixed instantiation depth limit and exceeding it is an error.
 
+**Self-specialization and evaluation.** The memoization that ties a self-specializing template's knot (§5.5) is a typing matter. Evaluating a body whose `$decl` initializer specializes the same template evaluates that instance in turn, without bound. Like any unconditional recursion, put it inside a `$func`. The instantiation depth limit bounds typing; it does not bound evaluation.
+
 Specializing with an overload argument is an error; resolve first.
 
 ### 4.10 `$prop name e`
 
-Declares a **compile-time constant** member of the enclosing block. `e` must be fully evaluable by the compiler: a literal, `true`/`false`, a `$func`/`$template` literal, a block made only of props, one of the compile-time forms `$overload`, `$union`, `$specialize`, `$impl`, `$traitsof`, a name bound to a prop or to a `$template` generic, or a projection of one of these. Never `$new`, never `$call`.
+Declares a **compile-time constant** member of the enclosing block. `e` must be fully evaluable by the compiler: a literal, `true`/`false`, a `$func`/`$template` literal, a block made only of props, one of the compile-time forms `$overload`, `$union`, `$specialize`, `$impl`, `$traitsof`, a name bound to a prop, or a projection of one of these. Never `$new`, never `$call`. A `$template` generic is a runtime value (§4.9) and may appear only in a type-only position (§5.7) of the initializer.
 
 **Props are visible throughout their block**, regardless of order, and are typed together as one system (§5.5). Props have no layout, so the no-hoisting rule (§4.11) does not apply to them.
 
 - A prop is in the block's namespace and **type**, not its layout. It costs no slot.
 - **A prop's value is part of the enclosing block's type.** `{$prop kind "circle"}` and `{$prop kind "square"}` are different types. This is the only place a value appears in a type, and it is how tags work.
-- A prop initializer may reference other props and enclosing **compile-time** bindings — a prop of an enclosing block, a `$template` generic — but not ordered siblings (there is no instance to read them from) and **not an enclosing runtime binding** such as a parameter or a `$decl`. The restriction is forced by the rule above it: a prop's value is part of its block's type and §5.1 matches props by value equality, so a prop reading a parameter would give its block a different type per call, which is not a type. A prop function reaches instance fields through an explicit receiver parameter.
+- A prop initializer may reference other props and enclosing **compile-time** bindings — a prop of an enclosing block, or a `$template` generic in a type-only position (§4.9) — but not ordered siblings (there is no instance to read them from) and **not an enclosing runtime binding** such as a parameter or a `$decl`. The restriction is forced by the rule above it: a prop's value is part of its block's type and §5.1 matches props by value equality, so a prop reading a parameter would give its block a different type per call, which is not a type. A prop function reaches instance fields through an explicit receiver parameter.
 - Access is uniform: `p.len` and `point.len` both work.
 
 ### 4.11 `$fwd name`
