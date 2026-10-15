@@ -715,15 +715,18 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
   $decl val $call deref_ty ($call infer (cx, e, $call op (n, 1)))
   $decl ret $match tgt (
       $case {$prop tag "ref"}
-        // §5.3a's second clause: allocated storage outlives every scope, so
-        // a frame reference written into it would outlive its frame.
-        $do ($if ($call T.is_alloc (tgt.kind))
+        // §5.3: `&const T` is a read-only view, so nothing writes through it. Nothing in
+        // stage 1 did — `$const` is outside the bootstrap subset — until §4.10 made a
+        // member's receiver one, which is what makes a member that writes need `$mut`.
+        $if ($call eq_str (tgt.qual, "const"))
+            ($call err (cx, "$set through a read-only reference (§5.3)", n))
+        ($do ($if ($call T.is_alloc (tgt.kind))
                  ($call escapes (cx, val, "this value", n)) val)
         ($if ($call T.sub (val, tgt.inner)) val
             ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
                 ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
                 ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
-                             $call concat (" into storage of ", $call T.show (tgt.inner)))), n)))),
+                             $call concat (" into storage of ", $call T.show (tgt.inner)))), n))))),
       $case tgt ($call err (cx, $call concat ("$set needs storage on the left, found ",
                      $call T.show (tgt)), n))
     )
@@ -2246,16 +2249,29 @@ $decl replace_prop_ty $func ($decl xs T.props.node, $decl nm "", $decl t T.proto
   $case xs ($call T.props.reverse (acc, T.props.nil))
 )
 
+// §4.10: "a member that writes through its receiver needs a mutable one, which is part
+// of the member's type." So a member is typed against a read-only receiver first. If that
+// fails and the declaration is `$mut`, it is retyped against a mutable one and its type
+// marked; otherwise the read-only typing stands, and so do its errors. The trial is loud
+// with its diagnostics rolled back, because a quiet `err` records nothing to count.
 $decl recv_one $func ($decl cx proto_ctx, $decl pe env.node, $decl it Pa.proto_node, $decl rn "",
-    $decl rt T.proto_ty, $decl acc T.props.node) {
-  $decl nm  $call name_of ($call op (it, 0))
-  $decl ty  $call infer_rec_func (cx, $call bind (pe, rn, rt), nm, $call op (it, 1))
-  $decl ret $call replace_prop_ty (acc, nm, ty, T.props.nil)
+    $decl bt T.proto_ty, $decl mutok P.boolean, $decl acc T.props.node) {
+  $decl nm   $call name_of ($call op (it, 0))
+  $decl init $call op (it, 1)
+  $decl e0   $call Pa.diags.val (cx.errs)
+  $decl ty0  $call infer_rec_func (cx, $call bind (pe, rn, $call T.t_ref ("const", bt)), nm, init)
+  $decl bad  $call lt ($call Pa.diags.length (e0, 0), $call Pa.diags.length (cx.errs, 0))
+  $decl ty   $if ($call and (bad, mutok)) {
+    $decl back $set cx.errs e0
+    $decl tm   $call infer_rec_func (cx, $call bind (pe, rn, $call T.t_ref ("mut", bt)), nm, init)
+    $decl ret2 $call T.with_rmut (tm)
+  }.ret2 ty0
+  $decl ret  $call replace_prop_ty (acc, nm, ty, T.props.nil)
 }.ret
 
 // §4.10's third pass: each member naming the receiver, typed with the receiver bound.
 $decl recv_props $func ($decl cx proto_ctx, $decl pe env.node, $decl items Pa.nodes.node,
-    $decl rn "", $decl rt T.proto_ty, $decl acc T.props.node) $match items (
+    $decl rn "", $decl bt T.proto_ty, $decl mutok P.boolean, $decl acc T.props.node) $match items (
   $case {$prop tag "cons"} {
     $decl it  items.head
     // Only a `$prop` has a second operand, and §7.1 makes a `$decl` strict, so each read
@@ -2263,8 +2279,8 @@ $decl recv_props $func ($decl cx proto_ctx, $decl pe env.node, $decl items Pa.no
     $decl ok  $if ($call is_form (it, "prop"))
                   ($if ($call is_form ($call op (it, 1), "func"))
                        ($call Pa.names_recv ($call op (it, 1), rn)) false) false
-    $decl a2  $if ok ($call recv_one (cx, pe, it, rn, rt, acc)) acc
-    $decl ret $call recv_props (cx, pe, $call Pa.nodes.val (items.tail), rn, rt, a2)
+    $decl a2  $if ok ($call recv_one (cx, pe, it, rn, bt, mutok, acc)) acc
+    $decl ret $call recv_props (cx, pe, $call Pa.nodes.val (items.tail), rn, bt, mutok, a2)
   }.ret,
   $case items acc
 )
@@ -2300,7 +2316,7 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   // prop's `ty` is outside the block's identity (§5.1), so replacing it moves nothing.
   $decl bt0  $call T.t_block (flds, s.prps)
   $decl prps $if ($call eq_str (rn, "")) ($call T.props.val (s.prps))
-                 ($call recv_props (cx, pe, items, rn, $call T.t_ref (rq, bt0),
+                 ($call recv_props (cx, pe, items, rn, bt0, $call eq_str (rq, "mut"),
                      $call T.props.val (s.prps)))
   $decl ret  $call T.t_block (flds, prps)
 }.ret

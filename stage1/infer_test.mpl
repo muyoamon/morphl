@@ -385,10 +385,20 @@ $decl t44v $call check_str ("the receiver of a value is read-only",
       "t"), 0, 14),
   "&const {w:Int,")
 
-$decl t44v2 $call check_str ("...and of $mut storage, mutable",
+$decl t44v2 $call check_str ("a member that writes its receiver needs it mutable, and says so",
   $call slice ($call field_ty (
-      "$decl b $mut $alloc { $decl w 3  $prop me $func () b }  $decl t $call b.me ()", "t"), 0, 12),
-  "&mut {w:Int,")
+      "$decl b $mut $alloc { $decl w 3  $prop again $func () $set b b }  $decl t b.again", "t"),
+      0, 3),
+  "mut")
+
+$decl t44v3 $call check_str ("...and through a read-only one, cannot (§5.3)",
+  $call errs_of ("$decl b { $decl w 3  $prop again $func () $set b b }"),
+  "$set through a read-only reference (§5.3)")
+
+$decl t44v4 $call check_str ("a member that only reads stays unmarked, even on $mut storage",
+  $call slice ($call field_ty ("$decl b $mut $alloc { $decl w 3  $prop me $func () b.w }  $decl t b.me",
+      "t"), 0, 2),
+  "[]")
 
 $decl t44w $call check_str ("a block declared inside a function has its receiver too",
   $call errs_of ($call concat ("$decl f $func () { $decl r { $decl w 2  $prop g $func () r.w }",

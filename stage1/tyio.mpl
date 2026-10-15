@@ -24,7 +24,7 @@
 //       | I<n> ty*                   intersection O<n> ty*  $overload
 //       | r<str><str>ty              reference: qual, kind, pointee
 //       | a ty                       array        m ty       μ (§5.5)
-//       | w<n> ty* ty <bool>         function: params, result, §5.3a frame flag
+//       | w<n> ty* ty <bool> <bool>  function: params, result, §5.3a frame, §4.10 rmut
 //       | B<n> fld* <n> prp*         block: fields then props (§7.2 order)
 //       | t<n> fld* <bool>           trait (§6): members, then the frame flag
 //   fld = <str> ty
@@ -236,7 +236,8 @@ $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
     $decl ps  $call T.tys.val (t.params)
     $decl a   $do ($call put (st, "w")) ($call put_n (st, $call T.tys.length (ps, 0)))
     $decl b   $do ($call put_tys (st, ps)) ($call put_ty (st, $call T.tval (t.result)))
-    $decl ret $call put (st, $if t.frame "y" "w")
+    $decl fr  $call put (st, $if t.frame "y" "w")
+    $decl ret $call put (st, $if t.rmut "y" "w")
   }.ret,
   $case {$prop tag "block"} {
     $decl fs  $call T.fields.val (t.fields)
@@ -447,8 +448,9 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
            $decl ps $call read_list (st, s, n.at, n.val, T.tys.nil)
            $decl rr $call rtval ($call read_at (st, s, ps.at))
            $decl fr $call one (s, rr.at, "y")
-           $decl ret2  $call rt ($call add (rr.at, 1),
-                        $call T.t_func_fr (ps.val, rr.val, fr))
+           $decl rm $call one (s, $call add (rr.at, 1), "y")
+           $decl ret2  $call rt ($call add (rr.at, 2),
+                        $call T.t_func_rm (ps.val, rr.val, fr, rm))
          }.ret2
          ($if ($call one (s, i, "t")) {
            $decl nm   $call read_n (s, j)

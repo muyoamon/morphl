@@ -529,4 +529,15 @@ $decl trs10 $call check ("a trait is not a subtype of a block",
 $decl trs11 $call check ("a block's *fields* do not meet a member: a trait describes props",
   $call P.not ($call T.sub ($call kblk ("name", kfn), kname)))
 
+// §4.10's `rmut`: part of a function's identity, unlike `frame`, and one-directional in
+// subtyping — a function needing a mutable receiver does not stand for one that does not.
+$decl krm  $call T.with_rmut ($call T.t_func ($call k1 (kint), kint))
+$decl krm0 $call T.t_func ($call k1 (kint), kint)
+$decl krm01 $call check ("func: rmut is in the key",
+  $call differ (krm, krm0))
+$decl krm02 $call check ("a function not needing a mutable receiver stands for one that does",
+  $call T.sub (krm0, krm))
+$decl krm03 $call check ("...and one needing it does not stand for one that does not",
+  $call P.not ($call T.sub (krm, krm0)))
+
 $decl done_k $call nl ("all class-key tests passed")

@@ -262,7 +262,9 @@ $decl proto_ty $union (
   {
     $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node
     $decl result $alloc proto_ty
-    $decl frame  P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
+    // `rmut`: a member that needs its receiver mutable (§4.10). Unlike `frame` it is part
+    // of the type's identity, because it changes what can call the function.
+    $decl frame  P.boolean  $decl rmut P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
   },
  {  // §3.5: storage has a **kind** as well as a qualifier, and the two are
    // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
@@ -722,21 +724,36 @@ $decl t_group $func ($decl xs tys.node) {
 // literal that captured a frame reference has to record that it did somewhere,
 // and this is it. It is not about the parameters or the result: those are
 // frame-bound or not on their own.
-$decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean) {
-  $decl hv $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r))
-  // The result first, then the parameters; `frame` is not in the key (see `ckey`).
+$decl t_func_rm $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean,
+    $decl rm P.boolean) {
+  $decl hv0 $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r))
+  // `rmut` joins the hash and the key only when it is set, so every function type that
+  // existed before it keeps its hash, its class and its struct name.
+  $decl hv  $if rm ($call hmix (hv0, 7)) hv0
+  // The result first, then the parameters; `frame` is not in the key (see `ckey`), and
+  // `rmut` is its first string.
   $decl ks  $call cints.cons ($call cid_of (r), $call kids_of (ps, cints.nil))
-  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (3, "", "", ks, strs.nil, strs.nil,
-      cvals.nil, 0))
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (3, $if rm "m" "", "", ks, strs.nil,
+      strs.nil, cvals.nil, 0))
   $decl pvv $if ($if ($call has_var_tys (ps, 0)) true ($call has_var (r, 0))) true false
   $decl n  {
-    $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl h hv
-    $decl cid c  $decl pv pvv
+    $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl rmut rm
+    $decl h hv  $decl cid c  $decl pv pvv
   }
   $decl ret n
 }.ret
 
+$decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean)
+  $call t_func_rm (ps, r, fr, false)
+
 $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r, false)
+
+// The same function type, marked as needing a mutable receiver (§4.10).
+$decl with_rmut $func ($decl t proto_ty) $match t (
+  $case {$prop tag "func"}
+    $call t_func_rm ($call tys.val (t.params), $call tval (t.result), t.frame, true),
+  $case t t
+)
 
 // §5.3: `qual` is "" for `&T`, "mut" for `&mut T`, "const" for `&const T`.
 // Two constructors rather than one with a default, because a *short* call is
@@ -929,8 +946,9 @@ $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "block"}  $call concat ("{", $call concat ($call show_fields (t.fields, ""),
                                  $call concat ($call show_props (t.props, ""), "}"))),
   $case {$prop tag "group"}  $call concat ("(", $call concat ($call show_tys (t.items, "", true), ")")),
-  $case {$prop tag "func"}   $call concat ("[", $call concat ($call show_tys (t.params, "", true),
-                                 $call concat ("]->", $call show (t.result)))),
+  $case {$prop tag "func"}
+    $call concat ($if t.rmut "mut" "", $call concat ("[", $call concat ($call show_tys (t.params, "",
+        true), $call concat ("]->", $call show (t.result))))),
   $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual, t.kind), $call show (t.inner)),
   $case {$prop tag "array"}  $call concat ("[]", $call show (t.elem)),
   $case {$prop tag "union"}  $call concat ("<", $call concat ($call show_set (t.members), ">")),
@@ -1010,7 +1028,9 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
       $case {$prop tag "group"} $call same_tys (a.items, b.items), $case b false),
   $case {$prop tag "func"} $match b (
       $case {$prop tag "func"}
-        $if ($call same_tys (a.params, b.params)) ($call same (a.result, b.result)) false,
+        $if ($call same_tys (a.params, b.params))
+            ($if ($call same (a.result, b.result)) ($if a.rmut b.rmut ($call not (b.rmut))) false)
+            false,
       $case b false
     ),
   $case {$prop tag "ref"} $match b (
@@ -1406,8 +1426,8 @@ $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
         $call remap_props (t.props, o, d, props.nil)),
   $case {$prop tag "group"} $call t_group ($call remap_tys (t.items, o, d, tys.nil)),
   $case {$prop tag "func"}
-    $call t_func_fr ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d),
-        t.frame),
+    $call t_func_rm ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d),
+        t.frame, t.rmut),
   $case {$prop tag "ref"}   $call t_ref_k (t.qual, $call remap (t.inner, o, d), t.kind),
   $case {$prop tag "array"} $call t_array ($call remap (t.elem, o, d)),
   $case {$prop tag "union"} $call t_union ($call remap_tys (t.members, o, d, tys.nil)),
@@ -1901,9 +1921,12 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
               $case b false
             ),
           $case {$prop tag "func"} $match b (
+              // §4.10: a function that needs a mutable receiver cannot stand where one that
+              // does not is expected — it would be called through a read-only one.
               $case {$prop tag "func"}
-                $if ($call subs_zip_flipped (a.params, b.params, st))
-                    ($call sub_seen (a.result, b.result, st)) false,
+                $if ($call and (a.rmut, $call not (b.rmut))) false
+                ($if ($call subs_zip_flipped (a.params, b.params, st))
+                     ($call sub_seen (a.result, b.result, st)) false),
               $case b false
             ),
           $case {$prop tag "ref"} $match b (
