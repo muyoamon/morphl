@@ -1792,30 +1792,6 @@ $decl prebind_props $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
 )
 
 
-// §4.10: the block a `$decl`'s initializer is, directly or through `$new`, `$alloc`,
-// `$mut`, `$const` or `$impl` — for `$impl` the override, whose props are the ones the
-// declaring name is the receiver of (§4.12). Anything else answers itself.
-$decl recv_target $func ($decl n Pa.proto_node) $match n (
-  $case {$prop tag "form"}
-    $if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
-                   $call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const"))))
-        ($call recv_target ($call op (n, 0)))
-        ($if ($call eq_str (n.keyword, "impl")) ($call recv_target ($call op (n, 2))) n),
-  $case n n
-)
-
-// The receiver's qualifier: mutable when the declaration reaches its block through
-// `$mut`, read-only otherwise (§4.10).
-$decl recv_qual $func ($decl n Pa.proto_node) $match n (
-  $case {$prop tag "form"}
-    $if ($call eq_str (n.keyword, "mut")) "mut"
-        ($if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
-                        $call eq_str (n.keyword, "const")))
-             ($call recv_qual ($call op (n, 0)))
-             "const"),
-  $case n "const"
-)
-
 $decl recv_save $func ($decl n "", $decl q "", $decl l 0, $decl c 0)
   { $decl name n  $decl qual q  $decl line l  $decl col c }
 
@@ -1832,10 +1808,10 @@ $decl recv_set $func ($decl cx proto_ctx, $decl r proto_recv) {
 }.ret
 
 $decl recv_of $func ($decl nm "", $decl init Pa.proto_node) {
-  $decl b   $call recv_target (init)
+  $decl b   $call Pa.recv_target (init)
   $decl sp  $call P.span_of (b)
   $decl ret $if ($call is_block_node (b))
-                ($call recv_save (nm, $call recv_qual (init), sp.line, sp.col)) proto_recv
+                ($call recv_save (nm, $call Pa.recv_qual (init), sp.line, sp.col)) proto_recv
 }.ret
 
 $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node) {
@@ -2045,13 +2021,6 @@ $decl ct_args_check $func ($decl cx proto_ctx, $decl e env.node, $decl gs strs.n
 
 // The type of one prop. §4.10: the initializer sees other props and enclosing
 // scopes, but *not* ordered siblings — hence the prop-only environment.
-// Does a member's body name the receiver? Its free names, less the ones the member
-// itself binds — a parameter of the same name is not the receiver.
-$decl names_recv $func ($decl init Pa.proto_node, $decl rn "")
-  $if ($call eq_str (rn, "")) false
-      ($if ($call mem_str ($call Pa.free_names (init, strs.nil), rn))
-           ($call not ($call mem_str ($call Pa.bound_names (init, strs.nil), rn))) false)
-
 $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl it Pa.proto_node,
     $decl rn "") {
   $decl init $call op (it, 1)
@@ -2066,7 +2035,7 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
   // A member that names its receiver is typed here only for a provisional type, and
   // quietly: the receiver's block is not typed yet. `infer_block` types it for real
   // once it is (§4.10).
-  $decl rcv  $if ($call is_form (init, "func")) ($call names_recv (init, rn)) false
+  $decl rcv  $if ($call is_form (init, "func")) ($call Pa.names_recv (init, rn)) false
   $decl q0   $call bval (cx.quiet)
   $decl qq   $set cx.quiet ($if rcv true q0)
   $decl ret0 $if ($call is_form (init, "func"))
@@ -2293,7 +2262,7 @@ $decl recv_props $func ($decl cx proto_ctx, $decl pe env.node, $decl items Pa.no
     // of one stays inside the test that it exists.
     $decl ok  $if ($call is_form (it, "prop"))
                   ($if ($call is_form ($call op (it, 1), "func"))
-                       ($call names_recv ($call op (it, 1), rn)) false) false
+                       ($call Pa.names_recv ($call op (it, 1), rn)) false) false
     $decl a2  $if ok ($call recv_one (cx, pe, it, rn, rt, acc)) acc
     $decl ret $call recv_props (cx, pe, $call Pa.nodes.val (items.tail), rn, rt, a2)
   }.ret,

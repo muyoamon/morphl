@@ -532,6 +532,21 @@ $decl fnm_ent   $func ($decl k "", $decl i 0,
 $decl proto_fnm $call fnm_ent ("", 0, T.t_bot)
 $decl fnm_list  $specialize P.list proto_fnm
 
+// §4.10's receivers. A module whose props have one records its name and the type the
+// receiver is captured at: the block's own type for a value, a reference to it for `$mut`
+// storage, so a member writes what the declaration can.
+$decl rcv_ent $func ($decl m 0, $decl n "", $decl t T.proto_ty)
+  { $decl mid m  $decl name n  $decl ty t }
+$decl proto_rcv $call rcv_ent (0, "", T.t_bot)
+$decl rcv_list $specialize P.list proto_rcv
+
+$decl find_rcv $func ($decl xs rcv_list.node, $decl m 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.mid, m)) ($call rcv_list.cons (xs.head, rcv_list.nil))
+        ($call find_rcv (xs.tail, m)),
+  $case xs rcv_list.nil
+)
+
 $decl find_fnm $func ($decl xs fnm_list.node, $decl k "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.key, k)) ($call fnm_list.cons (xs.head, fnm_list.nil))
@@ -592,6 +607,16 @@ $decl lstate $func () {
   $decl wpends $mut $alloc wrap_list.node
   // Lifted `$func` literals by specialisation and position. See `fnm_ent`.
   $decl fnmemo  $mut $alloc fnm_list.node
+  // §4.10's receiver as lowering meets it: the `$decl` whose initializer is the block
+  // about to be lowered, as in inference; every module whose props have one; and every
+  // lifted member that captures it, which a projection makes a closure over the target.
+  $decl rname   $mut $alloc ""
+  $decl rqual   $mut $alloc ""
+  $decl rkind   $mut $alloc ""
+  $decl rline   $mut $alloc -1
+  $decl rcol    $mut $alloc -1
+  $decl recvs   $mut $alloc rcv_list.node
+  $decl recvfns $mut $alloc rcv_list.node
   // Imported modules in the order their loading **completed** — a dependency first,
   // since §4.14 finishes a module before the importer's next member. It is what
   // `mpl_init` has to call them in, and it cannot be recovered from the function
@@ -1014,8 +1039,12 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
                    $decl ts T.tys.node, $decl tp T.tys.node, $decl ns 0, $decl ny 0,
                    $decl tr IR.proto_trie, $decl oq opq_list.node, $decl pq pend_list.node,
                    $decl fd fdef_list.node, $decl wr wrap_list.node, $decl wp wrap_list.node,
-                   $decl mx mxtrie, $decl ti IR.proto_trie, $decl fm fnm_list.node) {
+                   $decl mx mxtrie, $decl ti IR.proto_trie, $decl fm fnm_list.node,
+                   $decl rv rcv_list.node, $decl rf rcv_list.node) {
   $decl lifted lf  $decl nlifted nl  $decl mods md  $decl nmods nm
+  // The receivers name modules by id and members by lifted index; a rollback hands both
+  // out again.
+  $decl recvs rv  $decl recvfns rf
   // The shared `$func` literals name lifted indices, which a rollback hands out again.
   $decl fnmemo fm
   // The prop registry names modules by id, and a rollback hands ids out again; a
@@ -1044,7 +1073,7 @@ $decl lsnap $func ($decl lf IR.fns.node, $decl nl 0, $decl md mods_list.node, $d
 $decl proto_lsnap $call lsnap (IR.fns.nil, 0, mods_list.nil, 0, specs_list.nil,
     tmpls_list.nil, 0, T.tys.nil, T.tys.nil, 0, 0, IR.proto_trie, opq_list.nil,
     pend_list.nil, fdef_list.nil, wrap_list.nil, wrap_list.nil, mxtrie, IR.proto_trie,
-    fnm_list.nil)
+    fnm_list.nil, rcv_list.nil, rcv_list.nil)
 
 $decl eval_tmpls $func ($decl x tmpls_list.node) x
 $decl eval_specs $func ($decl x specs_list.node) x
@@ -1058,7 +1087,8 @@ $decl take_snap $func ($decl st proto_lst)
       $call IR.tval_trie (st.tytrie), $call opq_list.val (st.opaqs),
       $call pend_list.val (st.pends), $call fdef_list.val (st.fdefs),
       $call wrap_list.val (st.wraps), $call wrap_list.val (st.wpends),
-      $call mx_val (st.modix), $call IR.tval_trie (st.tyix), $call fnm_list.val (st.fnmemo))
+      $call mx_val (st.modix), $call IR.tval_trie (st.tyix), $call fnm_list.val (st.fnmemo),
+      $call rcv_list.val (st.recvs), $call rcv_list.val (st.recvfns))
 
 $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap) {
   $decl a   $set st.lifted  ($call IR.fns.val (sn.lifted))
@@ -1081,6 +1111,8 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap) {
   $decl x   $set st.modix    ($call mx_val (sn.modix))
   $decl y   $set st.tyix     ($call IR.tval_trie (sn.tyix))
   $decl z   $set st.fnmemo   ($call fnm_list.val (sn.fnmemo))
+  $decl z2  $set st.recvs    ($call rcv_list.val (sn.recvs))
+  $decl z3  $set st.recvfns  ($call rcv_list.val (sn.recvfns))
   $decl ret 0
 }.ret
 
@@ -1359,6 +1391,59 @@ $decl kind_of $func ($decl n Pa.proto_node) $match n (
 $decl proto_form  $call Pa.n_form ("", Pa.nodes.nil, 0, 0)
 $decl proto_projn $call Pa.n_projn (Pa.proto_node, "", 0, 0)
 
+// The receiver a module's member is lifted with, if the member names it.
+$decl rcv_name $func ($decl rv rcv_list.node, $decl pn Pa.proto_node) $match rv (
+  $case {$prop tag "cons"} $if ($call Pa.names_recv (pn, rv.head.name)) rv.head.name "",
+  $case rv ""
+)
+
+$decl rcv_ty $func ($decl rv rcv_list.node) $match rv (
+  $case {$prop tag "cons"} rv.head.ty,
+  $case rv T.t_bot
+)
+
+$decl is_ref_ty $func ($decl t T.proto_ty) $match t ($case {$prop tag "ref"} true, $case t false)
+
+// Whether a lifted index is a member that captures its receiver.
+$decl has_recvfn $func ($decl st proto_lst, $decl i 0)
+  $call P.not ($call rcv_list.is_nil ($call find_rcv ($call rcv_list.val (st.recvfns), i)))
+
+// §4.10: a member that names its receiver is a closure over it, so a projection onto one
+// builds the closure from the target it was projected from — the target's reference when
+// the receiver is `$mut` storage, so the member writes what the declaration can.
+$decl recv_wrap $func ($decl st proto_lst, $decl raw proto_lres, $decl tgt proto_lres,
+    $decl r proto_lres) {
+  $decl ir  r.ir
+  $decl ret $match ir (
+      $case {$prop tag "global"}
+        $if ($call has_recvfn (st, ir.fn)) {
+          // Keyed by the member's lifted index, not by the target's module: a projection
+          // off a parameter of block type reaches the member through its type's props
+          // and has no module, and the receiver is still what it was reached through.
+          $decl rv   $call find_rcv ($call rcv_list.val (st.recvfns), ir.fn)
+          $decl cap  $if ($call is_ref_ty ($call rcv_ty (rv))) raw.ir tgt.ir
+          $decl ret2 $call lres ($call IR.e_closure (ir.ty, ir.fn,
+                         $call IR.exprs.cons (cap, IR.exprs.nil)), r.ty)
+        }.ret2 r,
+      $case ir r
+    )
+}.ret
+
+// A member that names its receiver has nothing to capture when it is reached by its bare
+// name from a sibling, so it is reached through its receiver or not at all.
+$decl bare_recv $func ($decl st proto_lst, $decl r proto_lres, $decl nm "", $decl n Pa.proto_node) {
+  $decl ir  r.ir
+  $decl ret $match ir (
+      $case {$prop tag "global"}
+        $if ($call has_recvfn (st, ir.fn))
+            ($call lres ($call IR.e_unit ($call err (st, $call concat ("'",
+                $call concat (nm, "' names its receiver, so it is reached through it (§4.10)")), n)),
+                T.t_bot))
+            r,
+      $case ir r
+    )
+}.ret
+
 $fwd lower
 $fwd lower_block
 // A projection onto a prop, answered from the prop's source. It needs
@@ -1473,7 +1558,7 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
     ($if ($call eq_str (f.bnd.kind, "prop"))
       // §4.10: a prop is compile-time, so naming one is not reading a slot —
       // it is asking the module what that prop's value lowered to.
-      ($call lower_prop (st, f.bnd.mod, nm, n)) {
+      ($call bare_recv (st, $call lower_prop (st, f.bnd.mod, nm, n), nm, n)) {
         $decl bt $call T.tval (f.bnd.ty)
         $decl id $call mod_ty_id (st, f.bnd.mod, bt)
         $decl ir $if ($call eq_str (f.bnd.kind, "local"))   ($call IR.e_local (id, f.bnd.slot))
@@ -1684,19 +1769,22 @@ $decl is_deref $func ($decl x IR.proto_expr) $match x (
 )
 
 $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
-  $decl tgt $call as_value (st, $call lower (st, e, n.target, false))
+  $decl raw $call lval ($call lower (st, e, n.target, false))
+  $decl tgt $call as_value (st, raw)
   $decl tt  $call T.unroll (tgt.ty)
   $decl own $if ($call lt (tgt.mod, 0)) false ($call mod_has (st, tgt.mod, n.field))
   $decl ret $match tt (
       $case {$prop tag "block"} {
         $decl f   $call find_fld ($call T.fields.val (tt.fields), n.field, 0)
         $decl ask $if own ($call not ($call and (f.hit, $call is_deref (tgt.ir)))) false
-        $decl ret2 $if ask ($call lower_prop (st, tgt.mod, n.field, n))
+        $decl ret2 $if ask
+            ($call recv_wrap (st, raw, tgt, $call lower_prop (st, tgt.mod, n.field, n)))
             ($if f.hit
             ($call lres ($call IR.e_field ($call intern (st, f.ty), tgt.ir, f.idx), f.ty))
             ($if ($call lt (tgt.mod, 0))
-                 ($call prop_from_ty (st, $call T.props.val (tt.props), n.field, n))
-                 ($call lower_prop (st, tgt.mod, n.field, n))))
+                 ($call recv_wrap (st, raw, tgt,
+                     $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n)))
+                 ($call recv_wrap (st, raw, tgt, $call lower_prop (st, tgt.mod, n.field, n)))))
       }.ret2,
       $case {$prop tag "union"} {
         $decl f $call common_fld ($call T.tys.val (tt.members), n.field, fld_found_proto)
@@ -3148,7 +3236,7 @@ $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
   $case {$prop tag "name"}  ($call lower_name (st, e, n)),
   $case {$prop tag "proj_name"} ($call lower_proj (st, e, n)),
   $case {$prop tag "proj_index"} ($call lower_projidx (st, e, n, n.target, n.index)),
-  $case {$prop tag "block"} ($call lower_block (st, e, $call Pa.nodes.val (n.items))),
+  $case {$prop tag "block"} ($call lower_block (st, e, $call Pa.nodes.val (n.items), n)),
   $case {$prop tag "group"} ($call lower_group (st, e, $call Pa.nodes.val (n.items))),
   $case {$prop tag "form"}  ($call lower_form (st, e, n, tail)),
   $case n ($call lres ($call IR.e_unit ($call err (st,
@@ -3345,14 +3433,42 @@ $decl prop_rank $func ($decl ps mprops.node, $decl nm "", $decl i 0) $match ps (
   $case ps -1
 )
 
+// §4.10: the receiver a `$decl`'s initializer gives the block it is, recorded around the
+// lowering of that initializer — exactly as inference does — so `lower_block` can claim it.
+$decl recv_mark $func ($decl n "", $decl q "", $decl k "", $decl l 0, $decl c 0)
+  { $decl name n  $decl qual q  $decl kind k  $decl line l  $decl col c }
+$decl proto_mark $call recv_mark ("", "", "", -1, -1)
+
+$decl recv_put $func ($decl st proto_lst, $decl r proto_mark) {
+  $decl a   $set st.rname r.name
+  $decl b   $set st.rqual r.qual
+  $decl c   $set st.rkind r.kind
+  $decl d   $set st.rline r.line
+  $decl ret $set st.rcol r.col
+}.ret
+
+$decl recv_enter $func ($decl st proto_lst, $decl nm "", $decl init Pa.proto_node) {
+  $decl old $call recv_mark ($call P.sval (st.rname), $call P.sval (st.rqual),
+                $call P.sval (st.rkind), $call P.ival (st.rline), $call P.ival (st.rcol))
+  $decl b   $call Pa.recv_target (init)
+  $decl sp  $call P.span_of (b)
+  $decl nw  $if ($call Pa.is_block (b))
+                ($call recv_mark (nm, $call Pa.recv_qual (init), $call Pa.recv_kind (init),
+                     sp.line, sp.col))
+                proto_mark
+  $decl put $call recv_put (st, nw)
+  $decl ret old
+}.ret
+
 $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm "",
-                             $decl pn Pa.proto_node, $decl fty T.proto_ty, $decl rk 0) {
+                             $decl pn Pa.proto_node, $decl fty T.proto_ty, $decl rk 0,
+                             $decl ets IR.ints.node) {
   $decl o $call take_slots (st)
   // Marked here rather than inside `lower_func`, which also serves an entry-file
   // top-level `$decl` — §4.14 lets an importer project a *member*, and nothing
   // imports the entry file. `rk` is its source-order index, not a counter: see
   // `prop_rank`.
-  $decl f   $call IR.fn_member ($call lower_func (st, pe, nm, pn, fty, IR.ints.nil), rk)
+  $decl f   $call IR.fn_member ($call lower_func (st, pe, nm, pn, fty, ets), rk)
   $decl b   $call restore_slots (st, o)
   $decl ret f
 }.ret
@@ -3360,11 +3476,22 @@ $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm ""
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
-  $decl pe    $call benv.val (m.penv)
-  $decl chk   $call no_caps (st, pe, pn)
+  $decl pe0   $call benv.val (m.penv)
+  $decl chk   $call no_caps (st, pe0, pn)
+  // §4.10: a member that names its receiver captures it — capture 0, at the type the
+  // module recorded — and a projection onto it is a closure over the target (`recv_wrap`).
+  $decl rv    $call find_rcv ($call rcv_list.val (st.recvs), m.id)
+  $decl rn    $call rcv_name (rv, pn)
+  $decl rt    $call rcv_ty (rv)
+  $decl pe    $if ($call eq_str (rn, "")) pe0
+                  ($call benv.cons ($call bind_ent (rn, "capture", 0, rt), pe0))
+  $decl ets   $if ($call eq_str (rn, "")) IR.ints.nil
+                  ($call IR.ints.cons ($call intern (st, rt), IR.ints.nil))
   // The index is reserved before the body exists, because the body may name
   // this prop — §4.9 memoises before typing for exactly the same reason.
   $decl idx $call reserve_lifted (st)
+  $decl rfn $set st.recvfns ($if ($call eq_str (rn, "")) ($call rcv_list.val (st.recvfns))
+                ($call rcv_list.cons ($call rcv_ent (idx, rn, rt), st.recvfns)))
   $decl p0  $call note_prop (st, m.id, $call mdone (nm, "global", idx, T.t_bot, -1, -1))
   // §3.4: where a short call's omitted defaults are evaluated. Before the snapshot,
   // so a first pass that §5.5 rolls back does not take it with it.
@@ -3389,7 +3516,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // where `cc` refused the C it produced.
   $decl sn    $call take_snap (st)
   $decl q0    $call places (st)
-  $decl lf0   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0))
+  $decl lf0   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0), ets)
   $decl again $call lt (q0, $call places (st))
   // Everything the first pass built is discarded, exactly as a self-naming
   // `$prop` discards it: the siblings it lowered were lowered against this
@@ -3406,8 +3533,8 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // Completed now that the body has given up its result type. The new entry
   // goes in front of the placeholder, which `find_mdone` therefore stops at.
   $decl p1  $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
-  $decl lf  $if again ($call lower_prop_body (st, pe, nm, pn, fty, $call prop_rank (m.props, nm,
-      0))) lf0
+  $decl lf  $if again
+      ($call lower_prop_body (st, pe, nm, pn, fty, $call prop_rank (m.props, nm, 0), ets)) lf0
   $decl put $call put_lifted (st, idx, lf)
   $decl ret $call lres ($call IR.e_global ($call intern (st, fty), idx), fty)
   // Restored after the result is computed, not before: a nested `$import` inside
@@ -3511,6 +3638,7 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
   $decl self $call mem_str ($call free_names (pn, strs.nil), nm)
   $decl pv   $call fresh_var (st)
   $decl p0   $call note_prop (st, m.id, $call mdone (nm, "global", idx, $call T.t_var (pv), -1, -1))
+  $decl rs   $call recv_enter (st, nm, pn)
   $decl sn   $call take_snap (st)
   $decl b0   $call thunk_body (st, pe, pn)
   $decl und  $if self ($call put_snap (st, sn)) 0
@@ -3524,6 +3652,7 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
   $decl p1   $call note_prop (st, m.id, $call mdone (nm, "global", idx, t,
                  b0.val.mod, b0.val.tmpl))
   $decl bd  $if self ($call thunk_body (st, pe, pn)) b0
+  $decl rb  $call recv_put (st, rs)
   $decl vty $call intern (st, t)
   // A member, so exported (§4.14): an importer projects it and reads its static.
   $decl f    $call IR.fn_p (nm, IR.ints.nil, vty, $call IR.ints.val (bd.slots), bd.val.ir,
@@ -3662,7 +3791,9 @@ $fwd lower_items
 $decl lower_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node)
   $if ($call is_form (it, "decl")) {
     $decl nm  $call name_of ($call op (it, 0))
+    $decl rs  $call recv_enter (st, nm, $call op (it, 1))
     $decl v   $call lval ($call lower (st, a.env, $call op (it, 1), false))
+    $decl rb  $call recv_put (st, rs)
     $decl id  $call intern (st, v.ty)
     $decl ir  $call with_pending (a.pend, v.ir, id)
     $decl sl  $call fresh_slot (st, id)
@@ -3744,7 +3875,15 @@ $decl blk_key $func ($decl st proto_lst, $decl ps mprops.node) $match ps (
   $case ps ($call P.sval (st.curmod))
 )
 
-$decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node) {
+$decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
+    $decl x P.proto_span) {
+  // §4.10: the block a `$decl` is declaring claims its receiver, by the literal's span.
+  $decl mine $call and ($call not ($call eq_str ($call P.sval (st.rname), "")),
+                 $call and ($call eq_int ($call P.ival (st.rline), x.line),
+                           $call eq_int ($call P.ival (st.rcol), x.col)))
+  $decl rn   $call P.sval (st.rname)
+  $decl rq   $call P.sval (st.rqual)
+  $decl rk   $call P.sval (st.rkind)
   $decl a  $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
                                                  e, IR.exprs.nil), xs)
   $decl ty $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil),
@@ -3758,6 +3897,12 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
                ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps),
                    $call P.sval (st.curfile)))
   $decl reg $if ($call lt (md, 0)) 0 ($call note_opaqs (st, md, ps))
+  // Captured at the block's own type for a value, at a reference to it for `$mut` storage.
+  $decl rct $if ($call eq_str (rq, "mut"))
+                ($call T.t_ref_k ("mut", ty, $if ($call eq_str (rk, "alloc")) T.k_alloc "")) ty
+  $decl rcv $set st.recvs ($if ($call and (mine, $call not ($call lt (md, 0))))
+                ($call rcv_list.cons ($call rcv_ent (md, rn, rct), st.recvs))
+                ($call rcv_list.val (st.recvs)))
   $decl ret $call lres3 (ir, ty, md)
 }.ret
 
@@ -4012,7 +4157,9 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
           // A thunk: no parameters, the value as its body (§7.2's frame is
           // whatever slots the initializer needed).
           $decl reset $call take_slots (st)
+          $decl rs    $call recv_enter (st, nm, init)
           $decl v     $call lval ($call lower (st, e, init, true))
+          $decl rb    $call recv_put (st, rs)
           $decl vty   $call intern (st, v.ty)
           $decl ret2     $call topfn ($call IR.fn_p (nm, IR.ints.nil, vty, $call take_slots (st),
                               v.ir, false, true, IR.ints.nil,

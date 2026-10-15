@@ -887,3 +887,50 @@ $decl subst_lit $func ($decl n proto_node, $decl nm "", $decl lit proto_node) $m
             n.col)),
   $case n n
 )
+
+// ------------------------------------------------------------ §4.10's receiver
+//
+// The block a `$decl`'s initializer is, directly or through `$new`, `$alloc`, `$mut`,
+// `$const` or `$impl` — for `$impl` the override, whose props are the ones the declaring
+// name is the receiver of (§4.12). Anything else answers itself. Inference and lowering
+// both ask, so the answer is here.
+$decl recv_target $func ($decl n proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
+                   $call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const"))))
+        ($call recv_target ($call operand (n, 0)))
+        ($if ($call eq_str (n.keyword, "impl")) ($call recv_target ($call operand (n, 2))) n),
+  $case n n
+)
+
+// The receiver's qualifier: mutable when the declaration reaches its block through
+// `$mut`, read-only otherwise.
+$decl recv_qual $func ($decl n proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "mut")) "mut"
+        ($if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
+                        $call eq_str (n.keyword, "const")))
+             ($call recv_qual ($call operand (n, 0)))
+             "const"),
+  $case n "const"
+)
+
+// Whether the block sits in storage, and which kind (§3.5): "alloc" through `$alloc`,
+// "frame" through `$new`, "" for a value.
+$decl recv_kind $func ($decl n proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "alloc")) "alloc"
+        ($if ($call eq_str (n.keyword, "new")) "frame"
+             ($if ($call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const")))
+                  ($call recv_kind ($call operand (n, 0))) "")),
+  $case n ""
+)
+
+$decl is_block $func ($decl n proto_node) $match n ($case {$prop tag "block"} true, $case n false)
+
+// Does a member's body name the receiver? Its free names, less the ones the member itself
+// binds — a parameter of the same name is not the receiver.
+$decl names_recv $func ($decl init proto_node, $decl rn "")
+  $if ($call eq_str (rn, "")) false
+      ($if ($call mem_pstr ($call free_names (init, pstrs.nil), rn))
+           ($call not ($call mem_pstr ($call bound_names (init, pstrs.nil), rn))) false)

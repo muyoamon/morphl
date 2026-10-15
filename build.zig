@@ -220,6 +220,9 @@ pub fn build(b: *std.Build) void {
         // §4.9's compile-time generics: a value in the type, and tags made by a
         // template. 61.
         .{ .src = "stage1/fixtures/ctgen.mpl", .want = "61\n" },
+        // §4.10's receiver: top level, a member taken as a value, a block local to a
+        // function, `$mut` storage, and a copy. 48.
+        .{ .src = "stage1/fixtures/receiver.mpl", .want = "48\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -532,6 +535,9 @@ pub fn build(b: *std.Build) void {
         // §4.9: an instance's arguments sit in slots of an outer block and its body in
         // the current frame, so both sides must agree on the slot numbering.
         "stage1/fixtures/instance.mpl",
+        // §4.10: a member that names its receiver is a closure over it, so the two
+        // implementations must agree on the captures and on the entry point driving §6a.
+        "stage1/fixtures/receiver.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);

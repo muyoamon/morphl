@@ -1926,7 +1926,7 @@ $decl emit_tramp $func ($decl st proto_est, $decl ts T.tys.node) {
       ($call say (st, $call concat (
           "\n/* 6a's indirect case: a tail call through a function value is reported\n   here rather than made, and driven by the loop below - one frame per hop,\n   reused. Static because 7.8 gives the language no concurrency of its own. */\ntypedef union {\n",
           $call concat ($call tcargs_members (st, ts, sg, ""),
-          $call concat ("} mpl_tcargs;\nstatic int mpl_tc = 0;\nstatic int mpl_tc_tag = 0;\nstatic mpl_fun mpl_tc_fn;\nstatic mpl_tcargs mpl_tc_args;\n\nstatic void mpl_tcdrive(void *out) {\n  while (mpl_tc) {\n    mpl_fun f = mpl_tc_fn;\n    int tag = mpl_tc_tag;\n    mpl_tcargs a = mpl_tc_args;\n    mpl_tc = 0;\n    switch (tag) {\n",
+          $call concat ("} mpl_tcargs;\nstatic int mpl_tc = 0;\nstatic int mpl_tc_tag = 0;\nstatic mpl_fun mpl_tc_fn;\nstatic mpl_tcargs mpl_tc_args;\n\nstatic void mpl_tcdrive(void *out) {\n  while (mpl_tc) {\n    mpl_fun f = mpl_tc_fn;\n    int tag = mpl_tc_tag;\n    mpl_tcargs a = mpl_tc_args;\n    (void)a;\n    mpl_tc = 0;\n    switch (tag) {\n",
           $call concat ($call tcdrive_cases (st, ts, sg, ""),
                         "    default: mpl_panic(\"bad tail-call signature\");\n    }\n  }\n}\n"))))))
 }.ret
@@ -3338,11 +3338,21 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   // and a panic now that it indexes `st.fnames`. Same shape as the `$decl bad
   // $call concat (…T.show…)` that used to render two types at every coercion:
   // a `$decl` is not a branch.
+  // §6a: a `main` whose body ends in a tail call through a value *reports* it and
+  // returns a placeholder, like any reporting function — and every other caller of one
+  // drives the pending call afterwards. The entry point has to as well, or the program
+  // prints the placeholder.
+  $decl drv  $if ($call lt (mi, 0)) false ($call reports (st, mi))
+  $decl ct   $if ($call T.same (mt, T.t_str)) "mpl_str" "int64_t"
+  $decl call $if ($call lt (mi, 0)) "" ($call concat ($call fn_name (st, mi), "(NULL)"))
+  $decl val  $if drv "mpl_r" call
+  $decl pre  $if drv
+      ($call concat ("  ", $call concat (ct, $call concat (" mpl_r = ", $call concat (call,
+          ";\n  mpl_tcdrive(&mpl_r);\n"))))) ""
   $decl body $if ($call lt (mi, 0)) ""
-      ($if ($call T.same (mt, T.t_str))
-          ($call concat ("  mpl_print(", $call concat ($call fn_name (st, mi), "(NULL));\n")))
-          ($call concat ("  printf(\"%lld\\n\", (long long)",
-               $call concat ($call fn_name (st, mi), "(NULL));\n"))))
+      ($call concat (pre, $if ($call T.same (mt, T.t_str))
+          ($call concat ("  mpl_print(", $call concat (val, ");\n")))
+          ($call concat ("  printf(\"%lld\\n\", (long long)", $call concat (val, ");\n")))))
   $decl d2 $if ($call lt (mi, 0))
       ($call eerr (st, "no top-level $decl named 'main'"))
       ($call say (st, $call concat ($call concat ("\n", runtime_state),
