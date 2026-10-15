@@ -635,7 +635,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
         .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
-        .{ .src = "stage1/infer_test.mpl", .last = "all trait coercion tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all trait object tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
         .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },

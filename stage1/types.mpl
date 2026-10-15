@@ -293,10 +293,13 @@ $decl proto_ty $union (
     // variable, so `bnd 0` in a member's type is `Self`; members are sorted by name,
     // since props are unordered and a canonical order makes `same` positional. `frame`
     // is the trait object's kind (§3.5) — set when it refers to frame storage — and
-    // is, like a function's, not part of the type's identity (§5.3a).
+    // is, like a function's, not part of the type's identity (§5.3a). `qual` is the
+    // referent's qualifier (§6): "mut" for a trait object made from `$mut` storage, which
+    // is what a member needing a mutable receiver (§4.10) is called through; "" otherwise,
+    // read-only. Unlike `frame` it is identity, because it changes what may be called.
     $prop tag "trait"
     $decl members $alloc ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
-    $decl frame P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
+    $decl frame P.boolean  $decl qual ""  $decl h 0  $decl cid -1  $decl pv P.boolean
   },
   {
     // §4.12: `$impl` over a base that is not a block — its type with props added. Props
@@ -832,20 +835,24 @@ $decl sort_fields_go $func ($decl xs fields.node, $decl acc fields.node) $match 
 
 $decl sort_fields $func ($decl xs fields.node) $call sort_fields_go (xs, fields.nil)
 
-$decl t_trait_fr $func ($decl ms fields.node, $decl fr P.boolean) {
+// The qualifier is keyed and hashed only when set, so a read-only trait keeps the class
+// and hash it always had.
+$decl t_trait_q $func ($decl ms fields.node, $decl fr P.boolean, $decl q "") {
   $decl sm  $call sort_fields (ms)
-  $decl hv  $call hmix (23, $call hash_fields (sm, 0))
+  $decl hv0 $call hmix (23, $call hash_fields (sm, 0))
+  $decl hv  $if ($call eq_str (q, "")) hv0 ($call hash_str (q, 0, hv0))
   $decl ks  $call fkids_of (sm, cints.nil)
   $decl c   $call cid_for ($call kids_ok (ks), hv,
-                $call ckey (11, "", "", ks, $call fnames_of (sm, strs.nil), strs.nil, cvals.nil, 0))
+                $call ckey (11, q, "", ks, $call fnames_of (sm, strs.nil), strs.nil, cvals.nil, 0))
   $decl pvv $if ($call has_var_fields (sm, 0)) true false
   $decl n   {
-    $prop tag "trait" $decl members $alloc sm  $decl frame fr  $decl h hv  $decl cid c
-    $decl pv pvv
+    $prop tag "trait" $decl members $alloc sm  $decl frame fr  $decl qual q  $decl h hv
+    $decl cid c  $decl pv pvv
   }
   $decl ret n
 }.ret
-$decl t_trait $func ($decl ms fields.node) $call t_trait_fr (ms, false)
+$decl t_trait_fr $func ($decl ms fields.node, $decl fr P.boolean) $call t_trait_q (ms, fr, "")
+$decl t_trait    $func ($decl ms fields.node) $call t_trait_fr (ms, false)
 
 $decl t_over  $func ($decl cs tys.node) {
   $decl hv $call hmix (21, $call hash_tys (cs, 0))
@@ -984,7 +991,9 @@ $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "inter"}  $call concat ("^", $call concat ($call show_set (t.members), "^")),
   $case {$prop tag "bnd"}    $call concat ("b", $call int_to_str (t.idx)),
   $case {$prop tag "rec"}    $call concat ("mu.", $call show (t.body)),
-  $case {$prop tag "trait"}  $call concat ("trait{", $call concat ($call show_fields (t.members, ""), "}")),
+  $case {$prop tag "trait"}
+    $call concat ($if ($call eq_str (t.qual, "")) "" "mut ",
+        $call concat ("trait{", $call concat ($call show_fields (t.members, ""), "}"))),
   $case {$prop tag "with"}
     $call concat ($call show (t.base),
         $call concat ("+{", $call concat ($call show_props (t.props, ""), "}"))),
@@ -1110,7 +1119,9 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
   // Sorted by name at construction, so a positional walk is the set comparison; `frame`
   // is not compared (§5.3a), as for a function.
   $case {$prop tag "trait"} $match b (
-      $case {$prop tag "trait"} $call same_fields (a.members, b.members), $case b false),
+      $case {$prop tag "trait"}
+        $if ($call eq_str (a.qual, b.qual)) ($call same_fields (a.members, b.members)) false,
+      $case b false),
   $case {$prop tag "with"} $match b (
       $case {$prop tag "with"}
         $if ($call same (a.base, b.base)) ($call same_props (a.props, b.props)) false,
@@ -1469,7 +1480,8 @@ $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "rec"}   $call t_rec ($call remap (t.body, o, $call add (d, 1))),
   // A binder: `Self` is index 0 inside, so everything else moves up by one.
   $case {$prop tag "trait"}
-    $call t_trait_fr ($call remap_fields (t.members, o, $call add (d, 1), fields.nil), t.frame),
+    $call t_trait_q ($call remap_fields (t.members, o, $call add (d, 1), fields.nil), t.frame,
+        t.qual),
   // A prop's `ty` is rebuilt too. It is outside the type's identity (§5.1 compares a
   // prop's value), but §6's conformance reads it — so a bound variable left in it by
   // `unroll` would make a recursive block fail to conform to its own trait.
@@ -2078,17 +2090,37 @@ $decl members_sub $func ($decl xs fields.node, $decl ms fields.node, $decl st pr
 
 $decl is_trait $func ($decl t proto_ty) $match t ($case {$prop tag "trait"} true, $case t false)
 
+// §6: a mutable trait object stands where a read-only one is expected, never the reverse —
+// §5.3's `&mut T <: &const T` for the referent it is.
+$decl sub_tqual $func ($decl a "", $decl b "") $if ($call eq_str (b, "")) true ($call eq_str (a, b))
+
+// The same trait read-only, which is what a value conforming by itself is checked against:
+// the value is not storage, so only the read-only object can be made from it.
+$decl trait_ro $func ($decl b proto_ty) $match b (
+  $case {$prop tag "trait"} ($call tval ($call t_trait_fr ($call fields.val (b.members), b.frame))),
+  $case b b
+)
+
 $decl sub_trait $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match b (
   $case {$prop tag "trait"} $match a (
       $case {$prop tag "trait"}
-        $call members_sub ($call fields.val (a.members), $call fields.val (b.members), st),
+        $if ($call sub_tqual (a.qual, b.qual))
+            ($call members_sub ($call fields.val (a.members), $call fields.val (b.members), st))
+            false,
       $case {$prop tag "block"}
-        $call conforms ($call props.val (a.props), $call fields.val (b.members), a, b, st),
+        $if ($call eq_str (b.qual, ""))
+            ($call conforms ($call props.val (a.props), $call fields.val (b.members), a, b, st))
+            false,
       $case {$prop tag "with"}
-        $call conforms ($call props.val (a.props), $call fields.val (b.members), a, b, st),
+        $if ($call eq_str (b.qual, ""))
+            ($call conforms ($call props.val (a.props), $call fields.val (b.members), a, b, st))
+            false,
       // A trait object refers to its value (§6), so a reference to a conforming value
-      // conforms — the coercion takes the pointer it already is.
-      $case {$prop tag "ref"}   $call sub_seen ($call tval (a.inner), b, st),
+      // conforms — the coercion takes the pointer it already is. Only `$mut` storage
+      // makes a mutable one.
+      $case {$prop tag "ref"}
+        $if ($call sub_tqual (a.qual, b.qual))
+            ($call sub_seen ($call tval (a.inner), $call trait_ro (b), st)) false,
       $case {$prop tag "inter"} $call subs_any_left (a.members, b, st),
       $case a false
     ),

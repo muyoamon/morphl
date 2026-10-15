@@ -491,6 +491,29 @@ $decl ktr11 $call check ("a trait is a binder: an outer bound variable shifts pa
                $call ktr ("m", kstr)))
 $decl ktr12 $call check ("a placeholder in a member is a var the trait carries",
   $call T.has_var ($call ktr ("m", $call T.t_var (7)), 0))
+$decl ktr13 $call check ("trait: the qualifier IS in the key (it decides what may be called)",
+  $call differ ($call T.t_trait_q ($call kfield ("a", kint), false, "mut"),
+                $call T.t_trait_q ($call kfield ("a", kint), false, "")))
+$decl ktr14 $call check ("a mutable trait object stands for a read-only one, not the reverse",
+  $call P.and ($call T.sub ($call T.t_trait_q ($call kfield ("a", kint), false, "mut"),
+                            $call ktr ("a", kint)),
+      $call P.not ($call T.sub ($call ktr ("a", kint),
+                                $call T.t_trait_q ($call kfield ("a", kint), false, "mut")))))
+
+// §4.12's `with`, key tag 12: the base and the props' names and values.
+$decl kwp  $func ($decl n "", $decl v 0)
+  $call T.props.cons ($call T.prop_typed (n, $call T.cv_int (v), kint), T.props.nil)
+$decl kwi01 $call check ("one with built twice is one class",
+  $call agree ($call T.t_with (kint, $call kwp ("k", 1)), $call T.t_with (kint, $call kwp ("k", 1))))
+$decl kwi02 $call check ("with: the base is in the key",
+  $call differ ($call T.t_with (kint, $call kwp ("k", 1)), $call T.t_with (kstr, $call kwp ("k", 1))))
+$decl kwi03 $call check ("with: a prop's value is in the key",
+  $call differ ($call T.t_with (kint, $call kwp ("k", 1)), $call T.t_with (kint, $call kwp ("k", 2))))
+$decl kwi04 $call check ("a with is not its base",
+  $call differ ($call T.t_with (kint, $call kwp ("k", 1)), kint))
+$decl kwi05 $call check ("...but is a subtype of it (§5.1's block rule), and not the reverse",
+  $call P.and ($call T.sub ($call T.t_with (kint, $call kwp ("k", 1)), kint),
+      $call P.not ($call T.sub (kint, $call T.t_with (kint, $call kwp ("k", 1))))))
 
 // §6: conformance is subtyping against a trait — a prop of the member's name whose *type*
 // fits, with the conforming type for `Self`. Values are never compared.

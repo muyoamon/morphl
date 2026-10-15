@@ -26,7 +26,7 @@
 //       | a ty                       array        m ty       μ (§5.5)
 //       | w<n> ty* ty <bool> <bool>  function: params, result, §5.3a frame, §4.10 rmut
 //       | B<n> fld* <n> prp*         block: fields then props (§7.2 order)
-//       | t<n> fld* <bool>           trait (§6): members, then the frame flag
+//       | t<n> fld* <bool> <str>     trait (§6): members, the frame flag, the qualifier
 //       | W ty <n> prp*              §4.12's non-block base with props added
 //   fld = <str> ty
 //   prp = <str> cv ty                a prop's `ty` is written because for a
@@ -250,8 +250,8 @@ $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
   $case {$prop tag "trait"} {
     $decl ms  $call T.fields.val (t.members)
     $decl a   $do ($call put (st, "t")) ($call put_n (st, $call T.fields.length (ms, 0)))
-    $decl b   $call put_flds (st, ms)
-    $decl ret $call put (st, $if t.frame "y" "w")
+    $decl b   $do ($call put_flds (st, ms)) ($call put (st, $if t.frame "y" "w"))
+    $decl ret $call put_s (st, t.qual)
   }.ret,
   $case {$prop tag "with"} {
     $decl ps  $call T.props.val (t.props)
@@ -463,7 +463,8 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
            $decl nm   $call read_n (s, j)
            $decl ms   $call read_flds (st, s, nm.at, nm.val, T.fields.nil)
            $decl fr   $call one (s, ms.at, "y")
-           $decl ret2 $call rt ($call add (ms.at, 1), $call T.t_trait_fr (ms.val, fr))
+           $decl q    $call read_s (s, $call add (ms.at, 1))
+           $decl ret2 $call rt (q.at, $call T.t_trait_q (ms.val, fr, q.val))
          }.ret2
          ($if ($call one (s, i, "B")) {
            $decl nf   $call read_n (s, j)

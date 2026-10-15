@@ -937,3 +937,49 @@ $decl co08 $call check_str ("$set of an expression into trait storage",
   $call errs_of ($call concat (co_pre, "$decl w $set cur { $prop area $func () 2 }")), "a trait object refers to its value, so this must be a name or a reference (§6); $traitsof makes one from an expression")
 
 $decl done8 $call nl ("all trait coercion tests passed")
+
+// §4.7: "A trait object is not inspected."
+$decl tm01 $call check_str ("a catch-all on a trait object",
+  $call errs_of ($call concat (co_pre, "$decl g $func ($decl s $traitsof shape) $match s ($case s $call s.area ())")),
+  "")
+
+$decl tm02 $call check_str ("a pattern that is not a supertype never matches",
+  $call errs_of ($call concat (co_pre, "$decl g $func ($decl s $traitsof shape) $match s ($case 1 0, $case s 1)")),
+  "a trait object is not inspected (§4.7): this pattern is not a supertype of its trait, so the arm can never match; match on a union holding it, or ask it through a member")
+
+$decl tm03 $call check_str ("a wider trait always matches, so later arms are dead",
+  $call errs_of ($call concat (co_pre,
+      "$decl two { $prop area $func () 0  $prop w $func () 0 }  $decl g $func ($decl s $traitsof two) $match s ($case ($traitsof shape) 0, $case s 1)")),
+  "this arm always matches a trait object (§4.7), so the arms after it cannot be reached")
+
+// §6: a trait object's qualifier is its referent's.
+$decl tq_pre "$decl c $mut $alloc { $decl n 0  $prop bump $func () $do ($set c c) 0 }  $decl k $mut $alloc { $prop area $func () 1 }  "
+
+$decl tq01 $call check_str ("a mutable object calls a member needing a mutable receiver",
+  $call errs_of ($call concat (tq_pre, "$decl t $traitsof c  $decl y $call t.bump ()")), "")
+
+$decl tq02 $call check_str ("...and a read-only one does not",
+  $call errs_of ($call concat (tq_pre, "$decl g $func ($decl s $traitsof $const c) $call s.bump ()")),
+  "member 'bump' needs a mutable receiver, and this trait object is read-only (§4.10, §6)")
+
+// The found type renders a prop's opaque identity (§4.10), which a test may not pin, so
+// only the message's end is compared.
+$decl tail_of $func ($decl x "", $decl k 0)
+  $call slice (x, $call sub ($call len (x), k), $call len (x))
+
+$decl tq03 $call check_str ("a value makes only a read-only object",
+  $call tail_of ($call errs_of ($call concat (tq_pre,
+      "$decl f $func ($decl s $traitsof k) 0  $decl r { $prop area $func () 1 }  $decl y $call f (r)")),
+      35),
+  ", expected mut trait{area:[]->Int,}")
+
+$decl tq04 $call check_str ("a mutable object stands for a read-only one",
+  $call errs_of ($call concat (tq_pre,
+      "$decl r { $prop area $func () 1 }  $decl g $func ($decl s $traitsof r) 0  $decl y $call g ($traitsof k)")),
+  "")
+
+$decl tq05 $call check_str ("$mut storage coerces to a mutable object",
+  $call errs_of ($call concat (tq_pre, "$decl f $func ($decl s $traitsof k) 0  $decl y $call f (k)")),
+  "")
+
+$decl done9 $call nl ("all trait object tests passed")

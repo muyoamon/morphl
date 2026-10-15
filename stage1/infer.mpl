@@ -523,6 +523,8 @@ $decl proj_members $func ($decl cx proto_ctx, $decl ms T.tys.node, $decl fld "",
   $case ms acc
 )
 
+$decl needs_mut $func ($decl t T.proto_ty) $match t ($case {$prop tag "func"} t.rmut, $case t false)
+
 $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
     $decl n Pa.proto_node) $match tt (
   $case {$prop tag "block"} {
@@ -551,7 +553,11 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
         ($if ($call T.mentions_bnd ($call T.tval (f.ty), 0))
              ($call err (cx, $call concat ("member '", $call concat (fld,
                  "' mentions Self, so it is not callable through a trait object (§6)")), n))
-             ($call T.trait_member (tt, fld, tt)))
+             ($if ($call P.and ($call needs_mut ($call T.tval (f.ty)), $call eq_str (tt.qual, "")))
+                  ($call err (cx, $call concat ("member '", $call concat (fld,
+                      "' needs a mutable receiver, and this trait object is read-only (§4.10, §6)")),
+                      n))
+                  ($call T.trait_member (tt, fld, tt))))
   }.ret,
   // §4.12: an added prop, or else whatever the base has.
   $case {$prop tag "with"} {
@@ -667,20 +673,28 @@ $decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
   $decl t0  $call infer (cx, e, x)
   $decl t   $call deref_ty (t0)
   $decl fr  $call traitsof_frame (cx, x, t0)
+  // §6: "one made from `$mut` storage is mutable".
+  $decl tr  $call T.tval (t0)
+  $decl q   $match tr ($case {$prop tag "ref"} ($if ($call eq_str (tr.qual, "mut")) "mut" ""),
+                       $case tr "")
   $decl ret $match t (
       // A μ's bound variable is the block, and so is `Self`: the trait's binder takes its place.
       $case {$prop tag "rec"} {
         $decl b    $call T.tval (t.body)
         $decl ret2 $match b (
             $case {$prop tag "block"}
-              ($call T.t_trait_fr ($call trait_members_of ($call T.props.val (b.props), b, t,
-                  T.fields.nil), fr)),
+              ($call T.t_trait_q ($call trait_members_of ($call T.props.val (b.props), b, t,
+                  T.fields.nil), fr, q)),
             $case b ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
           )
       }.ret2,
       $case {$prop tag "block"}
-        ($call T.t_trait_fr ($call trait_members_of ($call T.props.val (t.props), t, t,
-            T.fields.nil), fr)),
+        ($call T.t_trait_q ($call trait_members_of ($call T.props.val (t.props), t, t,
+            T.fields.nil), fr, q)),
+      // §4.12's non-block base with props added: its props are the trait's members too.
+      $case {$prop tag "with"}
+        ($call T.t_trait_q ($call trait_members_of ($call T.props.val (t.props), t, t,
+            T.fields.nil), fr, q)),
       $case t ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
     )
 }.ret
@@ -860,14 +874,15 @@ $decl escapes $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl what "",
       t
 
 // §4.3: `$mut` requires a reference.
-$decl infer_mut $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+// §4.3: `$mut` and `$const` make a view of storage at their qualifier.
+$decl infer_mut $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form, $decl q "") {
   $decl t $call T.tval ($call infer (cx, e, $call op (n, 0)))
   $decl ret $match t (
       // §5.3: a view preserves the kind — `$mut` of allocated storage is
       // still allocated.
-      $case {$prop tag "ref"} $call T.t_ref_k ("mut", t.inner, t.kind),
-      $case t ($call err (cx, $call concat ("$mut expects storage, found ",
-                   $call concat ($call T.show (t), "; only $new creates storage")), n))
+      $case {$prop tag "ref"} $call T.t_ref_k (q, t.inner, t.kind),
+      $case t ($call err (cx, $call concat ("$", $call concat (q, $call concat (" expects storage, found ",
+                   $call concat ($call T.show (t), "; only $new creates storage")))), n))
     )
 }.ret
 
@@ -896,7 +911,7 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
             ($call err (cx, "$set through a read-only reference (§5.3)", n))
         ($do ($if ($call T.is_alloc (tgt.kind))
                  ($call escapes (cx, val, "this value", n)) val)
-        ($if ($call T.sub (val, tgt.inner)) val
+        ($if ($call T.sub ($if ($call T.is_trait (tgt.inner)) raw val, tgt.inner)) val
             ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
                 ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
                 ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
@@ -1259,7 +1274,10 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
         $decl raw $call infer (cx, e, as.head)
         // §5.4: a parameter whose type is a reference wants storage; any
         // other parameter wants a value, so the argument dereferences.
-        $decl at  $if ($call is_ref (ps.head)) raw ($call deref_ty (raw))
+        // So does a trait parameter (§6): a trait object refers to its argument, and the
+        // reference's qualifier is the object's.
+        $decl at  $if ($call or ($call is_ref (ps.head), $call T.is_trait (ps.head))) raw
+                      ($call deref_ty (raw))
         $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
         $decl cw  $call coerce_why (as.head, raw, ps.head)
         $decl ret $if ($call not ($call eq_str (cw, "")))
@@ -1361,8 +1379,19 @@ $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.pro
         ($if ($call T.same (pt, st))
              ($do ($call err (cx, "this arm's pattern is the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1", a)) 0)
              0)
+    // §4.7: "A trait object is not inspected." Its referent's type is erased, so an arm is
+    // decided here: a supertype of the trait always matches and leaves nothing for the arms
+    // after it, and anything else never matches. Either way the arm sees the trait object.
+    $decl tro $call T.is_trait (st)
+    $decl tok $if tro ($call T.sub (st, pt)) false
+    $decl tck $if tro
+        ($if tok
+             ($if ($call or ($call Pa.nodes.is_nil (rest), $call T.same (pt, st))) 0
+                  ($do ($call err (cx, "this arm always matches a trait object (§4.7), so the arms after it cannot be reached", a)) 0))
+             ($do ($call err (cx, "a trait object is not inspected (§4.7): this pattern is not a supertype of its trait, so the arm can never match; match on a union holding it, or ask it through a member", a)) 0))
+        0
     // §4.7: narrowed to `type(e) & P` — as a selection, not an intersection.
-    $decl e2  $call narrow (e, scrut, $call T.restrict (st, pt))
+    $decl e2  $call narrow (e, scrut, $if tro st ($call T.restrict (st, pt)))
     $decl bt  $call infer (cx, e2, $call op (a, 1))
     $decl ret $call infer_arms (cx, e, scrut, st, rest, $call T.join (acc, bt))
   }.ret,
@@ -2547,7 +2576,8 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
       $decl esc  $call escapes (cx, v, "this value", n)
       $decl ret2 $call T.t_ref_k ("", v, T.k_alloc)
     }.ret2
-    ($if ($call eq_str (k, "mut"))   ($call infer_mut (cx, e, n))
+    ($if ($call or ($call eq_str (k, "mut"), $call eq_str (k, "const")))
+                                     ($call infer_mut (cx, e, n, k))
     ($if ($call eq_str (k, "set"))   ($call infer_set (cx, e, n))
     ($if ($call eq_str (k, "func"))  ($call infer_func (cx, e, n))
     ($if ($call eq_str (k, "call"))  ($call infer_call (cx, e, n))
