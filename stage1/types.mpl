@@ -297,6 +297,16 @@ $decl proto_ty $union (
     $prop tag "trait"
     $decl members $alloc ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
     $decl frame P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
+  },
+  {
+    // §4.12: `$impl` over a base that is not a block — its type with props added. Props
+    // have no layout (§4.10), so the layout is the base's; a block base takes the props
+    // into the block instead, and never reaches here.
+    $prop tag "with" $decl base $alloc proto_ty
+    $decl props $alloc ($specialize P.list {
+      $decl name ""  $decl value proto_cv  $decl ty proto_ty
+    }).node
+    $decl h 0  $decl cid -1  $decl pv P.boolean
   }
 )
 
@@ -359,6 +369,7 @@ $decl hash_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "over"}   t.h,
   $case {$prop tag "tmpl"}   t.h,
   $case {$prop tag "trait"}  t.h,
+  $case {$prop tag "with"}   t.h,
   $case t 0
 )
 
@@ -439,6 +450,7 @@ $decl has_var $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "rec"}   t.pv,
   $case {$prop tag "over"}  t.pv,
   $case {$prop tag "trait"} t.pv,
+  $case {$prop tag "with"}  t.pv,
   $case t false
 )
 
@@ -489,6 +501,7 @@ $decl cid_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "over"}   t.cid,
   $case {$prop tag "tmpl"}   t.cid,
   $case {$prop tag "trait"}  t.cid,
+  $case {$prop tag "with"}   t.cid,
   $case t -1
 )
 
@@ -874,6 +887,22 @@ $decl props_sort $func ($decl xs props.node, $decl acc props.node) $match xs (
 $decl t_block $func ($decl fs fields.node, $decl ps props.node)
   $call raw_block (fs, $call props_sort (ps, props.nil))
 
+// Key tag 12: the base and the props' names and values, as for a block's props — never a
+// prop's `ty`, which `same_props` ignores.
+$decl t_with $func ($decl b proto_ty, $decl ps props.node) {
+  $decl sp  $call props_sort (ps, props.nil)
+  $decl hv  $call hmix ($call hmix (25, $call hash_of (b)), $call hash_props (sp, 0))
+  $decl ks  $call kid1 (b)
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (12, "", "", ks, strs.nil,
+                $call pnames_of (sp, strs.nil), $call pvals_of (sp, cvals.nil), 0))
+  $decl pvv $if ($call has_var (b, 0)) true false
+  $decl n   {
+    $prop tag "with" $decl base $alloc b  $decl props $alloc sp  $decl h hv  $decl cid c
+    $decl pv pvv
+  }
+  $decl ret n
+}.ret
+
 // --------------------------------------------------------- canonical form
 //
 // A string that determines the type. Used for equality, for deduplicating
@@ -956,6 +985,9 @@ $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "bnd"}    $call concat ("b", $call int_to_str (t.idx)),
   $case {$prop tag "rec"}    $call concat ("mu.", $call show (t.body)),
   $case {$prop tag "trait"}  $call concat ("trait{", $call concat ($call show_fields (t.members, ""), "}")),
+  $case {$prop tag "with"}
+    $call concat ($call show (t.base),
+        $call concat ("+{", $call concat ($call show_props (t.props, ""), "}"))),
   $case {$prop tag "over"}   $call concat ("O<", $call concat ($call show_tys (t.cands, "", true), ">")),
   $case {$prop tag "tmpl"}   $call concat ("Tmpl", $call int_to_str (t.id)),
   $case t "?"
@@ -1079,6 +1111,11 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
   // is not compared (§5.3a), as for a function.
   $case {$prop tag "trait"} $match b (
       $case {$prop tag "trait"} $call same_fields (a.members, b.members), $case b false),
+  $case {$prop tag "with"} $match b (
+      $case {$prop tag "with"}
+        $if ($call same (a.base, b.base)) ($call same_props (a.props, b.props)) false,
+      $case b false
+    ),
   // The leaf types carry nothing, so equal renderings mean equal types — but
   // only once `b` is known to be one too. Reaching here says nothing about
   // `b`, and `show` of a compound renders the whole type: `same (Int, <big
@@ -1099,6 +1136,7 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
       $case {$prop tag "over"}  false,
       $case {$prop tag "tmpl"}  false,
       $case {$prop tag "trait"} false,
+      $case {$prop tag "with"}  false,
       // Both sides are leaves by now, and a leaf carries nothing — so equal
       // tags *are* equal types. This used to be `eq_str (show (a), show (b))`,
       // which renders two constants through a fifteen-arm match to compare two
@@ -1343,6 +1381,7 @@ $decl occurs $func ($decl t proto_ty, $decl i 0)
   $case {$prop tag "rec"}   $call occurs (t.body, i),
   $case {$prop tag "over"}  $call occurs_tys (t.cands, i),
   $case {$prop tag "trait"} $call occurs_fields (t.members, i),
+  $case {$prop tag "with"}  $call occurs (t.base, i),
   $case t false
 ))
 
@@ -1446,6 +1485,8 @@ $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "union"} $call t_union ($call remap_tys (t.members, o, d, tys.nil)),
   $case {$prop tag "inter"} $call t_inter ($call remap_tys (t.members, o, d, tys.nil)),
   $case {$prop tag "over"}  $call t_over ($call remap_tys (t.cands, o, d, tys.nil)),
+  $case {$prop tag "with"}
+    $call t_with ($call remap (t.base, o, d), $call remap_props (t.props, o, d, props.nil)),
   $case t t
 )
 
@@ -1500,6 +1541,7 @@ $decl frame_bound $func ($decl t proto_ty, $decl i 0) $match t (
   // §6: a trait object takes the kind of what it refers to, and like a closure's
   // captures that is not in the type, so the flag is the whole record of it.
   $case {$prop tag "trait"} t.frame,
+  $case {$prop tag "with"}  ($call frame_bound (t.base, 0)),
   $case t false
 )
 
@@ -1541,6 +1583,7 @@ $decl first_frame $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "rec"}   ($call first_frame (t.body, 0)),
   $case {$prop tag "over"}  ($call first_frame_tys (t.cands, 0)),
   $case {$prop tag "trait"} $if t.frame t t_bot,
+  $case {$prop tag "with"}  ($call first_frame (t.base, 0)),
   $case t t_bot
 )
 
@@ -1616,6 +1659,8 @@ $decl unguarded $func ($decl t proto_ty, $decl k 0) $match t (
   $case {$prop tag "func"}  false,
   // A trait object is a reference (§6), so it guards too.
   $case {$prop tag "trait"} false,
+  // Props have no layout, so only the base can hold the variable inline.
+  $case {$prop tag "with"}  $call unguarded (t.base, k),
   // A nested binder shifts the index of the one being tested.
   $case {$prop tag "rec"}   $call unguarded (t.body, $call add (k, 1)),
   $case {$prop tag "block"} $call unguarded_fields (t.fields, k),
@@ -1715,6 +1760,8 @@ $decl mentions_bnd $func ($decl t proto_ty, $decl k 0) $match t (
   $case {$prop tag "over"}  $call mentions_tys (t.cands, k),
   $case {$prop tag "rec"}   $call mentions_bnd (t.body, $call add (k, 1)),
   $case {$prop tag "trait"} $call mentions_fields (t.members, $call add (k, 1)),
+  $case {$prop tag "with"}
+    $if ($call mentions_bnd (t.base, k)) true ($call mentions_props (t.props, k)),
   $case t false
 )
 
@@ -1756,6 +1803,8 @@ $decl occurs_all $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "over"}  $call occurs_all_tys (t.cands, i),
   $case {$prop tag "rec"}   $call occurs_all (t.body, i),
   $case {$prop tag "trait"} $call occurs_all_fields (t.members, i),
+  $case {$prop tag "with"}
+    $if ($call occurs_all (t.base, i)) true ($call occurs_all_props (t.props, i)),
   $case t false
 )
 
@@ -1797,6 +1846,44 @@ $decl find_prop $func ($decl xs props.node, $decl n "") $match xs (
   $case xs ($call prop_entry ("", $call cv_opaque (-1)))
 )
 
+// §4.12: `$impl`'s type — the base's with the override's props added. A block takes them
+// into the block, since a block's props are where §5.1 and §6 look; anything else is a
+// `with`, and an `$impl` over one adds to the same set rather than nesting.
+$decl impl_ty $func ($decl b proto_ty, $decl ps props.node) {
+  $decl u   $call tval ($call unroll (b))
+  $decl ret $match u (
+      $case {$prop tag "block"}
+        ($call tval ($call t_block ($call fields.val (u.fields),
+            $call props.reverse (ps, $call props.val (u.props))))),
+      $case {$prop tag "with"}
+        ($call tval ($call t_with ($call tval (u.base),
+            $call props.reverse (ps, $call props.val (u.props))))),
+      $case u ($call tval ($call t_with (b, ps)))
+    )
+}.ret
+
+// Whether a type already binds `nm` — a field or a prop — which an `$impl` adding a prop of
+// that name would bind a second time (§4.1).
+$decl binds_name $func ($decl b proto_ty, $decl nm "") {
+  $decl u   $call tval ($call unroll (b))
+  $decl ret $match u (
+      $case {$prop tag "block"}
+        $if ($call eq_str (($call find_field ($call fields.val (u.fields), nm)).name, ""))
+            ($call not ($call eq_str (($call find_prop ($call props.val (u.props), nm)).name,
+                "")))
+            true,
+      $case {$prop tag "with"}
+        ($call not ($call eq_str (($call find_prop ($call props.val (u.props), nm)).name, ""))),
+      $case u false
+    )
+}.ret
+
+// The layout under a `with` (§4.12): what indexing and fields see.
+$decl with_base $func ($decl t proto_ty) $match t (
+  $case {$prop tag "with"} ($call tval (t.base)),
+  $case t t
+)
+
 $fwd sub_seen
 
 $decl subs_all_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_actx) $match xs (
@@ -1833,6 +1920,7 @@ $decl kind_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "ref"}    "ref",
   $case {$prop tag "array"}  "array",
   $case {$prop tag "trait"}  "trait",
+  $case {$prop tag "with"}   "with",
   $case {$prop tag "bottom"} "!",
   $case t ($call show (t))
 )
@@ -1996,6 +2084,8 @@ $decl sub_trait $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) 
         $call members_sub ($call fields.val (a.members), $call fields.val (b.members), st),
       $case {$prop tag "block"}
         $call conforms ($call props.val (a.props), $call fields.val (b.members), a, b, st),
+      $case {$prop tag "with"}
+        $call conforms ($call props.val (a.props), $call fields.val (b.members), a, b, st),
       // A trait object refers to its value (§6), so a reference to a conforming value
       // conforms — the coercion takes the pointer it already is.
       $case {$prop tag "ref"}   $call sub_seen ($call tval (a.inner), b, st),
@@ -2025,6 +2115,14 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
       $case {$prop tag "inter"} $call subs_all_right (a, b.members, st),
       $case b $if ($call is_trait (b)) ($call sub_trait (a, b, st)) ($match a (
           $case {$prop tag "inter"} $call subs_any_left (a.members, b, st),
+          // §4.12 by §5.1's block rule: the props are an addition, so forgetting some is a
+          // subtype — down to the base itself — and the ones kept must keep their values.
+          $case {$prop tag "with"} $match b (
+              $case {$prop tag "with"}
+                $if ($call sub_seen (a.base, b.base, st)) ($call sub_props (a.props, b.props))
+                    false,
+              $case b ($call sub_seen (a.base, b, st))
+            ),
           $case {$prop tag "block"} $match b (
               $case {$prop tag "block"}
                 $if ($call sub_fields (a.fields, b.fields, st))

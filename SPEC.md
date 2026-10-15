@@ -327,7 +327,7 @@ There is **no hoisting**. Initialization order is source order. Mutual recursion
 
 Implements `trait` for `x`'s type. The result is **`x`'s value, at `x`'s type with `override`'s props added** — a concrete type whose base is `x`'s. Props have no layout (§4.10), so the value is `x`'s unchanged: its fields, if it has any, are untouched, and only the type grows. `override` is a block of props supplying **every** member the trait describes and nothing else. There are no defaults, so every implementation is written for the type it implements. Each member's type must be a subtype of the trait's member type with the result's type for `Self`. `trait` is a type-only position (§5.7): only its type is used.
 
-The result conforms to the trait by itself (§6), so it becomes a trait object the ordinary way, by coercion. Its receiver (§4.10) is the name of the `$decl` over the `$impl`, because that `$decl`'s value is the block the props belong to: `$decl n_s $impl n shape { $prop area $func () n_s }`. An `$impl` that no `$decl` binds has no nameable receiver; the return idiom names one. `x`'s own members keep their own receiver. A prop `x` already has is reused by naming it, `{ $prop area x.area }`, and an `override` prop whose name `x`'s type already binds is a name bound twice, which is an error (§4.1).
+The result conforms to the trait by itself (§6), so it becomes a trait object the ordinary way, by coercion. Its receiver (§4.10) is the name of the `$decl` over the `$impl`, because that `$decl`'s value is the block the props belong to: `$decl n_s $impl n shape { $prop area $func () $call add (n_s, 0) }`. An `$impl` that no `$decl` binds has no nameable receiver; the return idiom names one. `x`'s own members keep their own receiver. A prop `x` already has is reused by naming it, `{ $prop area x.area }`, and an `override` prop whose name `x`'s type already binds is a name bound twice, which is an error (§4.1).
 
 `x` may be of any type, including one with no props. There is no registration and no coherence problem: an implementation is chosen where it is written, and it is part of the type of the value it was written for.
 
@@ -914,9 +914,10 @@ $decl describe $func ($decl s $traitsof shape_proto)
 $call describe (rect)                                    // "area=12"
 
 // `Int` has no props. `$impl` gives this value the members; the `$decl` over it names the
-// receiver, and the value is still an `Int`.
+// receiver, and the value is still an `Int`. The receiver is a reference (§4.10), so the
+// member reads it where a value is expected (§5.4) rather than returning it.
 $decl n   7
-$decl n_s $impl n ($traitsof shape_proto) { $prop area $func () n_s }
+$decl n_s $impl n ($traitsof shape_proto) { $prop area $func () $call add (n_s, 0) }
 $call describe (n_s)                                     // "area=7"
 
 // Storage of trait type holds trait objects; `$set` replaces the whole object.

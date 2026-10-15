@@ -841,3 +841,63 @@ $decl tt10 $call check_str ("an object over allocated storage is not",
   $call errs_of ("$decl f $func () $traitsof $alloc { $prop k $func () 1 }"), "")
 
 $decl done6 $call nl ("all $traitsof tests passed")
+
+// §4.12: `$impl x trait override` is `x`'s value with the override's props added.
+$decl im_shape "$decl shape { $prop area $func () 0 }  "
+
+$decl im01 $call check_str ("$impl over a block adds its props to the block",
+  $call field_ty ($call concat (im_shape,
+      "$decl b { $decl w 3 }  $decl x $impl b ($traitsof shape) { $prop area $func () 7 }  $decl y $call x.area ()"),
+      "y"), "Int")
+
+$decl im02 $call check_str ("...and keeps the base's fields",
+  $call field_ty ($call concat (im_shape,
+      "$decl b { $decl w 3 }  $decl x $impl b ($traitsof shape) { $prop area $func () 7 }  $decl y x.w"),
+      "y"), "Int")
+
+// The receiver is the `$decl` over the `$impl`, at the result's type (§4.10, §4.12).
+$decl im03 $call check_str ("$impl over an Int, whose member reads the receiver",
+  $call errs_of ($call concat (im_shape,
+      "$decl n 7  $decl n_s $impl n ($traitsof shape) { $prop area $func () $call add (n_s, 0) }  $decl y $call n_s.area ()")),
+  "")
+
+$decl im04 $call check_str ("...and is still usable as its base (§5.1)",
+  $call field_ty ($call concat (im_shape,
+      "$decl n 7  $decl n_s $impl n ($traitsof shape) { $prop area $func () 1 }  $decl y $call add (n_s, 1)"),
+      "y"), "Int")
+
+$decl im05 $call check_str ("...and conforms to the trait it implements (§6)",
+  $call errs_of ($call concat (im_shape,
+      "$decl f $func ($decl s $traitsof shape) $call s.area ()  $decl n 7  $decl n_s $impl n ($traitsof shape) { $prop area $func () 1 }  $decl y $call f (n_s)")),
+  "")
+
+$decl im06 $call check_str ("every member must be implemented",
+  $call errs_of ($call concat (im_shape, "$decl n_s $impl 7 ($traitsof shape) {}")), "this $impl does not implement 'area', and a trait has no defaults (§4.12)")
+
+$decl im07 $call check_str ("and nothing but the members",
+  $call errs_of ($call concat (im_shape,
+      "$decl n_s $impl 7 ($traitsof shape) { $prop area $func () 1  $prop more 2 }")), "'more' is not a member of the trait this $impl implements (§4.12)")
+
+$decl im08 $call check_str ("each at the trait's type",
+  $call errs_of ($call concat (im_shape,
+      "$decl n_s $impl 7 ($traitsof shape) { $prop area $func () \"s\" }")), "member 'area' of this $impl is []->Str, but the trait wants []->Int")
+
+$decl im09 $call check_str ("a prop the base has is bound twice (§4.1)",
+  $call errs_of ($call concat (im_shape,
+      "$decl b { $prop area $func () 3 }  $decl x $impl b ($traitsof shape) { $prop area $func () 7 }")),
+  "'area' is already bound by the $impl's base, so this binds it twice (§4.1)")
+
+$decl im10 $call check_str ("the trait operand must be a trait",
+  $call errs_of ("$decl x $impl 7 5 { $prop area $func () 7 }"),
+  "an $impl implements a trait, and this is Int — write $traitsof (§4.12)")
+
+$decl im11 $call check_str ("the override holds props only",
+  $call errs_of ($call concat (im_shape,
+      "$decl x $impl 7 ($traitsof shape) { $prop area $func () 7  $decl w 1 }")), "an $impl's override is a block of props only (§4.12)")
+
+$decl im12 $call check_str ("a block base's fields are read through the receiver",
+  $call errs_of ($call concat (im_shape,
+      "$decl b { $decl w 3 }  $decl x $impl b ($traitsof shape) { $prop area $func () x.w }  $decl y $call x.area ()")),
+  "")
+
+$decl done7 $call nl ("all $impl tests passed")

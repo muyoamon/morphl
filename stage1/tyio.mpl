@@ -27,6 +27,7 @@
 //       | w<n> ty* ty <bool> <bool>  function: params, result, §5.3a frame, §4.10 rmut
 //       | B<n> fld* <n> prp*         block: fields then props (§7.2 order)
 //       | t<n> fld* <bool>           trait (§6): members, then the frame flag
+//       | W ty <n> prp*              §4.12's non-block base with props added
 //   fld = <str> ty
 //   prp = <str> cv ty                a prop's `ty` is written because for a
 //                                    `copaque` it does not follow from the value
@@ -252,6 +253,12 @@ $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
     $decl b   $call put_flds (st, ms)
     $decl ret $call put (st, $if t.frame "y" "w")
   }.ret,
+  $case {$prop tag "with"} {
+    $decl ps  $call T.props.val (t.props)
+    $decl a   $do ($call put (st, "W")) ($call put_ty (st, $call T.tval (t.base)))
+    $decl b   $call put_n (st, $call T.props.length (ps, 0))
+    $decl ret $call put_prps (st, ps)
+  }.ret,
   $case t ($call put (st, "!"))
 )
 
@@ -465,7 +472,13 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
            $decl ps   $call read_prps (st, s, np.at, np.val, T.props.nil)
            $decl ret2 $call rt (ps.at, $call T.t_block (fs.val, ps.val))
          }.ret2
-              ($call rt (j, T.t_bot)))))))))))))))))))))
+         ($if ($call one (s, i, "W")) {
+           $decl bs   $call rtval ($call read_at (st, s, j))
+           $decl np   $call read_n (s, bs.at)
+           $decl ps   $call read_prps (st, s, np.at, np.val, T.props.nil)
+           $decl ret2 $call rt (ps.at, $call T.t_with (bs.val, ps.val))
+         }.ret2
+              ($call rt (j, T.t_bot))))))))))))))))))))))
 }.ret
 
 $decl read_at $func ($decl st proto_cst, $decl s "", $decl i 0)

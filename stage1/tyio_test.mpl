@@ -55,6 +55,16 @@ $decl tr_ok  $call P.and ($call both ($call T.t_trait_fr (tr_ms, false)),
 $decl tr_chk $if tr_ok ($call nl ("ok   a trait survives a round trip"))
                  ($call panic ("a trait does not survive a round trip"))
 
+// §4.12's `with` likewise: a non-block base with props added, one a function whose `ty` is
+// written beside its opaque value, and a `with` over a reference.
+$decl wi_ps  $call T.props.cons (
+    $call T.prop_typed ("area", $call T.cv_opaque (5), $call T.t_func (T.tys.nil, T.t_int)),
+    $call T.props.cons ($call T.prop_typed ("k", $call T.cv_int (3), T.t_int), T.props.nil))
+$decl wi_ok  $call P.and ($call both ($call T.t_with (T.t_int, wi_ps)),
+                 $call both ($call T.t_with ($call T.t_ref ("const", T.t_str), wi_ps)))
+$decl wi_chk $if wi_ok ($call nl ("ok   an $impl's with survives a round trip"))
+                 ($call panic ("an $impl's with does not survive a round trip"))
+
 $decl argv $call args ()
 $decl path $if ($call lt (0, $call alen (argv))) ($call P.sval ($call at (argv, 0)))
                "stage1/types.mpl"

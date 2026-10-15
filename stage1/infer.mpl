@@ -242,6 +242,12 @@ $decl ctx $func () {
   $decl rqual   $mut $alloc ""
   $decl rline   $mut $alloc -1
   $decl rcol    $mut $alloc -1
+  // §4.12: an `$impl`'s base, and the span of its override block. That block's receiver is
+  // the `$impl`'s result, base and props together, so `infer_block` builds the receiver's
+  // type from this when — and only when — it is typing the block at that span.
+  $decl rbase   $mut $alloc T.proto_ty
+  $decl rbline  $mut $alloc -1
+  $decl rbcol   $mut $alloc -1
   // §4.16 rule 2. The section makes capture-freeness "a property of the
   // *expression* in the argument position", holding "when the compiler can see
   // which `$func` literal the value came from" — so the check is syntactic, and
@@ -547,6 +553,12 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
                  "' mentions Self, so it is not callable through a trait object (§6)")), n))
              ($call T.trait_member (tt, fld, tt)))
   }.ret,
+  // §4.12: an added prop, or else whatever the base has.
+  $case {$prop tag "with"} {
+    $decl p   $call T.find_prop ($call T.props.val (tt.props), fld)
+    $decl ret $if ($call eq_str (p.name, "")) ($call proj_one (cx, $call T.tval (tt.base), fld, n))
+                  ($call T.tval (p.ty))
+  }.ret,
   $case tt ($call err (cx, $call concat ("cannot project '.",
                 $call concat (fld, $call concat ("' from ", $call T.show (tt)))), n))
 )
@@ -555,7 +567,7 @@ $decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto
   $call proj_one (cx, $call deref_ty ($call infer (cx, e, n.target)), n.field, n)
 
 $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_proji) {
-  $decl tt $call deref_ty ($call infer (cx, e, n.target))
+  $decl tt $call T.with_base ($call deref_ty ($call infer (cx, e, n.target)))
   $decl ret $match tt (
       $case {$prop tag "group"}
         $if ($call and ($call lt (0, n.index), $call not ($call lt ($call T.tys.length (tt.items,
@@ -655,6 +667,76 @@ $decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
             T.fields.nil), fr)),
       $case t ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
     )
+}.ret
+
+// §4.12: every member the trait describes, each at a subtype of the trait's member type
+// with the result's type for `Self`. No defaults, so a missing member is an error.
+$decl impl_members $func ($decl cx proto_ctx, $decl ms T.fields.node, $decl ps T.props.node,
+    $decl tr T.proto_ty, $decl rt T.proto_ty, $decl n proto_form) $match ms (
+  $case {$prop tag "cons"} {
+    $decl nm   ms.head.name
+    $decl p    $call T.find_prop (ps, nm)
+    $decl want $call T.trait_member (tr, nm, rt)
+    $decl chk  $if ($call eq_str (p.name, ""))
+        ($call err (cx, $call concat ("this $impl does not implement '", $call concat (nm,
+            "', and a trait has no defaults (§4.12)")), n))
+        ($if ($call T.sub ($call T.tval (p.ty), want)) T.t_unit
+             ($do ($call T.explain ($call T.tval (p.ty), want))
+                  ($call err (cx, $call concat ("member '", $call concat (nm, $call concat (
+                      "' of this $impl is ", $call concat ($call T.show ($call T.tval (p.ty)),
+                      $call concat (", but the trait wants ", $call T.show (want)))))), n))))
+    $decl ret  $call impl_members (cx, $call T.fields.val (ms.tail), ps, tr, rt, n)
+  }.ret,
+  $case ms T.t_unit
+)
+
+// ...and nothing else, and nothing the base already binds (§4.1).
+$decl impl_extras $func ($decl cx proto_ctx, $decl ps T.props.node, $decl ms T.fields.node,
+    $decl bt T.proto_ty, $decl n proto_form) $match ps (
+  $case {$prop tag "cons"} {
+    $decl nm   ps.head.name
+    $decl chk  $if ($call T.binds_name (bt, nm))
+        ($call err (cx, $call concat ("'", $call concat (nm,
+            "' is already bound by the $impl's base, so this binds it twice (§4.1)")), n))
+        ($if ($call eq_str (($call T.find_field (ms, nm)).name, ""))
+             ($call err (cx, $call concat ("'", $call concat (nm,
+                 "' is not a member of the trait this $impl implements (§4.12)")), n))
+             T.t_unit)
+    $decl ret  $call impl_extras (cx, $call T.props.val (ps.tail), ms, bt, n)
+  }.ret,
+  $case ps T.t_unit
+)
+
+// §4.12: `$impl x trait override` is `x`'s value at `x`'s type with `override`'s props
+// added. `trait` is type-only (§5.7). The override's receiver is the result, which is why
+// its block is told the base before it is typed.
+$decl infer_impl $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl bt  $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+  $decl tr  $call T.tval ($call infer (cx, e, $call op (n, 1)))
+  $decl ov  $call op (n, 2)
+  $decl sp  $call P.span_of (ov)
+  $decl sb  $do ($set cx.rbase bt) ($do ($set cx.rbline sp.line) ($set cx.rbcol sp.col))
+  $decl ot  $call T.tval ($call infer (cx, e, ov))
+  // `{}` is `()` (§2.1), so an empty override arrives as unit, with no props.
+  $decl ok  $match ot (
+      $case {$prop tag "block"} ($call T.fields.is_nil ($call T.fields.val (ot.fields))),
+      $case {$prop tag "unit"}  true,
+      $case ot false
+    )
+  $decl ps  $match ot ($case {$prop tag "block"} ($call T.props.val (ot.props)), $case ot T.props.nil)
+  $decl rt  $call T.impl_ty (bt, ps)
+  $decl ret $if ($call not (ok))
+      ($call err (cx, "an $impl's override is a block of props only (§4.12)", n))
+      ($match tr (
+          $case {$prop tag "trait"} {
+            $decl ms   $call T.fields.val (tr.members)
+            $decl a    $call impl_members (cx, ms, ps, tr, rt, n)
+            $decl b    $call impl_extras (cx, ps, ms, bt, n)
+            $decl ret2 rt
+          }.ret2,
+          $case tr ($call err (cx, $call concat ("an $impl implements a trait, and this is ",
+              $call concat ($call T.show (tr), " — write $traitsof (§4.12)")), n))
+        ))
 }.ret
 
 // The first name a `$func` literal captures, or "". A free name of the body is a
@@ -2361,6 +2443,10 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
                                $call eq_int ($call ival (cx.rcol), x.col)))
   $decl rn     $if mine ($call sval (cx.rname)) ""
   $decl rq     $call sval (cx.rqual)
+  // Read now: typing the items may reach another `$impl`, which sets these afresh.
+  $decl isimp  $call P.and ($call eq_int ($call ival (cx.rbline), x.line),
+                   $call eq_int ($call ival (cx.rbcol), x.col))
+  $decl rbase  $call T.tval (cx.rbase)
   $decl hushed $set cx.quiet true
   $decl peA    $call prop_pass (cx, pe0, items, pe0, rn)
   $decl heard  $set cx.quiet false
@@ -2378,7 +2464,8 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   // The members that name the receiver, typed for real: the block's type exists now,
   // and the receiver is a reference to it at the declaration's qualifier (§4.10). A
   // prop's `ty` is outside the block's identity (§5.1), so replacing it moves nothing.
-  $decl bt0  $call T.t_block (flds, s.prps)
+  $decl bt0  $if isimp ($call T.impl_ty (rbase, $call T.props.val (s.prps)))
+                 ($call T.t_block (flds, s.prps))
   $decl prps $if ($call eq_str (rn, "")) ($call T.props.val (s.prps))
                  ($call recv_props (cx, pe, items, rn, bt0, $call eq_str (rq, "mut"),
                      $call T.props.val (s.prps)))
@@ -2443,8 +2530,9 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "import"))     ($call infer_import (cx, n))
     ($if ($call eq_str (k, "extern"))     ($call infer_extern (cx, e, n))
     ($if ($call eq_str (k, "traitsof"))   ($call infer_traitsof (cx, e, n))
+    ($if ($call eq_str (k, "impl"))       ($call infer_impl (cx, e, n))
          ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-    ))))))))))))))))
+    )))))))))))))))))
 }.ret
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (
