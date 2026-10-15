@@ -426,6 +426,16 @@ one out either (§7.3).
 The error is reported where the value would escape, naming the `$new` it came
 from. The fix is always the same: make that storage `$alloc` (§4.2a).
 
+**Parameters.** A parameter's type cannot say whether its argument is frame-bound: a
+closure's captures are not in its type (§7.3), and a trait object's kind is not in its
+trait (§6). So the rule is applied to the function instead. A parameter **escapes** when
+its value — or anything frame-bound it could carry, such as a closure it holds or a
+value its function returns — reaches the function's result, storage that is not
+frame-bound, or an escaping parameter of another call. Which parameters escape is
+inferred, never written, and is part of the function's type: a function that lets fewer
+of its parameters escape is a subtype of one that lets more. A frame-bound argument may
+not be passed to an escaping parameter, and the error is reported at the call.
+
 **Consequence for recursive data.** §5.5 makes a recursive value's tail storage,
 so a structure that outlives the function building it must be allocated — a
 list returned to a caller is built with `$alloc`, while one built and consumed

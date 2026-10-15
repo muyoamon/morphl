@@ -500,6 +500,21 @@ $decl ktr14 $call check ("a mutable trait object stands for a read-only one, not
       $call P.not ($call T.sub ($call ktr ("a", kint),
                                 $call T.t_trait_q ($call kfield ("a", kint), false, "mut")))))
 
+// §5.3a: the parameters a function lets escape are in its key; the marks are not.
+$decl kesc $func ($decl xs T.cints.node)
+  $call T.t_func_x ($call k1 kint, kint, false, false, xs, T.cints.nil)
+$decl kes01 $call check ("func: the escaping parameters ARE in the key",
+  $call differ ($call kesc ($call T.cints.cons (0, T.cints.nil)), $call kesc (T.cints.nil)))
+$decl kes02 $call check ("func: marks are NOT in the key",
+  $call agree ($call T.t_func_x ($call k1 kint, kint, false, false, T.cints.nil,
+                   $call T.cints.cons (64, T.cints.nil)),
+               $call kesc (T.cints.nil)))
+$decl kes03 $call check ("one that lets fewer escape stands for one that lets more, not the reverse",
+  $call P.and ($call T.sub ($call kesc (T.cints.nil),
+                            $call kesc ($call T.cints.cons (0, T.cints.nil))),
+      $call P.not ($call T.sub ($call kesc ($call T.cints.cons (0, T.cints.nil)),
+                                $call kesc (T.cints.nil)))))
+
 // §4.12's `with`, key tag 12: the base and the props' names and values.
 $decl kwp  $func ($decl n "", $decl v 0)
   $call T.props.cons ($call T.prop_typed (n, $call T.cv_int (v), kint), T.props.nil)

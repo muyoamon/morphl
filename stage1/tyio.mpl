@@ -24,7 +24,9 @@
 //       | I<n> ty*                   intersection O<n> ty*  $overload
 //       | r<str><str>ty              reference: qual, kind, pointee
 //       | a ty                       array        m ty       μ (§5.5)
-//       | w<n> ty* ty <bool> <bool>  function: params, result, §5.3a frame, §4.10 rmut
+//       | w<n> ty* ty <bool> <bool> <n> <n>*
+//                                    function: params, result, §5.3a frame, §4.10 rmut,
+//                                    and the parameters that escape (§5.3a)
 //       | B<n> fld* <n> prp*         block: fields then props (§7.2 order)
 //       | t<n> fld* <bool> <str>     trait (§6): members, the frame flag, the qualifier
 //       | W ty <n> prp*              §4.12's non-block base with props added
@@ -147,6 +149,12 @@ $decl put $func ($decl st proto_cst, $decl x "") {
 $decl put_n $func ($decl st proto_cst, $decl v 0)
   $call put (st, $call concat ($call int_to_str (v), ";"))
 
+$decl put_ints $func ($decl st proto_cst, $decl xs T.cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call put_n (st, xs.head)) ($call put_ints (st, $call T.cints.val (xs.tail))),
+  $case xs ()
+)
+
 $decl put_s $func ($decl st proto_cst, $decl x "")
   $do ($call put_n (st, $call len (x))) ($call put (st, x))
 
@@ -238,7 +246,10 @@ $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
     $decl a   $do ($call put (st, "w")) ($call put_n (st, $call T.tys.length (ps, 0)))
     $decl b   $do ($call put_tys (st, ps)) ($call put_ty (st, $call T.tval (t.result)))
     $decl fr  $call put (st, $if t.frame "y" "w")
-    $decl ret $call put (st, $if t.rmut "y" "w")
+    $decl rm  $call put (st, $if t.rmut "y" "w")
+    $decl es  $call T.cints.val (t.esc)
+    $decl ec  $call put_n (st, $call T.cints.length (es, 0))
+    $decl ret $call put_ints (st, es)
   }.ret,
   $case {$prop tag "block"} {
     $decl fs  $call T.fields.val (t.fields)
@@ -311,6 +322,16 @@ $decl read_n $func ($decl s "", $decl i 0) {
   $decl d   $call digits (s, $if neg ($call add (i, 1)) i, 0)
   $decl ret $call rn ($call add (d.at, 1), $if neg ($call isub (0, d.val)) d.val)
 }.ret
+
+$decl rints       $func ($decl i 0, $decl v T.cints.node) { $decl at i  $decl val v }
+$decl proto_rints $call rints (0, T.cints.nil)
+
+// Newest first; the caller reverses.
+$decl read_ints $func ($decl s "", $decl i 0, $decl n 0, $decl acc T.cints.node)
+  $if ($call not ($call lt (0, n))) ($call rints (i, acc)) {
+    $decl x   $call read_n (s, i)
+    $decl ret $call read_ints (s, x.at, $call sub (n, 1), $call T.cints.cons (x.val, acc))
+  }.ret
 
 $decl read_s $func ($decl s "", $decl i 0) {
   $decl n   $call read_n (s, i)
@@ -456,8 +477,10 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
            $decl rr $call rtval ($call read_at (st, s, ps.at))
            $decl fr $call one (s, rr.at, "y")
            $decl rm $call one (s, $call add (rr.at, 1), "y")
-           $decl ret2  $call rt ($call add (rr.at, 2),
-                        $call T.t_func_rm (ps.val, rr.val, fr, rm))
+           $decl ne $call read_n (s, $call add (rr.at, 2))
+           $decl es $call read_ints (s, ne.at, ne.val, T.cints.nil)
+           $decl ret2  $call rt (es.at, $call T.t_func_x (ps.val, rr.val, fr, rm,
+                        $call T.cints.reverse (es.val, T.cints.nil), T.cints.nil))
          }.ret2
          ($if ($call one (s, i, "t")) {
            $decl nm   $call read_n (s, j)

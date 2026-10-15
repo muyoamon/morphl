@@ -263,8 +263,13 @@ $decl proto_ty $union (
     $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node
     $decl result $alloc proto_ty
     // `rmut`: a member that needs its receiver mutable (§4.10). Unlike `frame` it is part
-    // of the type's identity, because it changes what can call the function.
-    $decl frame  P.boolean  $decl rmut P.boolean  $decl h 0  $decl cid -1  $decl pv P.boolean
+    // of the type's identity, because it changes what can call the function. `esc` is
+    // the parameters that escape (§5.3a), sorted — identity too, since it decides what a
+    // caller may pass. `marks` is which enclosing parameters a value of this type may be
+    // carrying while a body is typed; like `frame`, never identity.
+    $decl frame  P.boolean  $decl rmut P.boolean
+    $decl esc   $alloc ($specialize P.list 0).node  $decl marks $alloc ($specialize P.list 0).node
+    $decl h 0  $decl cid -1  $decl pv P.boolean
   },
  {  // §3.5: storage has a **kind** as well as a qualifier, and the two are
    // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
@@ -689,6 +694,18 @@ $decl ci_sort $func ($decl xs cints.node, $decl acc cints.node) $match xs (
 
 $decl kid1 $func ($decl t proto_ty) $call cints.cons ($call cid_of (t), cints.nil)
 
+$decl ci_mem $func ($decl xs cints.node, $decl x 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head, x)) true ($call ci_mem ($call cints.val (xs.tail), x)),
+  $case xs false
+)
+
+$decl ci_subset $func ($decl xs cints.node, $decl ys cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call ci_mem (ys, xs.head)) ($call ci_subset ($call cints.val (xs.tail), ys)) false,
+  $case xs true
+)
+
 // Raw constructors. `raw_union`/`raw_inter` are not for general use — build
 // unions with `t_union`, which normalises.
 $decl raw_block $func ($decl fs fields.node, $decl ps props.node) {
@@ -740,24 +757,38 @@ $decl t_group $func ($decl xs tys.node) {
 // literal that captured a frame reference has to record that it did somewhere,
 // and this is it. It is not about the parameters or the result: those are
 // frame-bound or not on their own.
-$decl t_func_rm $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean,
-    $decl rm P.boolean) {
+$decl ci_str $func ($decl xs cints.node, $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call ci_str ($call cints.val (xs.tail),
+        $call concat (acc, $call concat ($if ($call eq_str (acc, "")) "" ",",
+            $call int_to_str (xs.head)))),
+  $case xs acc
+)
+
+$decl t_func_x $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean,
+    $decl rm P.boolean, $decl es cints.node, $decl mk cints.node) {
   $decl hv0 $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r))
-  // `rmut` joins the hash and the key only when it is set, so every function type that
-  // existed before it keeps its hash, its class and its struct name.
-  $decl hv  $if rm ($call hmix (hv0, 7)) hv0
-  // The result first, then the parameters; `frame` is not in the key (see `ckey`), and
-  // `rmut` is its first string.
+  // `rmut` and `esc` join the hash and the key only when set, so every function type
+  // that existed before them keeps its hash, its class and its struct name.
+  $decl hv1 $if rm ($call hmix (hv0, 7)) hv0
+  $decl ess $call ci_str (es, "")
+  $decl hv  $if ($call eq_str (ess, "")) hv1 ($call hash_str (ess, 0, $call hmix (hv1, 9)))
+  // The result first, then the parameters; `frame` and `marks` are not in the key (see
+  // `ckey`), `rmut` is its first string and `esc` its second.
   $decl ks  $call cints.cons ($call cid_of (r), $call kids_of (ps, cints.nil))
-  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (3, $if rm "m" "", "", ks, strs.nil,
+  $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (3, $if rm "m" "", ess, ks, strs.nil,
       strs.nil, cvals.nil, 0))
   $decl pvv $if ($if ($call has_var_tys (ps, 0)) true ($call has_var (r, 0))) true false
   $decl n  {
     $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl rmut rm
-    $decl h hv  $decl cid c  $decl pv pvv
+    $decl esc $alloc es  $decl marks $alloc mk  $decl h hv  $decl cid c  $decl pv pvv
   }
   $decl ret n
 }.ret
+
+$decl t_func_rm $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean,
+    $decl rm P.boolean)
+  $call t_func_x (ps, r, fr, rm, cints.nil, cints.nil)
 
 $decl t_func_fr $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean)
   $call t_func_rm (ps, r, fr, false)
@@ -767,7 +798,8 @@ $decl t_func  $func ($decl ps tys.node, $decl r proto_ty) $call t_func_fr (ps, r
 // The same function type, marked as needing a mutable receiver (§4.10).
 $decl with_rmut $func ($decl t proto_ty) $match t (
   $case {$prop tag "func"}
-    $call t_func_rm ($call tys.val (t.params), $call tval (t.result), t.frame, true),
+    $call t_func_x ($call tys.val (t.params), $call tval (t.result), t.frame, true,
+        $call cints.val (t.esc), $call cints.val (t.marks)),
   $case t t
 )
 
@@ -982,9 +1014,13 @@ $decl show $func ($decl t proto_ty) $match t (
   $case {$prop tag "block"}  $call concat ("{", $call concat ($call show_fields (t.fields, ""),
                                  $call concat ($call show_props (t.props, ""), "}"))),
   $case {$prop tag "group"}  $call concat ("(", $call concat ($call show_tys (t.items, "", true), ")")),
-  $case {$prop tag "func"}
-    $call concat ($if t.rmut "mut" "", $call concat ("[", $call concat ($call show_tys (t.params, "",
-        true), $call concat ("]->", $call show (t.result))))),
+  $case {$prop tag "func"} {
+    $decl es  $call ci_str ($call cints.val (t.esc), "")
+    $decl ret $call concat ($if t.rmut "mut" "",
+        $call concat ($if ($call eq_str (es, "")) "" ($call concat ("esc(", $call concat (es, ")"))),
+        $call concat ("[", $call concat ($call show_tys (t.params, "", true),
+        $call concat ("]->", $call show (t.result))))))
+  }.ret,
   $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual, t.kind), $call show (t.inner)),
   $case {$prop tag "array"}  $call concat ("[]", $call show (t.elem)),
   $case {$prop tag "union"}  $call concat ("<", $call concat ($call show_set (t.members), ">")),
@@ -1070,7 +1106,10 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
   $case {$prop tag "func"} $match b (
       $case {$prop tag "func"}
         $if ($call same_tys (a.params, b.params))
-            ($if ($call same (a.result, b.result)) ($if a.rmut b.rmut ($call not (b.rmut))) false)
+            ($if ($call same (a.result, b.result))
+                 ($if ($if a.rmut b.rmut ($call not (b.rmut)))
+                      ($call ci_eq ($call cints.val (a.esc), $call cints.val (b.esc))) false)
+                 false)
             false,
       $case b false
     ),
@@ -1490,8 +1529,8 @@ $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
         $call remap_props (t.props, o, d, props.nil)),
   $case {$prop tag "group"} $call t_group ($call remap_tys (t.items, o, d, tys.nil)),
   $case {$prop tag "func"}
-    $call t_func_rm ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d),
-        t.frame, t.rmut),
+    $call t_func_x ($call remap_tys (t.params, o, d, tys.nil), $call remap (t.result, o, d),
+        t.frame, t.rmut, $call cints.val (t.esc), $call cints.val (t.marks)),
   $case {$prop tag "ref"}   $call t_ref_k (t.qual, $call remap (t.inner, o, d), t.kind),
   $case {$prop tag "array"} $call t_array ($call remap (t.elem, o, d)),
   $case {$prop tag "union"} $call t_union ($call remap_tys (t.members, o, d, tys.nil)),
@@ -1556,6 +1595,163 @@ $decl frame_bound $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "with"}  ($call frame_bound (t.base, 0)),
   $case t false
 )
+
+// §5.3a for parameters. A parameter's type cannot say whether the argument is frame-bound
+// — captures are not in a function's type (§7.3) and a trait object's kind is not in its
+// trait (§6) — so while a body is typed, every function type a parameter's type holds is
+// *marked* with it, and the marks travel wherever the value does. A mark reaching an
+// escape point makes that parameter escape. A trait is marked through its members.
+$fwd mark_deep
+
+$decl mark_tys $func ($decl xs tys.node, $decl m 0, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call mark_tys ($call tys.val (xs.tail), m, $call tys.cons ($call mark_deep (xs.head, m), acc)),
+  $case xs ($call tys.reverse (acc, tys.nil))
+)
+
+$decl mark_fields $func ($decl xs fields.node, $decl m 0, $decl acc fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $call mark_fields ($call fields.val (xs.tail), m,
+        $call fields.cons ($call field (xs.head.name, $call mark_deep (xs.head.ty, m)), acc)),
+  $case xs ($call fields.reverse (acc, fields.nil))
+)
+
+// A value of a function type can also *return* something frame-bound, so the result is
+// marked as well as the function.
+$decl mark_deep $func ($decl t proto_ty, $decl m 0) $match t (
+  $case {$prop tag "func"}
+    $call t_func_x ($call tys.val (t.params), $call mark_deep (t.result, m), t.frame, t.rmut,
+        $call cints.val (t.esc), $call cints.cons (m, $call cints.val (t.marks))),
+  $case {$prop tag "trait"}
+    $call t_trait_q ($call mark_fields ($call fields.val (t.members), m, fields.nil), t.frame,
+        t.qual),
+  $case {$prop tag "ref"}   $call t_ref_k (t.qual, $call mark_deep (t.inner, m), t.kind),
+  $case {$prop tag "block"}
+    $call raw_block ($call mark_fields ($call fields.val (t.fields), m, fields.nil),
+        $call props.val (t.props)),
+  $case {$prop tag "group"} $call t_group ($call mark_tys ($call tys.val (t.items), m, tys.nil)),
+  $case {$prop tag "array"} $call t_array ($call mark_deep (t.elem, m)),
+  $case {$prop tag "union"} $call t_union ($call mark_tys ($call tys.val (t.members), m, tys.nil)),
+  $case {$prop tag "rec"}   $call t_rec ($call mark_deep (t.body, m)),
+  $case {$prop tag "with"}  $call t_with ($call mark_deep (t.base, m), $call props.val (t.props)),
+  $case t t
+)
+
+// Whether a type holds a function type anywhere marking would reach — so a parameter
+// without one is bound as it is and costs nothing.
+$fwd markable
+
+$decl markable_tys $func ($decl xs tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call markable ($call tval (xs.head))) true ($call markable_tys (xs.tail)),
+  $case xs false
+)
+
+$decl markable_fields $func ($decl xs fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call markable ($call tval (xs.head.ty))) true ($call markable_fields (xs.tail)),
+  $case xs false
+)
+
+$decl markable $func ($decl t proto_ty) $match t (
+  $case {$prop tag "func"}  true,
+  $case {$prop tag "trait"} true,
+  $case {$prop tag "ref"}   $call markable (t.inner),
+  $case {$prop tag "block"} $call markable_fields (t.fields),
+  $case {$prop tag "group"} $call markable_tys (t.items),
+  $case {$prop tag "array"} $call markable (t.elem),
+  $case {$prop tag "union"} $call markable_tys (t.members),
+  $case {$prop tag "rec"}   $call markable (t.body),
+  $case {$prop tag "with"}  $call markable (t.base),
+  $case t false
+)
+
+$fwd marks_of
+
+$decl marks_tys $func ($decl xs tys.node, $decl acc cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call marks_tys ($call tys.val (xs.tail), $call marks_of ($call tval (xs.head), acc)),
+  $case xs acc
+)
+
+$decl marks_fields $func ($decl xs fields.node, $decl acc cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call marks_fields ($call fields.val (xs.tail), $call marks_of ($call tval (xs.head.ty), acc)),
+  $case xs acc
+)
+
+$decl ci_union $func ($decl xs cints.node, $decl acc cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call ci_union ($call cints.val (xs.tail),
+        $if ($call ci_mem (acc, xs.head)) acc ($call cints.cons (xs.head, acc))),
+  $case xs acc
+)
+
+// Every mark a value of this type may carry. Walks what `frame_bound` walks, plus a
+// function's result, which `mark_deep` marked for the reason given there.
+$decl marks_of $func ($decl t proto_ty, $decl acc cints.node) $match t (
+  $case {$prop tag "func"}
+    $call marks_of ($call tval (t.result), $call ci_union ($call cints.val (t.marks), acc)),
+  $case {$prop tag "trait"} $call marks_fields ($call fields.val (t.members), acc),
+  $case {$prop tag "ref"}   $call marks_of ($call tval (t.inner), acc),
+  $case {$prop tag "block"} $call marks_fields ($call fields.val (t.fields), acc),
+  $case {$prop tag "group"} $call marks_tys ($call tys.val (t.items), acc),
+  $case {$prop tag "array"} $call marks_of ($call tval (t.elem), acc),
+  $case {$prop tag "union"} $call marks_tys ($call tys.val (t.members), acc),
+  $case {$prop tag "inter"} $call marks_tys ($call tys.val (t.members), acc),
+  $case {$prop tag "rec"}   $call marks_of ($call tval (t.body), acc),
+  $case {$prop tag "over"}  $call marks_tys ($call tys.val (t.cands), acc),
+  $case {$prop tag "with"}  $call marks_of ($call tval (t.base), acc),
+  $case t acc
+)
+
+// The marks below a depth, for a function's type once its body is done: its own
+// parameters' marks would otherwise outlive it and name whatever is at that depth next.
+$decl keep_below $func ($decl xs cints.node, $decl lim 0, $decl acc cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call keep_below ($call cints.val (xs.tail), lim,
+        $if ($call lt (xs.head, lim)) ($call cints.cons (xs.head, acc)) acc),
+  $case xs acc
+)
+
+$fwd unmark
+
+$decl unmark_tys $func ($decl xs tys.node, $decl lim 0, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call unmark_tys ($call tys.val (xs.tail), lim,
+        $call tys.cons ($call unmark (xs.head, lim), acc)),
+  $case xs ($call tys.reverse (acc, tys.nil))
+)
+
+$decl unmark_fields $func ($decl xs fields.node, $decl lim 0, $decl acc fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $call unmark_fields ($call fields.val (xs.tail), lim,
+        $call fields.cons ($call field (xs.head.name, $call unmark (xs.head.ty, lim)), acc)),
+  $case xs ($call fields.reverse (acc, fields.nil))
+)
+
+$decl unmark $func ($decl t proto_ty, $decl lim 0) $match t (
+  $case {$prop tag "func"}
+    $call t_func_x ($call tys.val (t.params), $call unmark (t.result, lim), t.frame, t.rmut,
+        $call cints.val (t.esc), $call keep_below ($call cints.val (t.marks), lim, cints.nil)),
+  $case {$prop tag "trait"}
+    $call t_trait_q ($call unmark_fields ($call fields.val (t.members), lim, fields.nil), t.frame,
+        t.qual),
+  $case {$prop tag "ref"}   $call t_ref_k (t.qual, $call unmark (t.inner, lim), t.kind),
+  $case {$prop tag "block"}
+    $call raw_block ($call unmark_fields ($call fields.val (t.fields), lim, fields.nil),
+        $call props.val (t.props)),
+  $case {$prop tag "group"} $call t_group ($call unmark_tys ($call tys.val (t.items), lim, tys.nil)),
+  $case {$prop tag "array"} $call t_array ($call unmark (t.elem, lim)),
+  $case {$prop tag "union"} $call t_union ($call unmark_tys ($call tys.val (t.members), lim, tys.nil)),
+  $case {$prop tag "rec"}   $call t_rec ($call unmark (t.body, lim)),
+  $case {$prop tag "with"}  $call t_with ($call unmark (t.base, lim), $call props.val (t.props)),
+  $case t t
+)
+
+$decl t_func_esc $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean,
+    $decl es cints.node, $decl mk cints.node)
+  $call t_func_x (ps, r, fr, false, es, mk)
 
 // The frame reference that makes a type frame-bound, for the diagnostic. A
 // whole inferred type can be thousands of characters (§10.9: field order is
@@ -2205,8 +2401,12 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
               // does not is expected — it would be called through a read-only one.
               $case {$prop tag "func"}
                 $if ($call and (a.rmut, $call not (b.rmut))) false
+                // §5.3a: a function letting a parameter escape cannot stand where one that
+                // does not is expected — its callers may pass that one frame-bound.
+                ($if ($call not ($call ci_subset ($call cints.val (a.esc),
+                         $call cints.val (b.esc)))) false
                 ($if ($call subs_zip_flipped (a.params, b.params, st))
-                     ($call sub_seen (a.result, b.result, st)) false),
+                     ($call sub_seen (a.result, b.result, st)) false)),
               $case b false
             ),
           $case {$prop tag "ref"} $match b (

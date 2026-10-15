@@ -64,6 +64,12 @@ $decl wi_ps  $call T.props.cons (
     $call T.props.cons ($call T.prop_typed ("k", $call T.cv_int (3), T.t_int), T.props.nil))
 $decl wi_ok  $call P.and ($call both ($call T.t_with (T.t_int, wi_ps)),
                  $call both ($call T.t_with ($call T.t_ref ("const", T.t_str), wi_ps)))
+// §5.3a's escaping parameters ride on a function type.
+$decl es_ok  $call both ($call T.t_func_x ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_str,
+                 T.tys.nil)), T.t_int, false, false,
+                 $call T.cints.cons (0, $call T.cints.cons (1, T.cints.nil)), T.cints.nil))
+$decl es_chk $if es_ok ($call nl ("ok   a function's escaping parameters survive a round trip"))
+                 ($call panic ("a function's escaping parameters do not survive a round trip"))
 $decl wi_chk $if wi_ok ($call nl ("ok   an $impl's with survives a round trip"))
                  ($call panic ("an $impl's with does not survive a round trip"))
 

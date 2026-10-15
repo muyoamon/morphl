@@ -983,3 +983,44 @@ $decl tq05 $call check_str ("$mut storage coerces to a mutable object",
   "")
 
 $decl done9 $call nl ("all trait object tests passed")
+
+// §5.3a for parameters: which parameters escape is inferred and is in the function's
+// type, and a frame-bound argument may not be passed to one that does.
+$decl es_pre "$decl keep $mut $alloc $func () 0  $decl save $func ($decl f $func () 0) $do ($set keep f) 0  "
+
+$decl es01 $call check_str ("a parameter stored in allocated storage escapes",
+  $call field_ty (es_pre, "save"), "esc(0)[[]->Int]->Int")
+
+$decl es02 $call check_str ("...so a frame-bound argument to it is refused",
+  $call errs_of ($call concat (es_pre,
+      "$decl h $func () { $decl c $new 1  $decl r $call save ($func () $call add (c, 0))  $decl ret 0 }.ret")),
+  "argument 1 refers to frame storage, and this function lets that parameter escape (§5.3a); pass $alloc storage instead")
+
+$decl es03 $call check_str ("a parameter only called does not escape",
+  $call errs_of ($call concat (es_pre,
+      "$decl run $func ($decl f $func () 0) $call add ($call f (), 1)  $decl h $func () { $decl c $new 1  $decl r $call run ($func () $call add (c, 0))  $decl ret 0 }.ret")),
+  "")
+
+$decl es04 $call check_str ("...and its type says so",
+  $call field_ty ("$decl run $func ($decl f $func () 0) $call add ($call f (), 1)", "run"), "[[]->Int]->Int")
+
+$decl es05 $call check_str ("returning a parameter makes it escape",
+  $call field_ty ("$decl id $func ($decl f $func () 0) f", "id"), "esc(0)[[]->Int]->[]->Int")
+
+$decl es06 $call check_str ("...and so does returning a closure that captures it",
+  $call field_ty ("$decl wrap $func ($decl f $func () 0) $func () $call f ()", "wrap"), "esc(0)[[]->Int]->[]->Int")
+
+$decl es07 $call check_str ("passing it on to an escaping parameter makes it escape",
+  $call field_ty ($call concat (es_pre, "$decl pass $func ($decl g $func () 0) $call save (g)"),
+      "pass"), "esc(0)[[]->Int]->Int")
+
+$decl es08 $call check_str ("a trait parameter stored in allocated storage escapes",
+  $call errs_of ("$decl shape { $prop area $func () 0 }  $decl cur $mut $alloc $traitsof shape  $decl put $func ($decl s $traitsof shape) $do ($set cur s) 0  $decl h $func () { $decl r { $prop area $func () 1 }  $decl w $call put (r)  $decl ret 0 }.ret"),
+  "argument 1 refers to frame storage, and this function lets that parameter escape (§5.3a); pass $alloc storage instead")
+
+$decl es09 $call check_str ("a function letting a parameter escape is not one that does not",
+  $call errs_of ($call concat (es_pre,
+      "$decl use $func ($decl k $func ($decl f $func () 0) 0) 0  $decl y $call use (save)")),
+  "argument 1 is esc(0)[[]->Int]->Int, expected [[]->Int]->Int")
+
+$decl done10 $call nl ("all parameter escape tests passed")
