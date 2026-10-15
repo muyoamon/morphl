@@ -235,6 +235,13 @@ $decl ctx $func () {
   // progress — §4.9's "hitting an in-progress entry returns its `R`". Compared
   // across a body's first pass to learn whether the body reached itself.
   $decl sreach  $mut $alloc 0
+  // §4.10's receiver: the `$decl` whose initializer is the block about to be typed —
+  // its name, its qualifier, and the block literal's span, which is how `infer_block`
+  // knows it is that block. `rname` is "" when there is none.
+  $decl rname   $mut $alloc ""
+  $decl rqual   $mut $alloc ""
+  $decl rline   $mut $alloc -1
+  $decl rcol    $mut $alloc -1
   // §4.16 rule 2. The section makes capture-freeness "a property of the
   // *expression* in the argument position", holding "when the compiler can see
   // which `$func` literal the value came from" — so the check is syntactic, and
@@ -1785,6 +1792,52 @@ $decl prebind_props $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
 )
 
 
+// §4.10: the block a `$decl`'s initializer is, directly or through `$new`, `$alloc`,
+// `$mut`, `$const` or `$impl` — for `$impl` the override, whose props are the ones the
+// declaring name is the receiver of (§4.12). Anything else answers itself.
+$decl recv_target $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
+                   $call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const"))))
+        ($call recv_target ($call op (n, 0)))
+        ($if ($call eq_str (n.keyword, "impl")) ($call recv_target ($call op (n, 2))) n),
+  $case n n
+)
+
+// The receiver's qualifier: mutable when the declaration reaches its block through
+// `$mut`, read-only otherwise (§4.10).
+$decl recv_qual $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "mut")) "mut"
+        ($if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
+                        $call eq_str (n.keyword, "const")))
+             ($call recv_qual ($call op (n, 0)))
+             "const"),
+  $case n "const"
+)
+
+$decl recv_save $func ($decl n "", $decl q "", $decl l 0, $decl c 0)
+  { $decl name n  $decl qual q  $decl line l  $decl col c }
+
+$decl proto_recv $call recv_save ("", "", -1, -1)
+
+$decl is_block_node $func ($decl n Pa.proto_node)
+  $match n ($case {$prop tag "block"} true, $case n false)
+
+$decl recv_set $func ($decl cx proto_ctx, $decl r proto_recv) {
+  $decl a   $set cx.rname r.name
+  $decl b   $set cx.rqual r.qual
+  $decl c   $set cx.rline r.line
+  $decl ret $set cx.rcol r.col
+}.ret
+
+$decl recv_of $func ($decl nm "", $decl init Pa.proto_node) {
+  $decl b   $call recv_target (init)
+  $decl sp  $call P.span_of (b)
+  $decl ret $if ($call is_block_node (b))
+                ($call recv_save (nm, $call recv_qual (init), sp.line, sp.col)) proto_recv
+}.ret
+
 $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node) {
   $decl nm   $call name_of ($call op (it, 0))
   $decl init $call op (it, 1)
@@ -1803,7 +1856,12 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
           ($call infer (cx, $call self_tmpl_env (cx, s.env, nm, init), init)) {
             $decl id  $call fresh (cx)
             $decl e1  $call bind (s.env, nm, $call T.t_var (id))
+            // §4.10: if the initializer is a block, its members' receiver is `nm`.
+            $decl old $call recv_save ($call sval (cx.rname), $call sval (cx.rqual),
+                          $call ival (cx.rline), $call ival (cx.rcol))
+            $decl set $call recv_set (cx, $call recv_of (nm, init))
             $decl raw $call infer (cx, e1, init)
+            $decl put $call recv_set (cx, old)
             $decl ret $call close_rec (cx, raw, id, it)
           }.ret))
   $decl eqn $if ($call lt (-1, fe.id))
@@ -1987,7 +2045,15 @@ $decl ct_args_check $func ($decl cx proto_ctx, $decl e env.node, $decl gs strs.n
 
 // The type of one prop. §4.10: the initializer sees other props and enclosing
 // scopes, but *not* ordered siblings — hence the prop-only environment.
-$decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl it Pa.proto_node) {
+// Does a member's body name the receiver? Its free names, less the ones the member
+// itself binds — a parameter of the same name is not the receiver.
+$decl names_recv $func ($decl init Pa.proto_node, $decl rn "")
+  $if ($call eq_str (rn, "")) false
+      ($if ($call mem_str ($call Pa.free_names (init, strs.nil), rn))
+           ($call not ($call mem_str ($call Pa.bound_names (init, strs.nil), rn))) false)
+
+$decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl it Pa.proto_node,
+    $decl rn "") {
   $decl init $call op (it, 1)
   // Reported here, at the `$prop`, with its span — not at each projection that
   // later fails to reach the value. `err` is quiet during the first of the two
@@ -1997,12 +2063,20 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
       ($call err (cx, $call concat ("a $prop must be a constant expression (§4.10), and ",
           $call concat (why, " is not")), it))
   $decl id   $call var_id ($call lookup (pe, nm)).ty
-  $decl ret $if ($call is_form (init, "func"))
+  // A member that names its receiver is typed here only for a provisional type, and
+  // quietly: the receiver's block is not typed yet. `infer_block` types it for real
+  // once it is (§4.10).
+  $decl rcv  $if ($call is_form (init, "func")) ($call names_recv (init, rn)) false
+  $decl q0   $call bval (cx.quiet)
+  $decl qq   $set cx.quiet ($if rcv true q0)
+  $decl ret0 $if ($call is_form (init, "func"))
       ($call infer_rec_func (cx, pe, nm, init)) {
         $decl raw $call infer (cx, $if ($call is_form (init, "template"))
                                         ($call self_tmpl_env (cx, pe, nm, init)) pe, init)
         $decl ret2   $if ($call lt (-1, id)) ($call close_rec (cx, raw, id, it)) raw
       }.ret2
+  $decl back $set cx.quiet q0
+  $decl ret  ret0
 }.ret
 
 // §4.10 says props are "typed together as one system", which is the one place
@@ -2012,15 +2086,15 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
 // with the first pass's answers in scope. Each prop is still typed with its own
 // name bound to its placeholder, so self-recursion still closes with μ (§5.5).
 $decl prop_pass $func ($decl cx proto_ctx, $decl pe0 env.node, $decl items Pa.nodes.node,
-    $decl acc env.node) $match items (
+    $decl acc env.node, $decl rn "") $match items (
   $case {$prop tag "cons"} {
     $decl it items.head
     $decl nm $call name_of ($call op (it, 0))
     $decl e2 $if ($call is_form (it, "prop"))
         ($call bind (acc, nm,
-            $call prop_ty (cx, $call bind (acc, nm, ($call lookup (pe0, nm)).ty), nm, it)))
+            $call prop_ty (cx, $call bind (acc, nm, ($call lookup (pe0, nm)).ty), nm, it, rn)))
         acc
-    $decl ret $call prop_pass (cx, pe0, items.tail, e2)
+    $decl ret $call prop_pass (cx, pe0, items.tail, e2, rn)
   }.ret,
   $case items acc
 )
@@ -2194,15 +2268,54 @@ $decl recheck_defers $func ($decl cx proto_ctx, $decl rs res_list.node) {
 }.ret
 
 // §3.3: a block's type is the ordered list of its `$decl` slots plus its props.
+$decl replace_prop_ty $func ($decl xs T.props.node, $decl nm "", $decl t T.proto_ty,
+    $decl acc T.props.node) $match xs (
+  $case {$prop tag "cons"}
+    $call replace_prop_ty ($call T.props.val (xs.tail), nm, t, $call T.props.cons (
+        $if ($call eq_str (xs.head.name, nm)) ($call T.prop_typed (nm, xs.head.value, t)) xs.head,
+        acc)),
+  $case xs ($call T.props.reverse (acc, T.props.nil))
+)
+
+$decl recv_one $func ($decl cx proto_ctx, $decl pe env.node, $decl it Pa.proto_node, $decl rn "",
+    $decl rt T.proto_ty, $decl acc T.props.node) {
+  $decl nm  $call name_of ($call op (it, 0))
+  $decl ty  $call infer_rec_func (cx, $call bind (pe, rn, rt), nm, $call op (it, 1))
+  $decl ret $call replace_prop_ty (acc, nm, ty, T.props.nil)
+}.ret
+
+// §4.10's third pass: each member naming the receiver, typed with the receiver bound.
+$decl recv_props $func ($decl cx proto_ctx, $decl pe env.node, $decl items Pa.nodes.node,
+    $decl rn "", $decl rt T.proto_ty, $decl acc T.props.node) $match items (
+  $case {$prop tag "cons"} {
+    $decl it  items.head
+    // Only a `$prop` has a second operand, and §7.1 makes a `$decl` strict, so each read
+    // of one stays inside the test that it exists.
+    $decl ok  $if ($call is_form (it, "prop"))
+                  ($if ($call is_form ($call op (it, 1), "func"))
+                       ($call names_recv ($call op (it, 1), rn)) false) false
+    $decl a2  $if ok ($call recv_one (cx, pe, it, rn, rt, acc)) acc
+    $decl ret $call recv_props (cx, pe, $call Pa.nodes.val (items.tail), rn, rt, a2)
+  }.ret,
+  $case items acc
+)
+
 $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.nodes.node,
                          $decl x P.proto_span) {
   $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
   $decl fwdr   $call check_fwd_reads (cx, items)
   $decl pe0    $call prebind_props (cx, items, e0)
+  // §4.10: the block a `$decl` is declaring claims its receiver, and only that block —
+  // a block nested inside it has a span of its own.
+  $decl mine   $call P.and ($call P.not ($call eq_str ($call sval (cx.rname), "")),
+                   $call P.and ($call eq_int ($call ival (cx.rline), x.line),
+                               $call eq_int ($call ival (cx.rcol), x.col)))
+  $decl rn     $if mine ($call sval (cx.rname)) ""
+  $decl rq     $call sval (cx.rqual)
   $decl hushed $set cx.quiet true
-  $decl peA    $call prop_pass (cx, pe0, items, pe0)
+  $decl peA    $call prop_pass (cx, pe0, items, pe0, rn)
   $decl heard  $set cx.quiet false
-  $decl pe     $call prop_pass (cx, pe0, items, peA)
+  $decl pe     $call prop_pass (cx, pe0, items, peA, rn)
   $decl s      $call bst (pe)
   $decl walked $call infer_items (cx, s, pe, items, items)
   // §5.5: the group is solved as one system, then its answers are substituted
@@ -2213,7 +2326,14 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil),
                                        solved, T.fields.nil)
   $decl late $call recheck_defers (cx, solved)
-  $decl ret  $call T.t_block (flds, s.prps)
+  // The members that name the receiver, typed for real: the block's type exists now,
+  // and the receiver is a reference to it at the declaration's qualifier (§4.10). A
+  // prop's `ty` is outside the block's identity (§5.1), so replacing it moves nothing.
+  $decl bt0  $call T.t_block (flds, s.prps)
+  $decl prps $if ($call eq_str (rn, "")) ($call T.props.val (s.prps))
+                 ($call recv_props (cx, pe, items, rn, $call T.t_ref (rq, bt0),
+                     $call T.props.val (s.prps)))
+  $decl ret  $call T.t_block (flds, prps)
 }.ret
 
 // §4.16: `$extern "symbol" sig` binds a C function and "evaluates to a callable

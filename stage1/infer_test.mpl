@@ -367,6 +367,37 @@ $decl t44t2 $call check_str ("...but not one whose base is a runtime binding",
       "a $prop must be a constant expression (§4.10), and 'n' is not"),
   "a $prop must be a constant expression (§4.10), and 'n' is not")
 
+// §4.10's receiver: inside a member, the name of the `$decl` holding its block is the
+// value the member was reached through — a reference at the declaration's qualifier.
+$decl t44u $call check_str ("a member reads its receiver's fields",
+  $call field_ty ($call concat ("$decl rect { $decl w 3  $decl h 4",
+      "  $prop area $func () $call mul (rect.w, rect.h) }  $decl a $call rect.area ()"), "a"),
+  "Int")
+
+$decl t44u2 $call check_str ("...with no error",
+  $call errs_of ($call concat ("$decl rect { $decl w 3  $decl h 4",
+      "  $prop area $func () $call mul (rect.w, rect.h) }  $decl a $call rect.area ()")), "")
+
+// Only the qualifier and the fields are compared: the props render as content-derived
+// identities, which a test may not pin.
+$decl t44v $call check_str ("the receiver of a value is read-only",
+  $call slice ($call field_ty ("$decl b { $decl w 3  $prop me $func () b }  $decl t $call b.me ()",
+      "t"), 0, 14),
+  "&const {w:Int,")
+
+$decl t44v2 $call check_str ("...and of $mut storage, mutable",
+  $call slice ($call field_ty (
+      "$decl b $mut $alloc { $decl w 3  $prop me $func () b }  $decl t $call b.me ()", "t"), 0, 12),
+  "&mut {w:Int,")
+
+$decl t44w $call check_str ("a block declared inside a function has its receiver too",
+  $call errs_of ($call concat ("$decl f $func () { $decl r { $decl w 2  $prop g $func () r.w }",
+      "  $decl ret $call r.g () }.ret")), "")
+
+$decl t44x $call check_str ("a parameter sharing the declaring name is not the receiver",
+  $call field_ty ("$decl b { $decl w 3  $prop g $func ($decl b 0) b }  $decl t $call b.g (5)", "t"),
+  "Int")
+
 // A name is fine as an argument, whatever it is bound to, when the generic it
 // is passed to is not compile-time: only its type reaches the specialisation.
 $decl t44r $call check_str ("a runtime name may be a non-compile-time argument",
