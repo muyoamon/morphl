@@ -1068,7 +1068,7 @@ pub const Interp = struct {
                 if (p.target.data == .block) {
                     return self.projectBlockLiteral(p.target.data.block, scope, p.field, node.span);
                 }
-                const target = (try self.eval(p.target, scope)).deref();
+                const target = (try self.eval(p.target, scope)).derefRefs();
                 return self.projectName(target, p.field, node.span);
             },
             .proj_index => |p| {
@@ -1093,7 +1093,7 @@ pub const Interp = struct {
             // is a static distinction — and stage 0 does no static checking
             // and never frees (BOOTSTRAP §3), so here they are one form.
             .new, .alloc => blk: {
-                const v = (try self.eval(&ops[0], scope)).deref();
+                const v = (try self.eval(&ops[0], scope)).derefRefs();
                 if (self.stats) |st| {
                     st.cell_n += 1;
                     // What this storage would cost *compiled*: the value lives
@@ -1178,10 +1178,55 @@ pub const Interp = struct {
             // but stage 0 declines to run them.
             .@"const" => self.outOfSubset(node.span, "$const", "stage 0 has no read-only views; nothing in stage 1 needs one"),
             .overload => self.outOfSubset(node.span, "$overload", "the bootstrap root block is monomorphic, so no overload set exists"),
-            .impl => self.outOfSubset(node.span, "$impl", "traits are not needed to compile a file"),
-            .traitsof => self.outOfSubset(node.span, "$traitsof", "traits are not needed to compile a file"),
+            .impl => self.evalImpl(node, scope),
+            // §4.13, dynamically: dispatch is a projection onto the referent's own
+            // props, so the trait object is the value — a reference staying one, so a
+            // member writing through its receiver is seen.
+            .traitsof => self.eval(&node.data.form.operands[0], scope),
             .@"extern" => self.outOfSubset(node.span, "$extern", "stage 0 provides the platform as builtins instead (BOOTSTRAP.md §2)"),
         };
+    }
+
+    /// §4.12, dynamically (BOOTSTRAP.md §1.1): `x`'s value with `override`'s props
+    /// attached. The trait is type-only (§5.7) and never evaluated. A block base gets a
+    /// shape of its own holding both sets of props, the base's fields unchanged; any
+    /// other base is wrapped. The override's props stay lazy, and a member's receiver is
+    /// its declaring name, which resolves to this value when the member runs.
+    fn evalImpl(self: *Interp, node: *const Node, scope: *Scope) Error!Value {
+        const ops = node.data.form.operands;
+        const base = (try self.eval(&ops[0], scope)).derefRefs();
+        const ov = try self.eval(&ops[2], scope);
+        const added: []const value.Field = switch (ov) {
+            .block => |b| b.props(),
+            .unit => &.{},
+            else => return self.rt.fail(ops[2].span, "an $impl's override is a block of props, found {s}", .{ov.typeName()}),
+        };
+        switch (base) {
+            .block => |b| {
+                const ps = try self.arena.alloc(value.Field, b.props().len + added.len);
+                @memcpy(ps[0..b.props().len], b.props());
+                @memcpy(ps[b.props().len..], added);
+                const sh = try self.arena.create(value.Shape);
+                sh.* = .{ .names = b.names(), .props = ps };
+                const nb = try value.allocBlock(self.arena, sh, b.names().len);
+                @memcpy(nb.fields(), b.fields());
+                return .{ .block = nb };
+            },
+            .with => |w| {
+                const ps = try self.arena.alloc(value.Field, w.props.len + added.len);
+                @memcpy(ps[0..w.props.len], w.props);
+                @memcpy(ps[w.props.len..], added);
+                const nw = try self.arena.create(value.With);
+                nw.* = .{ .base = w.base, .props = ps };
+                return .{ .with = nw };
+            },
+            else => {
+                const ps = try self.arena.dupe(value.Field, added);
+                const nw = try self.arena.create(value.With);
+                nw.* = .{ .base = base, .props = ps };
+                return .{ .with = nw };
+            },
+        }
     }
 
     fn outOfSubset(self: *Interp, span: Span, what: []const u8, why: []const u8) Error {
@@ -1200,7 +1245,7 @@ pub const Interp = struct {
                 .{target.typeName()},
             );
         }
-        const v = (try self.eval(&ops[1], scope)).deref();
+        const v = (try self.eval(&ops[1], scope)).derefRefs();
         target.ref.value = v;
         return v;
     }
@@ -1218,6 +1263,8 @@ pub const Interp = struct {
             // §4.10: access is uniform over `$decl` fields and props.
             .block => |b| self.propValue(b.find(field) orelse
                 return self.rt.fail(span, "block has no field '{s}'", .{field})),
+            // §4.12: an added prop, or else whatever the base has.
+            .with => |w| if (w.findProp(field)) |p| self.propValue(p) else self.projectName(w.base, field, span),
             else => self.rt.fail(span, "cannot project '.{s}' from {s}", .{ field, target.typeName() }),
         };
     }
@@ -1574,8 +1621,9 @@ pub const Interp = struct {
                 }
             } else {
                 // §5.4: a reference behaves as its pointee where a value is
-                // expected, and a call argument is such a place.
-                v = v.deref();
+                // expected, and a call argument is such a place. An `$impl`'s
+                // props are the value's (§4.12), so they cross with it.
+                v = v.derefRefs();
             }
             const idx = try scope.reserve(p.name, span);
             _ = scope.complete(idx, v);
@@ -1809,6 +1857,9 @@ pub const Interp = struct {
             // A pattern is a value something evaluated, and a prop handed out of a
             // block is forced first, so an unread prop never stands here.
             .lazy => false,
+            // §4.12: props have no layout, so a pattern of an `$impl`'d value is its
+            // base's shape — the value reaching here was read through `deref` already.
+            .with => |w| try self.shapeMatches(w.base, val, depth - 1),
         };
     }
 
@@ -2413,8 +2464,57 @@ test "Int overflow panics rather than wrapping (3.1)" {
 test "excluded forms decline with a pointer to the subset" {
     try expectFails("$decl x $overload (1, 2)", "outside the bootstrap subset");
     try expectFails("$decl x $const $new 0", "outside the bootstrap subset");
-    try expectFails("$decl x $traitsof {}", "outside the bootstrap subset");
     try expectFails("$decl x $extern \"puts\" 0", "outside the bootstrap subset");
+}
+
+// BOOTSTRAP.md §1.1: `$impl` and `$traitsof` are in the subset, evaluated dynamically,
+// so trait programs run under both stages.
+test "$traitsof is its operand, and dispatch is the referent's own props (4.13)" {
+    try expectInt(
+        \\$decl r { $decl w 3  $prop area $func () r.w }
+        \\$decl t $traitsof r
+        \\$decl x $call t.area ()
+    , "x", 3);
+}
+
+test "$traitsof of storage keeps the reference, so a write through it is seen" {
+    try expectInt(
+        \\$decl c $mut $alloc { $decl n $mut $alloc 0
+        \\  $prop bump $func () $set c.n ($call add (c.n, 1)) }
+        \\$decl t $traitsof c
+        \\$decl a $call t.bump ()
+        \\$decl b $call t.bump ()
+        \\$decl x $call add (c.n, 0)
+    , "x", 2);
+}
+
+test "$impl attaches props to a non-block value, which is still its base (4.12)" {
+    try expectInt(
+        \\$decl s { $prop area $func () 0 }
+        \\$decl n 7
+        \\$decl m $impl n ($traitsof s) { $prop area $func () $call add (m, 1) }
+        \\$decl x $call add ($call m.area (), m)
+    , "x", 15);
+}
+
+test "...and to a block, whose fields are unchanged" {
+    try expectInt(
+        \\$decl s { $prop area $func () 0 }
+        \\$decl b { $decl w 4 }
+        \\$decl m $impl b ($traitsof s) { $prop area $func () $call mul (m.w, 2) }
+        \\$decl x $call add ($call m.area (), m.w)
+    , "x", 12);
+}
+
+test "an $impl'd value keeps its props through a call and through $set" {
+    try expectInt(
+        \\$decl s { $prop area $func () 0 }
+        \\$decl m $impl 5 ($traitsof s) { $prop area $func () 9 }
+        \\$decl one $func ($decl t $traitsof s) $call t.area ()
+        \\$decl c $mut $alloc $traitsof s
+        \\$decl w $set c m
+        \\$decl x $call add ($call one (m), $call c.area ())
+    , "x", 18);
 }
 
 test "patterns outside the subset are refused by name" {

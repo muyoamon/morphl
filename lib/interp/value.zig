@@ -102,6 +102,11 @@ pub const Value = union(enum) {
     /// slot rather than a value. It never reaches evaluation: everything that hands
     /// a prop to a caller forces it first (`Interp.propValue`).
     lazy: *Scope.PropSlot,
+    /// §4.12: `$impl` over a base that is not a block — the base's value with props
+    /// attached. Props have no layout (§4.10), so it is the base wherever a value is
+    /// read (`deref`), and only projection sees the props. A block base takes the
+    /// props into a block of its own instead, and never makes one of these.
+    with: *const With,
 
     pub fn typeName(self: Value) []const u8 {
         return switch (self) {
@@ -118,6 +123,7 @@ pub const Value = union(enum) {
             .array => "array",
             .builtin => "intrinsic",
             .lazy => "prop",
+            .with => |w| w.base.typeName(),
         };
     }
 
@@ -128,10 +134,37 @@ pub const Value = union(enum) {
     /// is applied at specific sites rather than eagerly.
     pub fn deref(self: Value) Value {
         var v = self;
-        // A chain, since `$new r` on a reference-typed cell can nest.
+        // A chain, since `$new r` on a reference-typed cell can nest — and an
+        // `$impl`'d value in storage is its base where a value is read.
+        var guard: u32 = 0;
+        while (guard < 1024) : (guard += 1) {
+            switch (v) {
+                .ref => |c| v = c.value,
+                .with => |w| v = w.base,
+                else => return v,
+            }
+        }
+        return v;
+    }
+
+    /// Through storage only, keeping an `$impl`'s props: what a projection reads
+    /// them off, and what `$set` stores so that trait storage keeps its members.
+    pub fn derefRefs(self: Value) Value {
+        var v = self;
         var guard: u32 = 0;
         while (v == .ref and guard < 1024) : (guard += 1) v = v.ref.value;
         return v;
+    }
+};
+
+/// §4.12's non-block base and the props an `$impl` gave it.
+pub const With = struct {
+    base: Value,
+    props: []Field,
+
+    pub fn findProp(self: *const With, name: []const u8) ?Value {
+        for (self.props) |f| if (Scope.nameEql(f.name, name)) return f.value;
+        return null;
     }
 };
 
@@ -543,6 +576,8 @@ pub fn equal(a0: Value, b0: Value, depth: u32) bool {
             break :blk true;
         },
         .ref => |x| b == .ref and b.ref == x, // reference identity
+        // §4.12: props have no layout, so an `$impl`'d value compares as its base.
+        .with => |x| equal(x.base, b.deref(), depth - 1),
         .array => |x| b == .array and b.array == x,
         .func => |x| b == .func and b.func == x,
         .template => |x| b == .template and b.template == x,
