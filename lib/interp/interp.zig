@@ -42,7 +42,7 @@ pub const no_prim_cache_flag = &no_prim_cache;
 const Span = diag.Span;
 const Diagnostics = diag.Diagnostics;
 const Node = ast.Node;
-const Value = value.Value;
+pub const Value = value.Value;
 const Scope = value.Scope;
 const Func = value.Func;
 const Template = value.Template;
@@ -524,6 +524,25 @@ pub const Interp = struct {
             // §4.15: "Outside a `$func` (file top level, prop initializer) it
             // is a compile error."
             error.TryReturn => self.rt.fail(.{ .start = 0, .end = 0, .line = 1, .col = 1 }, "$try outside a $func: it returns from the nearest enclosing function, and there is none here", .{}),
+            else => err,
+        };
+    }
+
+    /// The file, then its top-level `main` called with no arguments — what a compiled
+    /// program does (§9's entry point), so stage 0 can answer for a fixture exactly
+    /// where the emitted C answers. Null when the file binds no `main`.
+    pub fn runMain(self: *Interp, file: ast.File) Error!?Value {
+        const v = try self.runFile(file);
+        const blk = switch (v) {
+            .block => |b| b,
+            else => return null,
+        };
+        // By text: `main` comes from the command line's intent, not from source, so it
+        // was never interned — the case `findText` exists for.
+        const m = blk.findText("main") orelse return null;
+        const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
+        return self.callValue(m.deref(), &.{}, span) catch |err| switch (err) {
+            error.TryReturn => self.rt.fail(span, "$try escaped main", .{}),
             else => err,
         };
     }

@@ -161,6 +161,7 @@ pub fn build(b: *std.Build) void {
     // overflow rather than be optimised into a loop behind our backs — the loop
     // has to be ours (§6a).
     const emit_step = b.step("test-emit", "Compile each fixture to C, build it, run it");
+    const run0_step = b.step("test-run0", "Run each fixture under stage 0 and check it answers as compiled");
     // `host` is an extra C file linked in beside the emitted one: §4.16's fixture
     // needs C functions to bind, and providing them here is the point — a symbol
     // from libc proves nothing about a signature the target supplies itself.
@@ -256,6 +257,21 @@ pub fn build(b: *std.Build) void {
             run_bin.expectStdOutEqual(fixture.want);
             emit_step.dependOn(&run_bin.step);
             test_step.dependOn(&run_bin.step);
+        }
+
+        // ...and once more under stage 0, which must give the same answer. The two are
+        // independent implementations of one language, so agreeing on what a program
+        // *means* is the strongest check either has; `--main` makes stage 0 call the
+        // file's `main` and print it as the emitted `main` does. A fixture with a C host
+        // needs `$extern`, which stage 0 leaves out of the subset (BOOTSTRAP.md §1.2).
+        if (fixture.host == null) {
+            const run0 = b.addRunArtifact(exe);
+            run0.addArgs(&.{ "--run", "--main", fixture.src });
+            run0.setCwd(b.path("."));
+            run0.has_side_effects = true;
+            run0.expectStdOutEqual(fixture.want);
+            run0_step.dependOn(&run0.step);
+            test_step.dependOn(&run0.step);
         }
     }
     // ------------------------------------------------- programs that must fail

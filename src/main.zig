@@ -117,6 +117,9 @@ const RunCtx = struct {
     opts: interp.Interp.Options,
     stats: ?*interp.Interp.Stats = null,
     failed: ?anyerror = null,
+    // `--main`: call the file's `main` after running it, and keep what it answered.
+    call_main: bool = false,
+    answer: ?interp.Value = null,
 
     fn run(self: *RunCtx) void {
         var opts = self.opts;
@@ -125,6 +128,17 @@ const RunCtx = struct {
             self.failed = e;
             return;
         };
+        if (self.call_main) {
+            self.answer = it.runMain(self.file) catch |e| switch (e) {
+                error.Halt, error.Panicked => null,
+                error.TryReturn => unreachable, // runMain turns this into a diagnostic
+                error.OutOfMemory => blk: {
+                    self.failed = e;
+                    break :blk null;
+                },
+            };
+            return;
+        }
         _ = it.runFile(self.file) catch |e| switch (e) {
             // Both are already recorded as diagnostics; §7.8 makes a panic
             // abort the whole program, with no catch.
@@ -136,10 +150,12 @@ const RunCtx = struct {
 };
 
 const usage =
-    \\usage: morphlc [--tokens|--run] <file.mpl> [program args...]
+    \\usage: morphlc [--tokens|--run [--main]] <file.mpl> [program args...]
     \\
     \\  --tokens   print the token stream instead of the AST
     \\  --run      evaluate the file instead of printing the AST
+    \\  --main     with --run, then call the file's `main` and print what it
+    \\             answers, as the compiled program's `main` does
     \\
     \\Arguments after <file.mpl> are passed to the program, where the `args`
     \\intrinsic returns them.
@@ -266,6 +282,7 @@ pub fn main(init: process.Init.Minimal) !void {
     var path: ?[]const u8 = null;
     var dump_tokens = false;
     var run = false;
+    var call_main = false;
     // Everything after the input file belongs to the program, not to morphlc,
     // and is what its `args` intrinsic returns.
     var program_args: []const []const u8 = &.{};
@@ -282,6 +299,8 @@ pub fn main(init: process.Init.Minimal) !void {
             dump_tokens = true;
         } else if (std.mem.eql(u8, arg, "--run")) {
             run = true;
+        } else if (std.mem.eql(u8, arg, "--main")) {
+            call_main = true;
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try out.writeAll(usage);
             try out.flush();
@@ -345,6 +364,7 @@ pub fn main(init: process.Init.Minimal) !void {
                     .arena = arena,
                     .diags = &diags,
                     .file = parsed,
+                    .call_main = call_main,
                     .opts = .{
                         .out = out,
                         .err_out = err,
@@ -392,6 +412,15 @@ pub fn main(init: process.Init.Minimal) !void {
                 th.join();
                 if (ctx.stats) |st| try st.report(err);
                 if (ctx.failed) |e| return e;
+                // As the emitted `main` prints it: a `Str` as its bytes, anything
+                // else as a 64-bit integer and a newline (§3.2: a boolean is 1 or 0).
+                if (ctx.answer) |a| switch (a.deref()) {
+                    .str => |sv| try out.writeAll(sv.bytes),
+                    .int => |n| try out.print("{d}\n", .{n}),
+                    .bool => |b| try out.print("{d}\n", .{@intFromBool(b)}),
+                    .unit => try out.writeAll("0\n"),
+                    else => |v| try err.print("morphlc: main answered a {s}, which a compiled program cannot print\n", .{v.typeName()}),
+                };
             }
         } else if (!diags.any()) {
             try parsed.dump(out);
