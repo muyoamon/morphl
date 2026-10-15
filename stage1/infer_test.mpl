@@ -357,10 +357,15 @@ $decl t44s $call check_str ("a prop may not hold a $traitsof",
       "a $prop must be a constant expression (§4.10), and $traitsof, which makes a trait object (§6), is not"),
   "a $prop must be a constant expression (§4.10), and $traitsof, which makes a trait object (§6), is not")
 
-$decl t44t $call check_str ("...nor an $impl",
-  $call has_err ("$decl p { $prop area 0 }  $decl n 7  $decl b { $prop t $impl n ($traitsof p) {} }",
+$decl t44t $call check_str ("a prop may hold an $impl of constants (its value is the base's)",
+  $call has_err ("$decl p { $prop area 0 }  $decl b { $prop t $impl 7 ($traitsof p) {} }",
       "a $prop must be a constant expression (§4.10), and $impl, which makes a trait object (§6), is not"),
-  "a $prop must be a constant expression (§4.10), and $impl, which makes a trait object (§6), is not")
+  "")
+
+$decl t44t2 $call check_str ("...but not one whose base is a runtime binding",
+  $call has_err ("$decl p { $prop area 0 }  $decl n 7  $decl b { $prop t $impl n ($traitsof p) {} }",
+      "a $prop must be a constant expression (§4.10), and 'n' is not"),
+  "a $prop must be a constant expression (§4.10), and 'n' is not")
 
 // A name is fine as an argument, whatever it is bound to, when the generic it
 // is passed to is not compile-time: only its type reaches the specialisation.
