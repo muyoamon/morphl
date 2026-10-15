@@ -58,7 +58,7 @@ Two defects had to go first, both the same shape and neither visible to stage 0'
 | `$specialize t args` | **always explicit.** Never rely on `$call`-time inference of `T` (§4.9) |
 | `$import "name"` | none. Load-once, cycles are an error |
 | `$try e pat` | `pat` restricted to `err` / `none` / another prop-tagged block — §1.3 |
-| `$impl x trait override` | none, evaluated dynamically: a trait object is the value and an implementation block — `override`'s props, else the trait's defaults (SPEC §4.12). Stage 1's own source does not use it; it is in the subset so that trait programs run under both stages and keep the stage-0/stage-2 cross-check every other fixture has |
+| `$impl x trait override` | none, evaluated dynamically: `x`'s value with `override`'s props attached (SPEC §4.12). Stage 1's own source does not use it; it is in the subset so that trait programs run under both stages and keep the stage-0/stage-2 cross-check every other fixture has |
 | `$traitsof e` | none, likewise: the value and `e`'s own props (SPEC §4.13) |
 
 ### 1.2 Out of the subset
