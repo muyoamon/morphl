@@ -576,4 +576,25 @@ $decl t64 $call check ("...which calls through its environment",
 $decl t65 $call check ("...and the pair carries the C pointer there",
   $call has (pk_c.code, ".env = (void *)host_pick("))
 
+// §6: a trait object is two pointers whatever its trait, its table is a static list of
+// shims emitted once per implementation, and a member through it is a pair whose
+// environment is the referent — so the call is an ordinary indirect one.
+$decl tr_c $call compile ($call concat (
+  "$decl shape { $prop area $func () 0 }  $decl r { $decl w 3  $prop area $func () r.w }  ",
+  "$decl one $func ($decl s $traitsof shape) $call s.area ()  $decl main $func () $call one (r)"))
+$decl t66 $call check ("a trait object is the referent and its table",
+  $call has (tr_c.code, "typedef struct { void *ref; void *const *tbl; } mpl_tobj;"))
+$decl t67 $call check ("the table is static and its entry a shim",
+  $if ($call has (tr_c.code, "static void *const *mpl_tbl"))
+      ($call has (tr_c.code, "(void *)mpl_tsh")) false)
+$decl t68 $call check ("the shim builds the member's environment from the referent",
+  $call has (tr_c.code, " e; e.c0 = *("))
+$decl t69 $call check ("a member through the object is the table's entry and the referent",
+  $if ($call has (tr_c.code, ".tbl[0];")) ($call has (tr_c.code, ".ref;")) false)
+$decl t70 $call check ("...and a coercion at a call takes the name's own storage",
+  $call has (tr_c.code, ".ref = (void *)"))
+// A program with no trait carries none of it, so its C is what it always was.
+$decl t71 $call check ("no trait, no trait-object type",
+  $call not ($call has (clo_c.code, "mpl_tobj")))
+
 $decl done $call nl ("all C backend tests passed")

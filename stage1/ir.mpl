@@ -193,7 +193,23 @@ $decl proto_expr $union (
 
   // §4.15, the only non-local exit: if the value matches, return it from the
   // enclosing function. `disc` is the discriminator the pattern selects.
-  { $prop tag "try"     $decl ty 0  $decl id 0  $decl value $alloc proto_expr  $decl disc 0 }
+  { $prop tag "try"     $decl ty 0  $decl id 0  $decl value $alloc proto_expr  $decl disc 0 },
+
+  // §6: a trait object made from a reference to its referent. `fns` are the
+  // implementation's members in the trait's order (§6 sorts them by name), as lifted
+  // functions; the backend reads how each takes its receiver off its environment, and
+  // emits the table once per distinct list (§7.2: "the implementation is emitted
+  // statically").
+  {
+    $prop tag "tobj"    $decl ty 0  $decl id 0  $decl ref $alloc proto_expr
+    $decl fns $alloc ($specialize P.list 0).node
+  },
+  // §6: member `idx` of a trait object, as a function value whose environment is the
+  // referent — the receiver passed at the call (§10 item 13).
+  { $prop tag "tmem"    $decl ty 0  $decl id 0  $decl obj $alloc proto_expr  $decl idx 0 },
+  // A reference to a named value's own storage — a frame slot, a capture, or a
+  // global's static — which is what a trait object of a name refers to (§4.13).
+  { $prop tag "addr"    $decl ty 0  $decl id 0  $decl src $alloc proto_expr }
 )
 
 // Reading a child out of storage: §5.4 makes a reference transparent only
@@ -300,6 +316,17 @@ $decl e_do $func ($decl t 0, $decl a proto_expr, $decl b proto_expr) {
 
 $decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
   { $prop tag "try" $decl ty t  $decl id ($call fresh_id ())  $decl value $alloc v  $decl disc d }
+
+$decl e_tobj $func ($decl t 0, $decl r proto_expr, $decl fs ints.node) {
+  $prop tag "tobj" $decl ty t  $decl id ($call fresh_id ())  $decl ref $alloc r
+  $decl fns $alloc fs
+}
+
+$decl e_tmem $func ($decl t 0, $decl o proto_expr, $decl i 0)
+  { $prop tag "tmem" $decl ty t  $decl id ($call fresh_id ())  $decl obj $alloc o  $decl idx i }
+
+$decl e_addr $func ($decl t 0, $decl x proto_expr)
+  { $prop tag "addr" $decl ty t  $decl id ($call fresh_id ())  $decl src $alloc x }
 
 // ---------------------------------------------------------------- functions
 //
@@ -640,6 +667,13 @@ $decl find_ty $func ($decl ts T.tys.node, $decl t T.proto_ty) $call find_ty_at (
 // Enough to diff two lowerings and to read one by eye; the backend's own output
 // is the real test.
 
+$decl show_ints $func ($decl xs ints.node, $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call show_ints (xs.tail, $call concat (acc, $call concat ($if ($call eq_str (acc, "")) "" " ",
+        $call int_to_str (xs.head)))),
+  $case xs acc
+)
+
 $fwd show
 
 $decl show_list $func ($decl xs exprs.node, $decl acc "", $decl first P.boolean) $match xs (
@@ -717,5 +751,12 @@ $decl show $func ($decl e proto_expr) $match e (
   $case {$prop tag "try"}
     $call concat ("(try ", $call concat ($call show (e.value),
         $call concat (" ", $call concat ($call int_to_str (e.disc), ")")))),
+  $case {$prop tag "tobj"}
+    $call concat ("(tobj ", $call concat ($call show (e.ref),
+        $call concat (" [", $call concat ($call show_ints ($call ints.val (e.fns), ""), "])")))),
+  $case {$prop tag "tmem"}
+    $call concat ("(tmem ", $call concat ($call show (e.obj),
+        $call concat (" ", $call concat ($call int_to_str (e.idx), ")")))),
+  $case {$prop tag "addr"}    $call concat ("(addr ", $call concat ($call show (e.src), ")")),
   $case e "(?)"
 )

@@ -180,6 +180,21 @@ $decl note $func ($decl st proto_vst, $decl cx proto_vcx, $decl n IR.any_node)
   $do ($set st.ids ($call IR.ints.cons (n.id, st.ids)))
       ($call need (st, cx, n.id, n.ty, cx.ntypes, "type"))
 
+$decl has_storage $func ($decl x IR.proto_expr) $match x (
+  $case {$prop tag "local"}   true,
+  $case {$prop tag "capture"} true,
+  $case {$prop tag "global"}  true,
+  $case x false
+)
+
+$decl vtable $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0, $decl xs IR.ints.node)
+    $match xs (
+  $case {$prop tag "cons"}
+    $do ($call need (st, cx, id, xs.head, cx.nfuncs, "trait member"))
+        ($call vtable (st, cx, id, $call IR.ints.val (xs.tail))),
+  $case xs 0
+)
+
 $decl vlist $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.exprs.node) $match xs (
   $case {$prop tag "cons"}
     $do ($call vexpr (st, cx, xs.head, bfalse))
@@ -311,6 +326,16 @@ $decl vexpr $func ($decl st proto_vst, $decl cx proto_vcx, $decl e IR.proto_expr
     $case {$prop tag "copy"}  ($call vexpr (st, cx, e.src, bfalse)),
     $case {$prop tag "set"}
       $do ($call vexpr (st, cx, e.target, bfalse)) ($call vexpr (st, cx, e.value, bfalse)),
+    // §6: every member of the implementation is a function the table can point at.
+    $case {$prop tag "tobj"}
+      $do ($call vtable (st, cx, e.id, $call IR.ints.val (e.fns)))
+          ($call vexpr (st, cx, e.ref, bfalse)),
+    $case {$prop tag "tmem"}  ($call vexpr (st, cx, e.obj, bfalse)),
+    // Storage exists only for what has some: a slot, a capture, a global's static.
+    $case {$prop tag "addr"}
+      $do ($call vexpr (st, cx, e.src, bfalse))
+          ($if ($call has_storage ($call IR.eval (e.src))) 0
+               ($call err (st, cx, e.id, "an address of something that is not a name"))),
 
     $case {$prop tag "block"} ($call vslots (st, cx, $call IR.bslots.val (e.slots))),
     $case {$prop tag "group"} ($call vlist (st, cx, $call IR.exprs.val (e.items))),
@@ -547,6 +572,9 @@ $decl osum_of $func ($decl cx proto_vcx, $decl e IR.proto_expr, $decl a proto_os
   $case {$prop tag "do"}      ($call osum_of (cx, $call IR.eval (e.then), $call osum_of (cx,
       $call IR.eval (e.first), a))),
   $case {$prop tag "try"}     ($call osum_of (cx, $call IR.eval (e.value), a)),
+  $case {$prop tag "tobj"}    ($call osum_of (cx, $call IR.eval (e.ref), a)),
+  $case {$prop tag "tmem"}    ($call osum_of (cx, $call IR.eval (e.obj), a)),
+  $case {$prop tag "addr"}    ($call osum_of (cx, $call IR.eval (e.src), a)),
   $case e a
 )
 

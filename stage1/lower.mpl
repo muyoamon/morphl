@@ -617,6 +617,11 @@ $decl lstate $func () {
   $decl rcol    $mut $alloc -1
   $decl recvs   $mut $alloc rcv_list.node
   $decl recvfns $mut $alloc rcv_list.node
+  // §4.12: an `$impl`'s base and its override block's span, as in inference — that
+  // block's receiver is the `$impl`'s result, so `lower_block` types it from these.
+  $decl rbase   $mut $alloc T.proto_ty
+  $decl rbline  $mut $alloc -1
+  $decl rbcol   $mut $alloc -1
   // Imported modules in the order their loading **completed** — a dependency first,
   // since §4.14 finishes a module before the importer's next member. It is what
   // `mpl_init` has to call them in, and it cannot be recovered from the function
@@ -1508,16 +1513,27 @@ $decl wants_ref $func ($decl t0 T.proto_ty) {
 // dereference every argument, so a reference could never reach a reference
 // parameter: inference accepted the call and emit then reported "cannot coerce
 // Int to &Int". The two passes have to agree, and §5.4 says which way.
+$fwd tobj_of
+
+// §6: a trait object is wanted and a value of a conforming type given.
+$decl to_trait $func ($decl want T.proto_ty, $decl got T.proto_ty)
+  $if ($call T.is_trait (want)) ($call not ($call T.is_trait ($call deref_ty (got)))) false
+
 $decl lower_args $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
                         $decl acc IR.exprs.node, $decl tys T.tys.node,
                         $decl ps  T.tys.node) $match xs (
   $case {$prop tag "cons"} {
     $decl raw $call lower (st, e, xs.head, false)
+    $decl rl  $call lval (raw)
+    $decl pw  $call ps_head (ps)
     // `lval` is the identity at `lres`: while this knot is being solved
     // `lower`'s own result is a placeholder, so the `$if`'s two arms have
-    // nothing to join on until it is passed through one.
-    $decl r   $if ($call wants_ref ($call ps_head (ps))) ($call lval (raw))
-                  ($call as_value (st, raw))
+    // nothing to join on until it is passed through one. A trait parameter is §6's
+    // coercion, which makes the object from the argument where it stands.
+    $decl r   $if ($call to_trait (pw, rl.ty))
+                  ($call lval ($call tobj_of (st, raw, xs.head, pw, xs.head)))
+              ($if ($call wants_ref (pw)) ($call lval (raw))
+                  ($call as_value (st, raw)))
     $decl ret $call lower_args (st, e, xs.tail,
         $call IR.exprs.cons (r.ir, acc), $call T.tys.cons (r.ty, tys),
         $call ps_tail (ps))
@@ -1716,6 +1732,83 @@ $decl prop_from_ty $func ($decl st proto_lst, $decl ps T.props.node, $decl nm ""
     )
 }.ret
 
+// The props a value carries in its type: a block's, or §4.12's `with`'s.
+$decl own_props $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t (
+      $case {$prop tag "block"} ($call T.props.val (t.props)),
+      $case {$prop tag "with"}  ($call T.props.val (t.props)),
+      $case t T.props.nil
+    )
+}.ret
+
+$decl global_of $func ($decl x IR.proto_expr) $match x ($case {$prop tag "global"} x.fn, $case x -1)
+
+$decl is_name_node $func ($decl n Pa.proto_node) $match n ($case {$prop tag "name"} true, $case n false)
+
+// §6: the implementation a value of a conforming type has — each member, in the trait's
+// order, as the lifted function its prop's identity names (§4.10).
+$decl tobj_fns $func ($decl st proto_lst, $decl ps T.props.node, $decl ms T.fields.node,
+    $decl n Pa.proto_node, $decl acc IR.ints.node) $match ms (
+  $case {$prop tag "cons"} {
+    $decl r   $call lval ($call prop_from_ty (st, ps, ms.head.name, n))
+    $decl ret $call tobj_fns (st, ps, $call T.fields.val (ms.tail), n,
+                  $call IR.ints.cons ($call global_of (r.ir), acc))
+  }.ret,
+  $case ms ($call IR.ints.reverse (acc, IR.ints.nil))
+)
+
+// Lowering's block types carry a function-valued prop's *identity* and not its type —
+// `T.cv_type` answers ⊥ for an opaque value, since the type exists only once the prop is
+// lowered — so a trait derived here takes each member's type from the prop itself, by
+// the same route the table does (`prop_from_ty`). Inference's types are already right.
+$decl typed_props $func ($decl st proto_lst, $decl ps T.props.node, $decl all T.props.node,
+    $decl n Pa.proto_node, $decl acc T.props.node) $match ps (
+  $case {$prop tag "cons"} {
+    $decl t0  $call T.tval (ps.head.ty)
+    $decl t   $if ($call T.same (t0, T.t_bot))
+                  ($call lval ($call prop_from_ty (st, all, ps.head.name, n))).ty t0
+    $decl ret $call typed_props (st, $call T.props.val (ps.tail), all, n,
+                  $call T.props.cons ($call T.prop_typed (ps.head.name, ps.head.value, t), acc))
+  }.ret,
+  $case ps acc
+)
+
+$decl ltrait_of $func ($decl st proto_lst, $decl v0 T.proto_ty, $decl q "", $decl n Pa.proto_node) {
+  $decl v   $call T.unroll (v0)
+  $decl ret $match v (
+      $case {$prop tag "block"} {
+        $decl ps   $call T.props.val (v.props)
+        $decl ret2 $call T.trait_of ($call T.t_block ($call T.fields.val (v.fields),
+                       $call typed_props (st, ps, ps, n, T.props.nil)), false, q)
+      }.ret2,
+      $case {$prop tag "with"} {
+        $decl ps   $call T.props.val (v.props)
+        $decl ret2 $call T.trait_of ($call T.t_with ($call T.tval (v.base),
+                       $call typed_props (st, ps, ps, n, T.props.nil)), false, q)
+      }.ret2,
+      $case v ($call T.trait_of (v, false, q))
+    )
+}.ret
+
+// §6's coercion, and §4.13's `$traitsof`: a trait object referring to the value — a
+// reference as itself, a name through its own storage, anything else through fresh
+// frame storage as `$new` would make (§4.13). A value already a trait object is itself.
+$decl tobj_of $func ($decl st proto_lst, $decl raw proto_lres, $decl x Pa.proto_node,
+                     $decl want T.proto_ty, $decl n Pa.proto_node) {
+  $decl v   $call deref_ty (raw.ty)
+  $decl ret $if ($call T.is_trait (v)) ($call as_value (st, raw)) {
+    $decl rft  $call T.t_ref ("", v)
+    $decl rir  $if ($call is_ref_ty ($call T.unroll (raw.ty))) raw.ir
+                   ($if ($call is_name_node (x)) ($call IR.e_addr ($call intern (st, rft), raw.ir))
+                        ($call IR.e_new ($call intern (st, rft), raw.ir)))
+    $decl ms   $match want ($case {$prop tag "trait"} ($call T.fields.val (want.members)),
+                            $case want T.fields.nil)
+    $decl fs   $call tobj_fns (st, $call own_props (v), ms, n, IR.ints.nil)
+    $decl ret2 $call lres ($call IR.e_tobj ($call intern (st, want), rir, fs), want)
+  }.ret2
+}.ret
+
 // §4.6 as a layout position — for a `$decl`. A `$prop` has no layout position
 // at all (§4.10), so the two halves of a block are searched in turn: the
 // fields, then the props.
@@ -1768,6 +1861,13 @@ $decl is_deref $func ($decl x IR.proto_expr) $match x (
   $case x false
 )
 
+$decl member_ix $func ($decl ms T.fields.node, $decl nm "", $decl i 0) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (ms.head.name, nm)) i ($call member_ix ($call T.fields.val (ms.tail), nm,
+        $call add (i, 1))),
+  $case ms -1
+)
+
 $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
   $decl raw $call lval ($call lower (st, e, n.target, false))
   $decl tgt $call as_value (st, raw)
@@ -1786,6 +1886,23 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
                      $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n)))
                  ($call recv_wrap (st, raw, tgt, $call lower_prop (st, tgt.mod, n.field, n)))))
       }.ret2,
+      // §6: a member through a trait object, by its place in the trait's sorted members,
+      // with the object for `Self`.
+      $case {$prop tag "trait"} {
+        $decl ms   $call T.fields.val (tt.members)
+        $decl ix   $call member_ix (ms, n.field, 0)
+        $decl mt   $call T.trait_member (tt, n.field, tt)
+        $decl ret2 $if ($call lt (ix, 0))
+            ($call lres ($call IR.e_unit ($call err (st, $call concat ("no member '",
+                $call concat (n.field, "' in this trait")), n)), T.t_bot))
+            ($call lres ($call IR.e_tmem ($call intern (st, mt), tgt.ir, ix), mt))
+      }.ret2,
+      // §4.12: an added prop, from the `$impl`'s override where its source is known and by
+      // its identity in the type otherwise — exactly a block's props.
+      $case {$prop tag "with"}
+        $if own ($call recv_wrap (st, raw, tgt, $call lower_prop (st, tgt.mod, n.field, n)))
+            ($call recv_wrap (st, raw, tgt,
+                $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n))),
       $case {$prop tag "union"} {
         $decl f $call common_fld ($call T.tys.val (tt.members), n.field, fld_found_proto)
         $decl ret2 $if f.hit
@@ -2880,13 +2997,20 @@ $decl lower_match $func ($decl st proto_lst, $decl e benv.node, $decl n proto_fo
   $decl scrut $call as_value (st, $call lower (st, e, sn, false))
   $decl items $call group_items ($call op (n, 1))
   $decl ret $if ($call T.same (scrut.ty, T.t_bool))
-      ($call lower_bool_match (st, e, scrut, items, tail)) {
+      ($call lower_bool_match (st, e, scrut, items, tail))
+  // §4.7: a trait object is not inspected, so inference has already decided that the
+  // first arm is the one — it matches always, and an arm before it would have been an
+  // error. Its name is the object itself, so nothing is narrowed or rebound.
+  ($if ($call T.is_trait ($call T.unroll (scrut.ty))) {
+    $decl body $call lval ($call lower (st, e, $call op ($call Pa.nodes.nth (items, 0), 1), tail))
+    $decl ret2 $call lres ($call IR.e_do ($call intern (st, body.ty), scrut.ir, body.ir), body.ty)
+  }.ret2 {
         $decl a $call lower_arms (st, e, items, tail,
                     $call members_of ($call canon_ty (st, scrut.ty)),
                     $call name_of (sn), IR.ints.nil, IR.arms.nil, T.t_bot)
         $decl ret2 $call lres (
             $call IR.e_switch ($call intern (st, a.ty), scrut.ir, a.arms, a.default), a.ty)
-      }.ret2
+      }.ret2)
 }.ret
 
 
@@ -3082,16 +3206,21 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl ret2 $call lres ($call IR.e_new ($call intern (st, rt), v.ir), rt)
     }.ret2
     // §4.3: a view, not a value — no node, only a different type.
-    ($if ($call eq_str (k, "mut")) {
+    ($if ($call P.or ($call eq_str (k, "mut"), $call eq_str (k, "const"))) {
       $decl v  $call lval ($call lower (st, e, $call op (n, 0), false))
       // §5.3: a view preserves the kind.
-      $decl rt   $call T.t_ref_k ("mut", $call deref_ty (v.ty), $call ref_kind (v.ty))
+      $decl rt   $call T.t_ref_k (k, $call deref_ty (v.ty), $call ref_kind (v.ty))
       $decl ret2 $call lres (v.ir, rt)
     }.ret2
     // §4.4: writes *through* storage; the type is the written value's.
     ($if ($call eq_str (k, "set")) {
       $decl dst  $call lval ($call lower (st, e, $call op (n, 0), false))
-      $decl v    $call as_value (st, $call lower (st, e, $call op (n, 1), false))
+      $decl raw  $call lval ($call lower (st, e, $call op (n, 1), false))
+      // §6: storage of trait type holds trait objects, so a conforming value is coerced.
+      $decl pt   $call deref_ty (dst.ty)
+      $decl v    $if ($call to_trait (pt, raw.ty))
+                     ($call lval ($call tobj_of (st, raw, $call op (n, 1), pt, n)))
+                     ($call as_value (st, raw))
       $decl ret2 $call lres ($call IR.e_set ($call intern (st, v.ty), dst.ir, v.ir), v.ty)
     }.ret2
     // §4.8b, and the whole reason it exists: the second operand stays in tail
@@ -3209,6 +3338,31 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl sy   $call str_of ($call op (n, 0))
       $decl ret2 $call lres ($call IR.e_extern ($call intern (st, sg.ty), sy), sg.ty)
     }.ret2
+    // §4.13: the trait of the operand's type, with the operand as the referent.
+    ($if ($call eq_str (k, "traitsof")) {
+      $decl raw  $call lval ($call lower (st, e, $call op (n, 0), false))
+      $decl tr   $call T.unroll (raw.ty)
+      $decl q    $match tr ($case {$prop tag "ref"} ($if ($call eq_str (tr.qual, "mut")) "mut" ""),
+                            $case tr "")
+      $decl v0   $match tr ($case {$prop tag "ref"} ($call T.tval (tr.inner)), $case tr raw.ty)
+      $decl ret2 $call tobj_of (st, raw, $call op (n, 0), $call ltrait_of (st, v0, q, n), n)
+    }.ret2
+    // §4.12: the base's value at the base's type with the override's props added. The
+    // trait is type-only (§5.7). The override is lowered as a block so its props register
+    // under its span the way any block literal's do, and told the base first, because
+    // its receiver is the result (`lower_block`).
+    ($if ($call eq_str (k, "impl")) {
+      $decl bx   $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+      $decl tro  $call type_only (st, e, $call op (n, 1))
+      $decl ov   $call op (n, 2)
+      $decl sp   $call P.span_of (ov)
+      $decl sb   $do ($set st.rbase bx.ty) ($do ($set st.rbline sp.line) ($set st.rbcol sp.col))
+      $decl ovr  $call lval ($call lower (st, e, ov, false))
+      $decl rt   $call T.impl_ty (bx.ty, $call own_props (ovr.ty))
+      $decl ir   $if ($call T.same (rt, bx.ty)) bx.ir
+                     ($call IR.e_copy ($call intern (st, rt), bx.ir))
+      $decl ret2 $call lres3 (ir, rt, ovr.mod)
+    }.ret2
     ($if ($call eq_str (k, "call")) {
       $decl f  $call as_value (st, $call lower (st, e, $call op (n, 0), false))
       $decl as $call lower_args (st, e, $call group_items ($call op (n, 1)),
@@ -3218,7 +3372,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl ret2 $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
     }.ret2
       ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-           " is not lowered yet")), n)), T.t_unit))))))))))))))))
+           " is not lowered yet")), n)), T.t_unit))))))))))))))))))
 }.ret
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
@@ -3897,9 +4051,14 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
                ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps),
                    $call P.sval (st.curfile)))
   $decl reg $if ($call lt (md, 0)) 0 ($call note_opaqs (st, md, ps))
-  // Captured at the block's own type for a value, at a reference to it for `$mut` storage.
+  // Captured at the block's own type for a value, at a reference to it for `$mut` storage —
+  // and for an `$impl`'s override at the `$impl`'s result, which is what the `$decl` over
+  // it holds (§4.12).
+  $decl imp $call and ($call eq_int ($call P.ival (st.rbline), x.line),
+                $call eq_int ($call P.ival (st.rbcol), x.col))
+  $decl rty $if imp ($call T.impl_ty ($call T.tval (st.rbase), $call T.props.val (a.prps))) ty
   $decl rct $if ($call eq_str (rq, "mut"))
-                ($call T.t_ref_k ("mut", ty, $if ($call eq_str (rk, "alloc")) T.k_alloc "")) ty
+                ($call T.t_ref_k ("mut", rty, $if ($call eq_str (rk, "alloc")) T.k_alloc "")) rty
   $decl rcv $set st.recvs ($if ($call and (mine, $call not ($call lt (md, 0))))
                 ($call rcv_list.cons ($call rcv_ent (md, rn, rct), st.recvs))
                 ($call rcv_list.val (st.recvs)))
@@ -4351,6 +4510,13 @@ $decl grefs_arms $func ($decl xs IR.arms.node, $decl cs IR.ints.node, $decl acc 
 $decl gref_add $func ($decl i 0, $decl cs IR.ints.node, $decl acc IR.ints.node)
   $if ($call mem_int (cs, i)) ($if ($call mem_int (acc, i)) acc ($call IR.ints.cons (i, acc))) acc
 
+$decl gref_fns $func ($decl xs IR.ints.node, $decl cs IR.ints.node, $decl acc IR.ints.node)
+    $match xs (
+  $case {$prop tag "cons"}
+    $call gref_fns ($call IR.ints.val (xs.tail), cs, $call gref_add (xs.head, cs, acc)),
+  $case xs acc
+)
+
 $decl grefs $func ($decl x IR.proto_expr, $decl cs IR.ints.node, $decl acc IR.ints.node) $match x (
   $case {$prop tag "global"}  ($call gref_add (x.fn, cs, acc)),
   $case {$prop tag "closure"}
@@ -4375,6 +4541,10 @@ $decl grefs $func ($decl x IR.proto_expr, $decl cs IR.ints.node, $decl acc IR.in
   $case {$prop tag "do"}
     ($call grefs ($call IR.eval (x.then), cs, $call grefs ($call IR.eval (x.first), cs, acc))),
   $case {$prop tag "try"}     ($call grefs ($call IR.eval (x.value), cs, acc)),
+  $case {$prop tag "tobj"}
+    ($call grefs ($call IR.eval (x.ref), cs, $call gref_fns ($call IR.ints.val (x.fns), cs, acc))),
+  $case {$prop tag "tmem"}    ($call grefs ($call IR.eval (x.obj), cs, acc)),
+  $case {$prop tag "addr"}    ($call grefs ($call IR.eval (x.src), cs, acc)),
   $case x acc
 )
 

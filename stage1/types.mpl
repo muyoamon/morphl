@@ -2094,6 +2094,41 @@ $decl is_trait $func ($decl t proto_ty) $match t ($case {$prop tag "trait"} true
 // §5.3's `&mut T <: &const T` for the referent it is.
 $decl sub_tqual $func ($decl a "", $decl b "") $if ($call eq_str (b, "")) true ($call eq_str (a, b))
 
+// Both `self` and `alt` become `Self`: for a μ they are its unrolled body and the μ itself,
+// which §5.5 makes one type and `T.same` keeps apart, and a receiver retyped after the knot
+// is tied (§4.10) holds the first where a recursive mention holds the second.
+$decl trait_members_of $func ($decl xs props.node, $decl self proto_ty, $decl alt proto_ty,
+    $decl acc fields.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl t1   $call remap ($call tval (xs.head.ty), $call rop_abst (self), 0)
+    $decl ret $call trait_members_of ($call props.val (xs.tail), self, alt, $call fields.cons (
+        $call field (xs.head.name, $call remap (t1, $call rop_abst (alt), 0)), acc))
+  }.ret,
+  $case xs acc
+)
+
+// §4.13: the trait of a value of type `t` — its props' signatures, `t` abstracted as `Self`
+// — with the object's kind and qualifier (§6). ⊥ for a type with no props to take: both
+// passes ask, and lowering derives what inference solved, so the two must agree.
+$decl trait_of $func ($decl t proto_ty, $decl fr P.boolean, $decl q "") $match t (
+  // A μ's bound variable is the block, and so is `Self`: the trait's binder takes its place.
+  $case {$prop tag "rec"} {
+    $decl b   $call tval (t.body)
+    $decl ret $match b (
+        $case {$prop tag "block"}
+          ($call t_trait_q ($call trait_members_of ($call props.val (b.props), b, t, fields.nil),
+              fr, q)),
+        $case b t_bot
+      )
+  }.ret,
+  $case {$prop tag "block"}
+    ($call t_trait_q ($call trait_members_of ($call props.val (t.props), t, t, fields.nil), fr, q)),
+  // §4.12's non-block base with props added: its props are the members too.
+  $case {$prop tag "with"}
+    ($call t_trait_q ($call trait_members_of ($call props.val (t.props), t, t, fields.nil), fr, q)),
+  $case t t_bot
+)
+
 // The same trait read-only, which is what a value conforming by itself is checked against:
 // the value is not storage, so only the read-only object can be made from it.
 $decl trait_ro $func ($decl b proto_ty) $match b (

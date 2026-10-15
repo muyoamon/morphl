@@ -628,19 +628,6 @@ $decl in_strs $func ($decl xs strs.node, $decl n "") $match xs (
 // §4.13: `$traitsof e` makes a trait object referring to `e`, or — when `e` is not a name
 // or a reference — to fresh frame storage holding its value, as `$new e` would. Its type is
 // `e`'s props' signatures with `e`'s own type abstracted as `Self`.
-// Both `self` and `alt` become `Self`: for a μ they are its unrolled body and the μ itself,
-// which §5.5 makes one type and `T.same` keeps apart, and a receiver retyped after the knot
-// is tied (§4.10) holds the first where a recursive mention holds the second.
-$decl trait_members_of $func ($decl xs T.props.node, $decl self T.proto_ty, $decl alt T.proto_ty,
-    $decl acc T.fields.node) $match xs (
-  $case {$prop tag "cons"} {
-    $decl t1   $call T.remap ($call T.tval (xs.head.ty), $call T.rop_abst (self), 0)
-    $decl ret $call trait_members_of ($call T.props.val (xs.tail), self, alt, $call T.fields.cons (
-        $call T.field (xs.head.name, $call T.remap (t1, $call T.rop_abst (alt), 0)), acc))
-  }.ret,
-  $case xs acc
-)
-
 // Whether the object made is frame-bound (§5.3a): a reference has its own kind; a name
 // bound in a function frame is frame; anything else is `$new`'s frame storage there.
 $decl traitsof_frame $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl t0 T.proto_ty)
@@ -677,26 +664,9 @@ $decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
   $decl tr  $call T.tval (t0)
   $decl q   $match tr ($case {$prop tag "ref"} ($if ($call eq_str (tr.qual, "mut")) "mut" ""),
                        $case tr "")
-  $decl ret $match t (
-      // A μ's bound variable is the block, and so is `Self`: the trait's binder takes its place.
-      $case {$prop tag "rec"} {
-        $decl b    $call T.tval (t.body)
-        $decl ret2 $match b (
-            $case {$prop tag "block"}
-              ($call T.t_trait_q ($call trait_members_of ($call T.props.val (b.props), b, t,
-                  T.fields.nil), fr, q)),
-            $case b ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
-          )
-      }.ret2,
-      $case {$prop tag "block"}
-        ($call T.t_trait_q ($call trait_members_of ($call T.props.val (t.props), t, t,
-            T.fields.nil), fr, q)),
-      // §4.12's non-block base with props added: its props are the trait's members too.
-      $case {$prop tag "with"}
-        ($call T.t_trait_q ($call trait_members_of ($call T.props.val (t.props), t, t,
-            T.fields.nil), fr, q)),
-      $case t ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
-    )
+  $decl tt  $call T.trait_of (t, fr, q)
+  $decl ret $if ($call T.is_trait (tt)) tt
+      ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
 }.ret
 
 // §4.12: every member the trait describes, each at a subtype of the trait's member type

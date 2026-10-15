@@ -133,6 +133,12 @@ $decl fold_expr $func ($decl e IR.proto_expr) $match e (
     ($call IR.eval ($call IR.e_do (e.ty, $call fold_expr (e.first), $call fold_expr (e.then)))),
   $case {$prop tag "try"}
     ($call IR.eval ($call IR.e_try (e.ty, $call fold_expr (e.value), e.disc))),
+  $case {$prop tag "tobj"}
+    ($call IR.eval ($call IR.e_tobj (e.ty, $call fold_expr (e.ref), $call IR.ints.val (e.fns)))),
+  $case {$prop tag "tmem"}
+    ($call IR.eval ($call IR.e_tmem (e.ty, $call fold_expr (e.obj), e.idx))),
+  // An address is of a name, never of a computed value, so its operand is not folded.
+  $case {$prop tag "addr"}  ($call IR.eval ($call IR.e_addr (e.ty, $call IR.eval (e.src)))),
   // Every leaf: a literal, a slot, a global, a prim, §4.16's extern. Nothing to
   // rebuild, so
   // the node keeps the index it had.
