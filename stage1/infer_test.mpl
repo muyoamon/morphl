@@ -1023,4 +1023,26 @@ $decl es09 $call check_str ("a function letting a parameter escape is not one th
       "$decl use $func ($decl k $func ($decl f $func () 0) 0) 0  $decl y $call use (save)")),
   "argument 1 is esc(0)[[]->Int]->Int, expected [[]->Int]->Int")
 
-$decl done10 $call nl ("all parameter escape tests passed")
+// A call to a function still being typed — itself, or a `$fwd` before its completion — is
+// checked once the function's escaping parameters are known.
+$decl sr01 $call check_str ("a frame-bound argument in a self-call to an escaping parameter",
+  $call errs_of ($call concat (es_pre,
+      "$decl loop $func ($decl n 0, $decl f $func () 0) $if ($call lt (n, 1)) ($do ($set keep f) 0) { $decl c $new 1  $decl ret $call loop ($call sub (n, 1), $func () $call add (c, 0)) }.ret")),
+  "argument 2 refers to frame storage, and this function lets that parameter escape (§5.3a); pass $alloc storage instead")
+
+$decl sr02 $call check_str ("a parameter passed to one's own escaping parameter escapes",
+  $call field_ty ($call concat (es_pre,
+      "$decl loop2 $func ($decl n 0, $decl f $func () 0, $decl g $func () 0) $if ($call lt (n, 1)) ($do ($set keep f) 0) ($call loop2 ($call sub (n, 1), g, g))"),
+      "loop2"), "esc(1,2)[Int,[]->Int,[]->Int]->Int")
+
+$decl sr03 $call check_str ("a call to a $fwd before its completion is checked when it completes",
+  $call errs_of ($call concat (es_pre,
+      "$fwd sv  $decl user $func () { $decl c $new 1  $decl r $call sv ($func () $call add (c, 0))  $decl ret 0 }.ret  $decl sv $func ($decl f $func () 0) $do ($set keep f) 0")),
+  "argument 1 refers to frame storage, and this function lets that parameter escape (§5.3a); pass $alloc storage instead")
+
+$decl sr04 $call check_str ("a self-call to a parameter that does not escape is fine",
+  $call errs_of ($call concat (es_pre,
+      "$decl loop3 $func ($decl n 0, $decl f $func () 0) $if ($call lt (n, 1)) ($call f ()) { $decl c $new 1  $decl ret $call loop3 ($call sub (n, 1), $func () $call add (c, 0)) }.ret")),
+  "")
+
+$decl done11 $call nl ("all deferred escape tests passed")

@@ -163,6 +163,15 @@ $decl res_list  $specialize P.list proto_res
 
 // -------------------------------------------------------------------- context
 
+// A call recorded against a function still being typed (§5.3a): the callee's
+// placeholder result, the argument's position and what was passed, and the body it was
+// made in.
+$decl pesc_ent $func ($decl pid 0, $decl pi 0, $decl px Pa.proto_node, $decl pr T.proto_ty,
+    $decl pw T.proto_ty, $decl po 0)
+  { $decl id pid  $decl i pi  $decl x px  $decl raw pr  $decl want pw  $decl own po }
+$decl proto_pesc $call pesc_ent (0, 0, Pa.proto_node, T.t_bot, T.t_bot, 0)
+$decl pesc_list  $specialize P.list proto_pesc
+
 $decl ctx $func () {
   $decl next   $mut $alloc 1
   // §4.2 types storage from its operand, so `$new xs.nil` is storage only the
@@ -253,6 +262,12 @@ $decl ctx $func () {
   // each `depth * 64 + index`, until the function at that depth takes its own.
   $decl nmark   $mut $alloc 0
   $decl escd    $mut $alloc T.cints.node
+  // Calls to a function still being typed, whose escaping parameters are not known yet:
+  // checked when it closes (`func_close`). Function bodies are numbered in the order
+  // they start, so one body's own calls — and its nested ones' — are a range.
+  $decl pesc    $mut $alloc pesc_list.node
+  $decl fser    $mut $alloc 0
+  $decl curfn   $mut $alloc 0
   // §4.16 rule 2. The section makes capture-freeness "a property of the
   // *expression* in the argument position", holding "when the compiler can see
   // which `$func` literal the value came from" — so the check is syntactic, and
@@ -859,8 +874,18 @@ $decl escapes $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl what "",
 // The mark of parameter `i` of the function whose body is at depth `d`.
 $decl pmark $func ($decl d 0, $decl i 0) $call add ($call mul (d, 64), i)
 
-$decl mres       $func ($decl en env.node, $decl k 0) { $decl env en  $decl n k }
-$decl proto_mres $call mres (env.nil, 0)
+$decl mres       $func ($decl en env.node, $decl k 0, $decl sr 0, $decl up 0)
+  { $decl env en  $decl n k  $decl ser sr  $decl outer up }
+$decl proto_mres $call mres (env.nil, 0, 0, 0)
+
+// A body starts: it takes the next serial and becomes the current one.
+$decl open_body $func ($decl cx proto_ctx, $decl e env.node, $decl k 0) {
+  $decl up  $call ival (cx.curfn)
+  $decl sr  $call add ($call ival (cx.fser), 1)
+  $decl a   $set cx.fser sr
+  $decl b   $set cx.curfn sr
+  $decl ret $call mres (e, k, sr, up)
+}.ret
 
 // §5.3a: each parameter whose type can carry something frame-bound is rebound, for the
 // body, at its type marked with the parameter (`T.mark_deep`). The function's own type
@@ -879,12 +904,12 @@ $decl mark_params $func ($decl cx proto_ctx, $decl ps Pa.nodes.node, $decl ts T.
       }.ret2,
       $case ts {
         $decl c    $set cx.nmark ($call add ($call ival (cx.nmark), k))
-        $decl ret2 $call mres (e, k)
+        $decl ret2 $call open_body (cx, e, k)
       }.ret2
     ),
   $case ps {
     $decl c   $set cx.nmark ($call add ($call ival (cx.nmark), k))
-    $decl ret $call mres (e, k)
+    $decl ret $call open_body (cx, e, k)
   }.ret
 )
 
@@ -924,8 +949,56 @@ $decl caps_marks $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
 // no-op here before. The result is an escape point; the parameters whose marks reached
 // any escape point in the body are this function's `esc`; and its own marks are removed
 // from what it hands on, or they would name whatever is typed at this depth next.
+$fwd arg_escapes_at
+
+// Whether passing this argument to an escaping parameter could matter: it is frame-bound,
+// or it may carry a parameter's mark.
+$decl may_escape $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
+    $decl want T.proto_ty)
+  $if ($call T.frame_bound (raw, 0)) true
+  ($if ($if ($call T.is_trait (want)) ($call not ($call T.is_trait ($call deref_ty (raw)))) false)
+       ($call traitsof_frame (cx, x, raw))
+  ($if ($call lt (0, $call ival (cx.nmark)))
+       ($call not ($call T.cints.is_nil ($call T.marks_of (raw, T.cints.nil)))) false))
+
+// The calls recorded against this function (its placeholder result `id`), checked now
+// its escaping parameters are known. A call made in this body or one nested in it may
+// make this function's own parameters escape, which can enlarge the set — so this runs
+// to a fixed point, each call checked once. One made elsewhere — another `$fwd` member
+// that has already closed — is still refused if frame-bound, but its parameters' marks
+// have nobody left to attribute them to, so they are not noted.
+$decl pesc_run $func ($decl cx proto_ctx, $decl xs pesc_list.node, $decl id 0,
+    $decl mine T.cints.node, $decl lo 0, $decl lim 0, $decl keep pesc_list.node,
+    $decl hit P.boolean) $match xs (
+  $case {$prop tag "cons"} {
+    $decl x    xs.head
+    $decl due  $if ($call eq_int (x.id, id)) ($call T.ci_mem (mine, x.i)) false
+    $decl own  $if ($call lt (x.own, lo)) false ($call not ($call lt ($call ival (cx.fser), x.own)))
+    $decl chk  $if due ($call arg_escapes_at (cx, x.x, x.raw, x.want, $call add (x.i, 1), own, lim))
+                   x.raw
+    $decl ret2 $call pesc_run (cx, $call pesc_list.val (xs.tail), id, mine, lo, lim,
+                   $if due keep ($call pesc_list.cons (x, keep)), $if due true hit)
+  }.ret2,
+  $case xs {
+    $decl put $set cx.pesc keep
+    $decl ret hit
+  }.ret
+)
+
+$decl pesc_fix $func ($decl cx proto_ctx, $decl id 0, $decl d 0, $decl mine T.cints.node,
+    $decl lo 0) {
+  $decl lim  $call mul ($call add (d, 1), 64)
+  $decl hit  $call pesc_run (cx, $call pesc_list.val (cx.pesc), id, mine, lo, lim,
+                 pesc_list.nil, false)
+  $decl more $call esc_take (cx, d)
+  $decl all  $call T.ci_sort ($call T.ci_union (more, mine), T.cints.nil)
+  $decl ret  $if ($call T.cints.is_nil (more)) mine ($call pesc_fix (cx, id, d, all, lo))
+}.ret
+
 $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node,
-    $decl ps Pa.nodes.node, $decl tys T.tys.node, $decl res0 T.proto_ty, $decl mk 0) {
+    $decl ps Pa.nodes.node, $decl tys T.tys.node, $decl res0 T.proto_ty, $decl mr proto_mres,
+    $decl id -1) {
+  $decl mk   mr.n
   $decl d    $call add ($call ival (cx.fdepth), 1)
   $decl lim  $call mul (d, 64)
   $decl esc  $call escapes (cx, res0, "this function's result", n)
@@ -936,9 +1009,11 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   $decl capf $call caps_frame (cx, e, free, shad)
   $decl on   $call lt (0, $call ival (cx.nmark))
   $decl capm $if on ($call caps_marks (cx, e, free, shad, T.cints.nil)) T.cints.nil
-  $decl mine $call esc_take (cx, d)
+  $decl mine0 $call esc_take (cx, d)
+  $decl mine $if ($call lt (id, 0)) mine0 ($call pesc_fix (cx, id, d, mine0, mr.ser))
   $decl res  $if on ($call T.unmark (res0, lim)) res0
   $decl off  $set cx.nmark ($call sub ($call ival (cx.nmark), mk))
+  $decl back $set cx.curfn mr.outer
   $decl ret  $call T.t_func_esc (tys, res, capf, mine, $call T.keep_below (capm, lim, T.cints.nil))
 }.ret
 
@@ -946,7 +1021,13 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
 // the argument is frame-bound, and an escape of the caller's own parameter if it carries
 // one's mark. A trait object made at the call is frame-bound as `$traitsof` would be.
 $decl arg_escapes $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
-    $decl want T.proto_ty, $decl i 0) {
+    $decl want T.proto_ty, $decl i 0)
+  $call arg_escapes_at (cx, x, raw, want, i, true, -1)
+
+// `marks` false: refuse a frame-bound argument and note nothing. `lim` keeps only marks
+// below it, for a deferred check whose nested bodies have already closed.
+$decl arg_escapes_at $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
+    $decl want T.proto_ty, $decl i 0, $decl marks P.boolean, $decl lim 0) {
   $decl v   $call deref_ty (raw)
   $decl fb  $if ($call T.frame_bound (raw, 0)) true
                 ($if ($call and ($call T.is_trait (want), $call not ($call T.is_trait (v))))
@@ -954,7 +1035,10 @@ $decl arg_escapes $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.
   $decl ret $if fb
       ($call err (cx, $call concat ("argument ", $call concat ($call int_to_str (i),
            " refers to frame storage, and this function lets that parameter escape (§5.3a); pass $alloc storage instead")), x))
-      ($do ($call note_marks (cx, raw)) raw)
+      ($if marks
+           ($do ($if ($call lt (lim, 0)) ($call note_marks (cx, raw))
+                     ($call note_marks (cx, $call T.unmark (raw, lim)))) raw)
+           raw)
 }.ret
 
 // §4.3: `$mut` requires a reference.
@@ -1313,7 +1397,7 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
       n))
   // §5.3a — see `func_close`. A top-level `$decl` of a `$func` is typed here rather than
   // in `infer_func`, because its own name has to be bound while its body is typed (§5.5).
-  $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr.n)
+  $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr, id)
 }.ret
 
 $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
@@ -1335,12 +1419,12 @@ $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl res  $call T.join (body, tries)
   // §5.3a's first clause — the frame this `$func` returns to is gone by the time the
   // caller has the value — and the rest of it, in `func_close`.
-  $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr.n)
+  $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr, -1)
 }.ret
 
 $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.node,
                         $decl as Pa.nodes.node, $decl n Pa.proto_node, $decl i 1,
-                        $decl es T.cints.node) $match as (
+                        $decl es T.cints.node, $decl pd -1) $match as (
   $case {$prop tag "cons"} $match ps (
       $case {$prop tag "cons"} {
         $decl raw $call infer (cx, e, as.head)
@@ -1354,16 +1438,24 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
         $decl cw  $call coerce_why (as.head, raw, ps.head)
         $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1)))
                       ($call arg_escapes (cx, as.head, raw, ps.head, i)) raw
+        // A callee still being typed: its escaping parameters come later (`func_close`).
+        // Only an argument that could be refused or could carry a mark is worth keeping,
+        // and nearly none is — keeping every one made each closing function rescan them.
+        $decl rec $set cx.pesc ($if ($if ($call lt (pd, 0)) true
+                                         ($call not ($call may_escape (cx, as.head, raw, ps.head))))
+                                    ($call pesc_list.val (cx.pesc))
+                      ($call pesc_list.cons ($call pesc_ent (pd, $call sub (i, 1), as.head, raw,
+                          ps.head, $call ival (cx.curfn)), cx.pesc)))
         $decl ret $if ($call not ($call eq_str (cw, "")))
             ($do ($call err (cx, cw, as.head)) false)
             ($if ($call T.sub (at, ps.head))
-            ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es))
+            ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es, pd))
             // §5.5: a constraint on an unresolved `R` is checked after the
             // knot is tied, not now — otherwise every call inside a recursive
             // group would fail against its own placeholder.
             ($if ($call or ($call has_free_var (at), $call has_free_var (ps.head)))
                 ($do ($call defer_check (cx, at, ps.head, why, as.head))
-                     ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es)))
+                     ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es, pd)))
                 ($do ($call T.explain (at, ps.head))
                      ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
                                $call concat (", expected ", $call T.show (ps.head)))), as.head))
@@ -1380,7 +1472,9 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl args $call group_items ($call op (n, 1))
   $decl ret $match ft (
       $case {$prop tag "func"} {
-        $decl ok $call check_args (cx, e, ft.params, args, n, 1, $call T.cints.val (ft.esc))
+        $decl rv $call T.tval (ft.result)
+        $decl pd $match rv ($case {$prop tag "var"} rv.id, $case rv -1)
+        $decl ok $call check_args (cx, e, ft.params, args, n, 1, $call T.cints.val (ft.esc), pd)
         $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
             ($call chk_cbs (cx, $call T.tys.val (ft.params), args)) T.t_unit
         // A `$decl` initializer keeps a reference (§5.4), and `result` is
@@ -2433,7 +2527,7 @@ $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.pro
         $decl res      $if ($call T.same (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx,
             res0, id, n))
         // §5.3a, for a `$fwd`-completing `$decl` — see `func_close`.
-        $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr.n)
+        $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr, id)
       }.ret
 
 
