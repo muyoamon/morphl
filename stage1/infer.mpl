@@ -646,6 +646,22 @@ $decl traitsof_frame $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl t0 
           $case x true))
 )
 
+// §6's coercion makes a trait object referring to the value, so a value that is not
+// already one must be referable — a name or a reference — since §5.4 never turns a value
+// into storage implicitly. "" when the coercion is fine or is not one.
+$decl coerce_why $func ($decl x Pa.proto_node, $decl raw T.proto_ty, $decl want T.proto_ty) {
+  $decl v   $call deref_ty (raw)
+  $decl ret $if ($call and ($call T.is_trait (want), $call not ($call T.is_trait (v))))
+      ($match raw (
+          $case {$prop tag "ref"} "",
+          $case raw $match x (
+              $case {$prop tag "name"} "",
+              $case x "a trait object refers to its value, so this must be a name or a reference (§6); $traitsof makes one from an expression"
+            )
+        ))
+      ""
+}.ret
+
 $decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl x   $call op (n, 0)
   $decl t0  $call infer (cx, e, x)
@@ -858,9 +874,21 @@ $decl infer_mut $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
 // §4.4: writes *through* storage; the type is the written value's.
 $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl tgt $call T.tval ($call infer (cx, e, $call op (n, 0)))
-  $decl val $call deref_ty ($call infer (cx, e, $call op (n, 1)))
+  $decl x   $call op (n, 1)
+  $decl raw $call infer (cx, e, x)
+  $decl val $call deref_ty (raw)
   $decl ret $match tgt (
-      $case {$prop tag "ref"}
+      $case {$prop tag "ref"} {
+        // §6: storing into trait storage makes a trait object referring to the value — so it
+        // must be referable, and storage that outlives its frame (§5.3a) cannot hold one that
+        // refers to frame storage.
+        $decl cw   $call coerce_why (x, raw, tgt.inner)
+        $decl fr   $call P.and ($call P.not ($call T.is_trait (val)),
+                       $call traitsof_frame (cx, x, raw))
+        $decl ret2 $if ($call not ($call eq_str (cw, ""))) ($call err (cx, cw, x))
+            ($if ($call P.and ($call P.and ($call T.is_trait (tgt.inner), fr),
+                     $call T.is_alloc (tgt.kind)))
+                 ($call err (cx, "this trait object would refer to frame storage, which allocated storage outlives (§5.3a); store a reference to $alloc storage instead", x))
         // §5.3: `&const T` is a read-only view, so nothing writes through it. Nothing in
         // stage 1 did — `$const` is outside the bootstrap subset — until §4.10 made a
         // member's receiver one, which is what makes a member that writes need `$mut`.
@@ -872,7 +900,8 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
             ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
                 ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
                 ($call err (cx, $call concat ("cannot write ", $call concat ($call T.show (val),
-                             $call concat (" into storage of ", $call T.show (tgt.inner)))), n))))),
+                             $call concat (" into storage of ", $call T.show (tgt.inner)))), n))))))
+      }.ret2,
       $case tgt ($call err (cx, $call concat ("$set needs storage on the left, found ",
                      $call T.show (tgt)), n))
     )
@@ -1232,7 +1261,10 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
         // other parameter wants a value, so the argument dereferences.
         $decl at  $if ($call is_ref (ps.head)) raw ($call deref_ty (raw))
         $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
-        $decl ret $if ($call T.sub (at, ps.head))
+        $decl cw  $call coerce_why (as.head, raw, ps.head)
+        $decl ret $if ($call not ($call eq_str (cw, "")))
+            ($do ($call err (cx, cw, as.head)) false)
+            ($if ($call T.sub (at, ps.head))
             ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1)))
             // §5.5: a constraint on an unresolved `R` is checked after the
             // knot is tied, not now — otherwise every call inside a recursive
@@ -1243,7 +1275,7 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
                 ($do ($call T.explain (at, ps.head))
                      ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
                                $call concat (", expected ", $call T.show (ps.head)))), as.head))
-                          false)))
+                          false))))
       }.ret,
       $case ps ($do ($call err (cx, "too many arguments", n)) false)
     ),

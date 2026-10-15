@@ -901,3 +901,39 @@ $decl im12 $call check_str ("a block base's fields are read through the receiver
   "")
 
 $decl done7 $call nl ("all $impl tests passed")
+
+// §6: a coercion to a trait object refers to the value, so it needs something referable,
+// and allocated storage cannot hold one referring to frame storage (§5.3a).
+$decl co_pre "$decl shape { $prop area $func () 0 }  $decl f $func ($decl s $traitsof shape) $call s.area ()  $decl cur $mut $alloc $traitsof shape  "
+
+$decl co01 $call check_str ("an expression is not referable",
+  $call errs_of ($call concat (co_pre, "$decl y $call f ({ $prop area $func () 2 })")), "a trait object refers to its value, so this must be a name or a reference (§6); $traitsof makes one from an expression")
+
+$decl co02 $call check_str ("a reference is",
+  $call errs_of ($call concat (co_pre, "$decl y $call f ($new { $prop area $func () 2 })")), "")
+
+$decl co03 $call check_str ("a trait object passes on as itself",
+  $call errs_of ($call concat (co_pre, "$decl g $func ($decl s $traitsof shape) $call f (s)")), "")
+
+$decl co04 $call check_str ("$set of a top-level name into allocated trait storage",
+  $call errs_of ($call concat (co_pre, "$decl r { $prop area $func () 2 }  $decl w $set cur r")), "")
+
+$decl co05 $call check_str ("...of a local is refused",
+  $call errs_of ($call concat (co_pre,
+      "$decl h $func () { $decl r { $prop area $func () 2 }  $decl w $set cur r  $decl ret 0 }.ret")),
+  "this trait object would refer to frame storage, which allocated storage outlives (§5.3a); store a reference to $alloc storage instead")
+
+$decl co06 $call check_str ("...of allocated storage is not",
+  $call errs_of ($call concat (co_pre,
+      "$decl h $func () { $decl r $alloc { $prop area $func () 2 }  $decl w $set cur r  $decl ret 0 }.ret")),
+  "")
+
+$decl co07 $call check_str ("...and frame trait storage holds a local",
+  $call errs_of ($call concat (co_pre,
+      "$decl h $func () { $decl c $mut $new $traitsof shape  $decl r { $prop area $func () 2 }  $decl w $set c r  $decl ret 0 }.ret")),
+  "")
+
+$decl co08 $call check_str ("$set of an expression into trait storage",
+  $call errs_of ($call concat (co_pre, "$decl w $set cur { $prop area $func () 2 }")), "a trait object refers to its value, so this must be a name or a reference (§6); $traitsof makes one from an expression")
+
+$decl done8 $call nl ("all trait coercion tests passed")
