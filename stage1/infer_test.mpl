@@ -804,3 +804,40 @@ $decl t88k $call check_str ("a later $union member is not a read",
   "")
 
 $decl done5 $call nl ("all $fwd-initialisation tests passed")
+
+// §4.13: `$traitsof e` is `e`'s props' signatures, `e`'s type abstracted as `Self`.
+$decl tt01 $call check_str ("$traitsof a name gives its props' signatures",
+  $call field_ty ("$decl s { $prop area $func () 3  $decl w 1 }  $decl x $traitsof s", "x"), "trait{area:[]->Int,}")
+
+$decl tt02 $call check_str ("$traitsof takes an expression literal",
+  $call field_ty ("$decl x $traitsof { $prop k $func ($decl n 0) n }", "x"), "trait{k:[Int]->Int,}")
+
+// A parameter default naming the declaration in progress is §5.7's type-only position, so the
+// prototype is recursive through its prop, and that occurrence is `Self`.
+$decl tt03 $call check_str ("the operand's own type is Self",
+  $call field_ty ("$decl s { $prop eq $func ($decl o s) true }  $decl x $traitsof s", "x"), "trait{eq:[&const b0]->true,}")
+
+$decl tt04 $call check_str ("a member is read through the object",
+  $call field_ty ("$decl s { $prop area $func () 3 }  $decl o $traitsof s  $decl x o.area", "x"), "[]->Int")
+
+$decl tt05 $call check_str ("a member mentioning Self is not callable through it (§6)",
+  $call errs_of ("$decl s { $prop eq $func ($decl o s) true }  $decl o $traitsof s  $decl x o.eq"),
+  "member 'eq' mentions Self, so it is not callable through a trait object (§6)")
+
+$decl tt06 $call check_str ("a trait object has only its members",
+  $call errs_of ("$decl s { $prop k $func () 1  $decl w 2 }  $decl o $traitsof s  $decl x o.w"), "this trait has no member 'w'")
+
+$decl tt07 $call check_str ("$traitsof needs a block",
+  $call errs_of ("$decl x $traitsof 1"), "$traitsof needs a block, found Int")
+
+// §5.3a: a literal operand is placed in frame storage, so the object cannot leave the frame.
+$decl tt08 $call check_str ("an object over a literal is frame-bound",
+  $call errs_of ("$decl f $func () $traitsof { $prop k $func () 1 }"), "this function's result holds frame storage (a trait object referring to frame storage), which cannot outlive the scope its $new made it in. Write $alloc there instead (§4.2a, §5.3a)")
+
+$decl tt09 $call check_str ("an object over a top-level name is not",
+  $call errs_of ("$decl s { $prop k $func () 1 }  $decl f $func () $traitsof s"), "")
+
+$decl tt10 $call check_str ("an object over allocated storage is not",
+  $call errs_of ("$decl f $func () $traitsof $alloc { $prop k $func () 1 }"), "")
+
+$decl done6 $call nl ("all $traitsof tests passed")

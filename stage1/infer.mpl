@@ -365,7 +365,9 @@ $decl close_rec $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl i 0, $decl 
   // `μR. A | R` is `A` (see `T.drop_var`), so simplify before deciding whether
   // a binder is needed at all.
   $decl r   $call T.drop_var (t, i)
-  $decl ret $if ($call occurs (r, i)) {
+  // A prop's type counts as well: a prototype naming itself only in a member's parameter
+  // (§4.10) is recursive, and `$traitsof` needs the μ to find `Self` in it.
+  $decl ret $if ($if ($call occurs (r, i)) true ($call T.occurs_own_props (r, i))) {
     $decl m     $call T.close_var (r, i)
     $decl noted $if ($call T.unguarded_rec (m))
         ($call err (cx, $call concat (
@@ -533,6 +535,18 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
   $case {$prop tag "union"} $call proj_members (cx, tt.members, fld, n, T.t_bot),
   // Projection is the one place a recursive type has to be looked inside.
   $case {$prop tag "rec"}   $call proj_one (cx, $call T.unroll (tt), fld, n),
+  // §6: a trait object is read through its members. One that mentions `Self` is not
+  // callable through it — the referent's type is erased, so nothing could check an
+  // argument of that type — though it is still part of the trait, callable through a bound.
+  $case {$prop tag "trait"} {
+    $decl f   $call T.find_field (tt.members, fld)
+    $decl ret $if ($call eq_str (f.name, ""))
+        ($call err (cx, $call concat ("this trait has no member '", $call concat (fld, "'")), n))
+        ($if ($call T.mentions_bnd ($call T.tval (f.ty), 0))
+             ($call err (cx, $call concat ("member '", $call concat (fld,
+                 "' mentions Self, so it is not callable through a trait object (§6)")), n))
+             ($call T.trait_member (tt, fld, tt)))
+  }.ret,
   $case tt ($call err (cx, $call concat ("cannot project '.",
                 $call concat (fld, $call concat ("' from ", $call T.show (tt)))), n))
 )
@@ -592,6 +606,56 @@ $decl in_strs $func ($decl xs strs.node, $decl n "") $match xs (
     $if ($call eq_str (xs.head, n)) true ($call in_strs (xs.tail, n)),
   $case xs false
 )
+
+// §4.13: `$traitsof e` makes a trait object referring to `e`, or — when `e` is not a name
+// or a reference — to fresh frame storage holding its value, as `$new e` would. Its type is
+// `e`'s props' signatures with `e`'s own type abstracted as `Self`.
+// Both `self` and `alt` become `Self`: for a μ they are its unrolled body and the μ itself,
+// which §5.5 makes one type and `T.same` keeps apart, and a receiver retyped after the knot
+// is tied (§4.10) holds the first where a recursive mention holds the second.
+$decl trait_members_of $func ($decl xs T.props.node, $decl self T.proto_ty, $decl alt T.proto_ty,
+    $decl acc T.fields.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl t1   $call T.remap ($call T.tval (xs.head.ty), $call T.rop_abst (self), 0)
+    $decl ret $call trait_members_of ($call T.props.val (xs.tail), self, alt, $call T.fields.cons (
+        $call T.field (xs.head.name, $call T.remap (t1, $call T.rop_abst (alt), 0)), acc))
+  }.ret,
+  $case xs acc
+)
+
+// Whether the object made is frame-bound (§5.3a): a reference has its own kind; a name
+// bound in a function frame is frame; anything else is `$new`'s frame storage there.
+$decl traitsof_frame $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl t0 T.proto_ty)
+    $match t0 (
+  $case {$prop tag "ref"} ($call not ($call T.is_alloc (t0.kind))),
+  $case t0 $if ($call eq_int ($call ival (cx.fdepth), 0)) false
+      ($match x (
+          $case {$prop tag "name"} ($call not ($call in_strs ($call strs.val (cx.topnames), x.text))),
+          $case x true))
+)
+
+$decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl x   $call op (n, 0)
+  $decl t0  $call infer (cx, e, x)
+  $decl t   $call deref_ty (t0)
+  $decl fr  $call traitsof_frame (cx, x, t0)
+  $decl ret $match t (
+      // A μ's bound variable is the block, and so is `Self`: the trait's binder takes its place.
+      $case {$prop tag "rec"} {
+        $decl b    $call T.tval (t.body)
+        $decl ret2 $match b (
+            $case {$prop tag "block"}
+              ($call T.t_trait_fr ($call trait_members_of ($call T.props.val (b.props), b, t,
+                  T.fields.nil), fr)),
+            $case b ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
+          )
+      }.ret2,
+      $case {$prop tag "block"}
+        ($call T.t_trait_fr ($call trait_members_of ($call T.props.val (t.props), t, t,
+            T.fields.nil), fr)),
+      $case t ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
+    )
+}.ret
 
 // The first name a `$func` literal captures, or "". A free name of the body is a
 // capture unless the literal binds it — a parameter, or a `$decl` inside — or it
@@ -2378,8 +2442,9 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
     ($if ($call eq_str (k, "import"))     ($call infer_import (cx, n))
     ($if ($call eq_str (k, "extern"))     ($call infer_extern (cx, e, n))
+    ($if ($call eq_str (k, "traitsof"))   ($call infer_traitsof (cx, e, n))
          ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-    )))))))))))))))
+    ))))))))))))))))
 }.ret
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (

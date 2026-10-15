@@ -1370,6 +1370,12 @@ $decl rop_bnd   $func ($decl r proto_ty)            $call rop ("bnd", 0, r)
 // wrapped around the whole type — §5.5's knot, tied.
 $decl rop_abs   $func ($decl i 0)                   $call rop ("abs", i, t_bot)
 
+// Replace every subterm equal to `r` by the bound variable of a binder about to be wrapped
+// around the whole type — §4.13's "every occurrence of `e`'s type abstracted as `Self`".
+// Marked by `i = -9` rather than by its kind, so the check at every node is one integer
+// compare and the other rewrites pay nothing for it.
+$decl rop_abst  $func ($decl r proto_ty)            $call rop ("abst", -9, r)
+
 $decl proto_rop $call rop ("", 0, t_bot)
 
 $fwd remap
@@ -1398,7 +1404,14 @@ $decl remap_props $func ($decl xs props.node, $decl o proto_rop, $decl d 0,
   $case xs ($call props.reverse (acc, props.nil))
 )
 
-$decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
+$fwd remap_go
+
+$decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0)
+  $if ($call eq_int (o.i, -9))
+      ($if ($call same (t, o.ty)) ($call tval ($call t_bnd (d))) ($call remap_go (t, o, d)))
+      ($call remap_go (t, o, d))
+
+$decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "var"}
     $if ($call eq_int (t.id, o.i))
         ($if ($call eq_str (o.kind, "var")) o.ty
@@ -1666,6 +1679,107 @@ $decl find_field $func ($decl xs fields.node, $decl n "") $match xs (
   $case xs ($call field ("", t_bot))
 )
 
+// Does `t` mention the bound variable at index `k`, counting binders on the way down?
+// §6's object safety asks it of a member's type with `k = 0`, which is `Self`.
+$fwd mentions_bnd
+
+$decl mentions_tys $func ($decl xs tys.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"} $if ($call mentions_bnd ($call tval (xs.head), k)) true
+      ($call mentions_tys (xs.tail, k)),
+  $case xs false
+)
+
+$decl mentions_fields $func ($decl xs fields.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"} $if ($call mentions_bnd ($call tval (xs.head.ty), k)) true
+      ($call mentions_fields (xs.tail, k)),
+  $case xs false
+)
+
+$decl mentions_props $func ($decl xs props.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"} $if ($call mentions_bnd ($call tval (xs.head.ty), k)) true
+      ($call mentions_props (xs.tail, k)),
+  $case xs false
+)
+
+$decl mentions_bnd $func ($decl t proto_ty, $decl k 0) $match t (
+  $case {$prop tag "bnd"}   $call eq_int (t.idx, k),
+  $case {$prop tag "block"}
+    $if ($call mentions_fields (t.fields, k)) true ($call mentions_props (t.props, k)),
+  $case {$prop tag "group"} $call mentions_tys (t.items, k),
+  $case {$prop tag "func"}
+    $if ($call mentions_tys (t.params, k)) true ($call mentions_bnd (t.result, k)),
+  $case {$prop tag "ref"}   $call mentions_bnd (t.inner, k),
+  $case {$prop tag "array"} $call mentions_bnd (t.elem, k),
+  $case {$prop tag "union"} $call mentions_tys (t.members, k),
+  $case {$prop tag "inter"} $call mentions_tys (t.members, k),
+  $case {$prop tag "over"}  $call mentions_tys (t.cands, k),
+  $case {$prop tag "rec"}   $call mentions_bnd (t.body, $call add (k, 1)),
+  $case {$prop tag "trait"} $call mentions_fields (t.members, $call add (k, 1)),
+  $case t false
+)
+
+// Does placeholder `i` occur anywhere in `t`, a prop's type included? `occurs` deliberately
+// skips props' types — they are outside a block's identity — but a prototype that names
+// itself only in a member's parameter (§4.10's "another value of its own type") has to
+// close into a μ too, or `$traitsof` would find a placeholder where `Self` should be.
+$fwd occurs_all
+
+$decl occurs_all_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call occurs_all ($call tval (xs.head), i)) true
+      ($call occurs_all_tys (xs.tail, i)),
+  $case xs false
+)
+
+$decl occurs_all_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call occurs_all ($call tval (xs.head.ty), i)) true
+      ($call occurs_all_fields (xs.tail, i)),
+  $case xs false
+)
+
+$decl occurs_all_props $func ($decl xs props.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call occurs_all ($call tval (xs.head.ty), i)) true
+      ($call occurs_all_props (xs.tail, i)),
+  $case xs false
+)
+
+$decl occurs_all $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "var"}   $call eq_int (t.id, i),
+  $case {$prop tag "block"}
+    $if ($call occurs_all_fields (t.fields, i)) true ($call occurs_all_props (t.props, i)),
+  $case {$prop tag "group"} $call occurs_all_tys (t.items, i),
+  $case {$prop tag "func"}
+    $if ($call occurs_all_tys (t.params, i)) true ($call occurs_all (t.result, i)),
+  $case {$prop tag "ref"}   $call occurs_all (t.inner, i),
+  $case {$prop tag "array"} $call occurs_all (t.elem, i),
+  $case {$prop tag "union"} $call occurs_all_tys (t.members, i),
+  $case {$prop tag "inter"} $call occurs_all_tys (t.members, i),
+  $case {$prop tag "over"}  $call occurs_all_tys (t.cands, i),
+  $case {$prop tag "rec"}   $call occurs_all (t.body, i),
+  $case {$prop tag "trait"} $call occurs_all_fields (t.members, i),
+  $case t false
+)
+
+// Whether `i` occurs in the props of `t` itself, or of a block member when `t` is a union —
+// where a prototype naming itself in a member's parameter puts it (§4.10). `occurs` cannot
+// see it, since a prop is not layout; walking every type `close_rec` closes for it costs 5%
+// of a self-emit, and nothing deeper is a prototype's own prop.
+$decl occurs_own_props_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} {
+    $decl h   $call tval (xs.head)
+    $decl ret $match h (
+        $case {$prop tag "block"}
+          $if ($call occurs_all_props (h.props, i)) true ($call occurs_own_props_tys (xs.tail, i)),
+        $case h ($call occurs_own_props_tys (xs.tail, i))
+      )
+  }.ret,
+  $case xs false
+)
+
+$decl occurs_own_props $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "block"} $call occurs_all_props (t.props, i),
+  $case {$prop tag "union"} $call occurs_own_props_tys ($call tys.val (t.members), i),
+  $case t false
+)
 // A member's type with `self` for `Self` (§6): conformance instantiates it at the
 // conforming type, and a projection off a trait object at the trait itself — which is
 // §5.5's unrolling, the reason a trait is a binder. Bottom when there is no such member.
@@ -1735,7 +1849,8 @@ $decl desc $func ($decl t proto_ty) {
 $decl show_frame $func ($decl t proto_ty) $match t (
   $case {$prop tag "ref"}
     $call concat ($call show_qual (t.qual, t.kind), $call desc (t.inner)),
-  $case {$prop tag "func"} "a reference captured by a closure",
+  $case {$prop tag "func"}  "a reference captured by a closure",
+  $case {$prop tag "trait"} "a trait object referring to frame storage",
   $case t ($call desc (t))
 )
 

@@ -62,7 +62,7 @@ Newlines are whitespace. The language does not dictate formatting.
 | `$template T body` | 2 | name or group of names, expression |
 | `$specialize t args` | 2 | template, expression or group |
 | `$impl x trait override` | 3 | value, trait, block of props |
-| `$traitsof e` | 1 | referable block |
+| `$traitsof e` | 1 | block |
 | `$import "name"` | 1 | string literal |
 | `$try e pat` | 2 | expression, type-only pattern |
 | `$extern "symbol" sig` | 2 | string literal, type-only signature |
@@ -333,7 +333,7 @@ The result conforms to the trait by itself (§6), so it becomes a trait object t
 
 ### 4.13 `$traitsof e`
 
-Makes a trait object (§6) referring to `e`, dispatching to `e`'s own props. Its type is the **trait** of `e`: the name and type of each of `e`'s props — its receiver qualifier included, the receiver itself not counted (§4.10) — with every occurrence of `e`'s type in those types abstracted as `Self`. Substitution is structural: any parameter or result whose type equals `e`'s type becomes `Self`. A trait records **signatures only**: no fields, no values, no bodies. `e` is an example of the shape and lends the trait nothing else. `e` must be referable.
+Makes a trait object (§6) referring to `e`, dispatching to `e`'s own props. Its type is the **trait** of `e`: the name and type of each of `e`'s props — its receiver qualifier included, the receiver itself not counted (§4.10) — with every occurrence of `e`'s type in those types abstracted as `Self`. Substitution is structural: any parameter or result whose type equals `e`'s type becomes `Self`. A trait records **signatures only**: no fields, no values, no bodies. `e` is an example of the shape and lends the trait nothing else. When `e` is a name or a reference the object refers to it; otherwise `e`'s value is placed in fresh frame storage, exactly as `$new e` would, and the object refers to that — and is frame-bound (§5.3a), as the storage is. This is explicit, so it is not §5.4's implicit conversion; a *coercion* to a trait object still needs a referable argument (§6).
 
 ### 4.14 `$import "name"`
 
