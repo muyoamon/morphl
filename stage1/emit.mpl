@@ -793,13 +793,16 @@ $decl oct3 $func ($decl b 0)
       $call concat ($call int_to_str ($call mod ($call div (b, 8), 8)),
                     $call int_to_str ($call mod (b, 8)))))
 
-$decl c_bytes $func ($decl s "", $decl i 0, $decl acc "")
-  $if ($call not ($call lt (i, $call len (s)))) acc
-      ($call c_bytes (s, $call add (i, 1),
-          $call concat (acc, $call oct3 ($call byte (s, i)))))
+// Collected and joined in pairs (`join_all`), never appended: a left fold over `concat`
+// copies O(L n) for an L-byte literal, and the runtime's own text is one, so this was
+// 116 MB of a self-emit's 2.5 GB (PERF.md).
+$decl c_bytes $func ($decl s "", $decl i 0, $decl acc strs.node)
+  $if ($call not ($call lt (i, $call len (s))))
+      ($call join_all ($call strs.reverse (acc, strs.nil)))
+      ($call c_bytes (s, $call add (i, 1), $call strs.cons ($call oct3 ($call byte (s, i)), acc)))
 
 $decl c_str_lit $func ($decl s "")
-  $call concat ("(mpl_str){\"", $call concat ($call c_bytes (s, 0, ""),
+  $call concat ("(mpl_str){\"", $call concat ($call c_bytes (s, 0, strs.nil),
       $call concat ("\", ", $call concat ($call int_to_str ($call len (s)), "}"))))
 
 // ------------------------------------------------------------- expressions

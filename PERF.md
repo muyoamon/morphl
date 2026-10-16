@@ -2684,3 +2684,41 @@ was an algorithm, not a lifetime, and what garbage is left is short-lived and in
 with live data inside one phase — so whole-phase arenas would reclaim little without
 lowering being restructured to build its keepers under an outer allocator. The untyped
 919 MB is the next thing to attribute, by call site, before any allocator design.
+
+### Strings: the union sort rendered every member, every time — −32%
+
+The 919 MB of untyped allocation left after `put_mod` was measured the same way, with each
+call to a string-building runtime function tagged by the morphl function containing it (a
+comma expression in callee position, so the call itself is unchanged). It was almost all
+`concat` (914 MB), and two sites made most of it:
+
+| site | bytes | what |
+|---|---|---|
+| `T.show`, reached from `shty_addall` | 785 MB in 189,499 sorts | `t_union` orders members by rendering |
+| `c_bytes` | 116 MB in 23,940 calls of ~5 KB | a literal's octal escapes, appended one byte at a time |
+
+**The sort was CLAUDE.md's recorded trade, and its premise did not hold.** Rendering was
+chosen over a structural comparator as correct and obvious, on the reasoning that it "runs
+only when a union has two or more distinct members". But `remap`, `subst` and `unroll`
+rebuild unions constantly, each rebuild re-sorts, and a rendering is proportional to the
+whole type — members are often big recursive unions, so a render averaged over 1 KB. The
+first attribution misled, worth knowing: wrapping calls into `show` from "outside the
+rendering family" charged `show`'s own helper `show_sorted_add` with 797 MB, because it
+was left off the family list while the real caller was put on it. A self-call is not a
+caller.
+
+**The fix keeps the order and stops repeating the work.** A rendering is a function of the
+type's class — `show` prints exactly what `same` compares — so `sort_key` renders each
+class once and keeps it, in a trie by `cid` shaped like `ctable`. Member order, and so every
+§7.5 discriminator, is unchanged; the emitted C is byte-identical everywhere. `c_bytes`
+collects its pieces and joins them in pairs (`join_all`), CLAUDE.md's rule for exactly this.
+
+| self-emit | before | after |
+|---|---|---|
+| allocated | 2,505 MB | **1,705 MB** (−32%) |
+| untyped (strings, arrays) | 919 MB | 165 MB |
+| live at verify | 246 MB | 266 MB (the cache, +20 MB) |
+| time (mean of 5, interleaved) | 9.41 s | **8.72 s** (−7%) |
+
+Together with `put_mod`, a self-emit allocates **half what it did (3,421 → 1,705 MB)**, and
+since the compiled runtime never frees, its peak memory halves with it.

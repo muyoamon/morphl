@@ -1338,10 +1338,70 @@ $decl shty_ins $func ($decl p proto_shty, $decl xs shtys.node) $match xs (
   $case xs ($call shtys.cons (p, shtys.nil))
 )
 
+// §7.5's canonical member order is by rendering, and a rendering is a function of the type's
+// class — `show` prints exactly what `same` compares (`frame`, `marks` and a prop's `ty`
+// are in neither) — so each class is rendered once and kept. Re-rendering every member of
+// every union a substitution rebuilt was 785 MB of a self-emit's 2.5 GB (PERF.md).
+$decl rent       $func ($decl c 0, $decl k "") { $decl cid c  $decl key k }
+$decl proto_rent $call rent (0, "")
+$decl rents      $specialize P.list proto_rent
+$decl rtrie $union (
+  { $prop tag "leaf"   $decl items $alloc rents.node },
+  { $prop tag "branch" $decl lo $alloc rtrie  $decl hi $alloc rtrie }
+)
+$decl rt_leaf   $func ($decl xs rents.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl rt_branch $func ($decl l rtrie, $decl h rtrie) {
+  $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h
+}
+$decl rt_val   $func ($decl x rtrie) x
+$decl rt_items $func ($decl tr rtrie)
+    $match tr ($case {$prop tag "leaf"} ($call rents.val (tr.items)), $case tr rents.nil)
+$decl rt_scan $func ($decl xs rents.node, $decl c 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.cid, c)) xs.head.key ($call rt_scan ($call rents.val (xs.tail), c)),
+  $case xs ""
+)
+$decl rt_find $func ($decl tr rtrie, $decl b 0, $decl c 0) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (b, 2), 0))
+        ($call rt_find ($call rt_val (tr.lo), $call div (b, 2), c))
+        ($call rt_find ($call rt_val (tr.hi), $call div (b, 2), c)),
+  $case tr ($call rt_scan ($call rt_items (tr), c))
+)
+$decl rt_kid $func ($decl tr rtrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call rt_val ($if hi tr.hi tr.lo)),
+  $case tr ($call rt_leaf (rents.nil))
+)
+$decl rt_add $func ($decl tr rtrie, $decl b 0, $decl d 0, $decl e proto_rent)
+  $if ($call not ($call lt (d, 14))) ($call rt_leaf ($call rents.cons (e, $call rt_items (tr)))) {
+    $decl lo  $call rt_kid (tr, false)
+    $decl hi  $call rt_kid (tr, true)
+    $decl ret $if ($call eq_int ($call mod (b, 2), 0))
+        ($call rt_branch ($call rt_add (lo, $call div (b, 2), $call add (d, 1), e), hi))
+        ($call rt_branch (lo, $call rt_add (hi, $call div (b, 2), $call add (d, 1), e)))
+  }.ret
+
+$decl rtable $mut $alloc rtrie
+
+// A class's rendering, made once. No rendering is "", so "" is the miss; a type without a
+// class (`cid` -1, a child not interned) is rendered every time, as before.
+$decl sort_key $func ($decl t proto_ty) {
+  $decl c   $call cid_of (t)
+  $decl ret $if ($call lt (c, 0)) ($call show (t)) {
+    $decl b    $call mod ($call div (c, 4), 16381)
+    $decl f    $call rt_find ($call rt_val (rtable), b, c)
+    $decl ret2 $if ($call eq_str (f, "")) {
+      $decl k    $call show (t)
+      $decl put  $set rtable ($call rt_add ($call rt_val (rtable), b, 0, $call rent (c, k)))
+      $decl ret3 k
+    }.ret3 f
+  }.ret2
+}.ret
+
 $decl shty_addall $func ($decl xs tys.node, $decl acc shtys.node) $match xs (
   $case {$prop tag "cons"}
     $call shty_addall (xs.tail,
-        $call shty_ins ($call shty ($call show (xs.head), xs.head), acc)),
+        $call shty_ins ($call shty ($call sort_key (xs.head), xs.head), acc)),
   $case xs acc
 )
 
