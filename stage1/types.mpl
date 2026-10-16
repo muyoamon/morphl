@@ -586,9 +586,12 @@ $decl ct_find $func ($decl tr ctrie, $decl b 0, $decl k proto_ckey) $match tr (
         ($call ct_find ($call ct_val (tr.hi), $call div (b, 2), k)),
   $case tr ($call ct_scan ($call ct_items (tr), k))
 )
+// The one empty leaf every absent child shares: the trie is persistent, so it is
+// never written, and a fresh one per child was an allocation per level (PERF.md).
+$decl ct_nil $call ct_leaf (cents.nil)
 $decl ct_kid $func ($decl tr ctrie, $decl hi P.boolean) $match tr (
   $case {$prop tag "branch"} ($call ct_val ($if hi tr.hi tr.lo)),
-  $case tr ($call ct_leaf (cents.nil))
+  $case tr ct_nil
 )
 $decl ct_add $func ($decl tr ctrie, $decl b 0, $decl d 0, $decl e proto_cent)
   $if ($call not ($call lt (d, 14))) ($call ct_leaf ($call cents.cons (e, $call ct_items (tr)))) {
@@ -1368,9 +1371,12 @@ $decl rt_find $func ($decl tr rtrie, $decl b 0, $decl c 0) $match tr (
         ($call rt_find ($call rt_val (tr.hi), $call div (b, 2), c)),
   $case tr ($call rt_scan ($call rt_items (tr), c))
 )
+// The one empty leaf every absent child shares: the trie is persistent, so it is
+// never written, and a fresh one per child was an allocation per level (PERF.md).
+$decl rt_nil $call rt_leaf (rents.nil)
 $decl rt_kid $func ($decl tr rtrie, $decl hi P.boolean) $match tr (
   $case {$prop tag "branch"} ($call rt_val ($if hi tr.hi tr.lo)),
-  $case tr ($call rt_leaf (rents.nil))
+  $case tr rt_nil
 )
 $decl rt_add $func ($decl tr rtrie, $decl b 0, $decl d 0, $decl e proto_rent)
   $if ($call not ($call lt (d, 14))) ($call rt_leaf ($call rents.cons (e, $call rt_items (tr)))) {

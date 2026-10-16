@@ -2722,3 +2722,36 @@ collects its pieces and joins them in pairs (`join_all`), CLAUDE.md's rule for e
 
 Together with `put_mod`, a self-emit allocates **half what it did (3,421 → 1,705 MB)**, and
 since the compiled runtime never frees, its peak memory halves with it.
+
+### Environment lists: two allocation patterns in lookup code — −11%
+
+The 333 MB of environment (`benv`/binding) list cells, attributed by allocation site and
+then — because most sat behind `P.list`'s one shared `cons` — by the morphl function making
+each `cons` call:
+
+| site | share | what |
+|---|---|---|
+| `pt_leaf`, via `pt_kid` | 102 MB | a fresh empty leaf for every absent child of the name index |
+| `dx_scan` (a *lookup*) | 35% of the `cons` calls | its hit answered as a fresh one-element list |
+| `pt_add`, `ix_segment`, `with_scope`, `bind_params`, … | the rest | ordinary environment growth |
+
+**Both are lookup structures allocating on the read side.** A trie's leaf boxes its list,
+and the list node holds a binding inline, so an empty leaf is 152 bytes — and `pt_kid`
+made a new one for each of the two children at each of `pt_depth` levels of a fresh path.
+The trie is persistent, so one empty leaf serves them all; IR's type-table trie already
+shared one (`trie_empty`), and now `ptrie`, `dxtrie`, `mxtrie`, emit's `ftrie`, `ctable`'s
+`ctrie` and the rendering cache do too. And nine finders in `lower.mpl` — `dx_scan`,
+`find_mdone`, `find_mprop`, `find_tmpl`, `find_spec`, `find_mod_path`, `find_rcv`,
+`find_fnm`, `find_fdef` — answered a hit as `cons (xs.head, nil)`, "a list of zero or one";
+every caller reads only `.head`, so they return the suffix from the hit instead.
+
+| self-emit | before | after |
+|---|---|---|
+| allocated | 1,705 MB | **1,516 MB** (−11%) |
+| live at the end | 270 MB | 230 MB |
+| time (mean of 5, interleaved) | 8.57 s | **8.29 s** (−3%) |
+
+Byte-identical output throughout. From the start of this measurement work a self-emit has
+gone from **3,421 MB to 1,516 MB (−56%)**. What is left of the environment lists is
+`pt_add`, `ix_segment`, `with_scope` and `bind_params` building environments — growth, not
+repeated work.

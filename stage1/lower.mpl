@@ -82,9 +82,14 @@ $decl pt_branch $func ($decl l ptrie, $decl h ptrie) {
 $decl pt_val   $func ($decl x ptrie) x
 $decl pt_items $func ($decl tr ptrie)
     $match tr ($case {$prop tag "leaf"} ($call pbinds.val (tr.items)), $case tr pbinds.nil)
+// One empty leaf for every absent child. A leaf boxes its list, and the list node holds
+// a binding inline, so a fresh empty one is 152 bytes — and building a path asked for two
+// at each of `pt_depth` levels, which made this trie 102 MB of a self-emit (PERF.md). The
+// trie is persistent, so the empty leaf is never written and one serves them all.
+$decl pt_empty $call pt_leaf (pbinds.nil)
 $decl pt_kid $func ($decl tr ptrie, $decl hi P.boolean) $match tr (
   $case {$prop tag "branch"} ($call pt_val ($if hi tr.hi tr.lo)),
-  $case tr ($call pt_leaf (pbinds.nil))
+  $case tr pt_empty
 )
 $decl pt_depth 10
 $decl pt_key   $func ($decl nm "") $call mod ($call add ($call mod ($call T.hash_str (nm, 0, 0),
@@ -99,8 +104,6 @@ $decl pt_add $func ($decl tr ptrie, $decl k 0, $decl d 0, $decl b proto_pbind)
         hi))
                     ($call pt_branch (lo, $call pt_add (hi, $call div (k, 2), $call add (d, 1), b)))
   }.ret
-$decl pt_empty $call pt_leaf (pbinds.nil)
-
 // The slot an index entry carries, and the name: a slot no binding has, so telling one
 // apart is an integer test, and a name no identifier can be (§2: none starts with `$`),
 // since `lower_name` looks up "" for a node that is not a name.
@@ -257,16 +260,19 @@ $decl dx_branch $func ($decl l dxtrie, $decl h dxtrie) {
 $decl dx_val   $func ($decl x dxtrie) x
 $decl dx_items $func ($decl tr dxtrie)
     $match tr ($case {$prop tag "leaf"} ($call mdones.val (tr.items)), $case tr mdones.nil)
+// The one empty leaf every absent child shares: the trie is persistent, so it is
+// never written, and a fresh one per child was an allocation per level (PERF.md).
+$decl dx_nil $call dx_leaf (mdones.nil)
 $decl dx_kid $func ($decl tr dxtrie, $decl hi P.boolean) $match tr (
   $case {$prop tag "branch"} ($call dx_val ($if hi tr.hi tr.lo)),
-  $case tr ($call dx_leaf (mdones.nil))
+  $case tr dx_nil
 )
 $decl dx_depth 10
 $decl dx_key   $func ($decl nm "") $call mod ($call add ($call mod ($call T.hash_str (nm, 0, 0),
     1021), 1021), 1021)
 $decl dx_scan $func ($decl xs mdones.node, $decl nm "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.name, nm)) ($call mdones.cons (xs.head, mdones.nil))
+    $if ($call eq_str (xs.head.name, nm)) xs
         ($call dx_scan ($call mdones.val (xs.tail), nm)),
   $case xs mdones.nil
 )
@@ -311,7 +317,7 @@ $decl mod_ent $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
   $call mod_ent_f (i, ps, ds, en, bs, pt, pe, "")
 $decl proto_mod $call mod_ent (0, mprops.nil, mdones.nil, benv.nil, "", "", benv.nil)
 
-// A module's lowered member by name, as a list of zero or one: `find_mdone`'s answer.
+// A module's lowered member by name: `find_mdone`'s answer, the list from that entry on.
 $decl find_mdone_m $func ($decl m proto_mod, $decl nm "")
   $call dx_find ($call dx_val (m.dix), $call dx_key (nm), nm)
 $decl mods_list $specialize P.list proto_mod
@@ -393,9 +399,13 @@ $decl same_keys $func ($decl a IR.ints.node, $decl b IR.ints.node) $match a (
   $case a ($call IR.ints.is_nil (b))
 )
 
+// The finders below answer the list **from the entry on**, or nil — never a fresh
+// one-element list. Every caller reads only `.head` and tests for `cons`, so the suffix
+// is the same answer without an allocation; building the one-element list made
+// `dx_scan` alone 415k cons cells of a self-emit (PERF.md).
 $decl find_tmpl $func ($decl xs tmpls_list.node, $decl i 0) $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_int (xs.head.id, i)) ($call tmpls_list.cons (xs.head, tmpls_list.nil))
+    $if ($call eq_int (xs.head.id, i)) xs
         ($call find_tmpl (xs.tail, i)),
   $case xs tmpls_list.nil
 )
@@ -405,7 +415,7 @@ $decl find_spec $func ($decl xs specs_list.node, $decl i 0, $decl ks IR.ints.nod
   $case {$prop tag "cons"}
     $if ($call and ($call and ($call eq_int (xs.head.tmpl, i), $call eq_str (xs.head.vk, v)),
                     $call same_keys ($call IR.ints.val (xs.head.keys), ks)))
-        ($call specs_list.cons (xs.head, specs_list.nil))
+        xs
         ($call find_spec (xs.tail, i, ks, v)),
   $case xs specs_list.nil
 )
@@ -413,21 +423,21 @@ $decl find_spec $func ($decl xs specs_list.node, $decl i 0, $decl ks IR.ints.nod
 $decl find_mod_path $func ($decl xs mods_list.node, $decl p "") $match xs (
   $case {$prop tag "cons"}
     $if ($call and ($call not ($call eq_str (p, "")), $call eq_str (xs.head.path, p)))
-        ($call mods_list.cons (xs.head, mods_list.nil))
+        xs
         ($call find_mod_path (xs.tail, p)),
   $case xs mods_list.nil
 )
 
 $decl find_mprop $func ($decl xs mprops.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.name, n)) ($call mprops.cons (xs.head, mprops.nil))
+    $if ($call eq_str (xs.head.name, n)) xs
         ($call find_mprop (xs.tail, n)),
   $case xs mprops.nil
 )
 
 $decl find_mdone $func ($decl xs mdones.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.name, n)) ($call mdones.cons (xs.head, mdones.nil))
+    $if ($call eq_str (xs.head.name, n)) xs
         ($call find_mdone (xs.tail, n)),
   $case xs mdones.nil
 )
@@ -465,9 +475,12 @@ $decl mx_branch $func ($decl l mxtrie, $decl h mxtrie) {
 $decl mx_val   $func ($decl x mxtrie) x
 $decl mx_items $func ($decl tr mxtrie)
     $match tr ($case {$prop tag "leaf"} ($call mods_list.val (tr.items)), $case tr mods_list.nil)
+// The one empty leaf every absent child shares: the trie is persistent, so it is
+// never written, and a fresh one per child was an allocation per level (PERF.md).
+$decl mx_nil $call mx_leaf (mods_list.nil)
 $decl mx_kid $func ($decl tr mxtrie, $decl hi P.boolean) $match tr (
   $case {$prop tag "branch"} ($call mx_val ($if hi tr.hi tr.lo)),
-  $case tr ($call mx_leaf (mods_list.nil))
+  $case tr mx_nil
 )
 // Sixteen levels: 65,536 modules, against a dozen in the compiler.
 $decl mx_depth 16
@@ -535,14 +548,14 @@ $decl rcv_list $specialize P.list proto_rcv
 
 $decl find_rcv $func ($decl xs rcv_list.node, $decl m 0) $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_int (xs.head.mid, m)) ($call rcv_list.cons (xs.head, rcv_list.nil))
+    $if ($call eq_int (xs.head.mid, m)) xs
         ($call find_rcv (xs.tail, m)),
   $case xs rcv_list.nil
 )
 
 $decl find_fnm $func ($decl xs fnm_list.node, $decl k "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.key, k)) ($call fnm_list.cons (xs.head, fnm_list.nil))
+    $if ($call eq_str (xs.head.key, k)) xs
         ($call find_fnm (xs.tail, k)),
   $case xs fnm_list.nil
 )
@@ -660,7 +673,7 @@ $decl lstate $func () {
 
 $decl proto_lst $call lstate ()
 
-// The module with id `i`, as a list of zero or one, the shape `find_mod` gave.
+// The module with id `i`: the leaf's list from that entry on, or nil (see `find_tmpl`).
 $decl find_mod_st $func ($decl st proto_lst, $decl i 0) $call mx_find ($call mx_val (st.modix), i,
     0)
 
@@ -3025,7 +3038,7 @@ $decl lower_match $func ($decl st proto_lst, $decl e benv.node, $decl n proto_fo
 // file (`resolve_wraps`), as a deferred prop read is.
 $decl find_fdef $func ($decl xs fdef_list.node, $decl g 0) $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_int (xs.head.idx, g)) ($call fdef_list.cons (xs.head, fdef_list.nil))
+    $if ($call eq_int (xs.head.idx, g)) xs
         ($call find_fdef ($call fdef_list.val (xs.tail), g)),
   $case xs fdef_list.nil
 )

@@ -271,9 +271,12 @@ $decl ft_branch $func ($decl l ftrie, $decl h ftrie) {
 $decl ft_val   $func ($decl x ftrie) x
 $decl ft_items $func ($decl tr ftrie)
     $match tr ($case {$prop tag "leaf"} ($call fents.val (tr.items)), $case tr fents.nil)
+// The one empty leaf every absent child shares: the trie is persistent, so it is
+// never written, and a fresh one per child was an allocation per level (PERF.md).
+$decl ft_nil $call ft_leaf (fents.nil)
 $decl ft_kid $func ($decl tr ftrie, $decl hi P.boolean) $match tr (
   $case {$prop tag "branch"} ($call ft_val ($if hi tr.hi tr.lo)),
-  $case tr ($call ft_leaf (fents.nil))
+  $case tr ft_nil
 )
 $decl ft_add $func ($decl tr ftrie, $decl b 0, $decl d 0, $decl e proto_fent)
   $if ($call not ($call lt (d, 10))) ($call ft_leaf ($call fents.cons (e, $call ft_items (tr)))) {
