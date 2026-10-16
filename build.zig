@@ -283,6 +283,63 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&run0.step);
         }
     }
+    // ------------------------------------------------- programs that must panic
+    //
+    // §3.1 makes `Int` overflow panic and §8 makes division by zero panic, so the
+    // compiled program must abort with stage 0's message — and stage 0 must refuse
+    // with the same one. Every other fixture checks an answer, which a program that
+    // aborts cannot give, and the compiled C used to wrap silently instead.
+    // `overflow.mpl` takes the case as its argument, so it is compiled once.
+    const panic_step = b.step("test-panic", "Check Int overflow and division by zero panic in both stages");
+    {
+        const src = "stage1/fixtures/overflow.mpl";
+        const emit_run = b.addRunArtifact(exe);
+        emit_run.addArgs(&.{ "--run", "stage1/emit_c.mpl", src });
+        emit_run.setCwd(b.path("."));
+        emit_run.has_side_effects = true;
+        const c_file = emit_run.captureStdOut(.{ .basename = "out.c" });
+        const cc = b.addSystemCommand(&.{ "cc", "-O0", "-Wall", "-Wno-unused-function", "-Werror", "-o" });
+        const bin = cc.addOutputFileArg("overflow");
+        cc.addFileArg(c_file);
+        for ([_]struct { case: []const u8, msg: []const u8 }{
+            .{ .case = "add", .msg = "panic: Int overflow in add" },
+            .{ .case = "sub", .msg = "panic: Int overflow in sub" },
+            .{ .case = "mul", .msg = "panic: Int overflow in mul" },
+            .{ .case = "div0", .msg = "panic: division by zero" },
+            .{ .case = "divm", .msg = "panic: Int overflow in div" },
+            .{ .case = "mod0", .msg = "panic: division by zero in mod" },
+            .{ .case = "neg", .msg = "panic: Int overflow in neg" },
+            .{ .case = "alias", .msg = "panic: Int overflow in sub" },
+            .{ .case = "value", .msg = "panic: Int overflow in add" },
+        }) |c| {
+            const run_bin = std.Build.Step.Run.create(b, "run the overflow fixture");
+            run_bin.addFileArg(bin);
+            run_bin.addArg(c.case);
+            run_bin.has_side_effects = true;
+            run_bin.addCheck(.{ .expect_stderr_match = c.msg });
+            run_bin.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+            panic_step.dependOn(&run_bin.step);
+            test_step.dependOn(&run_bin.step);
+
+            const run0 = b.addRunArtifact(exe);
+            run0.addArgs(&.{ "--run", "--main", src, c.case });
+            run0.setCwd(b.path("."));
+            run0.has_side_effects = true;
+            run0.addCheck(.{ .expect_stderr_match = c.msg });
+            run0.expectExitCode(1);
+            panic_step.dependOn(&run0.step);
+            test_step.dependOn(&run0.step);
+        }
+        // ...and `mod` by -1 at the bottom of the range is 0, not C's undefined `%`.
+        const ok = std.Build.Step.Run.create(b, "run the overflow fixture");
+        ok.addFileArg(bin);
+        ok.addArg("ok");
+        ok.has_side_effects = true;
+        ok.expectStdOutEqual("0\n");
+        panic_step.dependOn(&ok.step);
+        test_step.dependOn(&ok.step);
+    }
+
     // ------------------------------------------------- programs that must fail
     //
     // Every other fixture is a program that must *work*; these must be refused,

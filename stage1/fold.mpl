@@ -50,6 +50,19 @@ $decl foldable $func ($decl op "")
   $call or ($call eq_str (op, "add"),
       $call or ($call eq_str (op, "sub"), $call eq_str (op, "mul")))
 
+// §3.1 makes `Int` overflow panic, so folding is only for operands that cannot
+// overflow — otherwise the pass would panic where the program would have, at
+// compile time rather than run time. Conservative by design: operands under
+// 2^62 for `add`/`sub` and under 2^31 for `mul` cannot overflow, and anything
+// else is simply left unfolded.
+$decl within $func ($decl x 0, $decl lim 0)
+  $call P.and ($call lt ($call sub (0, lim), x), $call lt (x, lim))
+
+$decl safe $func ($decl op "", $decl a 0, $decl b 0) {
+  $decl lim $if ($call eq_str (op, "mul")) 2147483648 4611686018427387904
+  $decl ret $call P.and ($call within (a, lim), $call within (b, lim))
+}.ret
+
 $decl apply $func ($decl op "", $decl a 0, $decl b 0)
   $if ($call eq_str (op, "add")) ($call add (a, b))
       ($if ($call eq_str (op, "sub")) ($call sub (a, b)) ($call mul (a, b)))
@@ -93,7 +106,9 @@ $decl fold_call $func ($decl t 0, $decl f IR.proto_expr, $decl xs IR.exprs.node,
                          $call is_int ($call IR.exprs.nth (xs, 1))))
            false)
       false
-  $decl ret $if hit
+  $decl ok  $if hit ($call safe (op, $call int_val ($call IR.exprs.nth (xs, 0)),
+                         $call int_val ($call IR.exprs.nth (xs, 1)))) false
+  $decl ret $if ok
       ($call IR.eval ($call IR.e_int (t, $call apply (op,
           $call int_val ($call IR.exprs.nth (xs, 0)),
           $call int_val ($call IR.exprs.nth (xs, 1))))))
