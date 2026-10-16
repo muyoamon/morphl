@@ -166,11 +166,24 @@ $decl res_list  $specialize P.list proto_res
 // A call recorded against a function still being typed (§5.3a): the callee's
 // placeholder result, the argument's position and what was passed, and the body it was
 // made in.
+// An open function body: its serial, the depth its body is typed at, and its key — the
+// `$func` form's file and span, which a second typing of the same block finds again.
+$decl fframe       $func ($decl fs 0, $decl fd 0, $decl fk "")
+  { $decl ser fs  $decl depth fd  $decl key fk }
+$decl proto_fframe $call fframe (0, 0, "")
+$decl fframes      $specialize P.list proto_fframe
+
 $decl pesc_ent $func ($decl pid 0, $decl pi 0, $decl px Pa.proto_node, $decl pr T.proto_ty,
-    $decl pw T.proto_ty, $decl po 0)
-  { $decl id pid  $decl i pi  $decl x px  $decl raw pr  $decl want pw  $decl own po }
-$decl proto_pesc $call pesc_ent (0, 0, Pa.proto_node, T.t_bot, T.t_bot, 0)
+    $decl pw T.proto_ty, $decl po 0, $decl pk fframes.node)
+  { $decl id pid  $decl i pi  $decl x px  $decl raw pr  $decl want pw  $decl own po  $decl stk pk }
+$decl proto_pesc $call pesc_ent (0, 0, Pa.proto_node, T.t_bot, T.t_bot, 0, fframes.nil)
 $decl pesc_list  $specialize P.list proto_pesc
+
+// A parameter found to escape after its function had already closed: its key and index,
+// for the next typing of the block to fold in (`func_close`, `infer_block`).
+$decl hint_ent   $func ($decl hk "", $decl hj 0) { $decl key hk  $decl j hj }
+$decl proto_hint $call hint_ent ("", 0)
+$decl hint_list  $specialize P.list proto_hint
 
 $decl ctx $func () {
   $decl next   $mut $alloc 1
@@ -268,6 +281,14 @@ $decl ctx $func () {
   $decl pesc    $mut $alloc pesc_list.node
   $decl fser    $mut $alloc 0
   $decl curfn   $mut $alloc 0
+  // The function bodies open now, innermost first, and the hints found so far.
+  $decl fstack  $mut $alloc fframes.node
+  $decl hints   $mut $alloc hint_list.node
+  // Functions whose type is still a placeholder, by name and placeholder: a `$decl` of a
+  // `$func` while its body is typed, and a `$fwd` until its completion. A call is deferred
+  // only to one of these *by name* — a placeholder result alone is not an identity, since
+  // a function returning a call to another shares that one's.
+  $decl inprog  $mut $alloc hint_list.node
   // §4.16 rule 2. The section makes capture-freeness "a property of the
   // *expression* in the argument position", holding "when the compiler can see
   // which `$func` literal the value came from" — so the check is syntactic, and
@@ -874,24 +895,37 @@ $decl escapes $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl what "",
 // The mark of parameter `i` of the function whose body is at depth `d`.
 $decl pmark $func ($decl d 0, $decl i 0) $call add ($call mul (d, 64), i)
 
-$decl mres       $func ($decl en env.node, $decl k 0, $decl sr 0, $decl up 0)
-  { $decl env en  $decl n k  $decl ser sr  $decl outer up }
-$decl proto_mres $call mres (env.nil, 0, 0, 0)
+$decl mres       $func ($decl en env.node, $decl k 0, $decl sr 0, $decl up 0, $decl fk "")
+  { $decl env en  $decl n k  $decl ser sr  $decl outer up  $decl key fk }
+$decl proto_mres $call mres (env.nil, 0, 0, 0, "")
 
-// A body starts: it takes the next serial and becomes the current one.
-$decl open_body $func ($decl cx proto_ctx, $decl e env.node, $decl k 0) {
+$decl fn_key_of $func ($decl cx proto_ctx, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl ret $call concat ($call sval (cx.file), $call concat (":", $call concat (
+                $call int_to_str (sp.line), $call concat (":", $call int_to_str (sp.col)))))
+}.ret
+
+// A body starts: it takes the next serial and becomes the current one, and — only if it
+// marked a parameter, since only then can a mark name it — joins the stack under its key.
+$decl open_body $func ($decl cx proto_ctx, $decl e env.node, $decl k 0, $decl fn Pa.proto_node) {
   $decl up  $call ival (cx.curfn)
   $decl sr  $call add ($call ival (cx.fser), 1)
   $decl a   $set cx.fser sr
   $decl b   $set cx.curfn sr
-  $decl ret $call mres (e, k, sr, up)
+  $decl fk  $if ($call lt (0, k)) ($call fn_key_of (cx, fn)) ""
+  $decl c   $set cx.fstack ($if ($call lt (0, k))
+                ($call fframes.cons ($call fframe (sr, $call add ($call ival (cx.fdepth), 1), fk),
+                    cx.fstack))
+                ($call fframes.val (cx.fstack)))
+  $decl ret $call mres (e, k, sr, up, fk)
 }.ret
+
 
 // §5.3a: each parameter whose type can carry something frame-bound is rebound, for the
 // body, at its type marked with the parameter (`T.mark_deep`). The function's own type
 // keeps the unmarked ones.
 $decl mark_params $func ($decl cx proto_ctx, $decl ps Pa.nodes.node, $decl ts T.tys.node,
-    $decl e env.node, $decl i 0, $decl k 0) $match ps (
+    $decl e env.node, $decl i 0, $decl k 0, $decl fn Pa.proto_node) $match ps (
   $case {$prop tag "cons"} $match ts (
       $case {$prop tag "cons"} {
         $decl nm   $if ($call is_form (ps.head, "decl")) ($call name_of ($call op (ps.head, 0))) ""
@@ -900,16 +934,16 @@ $decl mark_params $func ($decl cx proto_ctx, $decl ps Pa.nodes.node, $decl ts T.
         $decl e2   $if ok ($call bind (e, nm, $call T.mark_deep (t,
                        $call pmark ($call add ($call ival (cx.fdepth), 1), i)))) e
         $decl ret2 $call mark_params (cx, $call Pa.nodes.val (ps.tail), $call T.tys.val (ts.tail),
-                       e2, $call add (i, 1), $if ok ($call add (k, 1)) k)
+                       e2, $call add (i, 1), $if ok ($call add (k, 1)) k, fn)
       }.ret2,
       $case ts {
         $decl c    $set cx.nmark ($call add ($call ival (cx.nmark), k))
-        $decl ret2 $call open_body (cx, e, k)
+        $decl ret2 $call open_body (cx, e, k, fn)
       }.ret2
     ),
   $case ps {
     $decl c   $set cx.nmark ($call add ($call ival (cx.nmark), k))
-    $decl ret $call open_body (cx, e, k)
+    $decl ret $call open_body (cx, e, k, fn)
   }.ret
 )
 
@@ -967,33 +1001,102 @@ $decl may_escape $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.p
 // to a fixed point, each call checked once. One made elsewhere — another `$fwd` member
 // that has already closed — is still refused if frame-bound, but its parameters' marks
 // have nobody left to attribute them to, so they are not noted.
+// Whether the body with this serial is still open.
+$decl ser_open $func ($decl xs fframes.node, $decl sr 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.ser, sr)) true ($call ser_open (xs.tail, sr)),
+  $case xs false
+)
+
+$decl frame_at $func ($decl xs fframes.node, $decl d 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.depth, d)) xs.head ($call frame_at (xs.tail, d)),
+  $case xs proto_fframe
+)
+
+$decl pop_frame $func ($decl xs fframes.node) $match xs (
+  $case {$prop tag "cons"} ($call fframes.val (xs.tail)),
+  $case xs xs
+)
+
+$decl in_prog $func ($decl xs hint_list.node, $decl nm "", $decl id 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_int (xs.head.j, id), $call eq_str (xs.head.key, nm))) true
+        ($call in_prog (xs.tail, nm, id)),
+  $case xs false
+)
+
+$decl drop_prog $func ($decl xs hint_list.node, $decl id 0, $decl acc hint_list.node) $match xs (
+  $case {$prop tag "cons"}
+    $call drop_prog (xs.tail, id,
+        $if ($call eq_int (xs.head.j, id)) acc ($call hint_list.cons (xs.head, acc))),
+  $case xs acc
+)
+
+$decl callee_name $func ($decl n Pa.proto_node) $match n ($case {$prop tag "name"} n.text, $case n "")
+
+$decl has_hint $func ($decl xs hint_list.node, $decl k "", $decl j 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_str (xs.head.key, k), $call eq_int (xs.head.j, j))) true
+        ($call has_hint (xs.tail, k, j)),
+  $case xs false
+)
+
+// Each mark a deferred argument carries goes to its function: noted as usual while that
+// body is open, or kept as a hint for the next typing of the block once it has closed —
+// a `$fwd` member that called a later one, or a body nested in one.
+$decl route_marks $func ($decl cx proto_ctx, $decl ms T.cints.node, $decl stk fframes.node)
+    $match ms (
+  $case {$prop tag "cons"} {
+    $decl m    ms.head
+    $decl dd   $call div (m, 64)
+    $decl fr   $call frame_at (stk, dd)
+    $decl j    $call sub (m, $call mul (dd, 64))
+    $decl open $call ser_open ($call fframes.val (cx.fstack), fr.ser)
+    $decl put  $if open ($set cx.escd ($call T.ci_union ($call T.cints.cons (m, T.cints.nil),
+                   $call T.cints.val (cx.escd))))
+                   ($call T.cints.val (cx.escd))
+    $decl h    $set cx.hints ($if ($call or (open, $call eq_str (fr.key, "")))
+                   ($call hint_list.val (cx.hints))
+                   ($if ($call has_hint (cx.hints, fr.key, j)) ($call hint_list.val (cx.hints))
+                        ($call hint_list.cons ($call hint_ent (fr.key, j), cx.hints))))
+    $decl ret  $call route_marks (cx, $call T.cints.val (ms.tail), stk)
+  }.ret,
+  $case ms 0
+)
+
+// The calls recorded against this function (its placeholder result `id`), checked now
+// its escaping parameters are known: a frame-bound argument to one is refused, and what
+// the argument carries is routed (`route_marks`). That can enlarge the set — a self-call
+// passing the function's own parameter on — so `pesc_fix` runs this to a fixed point,
+// each call checked once.
 $decl pesc_run $func ($decl cx proto_ctx, $decl xs pesc_list.node, $decl id 0,
-    $decl mine T.cints.node, $decl lo 0, $decl lim 0, $decl keep pesc_list.node,
-    $decl hit P.boolean) $match xs (
+    $decl mine T.cints.node, $decl keep pesc_list.node) $match xs (
   $case {$prop tag "cons"} {
     $decl x    xs.head
     $decl due  $if ($call eq_int (x.id, id)) ($call T.ci_mem (mine, x.i)) false
-    $decl own  $if ($call lt (x.own, lo)) false ($call not ($call lt ($call ival (cx.fser), x.own)))
-    $decl chk  $if due ($call arg_escapes_at (cx, x.x, x.raw, x.want, $call add (x.i, 1), own, lim))
+    $decl chk  $if due
+                   ($call arg_escapes_at (cx, x.x, x.raw, x.want, $call add (x.i, 1), false, -1))
                    x.raw
-    $decl ret2 $call pesc_run (cx, $call pesc_list.val (xs.tail), id, mine, lo, lim,
-                   $if due keep ($call pesc_list.cons (x, keep)), $if due true hit)
+    $decl rt   $if due ($call route_marks (cx, $call T.marks_of (x.raw, T.cints.nil), x.stk)) 0
+    $decl ret2 $call pesc_run (cx, $call pesc_list.val (xs.tail), id, mine,
+                   $if due keep ($call pesc_list.cons (x, keep)))
   }.ret2,
-  $case xs {
-    $decl put $set cx.pesc keep
-    $decl ret hit
-  }.ret
+  $case xs ($set cx.pesc keep)
 )
 
-$decl pesc_fix $func ($decl cx proto_ctx, $decl id 0, $decl d 0, $decl mine T.cints.node,
-    $decl lo 0) {
-  $decl lim  $call mul ($call add (d, 1), 64)
-  $decl hit  $call pesc_run (cx, $call pesc_list.val (cx.pesc), id, mine, lo, lim,
-                 pesc_list.nil, false)
+$decl pesc_fix $func ($decl cx proto_ctx, $decl id 0, $decl d 0, $decl mine T.cints.node) {
+  $decl run  $call pesc_run (cx, $call pesc_list.val (cx.pesc), id, mine, pesc_list.nil)
   $decl more $call esc_take (cx, d)
   $decl all  $call T.ci_sort ($call T.ci_union (more, mine), T.cints.nil)
-  $decl ret  $if ($call T.cints.is_nil (more)) mine ($call pesc_fix (cx, id, d, all, lo))
+  $decl ret  $if ($call T.cints.is_nil (more)) mine ($call pesc_fix (cx, id, d, all))
 }.ret
+
+// What earlier typings of this block found about this function's parameters too late.
+$decl hints_for $func ($decl xs hint_list.node, $decl k "", $decl acc T.cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call hints_for (xs.tail, k, $if ($call eq_str (xs.head.key, k))
+        ($call T.ci_union ($call T.cints.cons (xs.head.j, T.cints.nil), acc)) acc),
+  $case xs acc
+)
 
 $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node,
     $decl ps Pa.nodes.node, $decl tys T.tys.node, $decl res0 T.proto_ty, $decl mr proto_mres,
@@ -1009,11 +1112,17 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   $decl capf $call caps_frame (cx, e, free, shad)
   $decl on   $call lt (0, $call ival (cx.nmark))
   $decl capm $if on ($call caps_marks (cx, e, free, shad, T.cints.nil)) T.cints.nil
-  $decl mine0 $call esc_take (cx, d)
-  $decl mine $if ($call lt (id, 0)) mine0 ($call pesc_fix (cx, id, d, mine0, mr.ser))
+  $decl took  $call esc_take (cx, d)
+  $decl mine0 $if ($call lt (0, mk))
+                  ($call T.ci_sort ($call hints_for ($call hint_list.val (cx.hints), mr.key, took),
+                      T.cints.nil))
+                  took
+  $decl mine $if ($call lt (id, 0)) mine0 ($call pesc_fix (cx, id, d, mine0))
   $decl res  $if on ($call T.unmark (res0, lim)) res0
   $decl off  $set cx.nmark ($call sub ($call ival (cx.nmark), mk))
   $decl back $set cx.curfn mr.outer
+  $decl pop  $set cx.fstack ($if ($call lt (0, mk))
+                  ($call pop_frame ($call fframes.val (cx.fstack))) ($call fframes.val (cx.fstack)))
   $decl ret  $call T.t_func_esc (tys, res, capf, mine, $call T.keep_below (capm, lim, T.cints.nil))
 }.ret
 
@@ -1380,9 +1489,10 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
   $decl ps       $call group_items ($call op (n, 0))
   $decl id       $call fresh (cx)
   $decl r        $call infer_params (cx, e, ps, T.tys.nil, e)
-  $decl mr       $call mark_params (cx, ps, r.tys, r.env, 0, 0)
+  $decl mr       $call mark_params (cx, ps, r.tys, r.env, 0, 0, n)
   $decl self     $call T.t_func (r.tys, $call T.t_var (id))
   $decl benv     $call bind (mr.env, nm, self)
+  $decl going    $set cx.inprog ($call hint_list.cons ($call hint_ent (nm, id), cx.inprog))
   $decl saved    $call tval (cx.tryset)
   $decl cleared  $set cx.tryset T.t_bot
   $decl din      $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
@@ -1391,6 +1501,8 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
   $decl tries    $call tval (cx.tryset)
   $decl restored $set cx.tryset saved
   $decl res0     $call T.join (body, tries)
+  $decl gone     $set cx.inprog ($call drop_prog ($call hint_list.val (cx.inprog), id,
+                     hint_list.nil))
   // `μR.R` is uninhabited: a function whose only result is its own recursive
   // call never returns, so its result type is ⊥ (§3.6).
   $decl res  $if ($call T.ty_eq (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx, res0, id,
@@ -1403,7 +1515,7 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
 $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl ps $call group_items ($call op (n, 0))
   $decl r  $call infer_params (cx, e, ps, T.tys.nil, e)
-  $decl mr $call mark_params (cx, ps, r.tys, r.env, 0, 0)
+  $decl mr $call mark_params (cx, ps, r.tys, r.env, 0, 0, n)
   // Each `$func` has its own error set (§4.15); save and restore the
   // enclosing one, since `$try` targets the *nearest* function.
   $decl saved    $call tval (cx.tryset)
@@ -1445,7 +1557,7 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
                                          ($call not ($call may_escape (cx, as.head, raw, ps.head))))
                                     ($call pesc_list.val (cx.pesc))
                       ($call pesc_list.cons ($call pesc_ent (pd, $call sub (i, 1), as.head, raw,
-                          ps.head, $call ival (cx.curfn)), cx.pesc)))
+                          ps.head, $call ival (cx.curfn), $call fframes.val (cx.fstack)), cx.pesc)))
         $decl ret $if ($call not ($call eq_str (cw, "")))
             ($do ($call err (cx, cw, as.head)) false)
             ($if ($call T.sub (at, ps.head))
@@ -1473,7 +1585,11 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl ret $match ft (
       $case {$prop tag "func"} {
         $decl rv $call T.tval (ft.result)
-        $decl pd $match rv ($case {$prop tag "var"} rv.id, $case rv -1)
+        $decl pd $match rv (
+            $case {$prop tag "var"}
+              $if ($call in_prog ($call hint_list.val (cx.inprog),
+                       $call callee_name ($call op (n, 0)), rv.id)) rv.id -1,
+            $case rv -1)
         $decl ok $call check_args (cx, e, ft.params, args, n, 1, $call T.cints.val (ft.esc), pd)
         $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
             ($call chk_cbs (cx, $call T.tys.val (ft.params), args)) T.t_unit
@@ -2218,6 +2334,9 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
             $decl put $call recv_set (cx, old)
             $decl ret $call close_rec (cx, raw, id, it)
           }.ret))
+  $decl done $set cx.inprog ($if ($call lt (-1, fe.id))
+                ($call drop_prog ($call hint_list.val (cx.inprog), fe.id, hint_list.nil))
+                ($call hint_list.val (cx.inprog)))
   $decl eqn $if ($call lt (-1, fe.id))
       ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
                                         $call eval_res (s.res))))
@@ -2501,6 +2620,9 @@ $decl prebind_one $func ($decl cx proto_ctx, $decl s proto_bst,
       ($call T.t_var (id))
   $decl bound $set s.env ($call bind (s.env, nm, ty))
   $decl noted $set s.fwds ($call fwd_list.cons ($call fwd_ent (nm, id), $call eval_fwds (s.fwds)))
+  $decl going $set cx.inprog ($if ($call is_form (init, "func"))
+                  ($call hint_list.cons ($call hint_ent (nm, id), cx.inprog))
+                  ($call hint_list.val (cx.inprog)))
   // §4.11: "A `$fwd` not completed by the end of its block is an error."
   $decl checked $if ($call is_form (comp, "decl")) T.t_unit
       ($call err (cx, $call concat ("$fwd '", $call concat (nm,
@@ -2515,7 +2637,7 @@ $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.pro
       ($call close_rec (cx, $call infer (cx, e, n), id, n)) {
         $decl ps       $call group_items ($call op (n, 0))
         $decl r        $call infer_params (cx, e, ps, T.tys.nil, e)
-        $decl mr       $call mark_params (cx, ps, r.tys, r.env, 0, 0)
+        $decl mr       $call mark_params (cx, ps, r.tys, r.env, 0, 0, n)
         $decl saved    $call tval (cx.tryset)
         $decl cleared  $set cx.tryset T.t_bot
         $decl din      $set cx.fdepth ($call add ($call ival (cx.fdepth), 1))
@@ -2659,6 +2781,11 @@ $decl recv_props $func ($decl cx proto_ctx, $decl pe env.node, $decl items Pa.no
 
 $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.nodes.node,
                          $decl x P.proto_span) {
+  // §5.3a's fixed point (see the end): what a second typing of a file starts from.
+  $decl h0     $call hint_list.length (cx.hints, 0)
+  $decl es0    $call Pa.diags.val (cx.errs)
+  $decl ds0    $call eval_defer (cx.defer)
+  $decl pc0    $call pesc_list.val (cx.pesc)
   $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
   $decl fwdr   $call check_fwd_reads (cx, items)
   $decl pe0    $call prebind_props (cx, items, e0)
@@ -2695,7 +2822,23 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl prps $if ($call eq_str (rn, "")) ($call T.props.val (s.prps))
                  ($call recv_props (cx, pe, items, rn, bt0, $call eq_str (rq, "mut"),
                      $call T.props.val (s.prps)))
-  $decl ret  $call T.t_block (flds, prps)
+  $decl t1   $call T.t_block (flds, prps)
+  // §5.3a, for mutual recursion: a parameter found to escape only after its function had
+  // closed — a `$fwd` member passing its own to a later one, or a body nested in a
+  // recursive one — leaves a hint, and everything typed after that function saw its
+  // smaller set. So a file with a new hint is typed again, its diagnostics and deferred
+  // checks rolled back, until none appears; hints only grow, so this ends, and a file that
+  // finds none is typed once. At file level and not per block, because the retry has to
+  // reach whatever the hinted function is nested in, and because a wrapper around this
+  // function made lowering the compiler blow up (it is the centre of inference's largest
+  // recursion; CLAUDE.md records the same symptom from an earlier attempt).
+  $decl ret  $if ($if ($call eq_int (x.line, 0))
+                      ($call lt (h0, $call hint_list.length (cx.hints, 0))) false) {
+    $decl a    $set cx.errs es0
+    $decl b    $set cx.defer ds0
+    $decl c    $set cx.pesc pc0
+    $decl ret2 $call infer_block (cx, e0, items, x)
+  }.ret2 t1
 }.ret
 
 // §4.16: `$extern "symbol" sig` binds a C function and "evaluates to a callable

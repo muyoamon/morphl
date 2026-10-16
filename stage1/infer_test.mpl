@@ -1045,4 +1045,35 @@ $decl sr04 $call check_str ("a self-call to a parameter that does not escape is 
       "$decl loop3 $func ($decl n 0, $decl f $func () 0) $if ($call lt (n, 1)) ($call f ()) { $decl c $new 1  $decl ret $call loop3 ($call sub (n, 1), $func () $call add (c, 0)) }.ret")),
   "")
 
-$decl done11 $call nl ("all deferred escape tests passed")
+// Mutual recursion through `$fwd`: a member passing its own parameter to a later one that
+// lets it escape learns of it when the block is typed again.
+$decl mr_grp "$fwd g  $decl f $func ($decl k $func () 0) $call g (k)  "
+$decl mr_end "$decl g $func ($decl h $func () 0) $do ($set keep h) 0"
+
+$decl mr01 $call check_str ("a $fwd member's parameter escaping through a later one",
+  $call field_ty ($call concat (es_pre, $call concat (mr_grp, mr_end)), "f"), "esc(0)[[]->Int]->Int")
+
+$decl mr02 $call check_str ("...is checked at a call typed between the two",
+  $call errs_of ($call concat (es_pre, $call concat (mr_grp, $call concat (
+      "$decl user $func () { $decl c $new 1  $decl r $call f ($func () $call add (c, 0))  $decl ret 0 }.ret  ",
+      mr_end)))),
+  "argument 1 refers to frame storage, and this function lets that parameter escape (§5.3a); pass $alloc storage instead")
+
+$decl mr03 $call check_str ("a mutual recursion that lets nothing escape stays clean",
+  $call errs_of ($call concat (es_pre,
+      "$fwd ev  $decl od $func ($decl n 0, $decl f $func () 0) $if ($call lt (n, 1)) ($call f ()) ($call ev ($call sub (n, 1), f))  $decl ev $func ($decl n 0, $decl f $func () 0) $call od (n, f)  $decl h $func () { $decl c $new 1  $decl r $call od (3, $func () $call add (c, 0))  $decl ret 0 }.ret")),
+  "")
+
+// The block is typed twice to find that, and the first typing's diagnostics are dropped.
+$decl err_count $func ($decl src "") {
+  $decl r   $call I.check_source (src)
+  $decl ret $call int_to_str ($call Pa.diags.length ($call Pa.diags.val (r.errs), 0))
+}.ret
+
+$decl mr04 $call check_str ("...and reported once",
+  $call err_count ($call concat (es_pre, $call concat (mr_grp, $call concat (
+      "$decl user $func () { $decl c $new 1  $decl r $call f ($func () $call add (c, 0))  $decl ret 0 }.ret  ",
+      mr_end)))),
+  "1")
+
+$decl done12 $call nl ("all mutual escape tests passed")
