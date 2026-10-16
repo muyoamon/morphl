@@ -1,10 +1,13 @@
 //! The bootstrap root block — BOOTSTRAP.md §2.
 //!
 //! This is **not** the root block of SPEC.md §8, and does not pretend to be.
-//! It is monomorphic: §8 defines the numeric intrinsics *as* `$overload` sets
-//! over `(Int,Int)` and `(Float,Float)`, and dropping float arithmetic (§1.2)
-//! means no overload set ever has to exist at stage 0. Comparison is split into
-//! `eq_int`/`eq_str` for the same reason.
+//! §8 defines the numeric intrinsics *as* `$overload` sets over `(Int,Int)` and
+//! `(Float,Float)`, and stage 1 types them that way. Stage 0 drops float
+//! arithmetic (§1.2), so here they are the `Int` candidate alone, and the names
+//! that exist only for other candidates — `eq` on `Int`, `Str` and `Bool`,
+//! `to_int` on a `Str`, `to_str` on an `Int` — accept what the subset has and
+//! refuse a `Float` by name. `eq_int`/`eq_str`, `int_to_str` and `str_to_int`
+//! are the bootstrap's monomorphic spellings and stay beside them.
 //!
 //! Everything here is an ordinary shadowable name, never a keyword (§2.1).
 //!
@@ -150,6 +153,45 @@ fn eqStrFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     // §8: `eq` on Str is bytewise, which equals code-point equality under the
     // always-valid-UTF-8 invariant.
     return .{ .bool = std.mem.eql(u8, a, b) };
+}
+
+/// §8's `eq`, on everything the subset has. A `Float` operand is refused rather
+/// than compared: its value is literal *text* here (BOOTSTRAP §1.2), and text
+/// equality is not float equality — `1.0` and `1.00` are one number.
+fn eqFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    try noFloat(rt, args, "eq", span);
+    return switch (args[0]) {
+        .int => .{ .bool = (try wantInt(rt, args, 1, "eq", span)) == args[0].int },
+        .str => .{ .bool = std.mem.eql(u8, args[0].str.bytes, try wantStr(rt, args, 1, "eq", span)) },
+        .bool => |a| switch (args[1]) {
+            .bool => |b| .{ .bool = a == b },
+            else => rt.fail(span, "eq expects Bool for operand 2, found {s}", .{args[1].typeName()}),
+        },
+        else => rt.fail(span, "eq expects Int, Str or Bool, found {s}", .{args[0].typeName()}),
+    };
+}
+
+fn noFloat(rt: *Runtime, args: []const Value, name: []const u8, span: Span) Error!void {
+    for (args) |a| if (a == .float)
+        return rt.fail(span, "{s} on a Float is outside the bootstrap subset (BOOTSTRAP 1.2)", .{name});
+}
+
+/// `to_float` has only a `Float` result, so stage 0 refuses it outright.
+fn toFloatFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    _ = args;
+    return rt.fail(span, "to_float is outside the bootstrap subset (BOOTSTRAP 1.2)", .{});
+}
+
+/// §8's `to_int`: from a `Str` it is `str_to_int`.
+fn toIntFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    try noFloat(rt, args, "to_int", span);
+    return strToIntFn(rt, args, span);
+}
+
+/// §8's `to_str`: from an `Int` it is `int_to_str`.
+fn toStrFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    try noFloat(rt, args, "to_str", span);
+    return intToStrFn(rt, args, span);
 }
 
 fn concatFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
@@ -364,6 +406,10 @@ const table = [_]value.Builtin{
     .{ .name = "mod", .arity = 2, .func = modFn },
     .{ .name = "neg", .arity = 1, .func = negFn },
     .{ .name = "lt", .arity = 2, .func = ltFn },
+    .{ .name = "eq", .arity = 2, .func = eqFn },
+    .{ .name = "to_float", .arity = 1, .func = toFloatFn },
+    .{ .name = "to_int", .arity = 1, .func = toIntFn },
+    .{ .name = "to_str", .arity = 1, .func = toStrFn },
     .{ .name = "eq_int", .arity = 2, .func = eqIntFn },
     .{ .name = "eq_str", .arity = 2, .func = eqStrFn },
     .{ .name = "concat", .arity = 2, .func = concatFn },
@@ -384,7 +430,7 @@ const table = [_]value.Builtin{
     .{ .name = "args", .arity = 0, .func = argsFn },
 };
 
-test "the root block is monomorphic and complete per BOOTSTRAP 2" {
+test "the root block is complete per BOOTSTRAP 2" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -397,6 +443,7 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
     for ([_][]const u8{
         // Numeric, comparison, strings, conversion, arrays, control.
         "add",        "sub",        "mul",   "div",  "mod",   "neg",   "lt",
+        "eq",         "to_float",   "to_int", "to_str",
         "eq_int",     "eq_str",     "concat", "len", "slice", "byte",
         "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.
@@ -407,8 +454,6 @@ test "the root block is monomorphic and complete per BOOTSTRAP 2" {
             return error.MissingIntrinsic;
         }
     }
-    // §8 defines these as overload sets; the bootstrap block must not have them.
-    try std.testing.expect(scope.findLocalText("eq") == null);
 }
 
 // Stage 0's root block and stage 1's `root_env` must name exactly the same
@@ -674,4 +719,26 @@ test "str_to_int returns the option shape that $try none expects" {
 
     const bad = try strToIntFn(&rt, &.{value.litStr("4x")}, span);
     try std.testing.expectEqualStrings("none", bad.block.findText("tag").?.str.bytes);
+}
+
+test "eq, to_int and to_str take the subset's candidates and refuse a Float" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    var diags = diag.Diagnostics.init(std.testing.allocator);
+    defer diags.deinit();
+    var pool: lexer.StringPool = .init(arena_state.allocator());
+    var rt: Runtime = .{ .arena = arena_state.allocator(), .diags = &diags, .pool = &pool };
+    const span: Span = .{ .start = 0, .end = 0, .line = 1, .col = 1 };
+
+    try std.testing.expect((try eqFn(&rt, &.{ .{ .int = 3 }, .{ .int = 3 } }, span)).bool);
+    try std.testing.expect(!(try eqFn(&rt, &.{ value.litStr("a"), value.litStr("b") }, span)).bool);
+    try std.testing.expect((try eqFn(&rt, &.{ .{ .bool = false }, .{ .bool = false } }, span)).bool);
+    try std.testing.expectEqualStrings("12", (try toStrFn(&rt, &.{.{ .int = 12 }}, span)).str.bytes);
+    const n = try toIntFn(&rt, &.{value.litStr("7")}, span);
+    try std.testing.expectEqual(@as(i64, 7), n.block.findText("v").?.int);
+
+    const f: Value = .{ .float = value.litStr("1.5").str };
+    try std.testing.expectError(error.Halt, eqFn(&rt, &.{ f, f }, span));
+    try std.testing.expectError(error.Halt, toStrFn(&rt, &.{f}, span));
+    try std.testing.expectError(error.Halt, toFloatFn(&rt, &.{.{ .int = 1 }}, span));
 }

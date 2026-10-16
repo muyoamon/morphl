@@ -1102,3 +1102,23 @@ $decl ov07 $call check_str ("a candidate an earlier one covers is never chosen",
   "this candidate is never chosen: an earlier one accepts every argument it does, and §4.8 is first fit")
 
 $decl done13 $call nl ("all overload tests passed")
+
+// §8's numeric intrinsics are overloads over `(Int,Int)` and `(Float,Float)`, with no
+// implicit conversion; `eq`, `to_int` and `to_str` are overloaded too.
+$decl fl01 $call check_str ("Float arithmetic is the Float candidate",
+  $call field_ty ("$decl x $call add (1.5, 2.25)", "x"), "Float")
+$decl fl02 $call check_str ("...and Int arithmetic still the Int one",
+  $call field_ty ("$decl x $call mod (7, 2)", "x"), "Int")
+$decl fl03 $call check_str ("mixing Int and Float is an error",
+  $call errs_of ("$decl x $call add (1, 2.0)"),
+  "no candidate of O<[Int,Int]->Int,[Float,Float]->Float> accepts these arguments (§4.8)")
+$decl fl04 $call check_str ("to_int on a Float is an option",
+  $call field_ty ("$decl x $call to_int (2.5)", "x"), "<{tag=s\"none\",},{v:Int,tag=s\"some\",}>")
+$decl fl05 $call check_str ("to_str and to_float",
+  $call field_ty ("$decl x $call to_str ($call to_float (3))", "x"), "Str")
+$decl fl06 $call check_str ("eq on strings",
+  $call field_ty ("$decl x $call eq (\"a\", \"b\")", "x"), "<false,true>")
+$decl fl07 $call check_str ("an aliased intrinsic keeps both candidates",
+  $call field_ty ("$decl isub sub  $decl x $call isub (5, 3)", "x"), "Int")
+
+$decl done14 $call nl ("all float tests passed")

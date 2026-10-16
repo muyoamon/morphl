@@ -68,7 +68,7 @@ Two defects had to go first, both the same shape and neither visible to stage 0'
 |---|---|
 | `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap |
 | `$const`, all `&const` | Nothing in stage 1 needs a read-only view. (This exclusion used to be justified by fat references; under §5.1's prefix rule a `&const` upcast is free and thin, so the reason is now only that it is unused.) Use `&T` or `$mut`. |
-| `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and converted by the backend when emitting C — so the lexer still lexes them |
+| `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and emitted by the backend as C `double` literals — so the lexer still lexes them. Stage 1 compiles float arithmetic (§2); only stage 0 lacks it |
 | Releasing an allocator | Nothing is freed at stage 0 (§3), so the default `allocator` is malloc-and-never-free. `$alloc` itself is *in* the subset — §5.3a makes it the only way a container outlives its builder, so stage 1 cannot be written without it. |
 | `sendable`, threads | Not needed to compile a file |
 | Implicit `$specialize` via `$call` | Requires parameter-default shape matching (§4.9) — inference work, in stage 0 |
@@ -99,14 +99,16 @@ Consequence for the AST representation: every node is a block with a `$prop tag 
 
 ## 2. The bootstrap root block
 
-Stage 0's root block is **not** the root block of §8, and it does not pretend to be. It is monomorphic, and it provides the platform as builtins rather than through `$extern`.
+Stage 0's root block is **not** the root block of §8, and it does not pretend to be. It provides §8's `Int` candidates where §8 has overloads, and it provides the platform as builtins rather than through `$extern`.
+
+Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(Int,Int)` and `(Float,Float)`, `eq` over `Int`, `Float`, `Str` and `Bool`, `to_int` from `Str` or `Float`, `to_str` from `Int` or `Float`, and `to_float` from `Int`. Stage 0 keeps `Float` out of the subset (§1.2): the same names exist, take what the subset has, and refuse a `Float` operand by name — so a program using them runs under both stages until it reaches a float, and a float fixture is a compiled-only one.
 
 | Group | Names |
 |---|---|
-| Int arithmetic | `add sub mul div mod neg lt` — `Int` only; overflow panics |
-| Comparison | `eq_int eq_str` — no polymorphic `eq` |
+| Int arithmetic | `add sub mul div mod neg lt` — `Int` only at stage 0; overflow panics |
+| Comparison | `eq` (`Int`, `Str`, `Bool`), and the monomorphic `eq_int eq_str` |
 | Strings | `concat len slice byte` — byte units, as §8 |
-| Conversion | `int_to_str` , `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works |
+| Conversion | `int_to_str` , `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works; `to_str` (from `Int`) and `to_int` (from `Str`) are the same at stage 0, and `to_float` refuses |
 | Characters | `from_code (cp)` → `none \| some Str`. **An addition to §8, not an implementation of it** — see §7 |
 | Arrays | `array at alen` — as §8; `at` returns a base+index handle |
 | Control | `panic` |

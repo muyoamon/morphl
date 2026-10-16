@@ -1688,6 +1688,17 @@ $decl name_of $func ($decl n Pa.proto_node) $match n (
 
 // A name: §2.1 makes intrinsics ordinary names, so the only question is which
 // kind of binding it found.
+//
+// An overloaded intrinsic named as a value is the group of its candidates (§4.8), and
+// the backend lays that out from the candidates' own entries — which nothing else
+// interns, since no expression of a candidate's type was lowered.
+$decl intern_cands $func ($decl st proto_lst, $decl cs T.tys.node, $decl id 0) $match cs (
+  $case {$prop tag "cons"}
+    $do ($call intern (st, $call T.tval (cs.head)))
+        ($call intern_cands (st, $call T.tys.val (cs.tail), id)),
+  $case cs id
+)
+
 $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
   $decl nm $call name_of (n)
   $decl f  $call lookup (e, nm)
@@ -1703,7 +1714,8 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
         $decl ir $if ($call eq_str (f.bnd.kind, "local"))   ($call IR.e_local (id, f.bnd.slot))
             ($if ($call eq_str (f.bnd.kind, "capture")) ($call IR.e_capture (id, f.bnd.slot))
             ($if ($call eq_str (f.bnd.kind, "global"))  ($call IR.e_global (id, f.bnd.slot))
-                 ($call IR.e_prim (id, nm))))
+                 ($call IR.e_prim ($if ($call is_over_l (bt))
+                     ($call intern_cands (st, $call over_cands (bt), id)) id, nm))))
         $decl ret2  $call lres4 (ir, bt, f.bnd.mod, f.bnd.tmpl)
       }.ret2)
 }.ret

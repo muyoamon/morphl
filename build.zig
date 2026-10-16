@@ -165,7 +165,9 @@ pub fn build(b: *std.Build) void {
     // `host` is an extra C file linked in beside the emitted one: §4.16's fixture
     // needs C functions to bind, and providing them here is the point — a symbol
     // from libc proves nothing about a signature the target supplies itself.
-    for ([_]struct { src: []const u8, want: []const u8, host: ?[]const u8 = null }{
+    // `stage0 = false` marks a fixture outside stage 0's subset (BOOTSTRAP.md §1.2) other
+    // than through `$extern`.
+    for ([_]struct { src: []const u8, want: []const u8, host: ?[]const u8 = null, stage0: bool = true }{
         .{ .src = "stage1/fixtures/fact.mpl", .want = "3628800\n" },
         .{ .src = "stage1/fixtures/blocks.mpl", .want = "16\n" },
         .{ .src = "stage1/fixtures/strings.mpl", .want = "hello, world! 9 a\n" },
@@ -233,6 +235,10 @@ pub fn build(b: *std.Build) void {
         // §4.8's `$overload`: first fit, a nested overload, an overload argument, and
         // `x.i`. 362.
         .{ .src = "stage1/fixtures/overload.mpl", .want = "362\n" },
+        // §3.1's `Float` with §8's overloads on it: printed through `to_str`, which
+        // round-trips, and an exact `mod`. Stage 0 leaves `Float` out (BOOTSTRAP §1.2).
+        .{ .src = "stage1/fixtures/float.mpl", .stage0 = false,
+           .want = "0.30000000000000004 0.25 -1.5 2.0 7.0 6.0 0.75 9.999999999999999e+29 1.0 126\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -267,7 +273,7 @@ pub fn build(b: *std.Build) void {
         // *means* is the strongest check either has; `--main` makes stage 0 call the
         // file's `main` and print it as the emitted `main` does. A fixture with a C host
         // needs `$extern`, which stage 0 leaves out of the subset (BOOTSTRAP.md §1.2).
-        if (fixture.host == null) {
+        if (fixture.host == null and fixture.stage0) {
             const run0 = b.addRunArtifact(exe);
             run0.addArgs(&.{ "--run", "--main", fixture.src });
             run0.setCwd(b.path("."));
@@ -571,6 +577,8 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/traits.mpl",
         // §4.8: lowering resolves an overload with its own types, as inference did.
         "stage1/fixtures/overload.mpl",
+        // §8: the candidate an intrinsic call becomes is read off the callee's type.
+        "stage1/fixtures/float.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);
@@ -668,7 +676,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
         .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
-        .{ .src = "stage1/infer_test.mpl", .last = "all overload tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all float tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
         .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },

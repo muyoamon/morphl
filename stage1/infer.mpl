@@ -509,6 +509,30 @@ $decl some_of $func ($decl t T.proto_ty)
 $decl opt_int $call T.union2 (t_none, $call some_of (T.t_int))
 $decl opt_str $call T.union2 (t_none, $call some_of (T.t_str))
 
+// §8's numeric intrinsics are overloads over `(Int,Int)` and `(Float,Float)`, with no
+// implicit conversion; `eq`, `to_int` and `to_str` are overloaded too. The bootstrap's own
+// monomorphic names (`eq_int`, `eq_str`, `int_to_str`, `str_to_int`) stay beside them.
+$decl ff_f $call T.t_func ($call T.tys.cons (T.t_float, $call T.tys.cons (T.t_float, T.tys.nil)),
+    T.t_float)
+$decl ff_b $call T.t_func ($call T.tys.cons (T.t_float, $call T.tys.cons (T.t_float, T.tys.nil)),
+    T.t_bool)
+$decl bb_b $call T.t_func ($call T.tys.cons (T.t_bool, $call T.tys.cons (T.t_bool, T.tys.nil)),
+    T.t_bool)
+$decl f_f  $call T.t_func ($call T.tys.cons (T.t_float, T.tys.nil), T.t_float)
+$decl i_f  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_float)
+$decl f_s  $call T.t_func ($call T.tys.cons (T.t_float, T.tys.nil), T.t_str)
+$decl s_oi $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_int)
+$decl f_oi $call T.t_func ($call T.tys.cons (T.t_float, T.tys.nil), opt_int)
+$decl ov2  $func ($decl a T.proto_ty, $decl b T.proto_ty)
+  $call T.t_over ($call T.tys.cons (a, $call T.tys.cons (b, T.tys.nil)))
+$decl num2 $call ov2 (ii_i, ff_f)
+$decl cmp2 $call ov2 (ii_b, ff_b)
+$decl num1 $call ov2 (i_i, f_f)
+$decl eq4  $call T.t_over ($call T.tys.cons (ii_b, $call T.tys.cons (ff_b,
+               $call T.tys.cons (ss_b, $call T.tys.cons (bb_b, T.tys.nil)))))
+$decl toint $call ov2 (s_oi, f_oi)
+$decl tostr $call ov2 (i_s, f_s)
+
 // §8's arrays, monomorphic like the rest of the bootstrap root block
 // (BOOTSTRAP.md §2): the only array stage 1 handles is `args ()`, an array of
 // `Str`. §7.6 makes `at` return a base+index handle rather than an interior
@@ -523,14 +547,16 @@ $decl at_t     $call T.t_func ($call T.tys.cons (arr_str, $call T.tys.cons (T.t_
 $decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 
 $decl root_env
+  $call bind ($call bind ($call bind ($call bind (
   $call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind (env.nil,
-    "add", ii_i), "sub", ii_i), "mul", ii_i), "div", ii_i), "mod", ii_i), "neg", i_i),
-    "lt", ii_b), "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "len", s_i),
+    "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
+    "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
+    "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "len", s_i),
     "slice", sii_s), "byte", si_i), "int_to_str", i_s),
     "str_to_int", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_int)),
     "from_code", $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), opt_str)),
@@ -1603,32 +1629,14 @@ $decl pick_cand $func ($decl cs T.tys.node, $decl rs T.tys.node) $match cs (
   $case cs T.t_bot
 )
 
-// Each argument's type, as written, typed to choose a candidate — quietly, with what typing
-// records rolled back, since `check_args` types them again against the chosen one.
+// Each argument's type, as written, typed once: an overloaded call chooses its candidate
+// from these and `check_typed` checks them against it.
 $decl arg_types $func ($decl cx proto_ctx, $decl e env.node, $decl as Pa.nodes.node,
     $decl acc T.tys.node) $match as (
   $case {$prop tag "cons"}
     $call arg_types (cx, e, $call Pa.nodes.val (as.tail),
         $call T.tys.cons ($call infer (cx, e, as.head), acc)),
   $case as ($call T.tys.reverse (acc, T.tys.nil))
-)
-
-$decl choose $func ($decl cx proto_ctx, $decl e env.node, $decl o T.proto_ty,
-    $decl as Pa.nodes.node) $match o (
-  $case {$prop tag "over"} {
-    $decl q0  $call bval (cx.quiet)
-    $decl es  $call Pa.diags.val (cx.errs)
-    $decl ds  $call eval_defer (cx.defer)
-    $decl pc  $call pesc_list.val (cx.pesc)
-    $decl hu  $set cx.quiet true
-    $decl rs  $call arg_types (cx, e, as, T.tys.nil)
-    $decl b1  $set cx.quiet q0
-    $decl b2  $set cx.errs es
-    $decl b3  $set cx.defer ds
-    $decl b4  $set cx.pesc pc
-    $decl ret $call pick_cand ($call T.tys.val (o.cands), rs)
-  }.ret,
-  $case o T.t_bot
 )
 
 // §4.8's lint: a candidate whose parameters are a subtype of an earlier one's is never
@@ -1682,55 +1690,74 @@ $decl infer_overload $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
   $decl ret $call T.t_over (ts)
 }.ret
 
+$decl ts_rest $func ($decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"} ($call T.tys.val (xs.tail)),
+  $case xs xs
+)
+
+// One argument against its parameter: §6's coercion, §5.3a's escape, a deferred call
+// against a function still being typed, §4.8's overload resolution, and the subtype check
+// — or §5.5's deferral of it while a knot is open. False on an error.
+$decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_node,
+                       $decl raw T.proto_ty, $decl i 0, $decl es T.cints.node, $decl pd -1) {
+  $decl at0 $call arg_as (p, raw)
+  // §4.8: an overload passed where one type is expected resolves to the first
+  // candidate the parameter accepts; passed to an overload parameter it stays one.
+  $decl at  $if ($call and ($call is_over (at0), $call not ($call is_over (p))))
+                ($match at0 (
+                    $case {$prop tag "over"} ($call cand_for ($call T.tys.val (at0.cands), p)),
+                    $case at0 at0))
+                at0
+  $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
+  $decl cw  $call coerce_why (x, raw, p)
+  $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1))) ($call arg_escapes (cx, x, raw, p, i)) raw
+  // A callee still being typed: its escaping parameters come later (`func_close`).
+  // Only an argument that could be refused or could carry a mark is worth keeping,
+  // and nearly none is — keeping every one made each closing function rescan them.
+  $decl rec $set cx.pesc ($if ($if ($call lt (pd, 0)) true
+                                   ($call not ($call may_escape (cx, x, raw, p))))
+                              ($call pesc_list.val (cx.pesc))
+                ($call pesc_list.cons ($call pesc_ent (pd, $call sub (i, 1), x, raw,
+                    p, $call ival (cx.curfn), $call fframes.val (cx.fstack)), cx.pesc)))
+  $decl ret $if ($call not ($call eq_str (cw, "")))
+      ($do ($call err (cx, cw, x)) false)
+      ($if ($call T.sub (at, p)) true
+      // §5.5: a constraint on an unresolved `R` is checked after the knot is tied, not
+      // now — otherwise every call inside a recursive group would fail against its own
+      // placeholder.
+      ($if ($call or ($call has_free_var (at), $call has_free_var (p)))
+          ($do ($call defer_check (cx, at, p, why, x)) true)
+          ($do ($call T.explain (at, p))
+               ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
+                         $call concat (", expected ", $call T.show (p)))), x))
+                    false))))
+}.ret
+
 $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.node,
                         $decl as Pa.nodes.node, $decl n Pa.proto_node, $decl i 1,
                         $decl es T.cints.node, $decl pd -1) $match as (
   $case {$prop tag "cons"} $match ps (
-      $case {$prop tag "cons"} {
-        $decl raw $call infer (cx, e, as.head)
-        // §5.4: a parameter whose type is a reference wants storage; any
-        // other parameter wants a value, so the argument dereferences.
-        // So does a trait parameter (§6): a trait object refers to its argument, and the
-        // reference's qualifier is the object's.
-        $decl at0 $call arg_as (ps.head, raw)
-        // §4.8: an overload passed where one type is expected resolves to the first
-        // candidate the parameter accepts; passed to an overload parameter it stays one.
-        $decl at  $if ($call and ($call is_over (at0), $call not ($call is_over (ps.head))))
-                      ($match at0 (
-                          $case {$prop tag "over"}
-                            ($call cand_for ($call T.tys.val (at0.cands), ps.head)),
-                          $case at0 at0))
-                      at0
-        $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
-        $decl cw  $call coerce_why (as.head, raw, ps.head)
-        $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1)))
-                      ($call arg_escapes (cx, as.head, raw, ps.head, i)) raw
-        // A callee still being typed: its escaping parameters come later (`func_close`).
-        // Only an argument that could be refused or could carry a mark is worth keeping,
-        // and nearly none is — keeping every one made each closing function rescan them.
-        $decl rec $set cx.pesc ($if ($if ($call lt (pd, 0)) true
-                                         ($call not ($call may_escape (cx, as.head, raw, ps.head))))
-                                    ($call pesc_list.val (cx.pesc))
-                      ($call pesc_list.cons ($call pesc_ent (pd, $call sub (i, 1), as.head, raw,
-                          ps.head, $call ival (cx.curfn), $call fframes.val (cx.fstack)), cx.pesc)))
-        $decl ret $if ($call not ($call eq_str (cw, "")))
-            ($do ($call err (cx, cw, as.head)) false)
-            ($if ($call T.sub (at, ps.head))
-            ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es, pd))
-            // §5.5: a constraint on an unresolved `R` is checked after the
-            // knot is tied, not now — otherwise every call inside a recursive
-            // group would fail against its own placeholder.
-            ($if ($call or ($call has_free_var (at), $call has_free_var (ps.head)))
-                ($do ($call defer_check (cx, at, ps.head, why, as.head))
-                     ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es, pd)))
-                ($do ($call T.explain (at, ps.head))
-                     ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
-                               $call concat (", expected ", $call T.show (ps.head)))), as.head))
-                          false))))
-      }.ret,
+      $case {$prop tag "cons"}
+        $if ($call check_one (cx, ps.head, as.head, $call infer (cx, e, as.head), i, es, pd))
+            ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es, pd)) false,
       $case ps ($do ($call err (cx, "too many arguments", n)) false)
     ),
   // Fewer arguments than parameters is fine: the defaults fill in (§3.4).
+  $case as true
+)
+
+// The same, against types already inferred — an overloaded call types its arguments
+// once, to choose a candidate (§4.8), and checks them against it without typing again.
+$decl check_typed $func ($decl cx proto_ctx, $decl ps T.tys.node, $decl as Pa.nodes.node,
+                         $decl rs T.tys.node, $decl n Pa.proto_node, $decl i 1,
+                         $decl es T.cints.node) $match as (
+  $case {$prop tag "cons"} $match ps (
+      $case {$prop tag "cons"}
+        $if ($call check_one (cx, ps.head, as.head, $call T.tys.nth (rs, 0), i, es, -1))
+            ($call check_typed (cx, ps.tail, as.tail, $call ts_rest (rs), n, $call add (i, 1),
+                es)) false,
+      $case ps ($do ($call err (cx, "too many arguments", n)) false)
+    ),
   $case as true
 )
 
@@ -1754,11 +1781,12 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
       }.ret2,
       // §4.8: the first candidate accepting the arguments, then checked as an ordinary call.
       $case {$prop tag "over"} {
-        $decl c    $call choose (cx, e, ft, args)
+        $decl rs   $call arg_types (cx, e, args, T.tys.nil)
+        $decl c    $call pick_cand ($call T.tys.val (ft.cands), rs)
         $decl ret2 $match c (
             $case {$prop tag "func"} {
-              $decl ok   $call check_args (cx, e, c.params, args, n, 1, $call T.cints.val (c.esc),
-                             -1)
+              $decl ok   $call check_typed (cx, $call T.tys.val (c.params), args, rs, n, 1,
+                             $call T.cints.val (c.esc))
               $decl ret3 $if ok ($call T.tval (c.result)) T.t_bot
             }.ret3,
             $case c ($call err (cx, $call concat ("no candidate of ", $call concat ($call T.show (ft),

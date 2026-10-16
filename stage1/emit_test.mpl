@@ -141,13 +141,13 @@ $decl t7 $call check ("a top-level `main` gets a C main",
 $decl t7b $call check ("and the host's arguments reach the runtime before mpl_init",
   $call has (loop_c.code, "mpl_argc = argc"))
 
-// Refused rather than mis-emitted. `$try` is emitted now, so what is left
-// without a C form is `Float` — BOOTSTRAP §1.2 leaves float arithmetic out and
-// §3.1 keeps a literal as its source text.
-$decl t8 $call check ("an unsupported construct is refused, not guessed at",
+// §3.1's `Float` is a C double, and §8's overloaded arithmetic on it is C's — chosen
+// by the candidate, not the name: `mod` on a `Float` is the runtime's exact `mpl_fmod`.
+$decl t8 $call check ("Float is a double and its mod the runtime's",
   {
-    $decl r   $call compile ("$decl main $func () 1.5 ")
-    $decl ret $call lt (0, r.nerrs)
+    $decl r   $call compile ("$decl f $func ($decl x 0.5) $call mod (x, 2.0)  $decl main $func () 1 ")
+    $decl ret $if ($call eq_int (r.nerrs, 0))
+        ($if ($call has (r.code, "double s0")) ($call has (r.code, "mpl_fmod(")) false) false
   }.ret)
 
 // And a program with no `main` is refused, since the emitted file would not
