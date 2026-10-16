@@ -1151,11 +1151,12 @@ pub const Interp = struct {
                     const pargs = try self.evalArgs(&ops[1], scope);
                     break :blk self.callBuiltin(b, pargs, node.span);
                 }
-                const callee = (try self.eval(&ops[0], scope)).deref();
-                self.notePrim(&ops[0], callee);
+                const callee0 = (try self.eval(&ops[0], scope)).deref();
+                self.notePrim(&ops[0], callee0);
                 const base = self.arg_top;
                 defer self.arg_top = base;
                 const args = try self.evalArgs(&ops[1], scope);
+                const callee = try self.resolveOverload(callee0, args, node.span);
                 break :blk self.callValue(callee, args, node.span);
             },
             .match => blk: {
@@ -1196,7 +1197,20 @@ pub const Interp = struct {
             // BOOTSTRAP.md §1.2. These parse (the parser covers all of §2.2)
             // but stage 0 declines to run them.
             .@"const" => self.outOfSubset(node.span, "$const", "stage 0 has no read-only views; nothing in stage 1 needs one"),
-            .overload => self.outOfSubset(node.span, "$overload", "the bootstrap root block is monomorphic, so no overload set exists"),
+            // §4.8, dynamically (BOOTSTRAP.md §1.1): the group of candidates, resolved
+            // at a call by `resolveOverload`.
+            .overload => blk: {
+                const members = &node.data.form.operands[0];
+                const items: []const Node = switch (members.data) {
+                    .group => |elems| elems,
+                    else => @as([*]const Node, @ptrCast(members))[0..1],
+                };
+                const vals = try self.arena.alloc(Value, items.len);
+                for (items, vals) |*it, *slot| slot.* = (try self.eval(it, scope)).deref();
+                const g = try self.arena.create(value.Group);
+                g.* = .{ .elems = vals };
+                break :blk Value{ .overload = g };
+            },
             .impl => self.evalImpl(node, scope),
             // §4.13, dynamically: dispatch is a projection onto the referent's own
             // props, so the trait object is the value — a reference staying one, so a
@@ -1294,6 +1308,12 @@ pub const Interp = struct {
                 g.elems[index - 1]
             else
                 self.rt.fail(span, "group index .{d} is out of range for a group of {d}", .{ index, g.elems.len }),
+            // §4.8: resolution "lowers to projection `x.i`", so an overload projects as
+            // the group it is.
+            .overload => |g| if (index >= 1 and index <= g.elems.len)
+                g.elems[index - 1]
+            else
+                self.rt.fail(span, "overload index .{d} is out of range for {d} candidates", .{ index, g.elems.len }),
             else => self.rt.fail(span, "cannot index .{d} into {s}", .{ index, target.typeName() }),
         };
     }
@@ -1592,14 +1612,15 @@ pub const Interp = struct {
                         const pargs = try self.evalArgs(&ops[1], scope);
                         return .{ .value = try self.callBuiltin(b, pargs, node.span) };
                     }
-                    const callee = (try self.eval(&ops[0], scope)).deref();
-                    self.notePrim(&ops[0], callee);
+                    const callee0 = (try self.eval(&ops[0], scope)).deref();
+                    self.notePrim(&ops[0], callee0);
                     const base = self.arg_top;
                     // `bindParams` copies the arguments out, and an intrinsic
                     // has returned by the time this unwinds, so the scratch is
                     // reclaimed either way.
                     defer self.arg_top = base;
                     const args = try self.evalArgs(&ops[1], scope);
+                    const callee = try self.resolveOverload(callee0, args, node.span);
                     if (callee == .func) {
                         const callee_scope = try self.bindParams(callee.func, args, node.span);
                         return .{ .tail = .{
@@ -1615,6 +1636,51 @@ pub const Interp = struct {
             }
         }
         return .{ .value = try self.eval(node, scope) };
+    }
+
+    /// §4.8: the **first** candidate whose parameters accept the arguments; a candidate
+    /// that is itself an overload fits if any of its own do. Stage 0 has no types, so
+    /// "accepts" is judged the way a `$match` pattern is: each parameter's default — the
+    /// example that fixes its type (§3.4) — against the argument (`shapeMatches`). An
+    /// intrinsic candidate has no defaults to judge by and is taken as fitting.
+    fn resolveOverload(self: *Interp, callee: Value, args: []Value, span: Span) Error!Value {
+        if (callee != .overload) return callee;
+        for (callee.overload.elems) |c| {
+            if (try self.candidateFits(c, args)) {
+                return self.resolveOverload(c, args, span);
+            }
+        }
+        return self.rt.fail(span, "no candidate of this overload accepts these arguments (4.8)", .{});
+    }
+
+    fn candidateFits(self: *Interp, c: Value, args: []Value) Error!bool {
+        switch (c) {
+            .func => |f| {
+                if (args.len > f.params.len) return false;
+                for (f.params[0..args.len], args) |p, a| {
+                    if (p.wants_storage) {
+                        if (a != .ref) return false;
+                        continue;
+                    }
+                    const d = (try self.eval(p.default, f.scope)).deref();
+                    const v = a.deref();
+                    // A `Bool` parameter's default is `$union (true, false)`, whose value
+                    // is its first member (4.8a): the example says "a boolean", not "true".
+                    if (d == .bool) {
+                        if (v != .bool) return false;
+                        continue;
+                    }
+                    if (!try self.shapeMatches(d, v, 64)) return false;
+                }
+                return true;
+            },
+            .builtin => return true,
+            .overload => |o| {
+                for (o.elems) |x| if (try self.candidateFits(x, args)) return true;
+                return false;
+            },
+            else => return false,
+        }
     }
 
     fn bindParams(self: *Interp, f: *Func, args: []Value, span: Span) Error!*Scope {
@@ -1871,7 +1937,7 @@ pub const Interp = struct {
             .ref => |p| val == .ref and try self.shapeMatches(p.value, val.ref.value, depth - 1),
             .array => val == .array,
             // Signatures are not comparable without types.
-            .func, .builtin => val == .func or val == .builtin,
+            .func, .builtin => val == .func or val == .builtin or val == .overload,
             .template => val == .template,
             // A pattern is a value something evaluated, and a prop handed out of a
             // block is forced first, so an unread prop never stands here.
@@ -1879,6 +1945,8 @@ pub const Interp = struct {
             // §4.12: props have no layout, so a pattern of an `$impl`'d value is its
             // base's shape — the value reaching here was read through `deref` already.
             .with => |w| try self.shapeMatches(w.base, val, depth - 1),
+            // An overload is a function wherever one is expected (§4.8).
+            .overload => val == .overload or val == .func or val == .builtin,
         };
     }
 
@@ -2481,7 +2549,6 @@ test "Int overflow panics rather than wrapping (3.1)" {
 }
 
 test "excluded forms decline with a pointer to the subset" {
-    try expectFails("$decl x $overload (1, 2)", "outside the bootstrap subset");
     try expectFails("$decl x $const $new 0", "outside the bootstrap subset");
     try expectFails("$decl x $extern \"puts\" 0", "outside the bootstrap subset");
 }

@@ -1077,3 +1077,28 @@ $decl mr04 $call check_str ("...and reported once",
   "1")
 
 $decl done12 $call nl ("all mutual escape tests passed")
+
+// §4.8: `$overload` — first fit, left to right, resolving where one type is expected.
+$decl ov_pre "$decl fi $func ($decl n 0) n  $decl fs $func ($decl s \"\") s  $decl o $overload (fi, fs)  "
+
+$decl ov01 $call check_str ("an Int argument chooses the Int candidate",
+  $call field_ty ($call concat (ov_pre, "$decl x $call o (3)"), "x"), "Int")
+$decl ov02 $call check_str ("...and a Str argument the Str one",
+  $call field_ty ($call concat (ov_pre, "$decl x $call o (\"a\")"), "x"), "Str")
+$decl ov03 $call check_str ("a $decl of an overload keeps it one",
+  $call field_ty (ov_pre, "o"), "O<[Int]->Int,[Str]->Str>")
+$decl ov04 $call check_str ("a candidate that is an overload fits when one of its own does",
+  $call field_ty ($call concat (ov_pre,
+      "$decl fb $func ($decl b $union (true, false)) 0  $decl o2 $overload (fb, o)  $decl x $call o2 (\"a\")"),
+      "x"), "Str")
+$decl ov05 $call check_str ("an overload passed as an argument resolves against the parameter",
+  $call field_ty ($call concat (ov_pre,
+      "$decl apply $func ($decl k $func ($decl s \"\") \"\") $call k (\"z\")  $decl x $call apply (o)"),
+      "x"), "Str")
+$decl ov06 $call check_str ("no candidate accepting the arguments is an error",
+  $call errs_of ($call concat (ov_pre, "$decl x $call o (true)")), "no candidate of O<[Int]->Int,[Str]->Str> accepts these arguments (§4.8)")
+$decl ov07 $call check_str ("a candidate an earlier one covers is never chosen",
+  $call errs_of ("$decl fi $func ($decl n 0) n  $decl gi $func ($decl n 0) 1  $decl o $overload (fi, gi)"),
+  "this candidate is never chosen: an earlier one accepts every argument it does, and §4.8 is first fit")
+
+$decl done13 $call nl ("all overload tests passed")

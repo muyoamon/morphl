@@ -107,6 +107,9 @@ pub const Value = union(enum) {
     /// read (`deref`), and only projection sees the props. A block base takes the
     /// props into a block of its own instead, and never makes one of these.
     with: *const With,
+    /// §4.8: "At runtime an overload *is* that group" — kept apart from a plain group
+    /// only so a call can resolve it to its first fitting candidate.
+    overload: *const Group,
 
     pub fn typeName(self: Value) []const u8 {
         return switch (self) {
@@ -124,6 +127,7 @@ pub const Value = union(enum) {
             .builtin => "intrinsic",
             .lazy => "prop",
             .with => |w| w.base.typeName(),
+            .overload => "overload",
         };
     }
 
@@ -578,6 +582,7 @@ pub fn equal(a0: Value, b0: Value, depth: u32) bool {
         .ref => |x| b == .ref and b.ref == x, // reference identity
         // §4.12: props have no layout, so an `$impl`'d value compares as its base.
         .with => |x| equal(x.base, b.deref(), depth - 1),
+        .overload => |x| b == .overload and b.overload == x,
         .array => |x| b == .array and b.array == x,
         .func => |x| b == .func and b.func == x,
         .template => |x| b == .template and b.template == x,

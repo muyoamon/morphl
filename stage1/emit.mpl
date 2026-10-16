@@ -388,6 +388,8 @@ $decl c_type $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0) {
       // §7.2: "Groups are laid out elementwise" — a struct whose members
       // have positions instead of names, which is what `.n` indexes.
       $case {$prop tag "group"} ($call ty_name (ts, i)),
+      // §4.8: "at runtime an overload *is* that group", laid out as one.
+      $case {$prop tag "over"} ($call ty_name (ts, i)),
       // §7.5: a value of union type carries a discriminator, and that is the
       // only construct that reads it (§4.7). Except `Bool` — §3.2 makes it
       // the union `true | false`, but its discriminator *is* its value, which
@@ -492,6 +494,7 @@ $decl is_structy $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "union"} ($call not ($call T.same (t, T.t_bool))),
   $case {$prop tag "rec"}   true,
   $case {$prop tag "group"} true,
+  $case {$prop tag "over"}  true,
   $case t false
 )
 
@@ -684,6 +687,8 @@ $decl emit_struct_at $func ($decl st proto_est, $decl all T.tys.node, $decl i 0)
           ($call emit_block_struct (st, all, $call T.fields.val (t.fields), i)),
         $case {$prop tag "group"}
           ($call emit_group_struct (st, all, $call T.tys.val (t.items), i)),
+        $case {$prop tag "over"}
+          ($call emit_group_struct (st, all, $call T.tys.val (t.cands), i)),
         $case {$prop tag "array"}
           ($call emit_array_struct (st, all, $call T.tval (t.elem), i)),
         $case {$prop tag "union"}

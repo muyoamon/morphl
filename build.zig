@@ -230,6 +230,9 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/traits.mpl", .want = "87\n" },
         // ...and across a module boundary, the table in the shared header. 49.
         .{ .src = "stage1/fixtures/traits_split.mpl", .want = "49\n" },
+        // §4.8's `$overload`: first fit, a nested overload, an overload argument, and
+        // `x.i`. 362.
+        .{ .src = "stage1/fixtures/overload.mpl", .want = "362\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -566,6 +569,8 @@ pub fn build(b: *std.Build) void {
         // §6: the shims and tables are emitted from a walk over every body, so the two
         // must find the same implementations in the same order.
         "stage1/fixtures/traits.mpl",
+        // §4.8: lowering resolves an overload with its own types, as inference did.
+        "stage1/fixtures/overload.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);
@@ -663,7 +668,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
         .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
-        .{ .src = "stage1/infer_test.mpl", .last = "all mutual escape tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all overload tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
         .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },

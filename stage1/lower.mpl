@@ -1515,27 +1515,148 @@ $decl wants_ref $func ($decl t0 T.proto_ty) {
 // dereference every argument, so a reference could never reach a reference
 // parameter: inference accepted the call and emit then reported "cannot coerce
 // Int to &Int". The two passes have to agree, and §5.4 says which way.
+// ---------------------------------------------------------- §4.8 overloads, lowered
+//
+// Resolution is first fit over lowering's own types, the rule inference applied: an
+// argument fits a parameter if it is a subtype, still holds a placeholder (§5.5), or is
+// an overload one of whose candidates is. A resolved overload is projection `x.i` (§4.8),
+// and an intrinsic's candidate is the intrinsic at that candidate's type.
+$decl is_over_l $func ($decl t T.proto_ty) $match t ($case {$prop tag "over"} true, $case t false)
+
+// Read off the type as it stands, never through `T.unroll`: an overload set is not a `μ`,
+// and asking `unroll` of every argument's type — a list type is a `μ` — made every call in
+// the compiler pay a cache scan for a question whose answer was always "no".
+$decl over_cands $func ($decl t T.proto_ty)
+  $match t ($case {$prop tag "over"} ($call T.tys.val (t.cands)), $case t T.tys.nil)
+
+// The position of the first candidate `p` accepts, or -1.
+$decl cand_ix $func ($decl cs T.tys.node, $decl p T.proto_ty, $decl i 0) $match cs (
+  $case {$prop tag "cons"}
+    $if ($call T.sub ($call T.tval (cs.head), p)) i
+        ($call cand_ix ($call T.tys.val (cs.tail), p, $call add (i, 1))),
+  $case cs -1
+)
+
+// Candidate `i` of an overload value, at type `c`.
+$decl pick_at $func ($decl st proto_lst, $decl r proto_lres, $decl i 0, $decl c T.proto_ty) {
+  $decl x   r.ir
+  $decl ret $match x (
+      $case {$prop tag "prim"} ($call lres ($call IR.e_prim ($call intern (st, c), x.name), c)),
+      $case x ($call lres ($call IR.e_field ($call intern (st, c), r.ir, i), c))
+    )
+}.ret
+
 $fwd tobj_of
 
 // §6: a trait object is wanted and a value of a conforming type given.
 $decl to_trait $func ($decl want T.proto_ty, $decl got T.proto_ty)
   $if ($call T.is_trait (want)) ($call not ($call T.is_trait ($call deref_ty (got)))) false
 
+// An argument, lowered, made what its parameter wants: storage kept for a storage
+// parameter, a trait object for a trait one (§6), a value otherwise (§5.4) — and an
+// overload resolved against a parameter that wants one type (§4.8). `lval` is the identity
+// at `lres`: while a knot is being solved `lower`'s own result is a placeholder, so the
+// `$if`'s arms have nothing to join on until it is passed through one.
+$decl finish_arg $func ($decl st proto_lst, $decl raw proto_lres, $decl x Pa.proto_node,
+                        $decl pw T.proto_ty) {
+  $decl rl  $call lval (raw)
+  $decl r0  $if ($call to_trait (pw, rl.ty))
+                ($call lval ($call tobj_of (st, raw, x, pw, x)))
+            ($if ($call wants_ref (pw)) ($call lval (raw))
+                ($call as_value (st, raw)))
+  $decl cs  $call over_cands (r0.ty)
+  $decl ix  $if ($call is_over_l (pw)) -1 ($call cand_ix (cs, pw, 0))
+  $decl ret $if ($call lt (ix, 0)) r0
+                ($call pick_at (st, r0, ix, $call T.tval ($call T.tys.nth (cs, ix))))
+}.ret
+
+$decl lres_list $specialize P.list proto_lres
+
+$decl lower_raws $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
+                        $decl acc lres_list.node) $match xs (
+  $case {$prop tag "cons"}
+    $call lower_raws (st, e, xs.tail,
+        $call lres_list.cons ($call lval ($call lower (st, e, xs.head, false)), acc)),
+  $case xs ($call lres_list.reverse (acc, lres_list.nil))
+)
+
+// The rest of a node list, total over it: `finish_raws` walks two lists in step and can
+// narrow only one of them.
+$decl nodes_rest $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"} ($call Pa.nodes.val (xs.tail)),
+  $case xs xs
+)
+
+$decl finish_raws $func ($decl st proto_lst, $decl rs lres_list.node, $decl xs Pa.nodes.node,
+                         $decl ps T.tys.node, $decl acc IR.exprs.node, $decl tys T.tys.node)
+    $match rs (
+  $case {$prop tag "cons"} {
+    $decl r   $call finish_arg (st, rs.head, $call Pa.nodes.nth (xs, 0), $call ps_head (ps))
+    $decl ret $call finish_raws (st, $call lres_list.val (rs.tail), $call nodes_rest (xs),
+                  $call ps_tail (ps), $call IR.exprs.cons (r.ir, acc), $call T.tys.cons (r.ty, tys))
+  }.ret,
+  $case rs ($call args_res ($call IR.exprs.reverse (acc, IR.exprs.nil),
+                            $call T.tys.reverse (tys, T.tys.nil)))
+)
+
+$decl over_vals $func ($decl st proto_lst, $decl rs lres_list.node, $decl acc IR.exprs.node,
+                       $decl tys T.tys.node) $match rs (
+  $case {$prop tag "cons"} {
+    $decl v   $call as_value (st, rs.head)
+    $decl ret $call over_vals (st, $call lres_list.val (rs.tail), $call IR.exprs.cons (v.ir, acc),
+                  $call T.tys.cons (v.ty, tys))
+  }.ret,
+  $case rs ($call args_res ($call IR.exprs.reverse (acc, IR.exprs.nil),
+                            $call T.tys.reverse (tys, T.tys.nil)))
+)
+
+$decl fits_l $func ($decl p T.proto_ty, $decl raw T.proto_ty) {
+  $decl a   $if ($call P.or ($call wants_ref (p), $call T.is_trait (p))) raw ($call deref_ty (raw))
+  $decl ret $if ($call T.has_var (a, 0)) true
+      ($if ($call T.sub (a, p)) true
+      ($if ($call P.and ($call is_over_l (a), $call not ($call is_over_l (p))))
+           ($call lt (-1, $call cand_ix ($call over_cands (a), p, 0))) false))
+}.ret
+
+$decl all_fit_l $func ($decl ps T.tys.node, $decl rs lres_list.node) $match rs (
+  $case {$prop tag "cons"} $match ps (
+      $case {$prop tag "cons"}
+        $if ($call fits_l ($call T.tval (ps.head), rs.head.ty))
+            ($call all_fit_l ($call T.tys.val (ps.tail), $call lres_list.val (rs.tail))) false,
+      $case ps false),
+  $case rs true
+)
+
+// The callee an overloaded call resolves to: first fit, a nested overload looked into.
+$decl resolve_call $func ($decl st proto_lst, $decl f proto_lres, $decl cs T.tys.node,
+                          $decl rs lres_list.node, $decl i 0) $match cs (
+  $case {$prop tag "cons"} {
+    $decl c   $call T.unroll ($call deref_ty ($call T.tval (cs.head)))
+    $decl ret $match c (
+        $case {$prop tag "func"}
+          $if ($call all_fit_l ($call T.tys.val (c.params), rs)) ($call pick_at (st, f, i, c))
+              ($call resolve_call (st, f, $call T.tys.val (cs.tail), rs, $call add (i, 1))),
+        $case {$prop tag "over"} {
+          $decl inner $call pick_at (st, f, i, c)
+          $decl got   $call lval ($call resolve_call (st, inner, $call T.tys.val (c.cands), rs, 0))
+          $decl ret2  $if ($call is_over_l ($call T.unroll (got.ty)))
+                          ($call resolve_call (st, f, $call T.tys.val (cs.tail), rs,
+                              $call add (i, 1)))
+                          got
+        }.ret2,
+        $case c ($call resolve_call (st, f, $call T.tys.val (cs.tail), rs, $call add (i, 1)))
+      )
+  }.ret,
+  // None fits: inference reported it, so the call is left on the overload itself.
+  $case cs f
+)
+
 $decl lower_args $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
                         $decl acc IR.exprs.node, $decl tys T.tys.node,
                         $decl ps  T.tys.node) $match xs (
   $case {$prop tag "cons"} {
-    $decl raw $call lower (st, e, xs.head, false)
-    $decl rl  $call lval (raw)
-    $decl pw  $call ps_head (ps)
-    // `lval` is the identity at `lres`: while this knot is being solved
-    // `lower`'s own result is a placeholder, so the `$if`'s two arms have
-    // nothing to join on until it is passed through one. A trait parameter is §6's
-    // coercion, which makes the object from the argument where it stands.
-    $decl r   $if ($call to_trait (pw, rl.ty))
-                  ($call lval ($call tobj_of (st, raw, xs.head, pw, xs.head)))
-              ($if ($call wants_ref (pw)) ($call lval (raw))
-                  ($call as_value (st, raw)))
+    $decl r   $call finish_arg (st, $call lower (st, e, xs.head, false), xs.head,
+                  $call ps_head (ps))
     $decl ret $call lower_args (st, e, xs.tail,
         $call IR.exprs.cons (r.ir, acc), $call T.tys.cons (r.ty, tys),
         $call ps_tail (ps))
@@ -1934,6 +2055,16 @@ $decl lower_projidx $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.pro
           $decl ret3 $call lres ($call IR.e_field ($call intern (st, fty), tgt.ir, k), fty)
         }.ret3
             ($call lres ($call IR.e_unit ($call err (st, "group index is out of range", n)),
+                T.t_bot))
+      }.ret2,
+      // §4.8: an overload is its group of candidates, and `x.i` names one.
+      $case {$prop tag "over"} {
+        $decl cs   $call T.tys.val (tt.cands)
+        $decl nc   $call T.tys.length (cs, 0)
+        $decl ret2 $if ($call and ($call lt (0, idx), $call not ($call lt (nc, idx))))
+            ($call pick_at (st, tgt, $call isub (idx, 1),
+                $call T.tval ($call T.tys.nth (cs, $call isub (idx, 1)))))
+            ($call lres ($call IR.e_unit ($call err (st, "overload index is out of range", n)),
                 T.t_bot))
       }.ret2,
       $case tt ($call lres ($call IR.e_unit ($call err (st,
@@ -3340,6 +3471,14 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl sy   $call str_of ($call op (n, 0))
       $decl ret2 $call lres ($call IR.e_extern ($call intern (st, sg.ty), sy), sg.ty)
     }.ret2
+    // §4.8: at run time an overload *is* the group of its candidates, typed as an
+    // overload set so a call or a typed position can resolve it.
+    ($if ($call eq_str (k, "overload")) {
+      $decl rs   $call lower_raws (st, e, $call group_items ($call op (n, 0)), lres_list.nil)
+      $decl vs   $call over_vals (st, rs, IR.exprs.nil, T.tys.nil)
+      $decl ty   $call T.t_over (vs.tys)
+      $decl ret2 $call lres ($call IR.e_group ($call intern (st, ty), vs.irs), ty)
+    }.ret2
     // §4.13: the trait of the operand's type, with the operand as the referent.
     ($if ($call eq_str (k, "traitsof")) {
       $decl raw  $call lval ($call lower (st, e, $call op (n, 0), false))
@@ -3365,16 +3504,24 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                      ($call IR.e_copy ($call intern (st, rt), bx.ir))
       $decl ret2 $call lres3 (ir, rt, ovr.mod)
     }.ret2
+    // §4.8: an overload as the callee resolves to its first fitting candidate — the
+    // arguments lowered first, as they stand, then made what that candidate's parameters
+    // want; lowering them twice could lift a `$func` literal twice.
     ($if ($call eq_str (k, "call")) {
-      $decl f  $call as_value (st, $call lower (st, e, $call op (n, 0), false))
-      $decl as $call lower_args (st, e, $call group_items ($call op (n, 1)),
-                                 IR.exprs.nil, T.tys.nil, $call params_of (f.ty))
+      $decl f0 $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+      $decl ov $call is_over_l (f0.ty)
+      $decl xs $call group_items ($call op (n, 1))
+      $decl rs $if ov ($call lower_raws (st, e, xs, lres_list.nil)) lres_list.nil
+      $decl f  $if ov ($call resolve_call (st, f0, $call over_cands (f0.ty), rs, 0)) f0
+      $decl ps $call params_of (f.ty)
+      $decl as $if ov ($call finish_raws (st, rs, xs, ps, IR.exprs.nil, T.tys.nil))
+                      ($call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps))
       $decl ty   $call result_of (f.ty)
       $decl cf   $call short_callee (st, f, $call IR.exprs.length (as.irs, 0), n)
       $decl ret2 $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
     }.ret2
       ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-           " is not lowered yet")), n)), T.t_unit))))))))))))))))))
+           " is not lowered yet")), n)), T.t_unit)))))))))))))))))))
 }.ret
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,

@@ -621,6 +621,12 @@ $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n prot
             0), n.index))))
             ($call T.tys.nth (tt.items, $call sub (n.index, 1)))
             ($call err (cx, "group index is out of range", n)),
+      // §4.8: an overload is its group of candidates, and `x.i` names one.
+      $case {$prop tag "over"}
+        $if ($call and ($call lt (0, n.index), $call not ($call lt ($call T.tys.length (tt.cands,
+            0), n.index))))
+            ($call T.tys.nth (tt.cands, $call sub (n.index, 1)))
+            ($call err (cx, "overload index is out of range", n)),
       $case tt ($call err (cx, $call concat ("cannot index into ", $call T.show (tt)), n))
     )
 }.ret
@@ -1534,6 +1540,148 @@ $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr, -1)
 }.ret
 
+// ----------------------------------------------------------------- §4.8 overloads
+
+$decl is_over $func ($decl t T.proto_ty) $match t ($case {$prop tag "over"} true, $case t false)
+
+// An argument as a parameter of type `p` sees it: storage where `p` wants storage or a
+// trait object (§5.4, §6), a value everywhere else.
+$decl arg_as $func ($decl p T.proto_ty, $decl raw T.proto_ty)
+  $if ($call or ($call is_ref (p), $call T.is_trait (p))) raw ($call deref_ty (raw))
+
+$fwd over_fits
+
+// §4.8: whether an argument fits a parameter — an overload argument fits when one of its
+// candidates does, and §5.5 lets an argument still holding a placeholder fit anything
+// (it resolves "as if it were ⊥", and the constraint is checked once the knot is tied).
+$decl arg_fits $func ($decl p T.proto_ty, $decl raw T.proto_ty) {
+  $decl a   $call arg_as (p, raw)
+  $decl ret $if ($call has_free_var (a)) true
+      ($if ($call T.sub (a, p)) true
+      ($if ($call and ($call is_over (a), $call not ($call is_over (p))))
+           ($call over_fits (p, a)) false))
+}.ret
+
+// The first candidate of overload `o` that parameter `p` accepts, or ⊥ (§4.8).
+$decl cand_for $func ($decl cs T.tys.node, $decl p T.proto_ty) $match cs (
+  $case {$prop tag "cons"}
+    $if ($call T.sub ($call T.tval (cs.head), p)) ($call T.tval (cs.head))
+        ($call cand_for ($call T.tys.val (cs.tail), p)),
+  $case cs T.t_bot
+)
+
+$decl over_fits $func ($decl p T.proto_ty, $decl o T.proto_ty) $match o (
+  $case {$prop tag "over"}
+    $call not ($call T.same ($call cand_for ($call T.tys.val (o.cands), p), T.t_bot)),
+  $case o false
+)
+
+// Every argument fits its parameter, and there are no more arguments than parameters
+// (fewer is fine: the defaults fill in, §3.4).
+$decl args_fit $func ($decl ps T.tys.node, $decl rs T.tys.node) $match rs (
+  $case {$prop tag "cons"} $match ps (
+      $case {$prop tag "cons"}
+        $if ($call arg_fits ($call T.tval (ps.head), $call T.tval (rs.head)))
+            ($call args_fit ($call T.tys.val (ps.tail), $call T.tys.val (rs.tail))) false,
+      $case ps false),
+  $case rs true
+)
+
+// §4.8: the **first** candidate whose parameters accept the arguments, left to right; a
+// candidate that is itself an overload fits if any of its own do. ⊥ when none does.
+$decl pick_cand $func ($decl cs T.tys.node, $decl rs T.tys.node) $match cs (
+  $case {$prop tag "cons"} {
+    $decl c   $call T.unroll ($call deref_ty ($call T.tval (cs.head)))
+    $decl hit $match c (
+        $case {$prop tag "func"} $if ($call args_fit ($call T.tys.val (c.params), rs)) c T.t_bot,
+        $case {$prop tag "over"} ($call pick_cand ($call T.tys.val (c.cands), rs)),
+        $case c T.t_bot
+      )
+    $decl ret $if ($call T.same (hit, T.t_bot)) ($call pick_cand ($call T.tys.val (cs.tail), rs))
+                  hit
+  }.ret,
+  $case cs T.t_bot
+)
+
+// Each argument's type, as written, typed to choose a candidate — quietly, with what typing
+// records rolled back, since `check_args` types them again against the chosen one.
+$decl arg_types $func ($decl cx proto_ctx, $decl e env.node, $decl as Pa.nodes.node,
+    $decl acc T.tys.node) $match as (
+  $case {$prop tag "cons"}
+    $call arg_types (cx, e, $call Pa.nodes.val (as.tail),
+        $call T.tys.cons ($call infer (cx, e, as.head), acc)),
+  $case as ($call T.tys.reverse (acc, T.tys.nil))
+)
+
+$decl choose $func ($decl cx proto_ctx, $decl e env.node, $decl o T.proto_ty,
+    $decl as Pa.nodes.node) $match o (
+  $case {$prop tag "over"} {
+    $decl q0  $call bval (cx.quiet)
+    $decl es  $call Pa.diags.val (cx.errs)
+    $decl ds  $call eval_defer (cx.defer)
+    $decl pc  $call pesc_list.val (cx.pesc)
+    $decl hu  $set cx.quiet true
+    $decl rs  $call arg_types (cx, e, as, T.tys.nil)
+    $decl b1  $set cx.quiet q0
+    $decl b2  $set cx.errs es
+    $decl b3  $set cx.defer ds
+    $decl b4  $set cx.pesc pc
+    $decl ret $call pick_cand ($call T.tys.val (o.cands), rs)
+  }.ret,
+  $case o T.t_bot
+)
+
+// §4.8's lint: a candidate whose parameters are a subtype of an earlier one's is never
+// chosen, since first fit takes the earlier one for every argument it accepts.
+$decl covers $func ($decl a T.tys.node, $decl b T.tys.node) $match b (
+  $case {$prop tag "cons"} $match a (
+      $case {$prop tag "cons"}
+        $if ($call T.sub ($call T.tval (b.head), $call T.tval (a.head)))
+            ($call covers ($call T.tys.val (a.tail), $call T.tys.val (b.tail))) false,
+      $case a false),
+  $case b ($call T.tys.is_nil (a))
+)
+
+$decl shadowed_by $func ($decl earlier T.tys.node, $decl c T.proto_ty) $match earlier (
+  $case {$prop tag "cons"} {
+    $decl x   $call T.unroll ($call T.tval (earlier.head))
+    $decl y   $call T.unroll (c)
+    $decl hit $match x (
+        $case {$prop tag "func"} $match y (
+            $case {$prop tag "func"}
+              ($call covers ($call T.tys.val (x.params), $call T.tys.val (y.params))),
+            $case y false),
+        $case x false
+      )
+    $decl ret $if hit true ($call shadowed_by ($call T.tys.val (earlier.tail), c))
+  }.ret,
+  $case earlier false
+)
+
+$decl lint_cands $func ($decl cx proto_ctx, $decl ns Pa.nodes.node, $decl ts T.tys.node,
+    $decl seen T.tys.node) $match ns (
+  $case {$prop tag "cons"} $match ts (
+      $case {$prop tag "cons"} {
+        $decl t   $call T.tval (ts.head)
+        $decl chk $if ($call shadowed_by ($call T.tys.reverse (seen, T.tys.nil), t))
+            ($call err (cx, "this candidate is never chosen: an earlier one accepts every argument it does, and §4.8 is first fit", ns.head))
+            T.t_unit
+        $decl ret $call lint_cands (cx, $call Pa.nodes.val (ns.tail), $call T.tys.val (ts.tail),
+                      $call T.tys.cons (t, seen))
+      }.ret,
+      $case ts ()),
+  $case ns ()
+)
+
+// §4.8: `$overload cands` is the group at run time, and its type marks it an overload set,
+// ordered as written.
+$decl infer_overload $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl cs  $call group_items ($call op (n, 0))
+  $decl ts  $call arg_types (cx, e, cs, T.tys.nil)
+  $decl lnt $call lint_cands (cx, cs, ts, T.tys.nil)
+  $decl ret $call T.t_over (ts)
+}.ret
+
 $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.node,
                         $decl as Pa.nodes.node, $decl n Pa.proto_node, $decl i 1,
                         $decl es T.cints.node, $decl pd -1) $match as (
@@ -1544,8 +1692,15 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
         // other parameter wants a value, so the argument dereferences.
         // So does a trait parameter (§6): a trait object refers to its argument, and the
         // reference's qualifier is the object's.
-        $decl at  $if ($call or ($call is_ref (ps.head), $call T.is_trait (ps.head))) raw
-                      ($call deref_ty (raw))
+        $decl at0 $call arg_as (ps.head, raw)
+        // §4.8: an overload passed where one type is expected resolves to the first
+        // candidate the parameter accepts; passed to an overload parameter it stays one.
+        $decl at  $if ($call and ($call is_over (at0), $call not ($call is_over (ps.head))))
+                      ($match at0 (
+                          $case {$prop tag "over"}
+                            ($call cand_for ($call T.tys.val (at0.cands), ps.head)),
+                          $case at0 at0))
+                      at0
         $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
         $decl cw  $call coerce_why (as.head, raw, ps.head)
         $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1)))
@@ -1596,6 +1751,19 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
         // A `$decl` initializer keeps a reference (§5.4), and `result` is
         // storage now, so the type has to be taken out of it here.
         $decl ret2  $if ok ($call T.tval (ft.result)) T.t_bot
+      }.ret2,
+      // §4.8: the first candidate accepting the arguments, then checked as an ordinary call.
+      $case {$prop tag "over"} {
+        $decl c    $call choose (cx, e, ft, args)
+        $decl ret2 $match c (
+            $case {$prop tag "func"} {
+              $decl ok   $call check_args (cx, e, c.params, args, n, 1, $call T.cints.val (c.esc),
+                             -1)
+              $decl ret3 $if ok ($call T.tval (c.result)) T.t_bot
+            }.ret3,
+            $case c ($call err (cx, $call concat ("no candidate of ", $call concat ($call T.show (ft),
+                " accepts these arguments (§4.8)")), n))
+          )
       }.ret2,
       // §3.6: a call on ⊥ stays ⊥ rather than reporting a second error.
       $case {$prop tag "bottom"} T.t_bot,
@@ -2901,8 +3069,9 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "extern"))     ($call infer_extern (cx, e, n))
     ($if ($call eq_str (k, "traitsof"))   ($call infer_traitsof (cx, e, n))
     ($if ($call eq_str (k, "impl"))       ($call infer_impl (cx, e, n))
+    ($if ($call eq_str (k, "overload"))   ($call infer_overload (cx, e, n))
          ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-    )))))))))))))))))
+    ))))))))))))))))))
 }.ret
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (

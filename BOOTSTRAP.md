@@ -60,12 +60,12 @@ Two defects had to go first, both the same shape and neither visible to stage 0'
 | `$try e pat` | `pat` restricted to `err` / `none` / another prop-tagged block — §1.3 |
 | `$impl x trait override` | none, evaluated dynamically: `x`'s value with `override`'s props attached (SPEC §4.12). Stage 1's own source does not use it; it is in the subset so that trait programs run under both stages and keep the stage-0/stage-2 cross-check every other fixture has |
 | `$traitsof e` | none, likewise: the value and `e`'s own props (SPEC §4.13) |
+| `$overload cands` | none, evaluated dynamically: the group, resolved at a call to the first candidate whose parameters' defaults — the examples that fix their types (§3.4) — shape-match the arguments, as a `$match` pattern does; a boolean default accepts any boolean. Stage 1's own source does not use it, and the bootstrap root block stays monomorphic (§2); it is in the subset so overload programs run under both stages and keep the stage-0 cross-check |
 
 ### 1.2 Out of the subset
 
 | Excluded | Why, and what to write instead |
 |---|---|
-| `$overload` | The bootstrap root block is monomorphic (§2), so no overload set ever exists. Removes first-fit type-level resolution *and* the `R`-as-`⊥` rule (§5.5) from stage 0 entirely |
 | `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap |
 | `$const`, all `&const` | Nothing in stage 1 needs a read-only view. (This exclusion used to be justified by fat references; under §5.1's prefix rule a `&const` upcast is free and thin, so the reason is now only that it is unused.) Use `&T` or `$mut`. |
 | `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and converted by the backend when emitting C — so the lexer still lexes them |
