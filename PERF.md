@@ -2636,3 +2636,51 @@ lowering with a measured 3.3x ceiling, it pays on the first build as well as eve
 one, it invalidates nothing, and it attacks the very super-linearity that makes
 incrementality worth having. An IR cache built on top of today's interning would be caching
 a cost that should not exist.
+
+### Where the compiled compiler's memory goes, and `put_mod`: −27%
+
+Measured on a self-emit by instrumenting the *emitted* C (no change to `stage1/`): every
+`mpl_alloc((int64_t)sizeof(T))` site counts its bytes under `T`, `mpl_alloc` allocates
+through Boehm's `GC_MALLOC`, and each phase entry collects and reports what is still
+reachable. The output is byte-identical to an uninstrumented run, so this is the real
+workload. The instrument is `meas/instrument.py` in a session scratchpad: a sed-level
+rewrite of `bootstrap/mplc.c` plus `-lgc`, cheap to recreate.
+
+| phase | allocated | share | live at its end |
+|---|---|---|---|
+| parse | 0.1 MB | ~0% | 0.3 MB |
+| infer | 742 MB | 22% | 116 MB |
+| lower | 2,423 MB | 71% | 225 MB |
+| verify | 44 MB | 1% | 257 MB |
+| emit | 211 MB | 6% | 230 MB |
+| **total** | **3,421 MB** | | peak live 257 MB |
+
+**About 92% of everything allocated is garbage by the next phase boundary**, and since the
+compiled runtime never frees (BOOTSTRAP §3), its peak memory is the whole 3.4 GB. By type,
+the largest single item was one list:
+
+| bytes | share | what |
+|---|---|---|
+| 912 MB | 26.7% | the module list, rebuilt per update (`put_mod`) — 7.0M cells of 136 B |
+| 939 MB | 27.5% | untyped: strings and arrays |
+| 331 MB | 9.7% | environment lists (`benv` bindings) |
+| 196 MB | 5.7% | lists of types |
+
+**`put_mod` was the O(n) update of an immutable list, again** — the shape of `append_ty`
+and `put_lifted`. `save_mod` rebuilt `st.mods` up to the entry on every update, though the
+list answers only `find_mod_path`, by an entry's `id` and `path`, which never change after
+registration; every lookup by id already went to the `modix` trie. So `save_mod` now
+updates the trie alone, the list keeps each module as registered, and the dead list-based
+`find_mod` is gone.
+
+| self-emit | before | after |
+|---|---|---|
+| allocated | 3,421 MB | **2,505 MB** (−27%) |
+| lowering's share | 2,423 MB | 1,523 MB |
+| time (mean of 5, interleaved) | 9.59 s | **8.98 s** (−6%) |
+
+The emitted C is byte-identical everywhere. **What it says about §7.6:** the biggest cost
+was an algorithm, not a lifetime, and what garbage is left is short-lived and interleaved
+with live data inside one phase — so whole-phase arenas would reclaim little without
+lowering being restructured to build its keepers under an outer allocator. The untyped
+919 MB is the next thing to attribute, by call site, before any allocator design.

@@ -418,13 +418,6 @@ $decl find_mod_path $func ($decl xs mods_list.node, $decl p "") $match xs (
   $case xs mods_list.nil
 )
 
-$decl find_mod $func ($decl xs mods_list.node, $decl i 0) $match xs (
-  $case {$prop tag "cons"}
-    $if ($call eq_int (xs.head.id, i)) ($call mods_list.cons (xs.head, mods_list.nil))
-        ($call find_mod (xs.tail, i)),
-  $case xs mods_list.nil
-)
-
 $decl find_mprop $func ($decl xs mprops.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.name, n)) ($call mprops.cons (xs.head, mprops.nil))
@@ -457,10 +450,10 @@ $decl proto_opq $call opq_ent (0, 0, "")
 $decl opq_list  $specialize P.list proto_opq
 
 // The module list by id. `find_mod` used to scan `st.mods` comparing ids — 7.4% of a
-// self-emit once types compared in O(1) — so the list is indexed by a trie on the id's
-// bits. Kept beside the list, not instead of it: the list is what is iterated and what
-// `put_snap` restores, and the index is changed at exactly the three places the list is
-// (`fresh_mod_ic`, `save_mod`, `put_snap`). A leaf holds the one entry for its id.
+// self-emit once types compared in O(1) — so the entries are indexed by a trie on the id's
+// bits, which holds the *current* version of each. The list beside it holds each module
+// as registered and answers only `find_mod_path`, by fields that never change; both are
+// restored together by `put_snap`. A leaf holds the one entry for its id.
 $decl mxtrie $union (
   { $prop tag "leaf"   $decl items $alloc mods_list.node },
   { $prop tag "branch" $decl lo $alloc mxtrie  $decl hi $alloc mxtrie }
@@ -1013,18 +1006,14 @@ $decl eval_mods $func ($decl x mods_list.node) x
 // roll the module table back for a recursive member's first pass (§5.5), and
 // restoring a list of entries that hold *pointers* would restore the pointers
 // and keep the mutations. Copying the prefix has no such hazard.
-$decl put_mod $func ($decl xs mods_list.node, $decl m proto_mod, $decl acc mods_list.node)
-  $match xs (
-    $case {$prop tag "cons"}
-      $if ($call eq_int (xs.head.id, m.id))
-          ($call mods_list.reverse (acc, $call mods_list.cons (m, xs.tail)))
-          ($call put_mod (xs.tail, m, $call mods_list.cons (xs.head, acc))),
-    $case xs ($call mods_list.reverse (acc, mods_list.nil))
-  )
-
+// An updated entry goes to the index only. The list answers exactly one question —
+// which module a resolved path is (`find_mod_path`, for §4.14's load-once) — and an
+// entry's `id` and `path` never change after registration, so the list never needs the
+// new version. It used to get one anyway: `put_mod` rebuilt the list up to the entry on
+// every save, which was 912 MB of a self-emit's 3.4 GB — 27% of everything the compiled
+// compiler allocated, in 7.0M cons cells of 136 bytes.
 $decl save_mod $func ($decl st proto_lst, $decl m proto_mod) {
   $decl x   $set st.modix ($call mx_put ($call mx_val (st.modix), m.id, 0, m))
-  $decl s   $set st.mods ($call put_mod (st.mods, m, mods_list.nil))
   $decl ret 0
 }.ret
 
@@ -1225,9 +1214,9 @@ $decl reserve_lifted $func ($decl st proto_lst) {
   $decl ret $call add (st.fnbase, i)
 }.ret
 
-// Replace one entry, copying only as far as it and **sharing the tail** — the
-// same shape as `put_mod`. `st.lifted` is newest first, so the entry just
-// reserved is at position 0 and the common case costs nothing.
+// Replace one entry, copying only as far as it and **sharing the tail**. `st.lifted`
+// is newest first, so the entry just reserved is at position 0 and the common case
+// costs nothing.
 $decl replace_at $func ($decl xs IR.fns.node, $decl i 0, $decl f IR.proto_fn,
                         $decl acc IR.fns.node) $match xs (
   $case {$prop tag "cons"}
