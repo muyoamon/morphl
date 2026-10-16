@@ -484,7 +484,7 @@ This is checked once the knot is tied, alongside the overload constraints above.
 
 ### 5.7 Type-only positions
 
-Some positions hold an expression that is **never evaluated**; only its static type is used: `$match` patterns, `$union` members after the first, template bounds, `$impl`'s trait (§4.12), and (future) the `$fwd` type operand. In these positions a name may be referenced while its own declaration — or an enclosing one — is still in progress. It takes the placeholder `R` and the knot of §5.5 applies. This is how recursive data types are named as bounds and defaults without a helper function, and how F-bounded template bounds work.
+Some positions hold an expression that is **never evaluated**; only its static type is used: `$match` patterns, `$try`'s pattern (§4.15), `$union` members after the first, template bounds, a parameter's default where its `$func` is written, `$extern`'s signature (§4.16), `$impl`'s trait (§4.12), and (future) the `$fwd` type operand. A default is type-only where it is written — it fixes its parameter's type there (§3.4) — and is evaluated only by a call that omits the argument, in the callee's scope. In these positions a name may be referenced while its own declaration — or an enclosing one — is still in progress. It takes the placeholder `R` and the knot of §5.5 applies. This is how recursive data types are named as bounds and defaults without a helper function, and how F-bounded template bounds work.
 
 
 ---
