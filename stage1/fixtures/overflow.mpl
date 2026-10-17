@@ -1,7 +1,7 @@
-// §3.1: `Int` overflow panics, and so does §8's division by zero — in both
-// implementations, with one message. The argument picks the case; `ok` is the one
-// that does not panic, since `mod` by -1 is 0 even at the bottom of the range, where
-// C's `%` is undefined.
+// §3.1: `Int` overflow panics, and so do §8's division by zero and a shift count
+// outside 0..63 — in both implementations, with one message. The argument picks the
+// case; `ok` is the one that does not panic, since `mod` by -1 is 0 even at the
+// bottom of the range, where C's `%` is undefined.
 //
 // The operands go through `id` so that nothing about them is constant.
 
@@ -26,7 +26,10 @@ $decl pick $func ($decl k "")
   // Through an alias of the overloaded intrinsic, and through it as a value.
   ($if ($call eq_str (k, "alias")) ($call isub ($call id (small), 1))
   ($if ($call eq_str (k, "value")) ($call apply (add, $call id (big), 1))
-       ($call mod ($call id (small), -1))))))))))
+  // A shift count outside 0..63.
+  ($if ($call eq_str (k, "shl"))  ($call shl (1, $call id (64)))
+  ($if ($call eq_str (k, "shr"))  ($call shr (1, $call id (-1)))
+       ($call mod ($call id (small), -1))))))))))))
 
 $decl main $func () {
   $decl argv $call args ()

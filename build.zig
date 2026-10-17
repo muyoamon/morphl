@@ -239,6 +239,10 @@ pub fn build(b: *std.Build) void {
         // round-trips, and an exact `mod`. Stage 0 leaves `Float` out (BOOTSTRAP §1.2).
         .{ .src = "stage1/fixtures/float.mpl", .stage0 = false,
            .want = "0.30000000000000004 0.25 -1.5 2.0 7.0 6.0 0.75 9.999999999999999e+29 1.0 inf nan 126\n" },
+        // §8's wrapping, saturating and bitwise intrinsics at the edges of the range, each
+        // also passed as a value. Stage 0 used to remember the builtin a parameter held at
+        // its first call, which this is the first fixture to notice.
+        .{ .src = "stage1/fixtures/bits.mpl", .want = "-9223372036854775808 9223372036854775807 9223372036854775805 9223372036854775807 -9223372036854775808 -9223372036854775808 9223372036854775807 42 8 14 6 -9223372036854775808 -9223372036854775808 -4611686018427387904 -4 -1 1 -9223372036854775807 9223372036854775807 6 10 68\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole
@@ -311,6 +315,8 @@ pub fn build(b: *std.Build) void {
             .{ .case = "neg", .msg = "panic: Int overflow in neg" },
             .{ .case = "alias", .msg = "panic: Int overflow in sub" },
             .{ .case = "value", .msg = "panic: Int overflow in add" },
+            .{ .case = "shl", .msg = "panic: shift count 64 out of range in shl" },
+            .{ .case = "shr", .msg = "panic: shift count -1 out of range in shr" },
         }) |c| {
             const run_bin = std.Build.Step.Run.create(b, "run the overflow fixture");
             run_bin.addFileArg(bin);
@@ -636,6 +642,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/overload.mpl",
         // §8: the candidate an intrinsic call becomes is read off the callee's type.
         "stage1/fixtures/float.mpl",
+        "stage1/fixtures/bits.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);

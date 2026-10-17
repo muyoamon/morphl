@@ -547,6 +547,8 @@ $decl at_t     $call T.t_func ($call T.tys.cons (arr_str, $call T.tys.cons (T.t_
 $decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 
 $decl root_env
+  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
+  $call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind (
   $call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
@@ -556,6 +558,9 @@ $decl root_env
   $call bind ($call bind (env.nil,
     "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
     "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
+    "add_wrap", ii_i), "sub_wrap", ii_i), "mul_wrap", ii_i),
+    "add_sat", ii_i), "sub_sat", ii_i), "mul_sat", ii_i),
+    "band", ii_i), "bor", ii_i), "bxor", ii_i), "shl", ii_i), "shr", ii_i),
     "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "len", s_i),
     "slice", sii_s), "byte", si_i), "int_to_str", i_s),
     "str_to_int", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_int)),

@@ -135,6 +135,64 @@ fn negFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return .{ .int = -a };
 }
 
+/// §8's explicit `Int` arithmetic: wrapping is two's complement modulo 2^64,
+/// saturating clamps to `Int`'s range. Neither panics, which is their point.
+fn addWrapFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "add_wrap", span)) +% (try wantInt(rt, args, 1, "add_wrap", span)) };
+}
+
+fn subWrapFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "sub_wrap", span)) -% (try wantInt(rt, args, 1, "sub_wrap", span)) };
+}
+
+fn mulWrapFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "mul_wrap", span)) *% (try wantInt(rt, args, 1, "mul_wrap", span)) };
+}
+
+fn addSatFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "add_sat", span)) +| (try wantInt(rt, args, 1, "add_sat", span)) };
+}
+
+fn subSatFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "sub_sat", span)) -| (try wantInt(rt, args, 1, "sub_sat", span)) };
+}
+
+fn mulSatFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "mul_sat", span)) *| (try wantInt(rt, args, 1, "mul_sat", span)) };
+}
+
+/// §8's bitwise operators, on `Int`'s two's complement representation.
+fn bandFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "band", span)) & (try wantInt(rt, args, 1, "band", span)) };
+}
+
+fn borFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "bor", span)) | (try wantInt(rt, args, 1, "bor", span)) };
+}
+
+fn bxorFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    return .{ .int = (try wantInt(rt, args, 0, "bxor", span)) ^ (try wantInt(rt, args, 1, "bxor", span)) };
+}
+
+/// A shift count outside 0..63 panics, as `Int`'s other failures do. `shl` discards
+/// the bits shifted out — it is a bit operation, not arithmetic — and `shr` is
+/// arithmetic, copying the sign bit in.
+fn shiftCount(rt: *Runtime, args: []const Value, name: []const u8, span: Span) Error!u6 {
+    const n = try wantInt(rt, args, 1, name, span);
+    if (n < 0 or n > 63) return rt.panic(span, "shift count {d} out of range in {s}", .{ n, name });
+    return @intCast(n);
+}
+
+fn shlFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const a = try wantInt(rt, args, 0, "shl", span);
+    return .{ .int = a << try shiftCount(rt, args, "shl", span) };
+}
+
+fn shrFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const a = try wantInt(rt, args, 0, "shr", span);
+    return .{ .int = a >> try shiftCount(rt, args, "shr", span) };
+}
+
 fn ltFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const a = try wantInt(rt, args, 0, "lt", span);
     const b = try wantInt(rt, args, 1, "lt", span);
@@ -407,6 +465,17 @@ const table = [_]value.Builtin{
     .{ .name = "neg", .arity = 1, .func = negFn },
     .{ .name = "lt", .arity = 2, .func = ltFn },
     .{ .name = "eq", .arity = 2, .func = eqFn },
+    .{ .name = "add_wrap", .arity = 2, .func = addWrapFn },
+    .{ .name = "sub_wrap", .arity = 2, .func = subWrapFn },
+    .{ .name = "mul_wrap", .arity = 2, .func = mulWrapFn },
+    .{ .name = "add_sat", .arity = 2, .func = addSatFn },
+    .{ .name = "sub_sat", .arity = 2, .func = subSatFn },
+    .{ .name = "mul_sat", .arity = 2, .func = mulSatFn },
+    .{ .name = "band", .arity = 2, .func = bandFn },
+    .{ .name = "bor", .arity = 2, .func = borFn },
+    .{ .name = "bxor", .arity = 2, .func = bxorFn },
+    .{ .name = "shl", .arity = 2, .func = shlFn },
+    .{ .name = "shr", .arity = 2, .func = shrFn },
     .{ .name = "to_float", .arity = 1, .func = toFloatFn },
     .{ .name = "to_int", .arity = 1, .func = toIntFn },
     .{ .name = "to_str", .arity = 1, .func = toStrFn },
@@ -444,6 +513,8 @@ test "the root block is complete per BOOTSTRAP 2" {
         // Numeric, comparison, strings, conversion, arrays, control.
         "add",        "sub",        "mul",   "div",  "mod",   "neg",   "lt",
         "eq",         "to_float",   "to_int", "to_str",
+        "add_wrap",   "sub_wrap",   "mul_wrap", "add_sat", "sub_sat", "mul_sat",
+        "band",       "bor",        "bxor",  "shl",  "shr",
         "eq_int",     "eq_str",     "concat", "len", "slice", "byte",
         "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.

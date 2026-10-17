@@ -1152,7 +1152,7 @@ pub const Interp = struct {
                     break :blk self.callBuiltin(b, pargs, node.span);
                 }
                 const callee0 = (try self.eval(&ops[0], scope)).deref();
-                self.notePrim(&ops[0], callee0);
+                self.notePrim(&ops[0], callee0, scope);
                 const base = self.arg_top;
                 defer self.arg_top = base;
                 const args = try self.evalArgs(&ops[1], scope);
@@ -1443,14 +1443,15 @@ pub const Interp = struct {
     /// `eq_int` alone being 57%. The resolution is the work; the comparison
     /// after it is one instruction.
     ///
-    /// What a *given call site* sees is fixed. §4.10 makes visibility
-    /// positional and a node sits at one position, so the bindings in scope
-    /// where it is evaluated are the same on every evaluation: a `$func` body
-    /// resolves against its finished block, an initializer against what
-    /// precedes it, and neither changes between runs of that node. So the first
-    /// resolution stands for all of them. `MORPHL_VERIFY_PRIM=1` re-resolves on
-    /// every hit and fails on a mismatch, which is how that is checked rather
-    /// than asserted.
+    /// Which *binding* a given call site finds is fixed — §4.10 makes visibility
+    /// positional and a node sits at one position — but the binding's *value* is
+    /// fixed only where its scope is evaluated once. A parameter or a function's
+    /// local is a fresh slot per call, so `$func (f …) $call f (…)` called with
+    /// `add_wrap` and then `mul_sat` must call `mul_sat` the second time; caching
+    /// it by node called `add_wrap` for ever. So only a name held by the root
+    /// block, or by a file's or module's top level (whose parent is the root,
+    /// and whose `$decl`s run once), is remembered. `MORPHL_VERIFY_PRIM=1`
+    /// re-resolves on every hit and fails on a mismatch.
     fn cachedPrim(self: *Interp, callee: *const Node, scope: *Scope) Error!?*const value.Builtin {
         if (no_prim_cache or callee.data != .name) return null;
         const b = self.prim_cache.get(callee) orelse return null;
@@ -1463,8 +1464,18 @@ pub const Interp = struct {
         return b;
     }
 
-    fn notePrim(self: *Interp, callee: *const Node, v: Value) void {
+    fn notePrim(self: *Interp, callee: *const Node, v: Value, scope: *Scope) void {
         if (callee.data != .name or v != .builtin) return;
+        const name = callee.data.name;
+        var s: ?*Scope = scope;
+        const holder: *Scope = while (s) |sc| : (s = sc.parent) {
+            if (sc.findLocal(name) != null) break sc;
+            for (sc.props) |p| {
+                if (Scope.nameEql(p.name, name)) break;
+            } else continue;
+            break sc;
+        } else return;
+        if (holder != self.root and holder.parent != self.root) return;
         self.prim_cache.put(self.arena, callee, v.builtin) catch {};
     }
 
@@ -1613,7 +1624,7 @@ pub const Interp = struct {
                         return .{ .value = try self.callBuiltin(b, pargs, node.span) };
                     }
                     const callee0 = (try self.eval(&ops[0], scope)).deref();
-                    self.notePrim(&ops[0], callee0);
+                    self.notePrim(&ops[0], callee0, scope);
                     const base = self.arg_top;
                     // `bindParams` copies the arguments out, and an intrinsic
                     // has returned by the time this unwinds, so the scratch is
@@ -2446,6 +2457,16 @@ test "a prop initialized from an enclosing scope is not shared between evaluatio
         \\$decl b $call box (2)
         \\$decl r $call add (a.tag, b.tag)
     , "r", 3);
+}
+
+test "an intrinsic reached through a parameter is not remembered by call site" {
+    // `cachedPrim` remembers the builtin a callee name resolved to. A parameter
+    // is a fresh slot per call, so remembering it made the second call below
+    // run `add` again: 7 + 7 rather than 7 + 12.
+    try expectInt(
+        \\$decl apply $func ($decl f $func ($decl a 0, $decl b 0) 0) $call f (3, 4)
+        \\$decl r $call add ($call apply (add), $call apply (mul))
+    , "r", 19);
 }
 
 test "a prop that is a literal is shared, and still reads as itself (4.10)" {
