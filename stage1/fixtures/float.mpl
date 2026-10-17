@@ -50,6 +50,7 @@ $decl main $func () {
   $decl r4  $call b2i ($call eq ($call add (0.5, 0.25), 0.75))
   $decl r5  $call fsub (10, 3)
   $decl nan $call div (0.0, 0.0)
+  $decl d10 $call say ($call to_str (nan))
   $decl r6  $call trunc (nan)
   // ...and NaN is unordered and not equal to itself, so both of these are 0.
   $decl r7  $call add ($call b2i ($call lt (nan, 1.0)), $call b2i ($call eq (nan, nan)))
