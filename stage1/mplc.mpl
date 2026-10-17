@@ -1,5 +1,6 @@
 // `mplc <file.mpl>` — a real command-line driver, emitting C on stdout — and
-// `mplc <file.mpl> -o <exe>`, which hands the C to §9.1's `link` instead.
+// `mplc <file.mpl> -o <exe> [cc args…]`, which hands the C to §9.1's `link` instead,
+// with every argument after the executable passed on to `cc`.
 //
 // This is what §8's `args`, `at` and `alen` were missing a C backend for. Until
 // they were emitted, no driver could be compiled at all: every one of them opens
@@ -13,13 +14,13 @@ $decl argv $call args ()
 
 $decl path $if ($call lt (0, $call alen (argv)))
     ($call P.sval ($call at (argv, 0)))
-    ($call panic ("usage: mplc <file.mpl> [-o <exe>]"))
+    ($call panic ("usage: mplc <file.mpl> [-o <exe> [cc args...]]"))
 
 // `-o <exe>`, or "" to print the C.
 $decl out_path $if ($call lt (2, $call alen (argv)))
     ($if ($call eq_str ($call P.sval ($call at (argv, 1)), "-o"))
          ($call P.sval ($call at (argv, 2)))
-         ($call panic ("usage: mplc <file.mpl> [-o <exe>]")))
+         ($call panic ("usage: mplc <file.mpl> [-o <exe> [cc args...]]")))
     ""
 
 $decl rf  $call read_file (path)
@@ -70,6 +71,21 @@ $decl warn_all $func ($decl ds Pa.diags.node) $match ds (
   $case ds ()
 )
 
+// The arguments after `-o <exe>`, which go to `cc`.
+$decl nextra $if ($call lt (3, $call alen (argv))) ($call sub ($call alen (argv), 3)) 0
+$decl extra  $call array (nextra, "")
+
+$decl fill_extra $func ($decl i 0)
+  $if ($call lt (i, nextra))
+      ($do {
+         $decl c   $call at (extra, i)
+         $decl w   $set c ($call P.sval ($call at (argv, $call add (i, 3))))
+         $decl ret ()
+       }.ret ($call fill_extra ($call add (i, 1))))
+      ()
+
+$decl filled $call fill_extra (0)
+
 $decl main $func () {
   $decl ckd $call C.check ($call C.parse (src, path))
   $decl cd  $call Pa.diags.val (ckd.diagnostics)
@@ -86,7 +102,7 @@ $decl main $func () {
   $decl w   $call warn_all ($call Pa.diags.val (out.diagnostics))
   $decl ret $if ($call eq_str (out_path, "")) ($call C.sole_text (out)) {
     // A link failure is fatal, like a check failure: there is no executable.
-    $decl lk   $call C.link (out, out_path)
+    $decl lk   $call C.link (out, out_path, extra)
     $decl ld   $call Pa.diags.val (lk.diagnostics)
     $decl nl   $call Pa.diags.length (ld, 0)
     $decl g3   $if ($call lt (0, nl)) ($call panic ($call first_msg (ld, "link", nl))) ""

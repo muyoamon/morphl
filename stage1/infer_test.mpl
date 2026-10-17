@@ -1140,4 +1140,8 @@ $decl ff06 $call check_str ("run answers an option of the exit status",
   $call field_ty ("$decl x $call run ($call args ())", "x"),
   "<{tag=s\"none\",},{v:Int,tag=s\"some\",}>")
 
+$decl ff07 $call check_str ("str_from_ptr answers an option of a Str",
+  $call field_ty ("$decl x $call str_from_ptr (0, 0)", "x"),
+  "<{tag=s\"none\",},{v:Str,tag=s\"some\",}>")
+
 $decl done15 $call nl ("all FFI tests passed")

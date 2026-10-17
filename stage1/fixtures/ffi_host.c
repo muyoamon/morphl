@@ -33,3 +33,10 @@ int64_t host_bump(int64_t addr) {
 static pt shared = { 3, 4 };
 int64_t host_point(void)     { return (int64_t)(intptr_t)&shared; }
 int64_t host_point_sum(void) { return shared.x * 100 + shared.y; }
+
+/* `str_from_ptr`: bytes C owns, valid UTF-8 ("h\xc3\xa9llo" is "héllo", 6 bytes)
+   and not (a lone continuation byte). */
+static const char greeting[] = "h\xc3\xa9llo";
+static const char garbage[]  = "\xff\xfe";
+int64_t host_greeting(void) { return (int64_t)(intptr_t)greeting; }
+int64_t host_garbage(void)  { return (int64_t)(intptr_t)garbage; }

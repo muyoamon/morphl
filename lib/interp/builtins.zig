@@ -530,6 +530,7 @@ const table = [_]value.Builtin{
     .{ .name = "args", .arity = 0, .func = argsFn },
     .{ .name = "run", .arity = 1, .func = runFn },
     .{ .name = "str_ptr", .arity = 1, .func = ffiFn },
+    .{ .name = "str_from_ptr", .arity = 2, .func = ffiFn },
     .{ .name = "array_ptr", .arity = 1, .func = ffiFn },
     .{ .name = "box_ptr", .arity = 1, .func = ffiFn },
     .{ .name = "unbox", .arity = 2, .func = ffiFn },
@@ -555,7 +556,7 @@ test "the root block is complete per BOOTSTRAP 2" {
         "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.
         "err",        "none",       "print", "eprint", "read_file", "write_file", "args",
-        "run",        "str_ptr",    "array_ptr", "box_ptr", "unbox",
+        "run",        "str_ptr",    "str_from_ptr", "array_ptr", "box_ptr", "unbox",
     }) |name| {
         if (scope.findLocalText(name) == null) {
             std.debug.print("root block is missing '{s}'\n", .{name});

@@ -172,16 +172,34 @@ $decl emit $func ($decl pr IR.proto_program) {
 // §9.1's last step. The outputs are written as one translation unit, `<path>.c` —
 // the concatenated form `join_files` keeps valid — and the platform's C compiler is
 // run on it through BOOTSTRAP §2's `run`, which takes an argv and no shell, so no
-// path needs quoting. The C file is left beside the executable, which is what a
-// failing `cc` would want looked at. Separate compilation per module is what
-// `test-split` does; one unit is the simplest artifact that is the whole program.
+// path needs quoting. `extra` is passed to it after the source: C files the program's
+// `$extern`s are defined in, `-l` libraries, flags. The C file is left beside the
+// executable, which is what a failing `cc` would want looked at. Separate compilation
+// per module is what `test-split` does; one unit is the simplest artifact that is the
+// whole program.
 $decl link_err $func ($decl msg "")
   $call artifact ("", $call Pa.diags.cons ($call Pa.diag ($call concat ("link: ", msg), 0, 0, ""),
       Pa.diags.nil))
 
-// `cc -O2 -o <path> <path>.c`, each element set through §8's `at`.
-$decl cc_argv $func ($decl path "", $decl src "") {
-  $decl av  $call array (5, "cc")
+// One element of an argv, set through §8's `at`.
+$decl put_arg $func ($decl av $call array (0, ""), $decl k 0, $decl v "") {
+  $decl c   $call at (av, k)
+  $decl w   $set c v
+  $decl ret ()
+}.ret
+
+// `extra`'s elements into `av` from position `base` on.
+$decl copy_args $func ($decl av $call array (0, ""), $decl extra $call array (0, ""),
+                       $decl base 0, $decl i 0)
+  $if ($call lt (i, $call alen (extra)))
+      ($do ($call put_arg (av, $call add (base, i), $call P.sval ($call at (extra, i))))
+           ($call copy_args (av, extra, base, $call add (i, 1))))
+      ()
+
+// `cc -O2 -o <path> <path>.c`, then `extra` — the build's own C files, `-l`
+// libraries and flags, after the source so a library resolves what it uses.
+$decl cc_argv $func ($decl path "", $decl src "", $decl extra $call array (0, "")) {
+  $decl av  $call array ($call add (5, $call alen (extra)), "cc")
   $decl a1  $call at (av, 1)
   $decl w1  $set a1 "-O2"
   $decl a2  $call at (av, 2)
@@ -190,16 +208,17 @@ $decl cc_argv $func ($decl path "", $decl src "") {
   $decl w3  $set a3 path
   $decl a4  $call at (av, 4)
   $decl w4  $set a4 src
+  $decl w5  $call copy_args (av, extra, 5, 0)
   $decl ret av
 }.ret
 
-$decl link $func ($decl e proto_emitted, $decl path "") {
+$decl link $func ($decl e proto_emitted, $decl path "", $decl extra $call array (0, "")) {
   $decl src $call concat (path, ".c")
   $decl w   $call write_file (src, $call sole_text (e))
   $decl ret $match w (
       $case {$prop tag "err"} ($call link_err ($call concat ("cannot write ", src))),
       $case w {
-        $decl r    $call run ($call cc_argv (path, src))
+        $decl r    $call run ($call cc_argv (path, src, extra))
         $decl ret2 $match r (
             $case {$prop tag "some"}
               $if ($call eq_int (r.v, 0)) ($call artifact (path, Pa.diags.nil))

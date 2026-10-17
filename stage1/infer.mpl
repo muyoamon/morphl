@@ -552,12 +552,17 @@ $decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 // and typed in `infer_ffi`.
 $decl arrp_t  $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 
+// `str_from_ptr (addr, n)`: §4.16's "bytes received from C become a `Str` only
+// through a validating library function returning `option Str`".
+$decl strf_t  $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)),
+                  opt_str)
+
 // BOOTSTRAP §2's `run (argv)`: the process's exit status, or `none` when it could
 // not be started.
 $decl run_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), opt_int)
 
 $decl root_env
-  $call bind ($call bind ($call bind ($call bind ($call bind (
+  $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind (
@@ -569,7 +574,7 @@ $decl root_env
   $call bind ($call bind (env.nil,
     "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
     "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
-    "str_ptr", s_i), "array_ptr", arrp_t), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
+    "str_ptr", s_i), "str_from_ptr", strf_t), "array_ptr", arrp_t), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
     "run", run_t),
     "add_wrap", ii_i), "sub_wrap", ii_i), "mul_wrap", ii_i),
     "add_sat", ii_i), "sub_sat", ii_i), "mul_sat", ii_i),

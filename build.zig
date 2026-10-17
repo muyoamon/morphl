@@ -246,7 +246,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/run.mpl", .want = "37710\n" },
         // §8's FFI addresses against a C host: bytes, elements, storage C writes
         // through, and memory C owns read and written through `unbox`.
-        .{ .src = "stage1/fixtures/ffi.mpl", .want = "1493\n",
+        .{ .src = "stage1/fixtures/ffi.mpl", .want = "11117493\n",
            .host = "stage1/fixtures/ffi_host.c" },
         .{ .src = "stage1/fixtures/bits.mpl", .want = "-9223372036854775808 9223372036854775807 9223372036854775805 9223372036854775807 -9223372036854775808 -9223372036854775808 9223372036854775807 42 8 14 6 -9223372036854775808 -9223372036854775808 -4611686018427387904 -4 -1 1 -9223372036854775807 9223372036854775807 6 10 68\n" },
     }) |fixture| {
@@ -674,17 +674,21 @@ pub fn build(b: *std.Build) void {
 
     // §9.1's `link`: `mplc <file> -o <exe>` writes the C beside the executable and
     // runs `cc` on it through BOOTSTRAP §2's `run`, so the executable is built by the
-    // compiler and not by this file. Two fixtures, one of which imports a module, and
-    // a program that does not link must make `mplc` fail.
+    // compiler and not by this file. Three fixtures — one imports a module, one needs
+    // its C host, passed as `mplc`'s trailing `cc` arguments — and a program that does
+    // not link must make `mplc` fail.
     const link_step = b.step("test-link", "mplc -o builds a working executable");
-    for ([_]struct { src: []const u8, want: []const u8 }{
+    for ([_]struct { src: []const u8, want: []const u8, extra: []const []const u8 = &.{} }{
         .{ .src = "stage1/fixtures/fact.mpl", .want = "3628800\n" },
         .{ .src = "stage1/fixtures/import.mpl", .want = "57\n" },
+        .{ .src = "stage1/fixtures/ffi.mpl", .want = "11117493\n",
+           .extra = &.{"stage1/fixtures/ffi_host.c"} },
     }) |fx| {
         const build_exe = std.Build.Step.Run.create(b, "mplc -o");
         build_exe.addFileArg(mplc_bin);
         build_exe.addArgs(&.{ fx.src, "-o" });
         const exe_out = build_exe.addOutputFileArg("prog");
+        build_exe.addArgs(fx.extra);
         build_exe.setCwd(b.path("."));
         build_exe.has_side_effects = true;
         build_exe.expectExitCode(0);
