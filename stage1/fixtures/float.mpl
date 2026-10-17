@@ -9,7 +9,7 @@
 // 10^30 built by multiplying is one ulp short of the literal. `mod` is exact, so the
 // remainder of that by 7 is exactly 1.
 //
-// -3 + -1 + 123 + 0 + 1 + 7 + -1 = 126.
+// -3 + -1 + 123 + 0 + 1 + 7 + -1 + 0 = 126.
 
 $decl say $func ($decl s "") $call print ($call concat (s, " "))
 
@@ -41,13 +41,18 @@ $decl main $func () {
   $decl d6  $call say ($call to_str ($call fsub (1.0, 0.25)))
   $decl d7  $call say ($call to_str ($call big (1.0, 30)))
   $decl d8  $call say ($call to_str ($call mod ($call big (1.0, 30), 7.0)))
+  // §8: Float arithmetic does not panic — division by zero is an infinity.
+  $decl d9  $call say ($call to_str ($call div (1.0, 0.0)))
   $decl r0  $call trunc (-3.99)
   $decl r1  $call trunc ($call big (1.0, 19))
   $decl r2  $call trunc (123.9)
   $decl r3  $call b2i ($call lt (0.5, 0.25))
   $decl r4  $call b2i ($call eq ($call add (0.5, 0.25), 0.75))
   $decl r5  $call fsub (10, 3)
-  $decl r6  $call trunc ($call div (0.0, 0.0))
+  $decl nan $call div (0.0, 0.0)
+  $decl r6  $call trunc (nan)
+  // ...and NaN is unordered and not equal to itself, so both of these are 0.
+  $decl r7  $call add ($call b2i ($call lt (nan, 1.0)), $call b2i ($call eq (nan, nan)))
   $decl ret $call add ($call add ($call add (r0, r1), $call add (r2, r3)),
-                $call add ($call add (r4, r5), r6))
+                $call add ($call add (r4, r5), $call add (r6, r7)))
 }.ret

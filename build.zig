@@ -238,7 +238,7 @@ pub fn build(b: *std.Build) void {
         // §3.1's `Float` with §8's overloads on it: printed through `to_str`, which
         // round-trips, and an exact `mod`. Stage 0 leaves `Float` out (BOOTSTRAP §1.2).
         .{ .src = "stage1/fixtures/float.mpl", .stage0 = false,
-           .want = "0.30000000000000004 0.25 -1.5 2.0 7.0 6.0 0.75 9.999999999999999e+29 1.0 126\n" },
+           .want = "0.30000000000000004 0.25 -1.5 2.0 7.0 6.0 0.75 9.999999999999999e+29 1.0 inf 126\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
         // middle. The answer has to be the same both ways — that is the whole

@@ -85,7 +85,7 @@ Because every form has fixed arity and groups/blocks are delimited, parsing need
 
 ### 3.1 Base types
 
-`Int` (64-bit; **overflow panics**; wrapping and saturating forms are explicit intrinsics), `Float` (64-bit), `Str` (immutable, pointer + length, **always valid UTF-8**). There is no character type: a character is a one-code-point substring.
+`Int` (64-bit; **overflow panics**; wrapping and saturating forms are explicit intrinsics), `Float` (64-bit IEEE 754; **never panics** — division by zero and invalid operations give infinities and NaN, §8), `Str` (immutable, pointer + length, **always valid UTF-8**). There is no character type: a character is a one-code-point substring.
 
 Literals have their base type: `0 : Int`, `"hi" : Str`. There are no singleton literal types.
 
@@ -616,11 +616,11 @@ Every program is wrapped in an implicit **root block**, assembled by the build p
 
 | Group | Names | Notes |
 |---|---|---|
-| Numeric | `add sub mul div mod neg lt` | each `$overload` over `(Int,Int)` and `(Float,Float)`; no implicit conversion; `Int` overflow panics |
+| Numeric | `add sub mul div mod neg lt` | each `$overload` over `(Int,Int)` and `(Float,Float)`; no implicit conversion. On `Int`, overflow and `div`/`mod` by zero panic, and `mod` by `-1` is `0`. On `Float` they are IEEE 754: `div` by zero is an infinity (NaN for `0.0 / 0.0`), `mod` by zero is NaN, `mod` takes the dividend's sign, and `lt` is false whenever an operand is NaN |
 | Numeric, explicit | `add_wrap sub_wrap mul_wrap add_sat sub_sat mul_sat` | wrapping / saturating `Int` arithmetic |
 | Bitwise | `band bor bxor shl shr` | on `Int` |
-| Conversion | `to_float to_int to_str` | `to_int` overloaded: `Str -> option Int`, `Float -> option Int` (`none` if out of range) |
-| Equality | `eq` | overloaded over `Int Float Str Bool`; structural equality on blocks is a trait |
+| Conversion | `to_float to_int to_str` | `to_int` overloaded: `Str -> option Int`, `Float -> option Int` (truncates toward zero; `none` if out of range or NaN) |
+| Equality | `eq` | overloaded over `Int Float Str Bool`; structural equality on blocks is a trait. On `Float` it is IEEE equality — NaN is not equal to itself and `0.0` equals `-0.0` — so `eq` is not reflexive on `Float`, and an equality built from it over a block with a `Float` field inherits that |
 | Strings | `concat len slice byte` | **byte** units. `byte (s, i)` reads one byte as `Int`. `len` counts bytes; `slice (s, i, j)` takes byte offsets and panics if an offset splits a code point, preserving the validity invariant. Code-point and grapheme iteration are library; `eq` is bytewise (equal to code-point equality under the invariant) |
 | Arrays | `array at alen` | `$call array (n, example)` → `&mut [T]`, contiguous, bounds-checked; `at` → fat `&mut T` (or `&const T` through a `&const` array); length not part of the type |
 | Control | `panic` | returns `⊥`; aborts, no catch |
@@ -629,7 +629,7 @@ Every program is wrapped in an implicit **root block**, assembled by the build p
 | FFI | `str_ptr array_ptr box_ptr unbox` | raw addresses for `$extern`: `str_ptr (s)`, `array_ptr (a)`; `box_ptr (r)` takes the address of storage; `unbox (addr, example)` recovers a reference typed by the example. All unsafe by declaration |
 | Build | `compiler` | see §9 |
 
-**Platform** — library code over `$extern`, present per target: `print`, `read`, files, sockets, `spawn`/`join`/`channel`/`mutex`/`atomic`, `malloc`-backed allocators. The root block defines `option` and `result` before any of these so failing operations return them; arithmetic (`div` by zero) and `slice` out of range panic.
+**Platform** — library code over `$extern`, present per target: `print`, `read`, files, sockets, `spawn`/`join`/`channel`/`mutex`/`atomic`, `malloc`-backed allocators. The root block defines `option` and `result` before any of these so failing operations return them; `Int` arithmetic (overflow, `div` by zero) and `slice` out of range panic. `Float` arithmetic does not: its failures are values (§3.1), and the program meets them where a `Float` becomes an `Int`, since `to_int` answers `none` for NaN and out-of-range values.
 
 Everything else — `not`, `and`, `or`, `max`, lists, maps, formatting — is library code. Sanity check that the core suffices:
 
