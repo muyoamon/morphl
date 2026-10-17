@@ -169,14 +169,47 @@ $decl emit $func ($decl pr IR.proto_program) {
 
 // -------------------------------------------------------------------- link
 //
-// §9.1's last step, and the one this build cannot take: §9 makes `$extern` the
-// only door to the platform and stage 1 has none, so there is no way to run a
-// linker from here. It reports that rather than pretending to have done it —
-// the caller writes `emit`'s text out and runs the platform's C compiler.
-$decl link $func ($decl e proto_emitted, $decl path "")
-  $call artifact ("", $call Pa.diags.cons (
-      $call Pa.diag ("link: no linker is reachable from this build; write emit's text out and compile it", 0, 0, ""),
+// §9.1's last step. The outputs are written as one translation unit, `<path>.c` —
+// the concatenated form `join_files` keeps valid — and the platform's C compiler is
+// run on it through BOOTSTRAP §2's `run`, which takes an argv and no shell, so no
+// path needs quoting. The C file is left beside the executable, which is what a
+// failing `cc` would want looked at. Separate compilation per module is what
+// `test-split` does; one unit is the simplest artifact that is the whole program.
+$decl link_err $func ($decl msg "")
+  $call artifact ("", $call Pa.diags.cons ($call Pa.diag ($call concat ("link: ", msg), 0, 0, ""),
       Pa.diags.nil))
+
+// `cc -O2 -o <path> <path>.c`, each element set through §8's `at`.
+$decl cc_argv $func ($decl path "", $decl src "") {
+  $decl av  $call array (5, "cc")
+  $decl a1  $call at (av, 1)
+  $decl w1  $set a1 "-O2"
+  $decl a2  $call at (av, 2)
+  $decl w2  $set a2 "-o"
+  $decl a3  $call at (av, 3)
+  $decl w3  $set a3 path
+  $decl a4  $call at (av, 4)
+  $decl w4  $set a4 src
+  $decl ret av
+}.ret
+
+$decl link $func ($decl e proto_emitted, $decl path "") {
+  $decl src $call concat (path, ".c")
+  $decl w   $call write_file (src, $call sole_text (e))
+  $decl ret $match w (
+      $case {$prop tag "err"} ($call link_err ($call concat ("cannot write ", src))),
+      $case w {
+        $decl r    $call run ($call cc_argv (path, src))
+        $decl ret2 $match r (
+            $case {$prop tag "some"}
+              $if ($call eq_int (r.v, 0)) ($call artifact (path, Pa.diags.nil))
+                  ($call link_err ($call concat ("cc exited with status ",
+                       $call concat ($call int_to_str (r.v), $call concat (" on ", src))))),
+            $case r ($call link_err ("cannot run cc"))
+          )
+      }.ret2
+    )
+}.ret
 
 // --------------------------------------------------------- the whole of it
 //

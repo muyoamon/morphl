@@ -115,13 +115,15 @@ Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(
 | Arrays | `array at alen` — as §8; `at` returns a base+index handle |
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
-| Platform | `print eprint read_file write_file args` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
+| Platform | `print eprint read_file write_file args run` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
+| FFI | `str_ptr array_ptr box_ptr unbox` — as §8 in stage 1, which compiles them; stage 0 has the names and refuses them, since it has no `$extern` (§1.2) |
 
 **Platform shapes.** §8 requires failing operations to return `option`/`result` rather than panic, which fixes these signatures:
 
 - `eprint (s)` is `print` to stderr. It exists because `panic` was the only way there and it aborts, so a compiled compiler — whose stdout *is* the C it emits — had no way to report a warning. §8 lists the platform's "files" without naming streams; this is the stand-in for one.
 - `read_file (path)` → `none | {$prop tag "some" $decl v Str}`. A missing file *and* non-UTF-8 contents both give `none`. That is not defensiveness: §3.1 makes `Str` always valid UTF-8, and §4.16 says bytes arriving from outside "become a `Str` only through a validating library function returning `option Str`".
 - `write_file (path, contents)` → `() | err`, so a caller writes `$try ($call write_file (p, s)) err` and the error set is inferred (§4.15).
+- `run (argv)` → `none | {$prop tag "some" $decl v Int}`: runs the program `argv[0]` names with `argv` as its arguments — no shell, so no argument is ever quoted — inheriting the standard streams, which are flushed first. The status is the exit code, or 128 plus the signal that ended it, as a shell reports one; `none` when it cannot be started. It is what §9.1's `link` runs `cc` with, and like the rest of this group it stands in for library code over `$extern`.
 - `args ()` → an array of `Str`: the arguments after the input file, i.e. the *program's* arguments rather than the compiler's. A zero-arity function, so a program that never asks pays nothing, and a fresh array per call since §8's arrays are `&mut [T]`.
 
 The evaluator holds these as an injected interface and never opens a file itself — the same arrangement as the `$import` resolver, and for the same reason: §4.16 puts the platform in a per-target root block, not in the language.

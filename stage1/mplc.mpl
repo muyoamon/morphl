@@ -1,4 +1,5 @@
-// `mplc <file.mpl>` — a real command-line driver, emitting C on stdout.
+// `mplc <file.mpl>` — a real command-line driver, emitting C on stdout — and
+// `mplc <file.mpl> -o <exe>`, which hands the C to §9.1's `link` instead.
 //
 // This is what §8's `args`, `at` and `alen` were missing a C backend for. Until
 // they were emitted, no driver could be compiled at all: every one of them opens
@@ -12,7 +13,14 @@ $decl argv $call args ()
 
 $decl path $if ($call lt (0, $call alen (argv)))
     ($call P.sval ($call at (argv, 0)))
-    ($call panic ("usage: mplc <file.mpl>"))
+    ($call panic ("usage: mplc <file.mpl> [-o <exe>]"))
+
+// `-o <exe>`, or "" to print the C.
+$decl out_path $if ($call lt (2, $call alen (argv)))
+    ($if ($call eq_str ($call P.sval ($call at (argv, 1)), "-o"))
+         ($call P.sval ($call at (argv, 2)))
+         ($call panic ("usage: mplc <file.mpl> [-o <exe>]")))
+    ""
 
 $decl rf  $call read_file (path)
 $decl src $match rf (
@@ -29,9 +37,12 @@ $decl first_msg $func ($decl ds Pa.diags.node, $decl what "", $decl n 0)
       ($call concat (what, $call concat (": ", $call concat ($call int_to_str (n),
            $call concat (" error(s), first at ",
            $call concat ($if ($call eq_str (ds.head.file, "")) path ds.head.file,
-           $call concat (":", $call concat ($call int_to_str (ds.head.line),
-           $call concat (":", $call concat ($call int_to_str (ds.head.col),
-           $call concat (": ", ds.head.msg))))))))))),
+           // `verify` and `link` have no source position to give (the typed tree
+           // carries no spans), so a zero one is left out rather than printed.
+           $call concat ($if ($call lt (0, ds.head.line))
+               ($call concat (":", $call concat ($call int_to_str (ds.head.line),
+                $call concat (":", $call int_to_str (ds.head.col))))) "",
+           $call concat (": ", ds.head.msg)))))))),
     $case ds ($call concat (what, ": failed"))
   )
 
@@ -73,5 +84,12 @@ $decl main $func () {
   // invisible here, because §8 gave a program stdout (the C) and `panic` (fatal)
   // and nothing between. BOOTSTRAP §2's `eprint` is the between.
   $decl w   $call warn_all ($call Pa.diags.val (out.diagnostics))
-  $decl ret $call C.sole_text (out)
+  $decl ret $if ($call eq_str (out_path, "")) ($call C.sole_text (out)) {
+    // A link failure is fatal, like a check failure: there is no executable.
+    $decl lk   $call C.link (out, out_path)
+    $decl ld   $call Pa.diags.val (lk.diagnostics)
+    $decl nl   $call Pa.diags.length (ld, 0)
+    $decl g3   $if ($call lt (0, nl)) ($call panic ($call first_msg (ld, "link", nl))) ""
+    $decl ret2 ""
+  }.ret2
 }.ret

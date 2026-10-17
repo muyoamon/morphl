@@ -242,6 +242,12 @@ pub fn build(b: *std.Build) void {
         // §8's wrapping, saturating and bitwise intrinsics at the edges of the range, each
         // also passed as a value. Stage 0 used to remember the builtin a parameter held at
         // its first call, which this is the first fixture to notice.
+        // BOOTSTRAP §2's `run`: exit status, signal and `none`, compared with stage 0.
+        .{ .src = "stage1/fixtures/run.mpl", .want = "37710\n" },
+        // §8's FFI addresses against a C host: bytes, elements, storage C writes
+        // through, and memory C owns read and written through `unbox`.
+        .{ .src = "stage1/fixtures/ffi.mpl", .want = "1493\n",
+           .host = "stage1/fixtures/ffi_host.c" },
         .{ .src = "stage1/fixtures/bits.mpl", .want = "-9223372036854775808 9223372036854775807 9223372036854775805 9223372036854775807 -9223372036854775808 -9223372036854775808 9223372036854775807 42 8 14 6 -9223372036854775808 -9223372036854775808 -4611686018427387904 -4 -1 1 -9223372036854775807 9223372036854775807 6 10 68\n" },
     }) |fixture| {
         // Every fixture twice: once straight, once with §9.2's pass in the
@@ -643,6 +649,8 @@ pub fn build(b: *std.Build) void {
         // §8: the candidate an intrinsic call becomes is read off the callee's type.
         "stage1/fixtures/float.mpl",
         "stage1/fixtures/bits.mpl",
+        "stage1/fixtures/ffi.mpl",
+        "stage1/fixtures/run.mpl",
     }) |src| {
         const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
         by_mplc.addFileArg(mplc_bin);
@@ -662,6 +670,43 @@ pub fn build(b: *std.Build) void {
         agree.addFileArg(bfile);
         s2_step.dependOn(&agree.step);
         test_step.dependOn(&agree.step);
+    }
+
+    // §9.1's `link`: `mplc <file> -o <exe>` writes the C beside the executable and
+    // runs `cc` on it through BOOTSTRAP §2's `run`, so the executable is built by the
+    // compiler and not by this file. Two fixtures, one of which imports a module, and
+    // a program that does not link must make `mplc` fail.
+    const link_step = b.step("test-link", "mplc -o builds a working executable");
+    for ([_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "stage1/fixtures/fact.mpl", .want = "3628800\n" },
+        .{ .src = "stage1/fixtures/import.mpl", .want = "57\n" },
+    }) |fx| {
+        const build_exe = std.Build.Step.Run.create(b, "mplc -o");
+        build_exe.addFileArg(mplc_bin);
+        build_exe.addArgs(&.{ fx.src, "-o" });
+        const exe_out = build_exe.addOutputFileArg("prog");
+        build_exe.setCwd(b.path("."));
+        build_exe.has_side_effects = true;
+        build_exe.expectExitCode(0);
+        const run_exe = std.Build.Step.Run.create(b, "run what mplc linked");
+        run_exe.addFileArg(exe_out);
+        run_exe.has_side_effects = true;
+        run_exe.expectStdOutEqual(fx.want);
+        link_step.dependOn(&run_exe.step);
+        test_step.dependOn(&run_exe.step);
+    }
+    {
+        // An extern C does not define: `cc` fails, so `link` reports and `mplc` aborts.
+        const bad = std.Build.Step.Run.create(b, "mplc -o on a program that does not link");
+        bad.addFileArg(mplc_bin);
+        bad.addArgs(&.{ "stage1/fixtures/unlinked.mpl", "-o" });
+        _ = bad.addOutputFileArg("prog");
+        bad.setCwd(b.path("."));
+        bad.has_side_effects = true;
+        bad.addCheck(.{ .expect_stderr_match = "link: cc exited with status 1" });
+        bad.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        link_step.dependOn(&bad.step);
+        test_step.dependOn(&bad.step);
     }
 
     // `mplc` reports a non-fatal diagnostic on stderr and keeps stdout the C. It could
@@ -740,7 +785,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
         .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
-        .{ .src = "stage1/infer_test.mpl", .last = "all float tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all FFI tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
         .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },

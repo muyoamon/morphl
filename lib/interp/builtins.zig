@@ -456,6 +456,37 @@ fn argsFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return .{ .array = a };
 }
 
+/// BOOTSTRAP §2's `run (argv)` → `none | {$prop tag "some" $decl v status}`. The
+/// streams are flushed first so the child's output follows what this program has
+/// already printed, as the compiled runtime's `mpl_run` does.
+fn runFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const a = switch (args[0]) {
+        .array => |x| x,
+        else => return rt.fail(span, "run expects an array, found {s}", .{args[0].typeName()}),
+    };
+    const p = rt.platform orelse
+        return rt.fail(span, "run is unavailable: no platform was configured", .{});
+    const argv = try rt.arena.alloc([]const u8, a.elems.len);
+    for (a.elems, argv) |cell, *o| o.* = switch (cell.value) {
+        .str => |s| s.bytes,
+        else => return rt.fail(span, "run expects an array of Str", .{}),
+    };
+    if (rt.out) |w| w.flush() catch {};
+    if (rt.err_out) |w| w.flush() catch {};
+    const status = p.run(rt.arena, argv) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Failed => return tagBlock(rt, "none"),
+    };
+    return some(rt, .{ .int = status });
+}
+
+/// §8's FFI addresses exist only for `$extern`, which stage 0 leaves out of the
+/// subset (BOOTSTRAP §1.2), so the names are here and refuse.
+fn ffiFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    _ = args;
+    return rt.fail(span, "the FFI intrinsics are outside the bootstrap subset (BOOTSTRAP 1.2)", .{});
+}
+
 const table = [_]value.Builtin{
     .{ .name = "add", .arity = 2, .func = addFn },
     .{ .name = "sub", .arity = 2, .func = subFn },
@@ -497,6 +528,11 @@ const table = [_]value.Builtin{
     .{ .name = "read_file", .arity = 1, .func = readFileFn },
     .{ .name = "write_file", .arity = 2, .func = writeFileFn },
     .{ .name = "args", .arity = 0, .func = argsFn },
+    .{ .name = "run", .arity = 1, .func = runFn },
+    .{ .name = "str_ptr", .arity = 1, .func = ffiFn },
+    .{ .name = "array_ptr", .arity = 1, .func = ffiFn },
+    .{ .name = "box_ptr", .arity = 1, .func = ffiFn },
+    .{ .name = "unbox", .arity = 2, .func = ffiFn },
 };
 
 test "the root block is complete per BOOTSTRAP 2" {
@@ -519,6 +555,7 @@ test "the root block is complete per BOOTSTRAP 2" {
         "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.
         "err",        "none",       "print", "eprint", "read_file", "write_file", "args",
+        "run",        "str_ptr",    "array_ptr", "box_ptr", "unbox",
     }) |name| {
         if (scope.findLocalText(name) == null) {
             std.debug.print("root block is missing '{s}'\n", .{name});
@@ -669,7 +706,16 @@ const FakePlatform = struct {
             .readFileFn = readFile,
             .writeFileFn = writeFile,
             .argsFn = args,
+            .runFn = run,
         };
+    }
+
+    /// A test platform starts no processes.
+    fn run(ctx: *const anyopaque, arena: Allocator, argv: []const []const u8) value.Platform.PlatformError!i64 {
+        _ = ctx;
+        _ = arena;
+        _ = argv;
+        return error.Failed;
     }
 };
 

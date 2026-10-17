@@ -1122,3 +1122,22 @@ $decl fl07 $call check_str ("an aliased intrinsic keeps both candidates",
   $call field_ty ("$decl isub sub  $decl x $call isub (5, 3)", "x"), "Int")
 
 $decl done14 $call nl ("all float tests passed")
+
+// §8's FFI intrinsics: an address is an `Int`, `box_ptr` takes storage, and `unbox`
+// is typed by its example. Both are bound at markers, so a user's own `unbox`
+// shadows the intrinsic like any other.
+$decl ff01 $call check_str ("box_ptr of storage is an Int",
+  $call field_ty ("$decl c $mut $alloc 1  $decl x $call box_ptr (c)", "x"), "Int")
+$decl ff02 $call check_str ("box_ptr of a value is an error",
+  $call errs_of ("$decl x $call box_ptr (3)"), "box_ptr takes storage, found Int")
+$decl ff03 $call check_str ("unbox is allocated, writable storage of the example's type",
+  $call field_ty ("$decl x $call unbox (0, \"\")", "x"), "&^mut Str")
+$decl ff04 $call check_str ("unbox's address must be an Int",
+  $call errs_of ("$decl x $call unbox (\"a\", 0)"), "unbox's address is Str, expected Int")
+$decl ff05 $call check_str ("a user's unbox shadows the intrinsic",
+  $call field_ty ("$decl unbox $func ($decl a 0) a  $decl x $call unbox (4)", "x"), "Int")
+$decl ff06 $call check_str ("run answers an option of the exit status",
+  $call field_ty ("$decl x $call run ($call args ())", "x"),
+  "<{tag=s\"none\",},{v:Int,tag=s\"some\",}>")
+
+$decl done15 $call nl ("all FFI tests passed")

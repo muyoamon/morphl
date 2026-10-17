@@ -2692,7 +2692,16 @@ const FakeHost = struct {
             .readFileFn = readFile,
             .writeFileFn = writeFile,
             .argsFn = args,
+            .runFn = run,
         };
+    }
+
+    /// A test platform starts no processes.
+    fn run(ctx: *const anyopaque, arena: Allocator, argv: []const []const u8) Platform.PlatformError!i64 {
+        _ = ctx;
+        _ = arena;
+        _ = argv;
+        return error.Failed;
     }
 };
 

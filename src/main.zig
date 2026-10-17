@@ -237,12 +237,30 @@ const HostPlatform = struct {
         return self.argv;
     }
 
+    fn run(
+        ctx: *const anyopaque,
+        arena: Allocator,
+        argv: []const []const u8,
+    ) interp.Platform.PlatformError!i64 {
+        _ = arena;
+        const self: *const HostPlatform = @ptrCast(@alignCast(ctx));
+        if (argv.len == 0) return error.Failed;
+        var child = process.spawn(self.io, .{ .argv = argv }) catch return error.Failed;
+        const term = child.wait(self.io) catch return error.Failed;
+        return switch (term) {
+            .exited => |code| code,
+            .signal => |sig| 128 + @as(i64, @intFromEnum(sig)),
+            else => error.Failed,
+        };
+    }
+
     fn platform(self: *const HostPlatform) interp.Platform {
         return .{
             .ctx = self,
             .readFileFn = readFile,
             .writeFileFn = writeFile,
             .argsFn = args,
+            .runFn = run,
         };
     }
 };

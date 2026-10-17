@@ -3332,6 +3332,50 @@ $decl short_callee $func ($decl st proto_lst, $decl f proto_lres, $decl k 0,
       f.ir
 }.ret
 
+// A call: the callee is lowered already, because §8's FFI intrinsics are told apart
+// by it before their arguments are lowered (`lower_ffi`).
+$decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
+                        $decl tail P.boolean, $decl f0 proto_lres) {
+  $decl ov   $call is_over_l (f0.ty)
+  $decl xs   $call group_items ($call op (n, 1))
+  $decl rs   $if ov ($call lower_raws (st, e, xs, lres_list.nil)) lres_list.nil
+  $decl f    $if ov ($call resolve_call (st, f0, $call over_cands (f0.ty), rs, 0)) f0
+  $decl ps   $call params_of (f.ty)
+  $decl as   $if ov ($call finish_raws (st, rs, xs, ps, IR.exprs.nil, T.tys.nil))
+                    ($call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps))
+  $decl ty   $call result_of (f.ty)
+  $decl cf   $call short_callee (st, f, $call IR.exprs.length (as.irs, 0), n)
+  $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
+}.ret
+
+// §8's `box_ptr` and `unbox`, bound at marker types (`T.ffi_box`) because the root
+// block cannot say "for any T". Inference typed the call; here the intrinsic is given
+// the monomorphic signature this call needs — `(&T) -> Int` with the storage passed
+// as itself, or `(Int, T) -> &^T` — so the backend sees an ordinary prim call.
+$decl ffi_l $func ($decl f proto_lres) {
+  $decl x   f.ir
+  $decl ret $match x (
+      $case {$prop tag "prim"}
+        $if ($call T.same (f.ty, T.ffi_box)) "box_ptr"
+            ($if ($call T.same (f.ty, T.ffi_unbox)) "unbox" ""),
+      $case x ""
+    )
+}.ret
+
+$decl lower_ffi $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
+                       $decl tail P.boolean, $decl w "") {
+  $decl xs  $call group_items ($call op (n, 1))
+  $decl box $call eq_str (w, "box_ptr")
+  // A parameter typed as storage is what keeps `lower_args` from reading through.
+  $decl ps  $if box ($call T.tys.cons ($call T.t_ref ("", T.t_int), T.tys.nil)) T.tys.nil
+  $decl as  $call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps)
+  $decl ty  $if box T.t_int ($call T.t_ref_k ("mut", $call ps_head ($call ps_tail (as.tys)),
+                T.k_alloc))
+  $decl ft  $call T.t_func (as.tys, ty)
+  $decl cf  $call IR.e_prim ($call intern (st, ft), w)
+  $decl ret $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
+}.ret
+
 $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean) {
   $decl k n.keyword
@@ -3520,17 +3564,10 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     // arguments lowered first, as they stand, then made what that candidate's parameters
     // want; lowering them twice could lift a `$func` literal twice.
     ($if ($call eq_str (k, "call")) {
-      $decl f0 $call as_value (st, $call lower (st, e, $call op (n, 0), false))
-      $decl ov $call is_over_l (f0.ty)
-      $decl xs $call group_items ($call op (n, 1))
-      $decl rs $if ov ($call lower_raws (st, e, xs, lres_list.nil)) lres_list.nil
-      $decl f  $if ov ($call resolve_call (st, f0, $call over_cands (f0.ty), rs, 0)) f0
-      $decl ps $call params_of (f.ty)
-      $decl as $if ov ($call finish_raws (st, rs, xs, ps, IR.exprs.nil, T.tys.nil))
-                      ($call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps))
-      $decl ty   $call result_of (f.ty)
-      $decl cf   $call short_callee (st, f, $call IR.exprs.length (as.irs, 0), n)
-      $decl ret2 $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
+      $decl f0   $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+      $decl fw   $call ffi_l (f0)
+      $decl ret2 $if ($call eq_str (fw, "")) ($call lower_call (st, e, n, tail, f0))
+                     ($call lower_ffi (st, e, n, tail, fw))
     }.ret2
       ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
            " is not lowered yet")), n)), T.t_unit)))))))))))))))))))

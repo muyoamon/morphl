@@ -2651,3 +2651,10 @@ $decl p1 $func ($decl n "", $decl c proto_cv) $call props.cons ($call prop_entry
 // A prop-only block: the shape of every tag (§4.15, §12).
 $decl tag_block $func ($decl n "", $decl v "")
   $call t_block (fields.nil, $call p1 (n, $call cv_str (v)))
+
+// §8's `box_ptr` and `unbox` are polymorphic — over the pointee of the storage, and
+// over the example's type — which a root block made of types cannot say. Each is
+// bound at one of these markers instead, and inference and lowering type a call to
+// it there. Both passes share them, so they recognise the same binding.
+$decl ffi_box   $call tag_block ("intrinsic", "box_ptr")
+$decl ffi_unbox $call tag_block ("intrinsic", "unbox")

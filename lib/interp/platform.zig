@@ -18,6 +18,10 @@ pub const Platform = struct {
     readFileFn: *const fn (ctx: *const anyopaque, arena: Allocator, path: []const u8) PlatformError![]const u8,
     writeFileFn: *const fn (ctx: *const anyopaque, path: []const u8, bytes: []const u8) PlatformError!void,
     argsFn: *const fn (ctx: *const anyopaque, arena: Allocator) PlatformError![]const []const u8,
+    /// BOOTSTRAP §2's `run`: start `argv[0]` with `argv`, no shell, inheriting the
+    /// standard streams, and answer its exit status — or 128 plus the signal that
+    /// ended it. `Failed` when it could not be started.
+    runFn: *const fn (ctx: *const anyopaque, arena: Allocator, argv: []const []const u8) PlatformError!i64,
 
     /// `Failed` covers every reason the host gave up. The intrinsics turn it
     /// into a morphl value (`none`/`err`), never a compiler error: §8 requires
@@ -34,5 +38,9 @@ pub const Platform = struct {
 
     pub fn args(self: Platform, arena: Allocator) PlatformError![]const []const u8 {
         return self.argsFn(self.ctx, arena);
+    }
+
+    pub fn run(self: Platform, arena: Allocator, argv: []const []const u8) PlatformError!i64 {
+        return self.runFn(self.ctx, arena, argv);
     }
 };

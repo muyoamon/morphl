@@ -546,7 +546,18 @@ $decl at_t     $call T.t_func ($call T.tys.cons (arr_str, $call T.tys.cons (T.t_
                                $call T.t_ref ("mut", T.t_str))
 $decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 
+// §8's FFI addresses are `Int`s — §3.1 has one integer type, and an address is one
+// as far as `$extern`'s ABI mapping is concerned. `str_ptr` and `array_ptr` are
+// monomorphic; `box_ptr` and `unbox` are bound at `T.ffi_box` / `T.ffi_unbox`
+// and typed in `infer_ffi`.
+$decl arrp_t  $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
+
+// BOOTSTRAP §2's `run (argv)`: the process's exit status, or `none` when it could
+// not be started.
+$decl run_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), opt_int)
+
 $decl root_env
+  $call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind (
@@ -558,6 +569,8 @@ $decl root_env
   $call bind ($call bind (env.nil,
     "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
     "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
+    "str_ptr", s_i), "array_ptr", arrp_t), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
+    "run", run_t),
     "add_wrap", ii_i), "sub_wrap", ii_i), "mul_wrap", ii_i),
     "add_sat", ii_i), "sub_sat", ii_i), "mul_sat", ii_i),
     "band", ii_i), "bor", ii_i), "bxor", ii_i), "shl", ii_i), "shr", ii_i),
@@ -1766,7 +1779,7 @@ $decl check_typed $func ($decl cx proto_ctx, $decl ps T.tys.node, $decl as Pa.no
   $case as true
 )
 
-$decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+$decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl ft   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
   $decl args $call group_items ($call op (n, 1))
   $decl ret $match ft (
@@ -1809,6 +1822,48 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
 }.ret
 
 // §2.2: `$if c a b` is sugar for `$match c ($case true a, $case false b)`.
+
+// §8's `box_ptr` and `unbox`, which the root block binds at marker types because
+// it cannot say "for any T" (`T.ffi_box`). Recognised by name *and* marker, so a
+// user's own `unbox` shadows the intrinsic as it shadows any other.
+$decl ffi_which $func ($decl e env.node, $decl c Pa.proto_node) {
+  $decl nm  $call callee_name (c)
+  $decl f   $call lookup (e, nm)
+  $decl ret $if ($call not (f.ok)) ""
+      ($if ($call and ($call eq_str (nm, "box_ptr"), $call T.same (f.ty, T.ffi_box))) nm
+      ($if ($call and ($call eq_str (nm, "unbox"), $call T.same (f.ty, T.ffi_unbox))) nm ""))
+}.ret
+
+// `box_ptr (r)`: the address of storage, so the argument must be a reference and is
+// not read through. `unbox (addr, example)`: the reference at an address, typed by
+// the example — allocated and writable, because what it points at is the C side's
+// and outside every frame (§4.16 rule 1: unsafe by declaration).
+$decl infer_ffi $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form, $decl w "") {
+  $decl args $call group_items ($call op (n, 1))
+  $decl na   $call Pa.nodes.length (args, 0)
+  $decl ret  $if ($call eq_str (w, "box_ptr"))
+      ($if ($call eq_int (na, 1)) {
+         $decl t    $call T.unroll ($call infer (cx, e, $call Pa.nodes.nth (args, 0)))
+         $decl ret2 $match t (
+             $case {$prop tag "ref"} T.t_int,
+             $case t ($call err (cx, $call concat ("box_ptr takes storage, found ",
+                 $call T.show (t)), n)))
+       }.ret2 ($call err (cx, "box_ptr takes one argument, the storage", n)))
+      ($if ($call eq_int (na, 2)) {
+         $decl a    $call deref_ty ($call infer (cx, e, $call Pa.nodes.nth (args, 0)))
+         $decl ok   $if ($call T.sub (a, T.t_int)) true
+             ($do ($call err (cx, $call concat ("unbox's address is ", $call concat (
+                  $call T.show (a), ", expected Int")), n)) false)
+         $decl v    $call deref_ty ($call infer (cx, e, $call Pa.nodes.nth (args, 1)))
+         $decl ret2 $if ok ($call T.t_ref_k ("mut", v, T.k_alloc)) T.t_bot
+       }.ret2 ($call err (cx, "unbox takes two arguments, an address and an example", n)))
+}.ret
+
+$decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl w   $call ffi_which (e, $call op (n, 0))
+  $decl ret $if ($call eq_str (w, "")) ($call infer_call_std (cx, e, n))
+                ($call infer_ffi (cx, e, n, w))
+}.ret
 $decl infer_if $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl c   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
   $decl chk $if ($call T.sub (c, T.t_bool)) T.t_unit
