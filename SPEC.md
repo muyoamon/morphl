@@ -117,11 +117,12 @@ A function's type is `params -> result`, where `result` is the type of `body`.
 
 Storage also has a **kind**, fixed where it is created and carried in its type:
 
-- **frame** storage (`$new`, §4.2) lives in the enclosing scope and is released
-  when that scope exits. It is free — no allocator, no bookkeeping — and it may
-  not outlive the scope that made it (§5.3a).
+- **frame** storage (`$new`, §4.2) is a *place* in the activation that made it, and is
+  released when that activation ends. It is free — no allocator, no bookkeeping — and
+  it may not outlive the activation that made it (§5.3a).
 - **allocated** storage (`$alloc`, §4.2a) comes from an `allocator` and lives
-  until that allocator releases it. It may outlive anything.
+  until that allocator releases it. A reference to it is a pointer value, which may
+  be stored and may outlive anything.
 
 The kind is written `&T` for frame and `&^T` for allocated *in diagnostics only*
 — there is still no syntax for writing a type (§1). Which kind an expression has
@@ -157,19 +158,23 @@ In *type-only positions* (§5.7) a name may be referenced while its own declarat
 
 Allocates storage holding the value of `e` and evaluates to a reference `&T`, where `T` is the type of `e`. If `e` is itself a reference, it is dereferenced first (so `$new r` is a copy, not an alias).
 
-`$new` makes **frame** storage: it lives in the enclosing scope and is released
-when that scope exits, at no cost and with no allocator. In exchange it may not
-escape that scope — see §5.3a, which is what makes the release safe without any
-inference or runtime.
+`$new` makes **frame** storage: a *place* in the activation that made it — the call of
+the enclosing function, or, at a file's top level, the program — released when that
+activation ends, at no cost and with no allocator (§7.6). In exchange it may not
+outlive the activation; §5.3a's three rules are what make the release safe.
+
+As a parameter's default (§3.4), `$new e` makes the parameter a place — pass by
+reference: the caller lends storage it owns, and the function borrows it.
 
 `$new` and `$alloc` (§4.2a) are the **only** ways storage comes into existence. A
 `$decl` never creates a cell.
 
 ### 4.2a `$alloc e`
 
-Allocates storage holding the value of `e` from the `allocator` in lexical scope
-(§7.6) and evaluates to a reference `&^T`. As with `$new`, a reference operand is
-dereferenced first.
+Allocates storage holding the value of `e` from the `allocator` in lexical scope at the
+point `$alloc` is written (§7.6) and evaluates to a reference `&^T` — a pointer value,
+which may be stored and copied like any other. As with `$new`, a reference operand is
+dereferenced first, and the value may not carry a place (§5.3a).
 
 Allocated storage may outlive any scope, so nothing restricts where its
 references go. What releases it is the allocator, when the author says so:
@@ -365,7 +370,7 @@ Binds a C function. `symbol` is a string literal; `sig` is a type-only position 
 **ABI mapping.** A block is a C struct in `$decl` order (props cost nothing; they are not present at runtime). Groups likewise. `&T` and `&mut T` are thin pointers (`T*`); `&const T` may be fat, so only exact-type references cross — coerce before the call. `Int` → `int64_t`, `Float` → `double`. `Str` is pointer + length; a library `cstr` adapter produces NUL-terminated strings, and bytes received from C become a `Str` only through a validating library function returning `option Str`. `array` does not map directly (its references are fat); a library function exposes its base pointer. A `$func` is a **bare code pointer** — §7.3's pair does not cross, because C has nowhere to put the environment word, and rule 2 is what makes dropping it sound; a function pointer received *from* C becomes a pair whose environment is the pointer itself.
 
 **Rules.**
-1. Extern calls are **unsafe by declaration** — the same status as `$alloc` (§4.2a). Memory returned by C is outside every region; wrapping it as a reference is the author's responsibility. The compiler treats every extern call as opaque.
+1. Extern calls are **unsafe by declaration** — the same status as `$alloc` (§4.2a). Memory returned by C is outside every frame and every allocator; wrapping it as a reference is the author's responsibility. The compiler treats every extern call as opaque.
 2. **C callbacks must be capture-free.** A `$func` maps to a C function pointer only if its captured set is empty (closures capture by copy, so the set is static per literal). Captures are not in the type (§7.3), so this is a property of the *expression* in the argument position: it holds when the compiler can see which `$func` literal the value came from, and a closure arriving through a mutable function slot is rejected because it cannot be seen. Otherwise it is a compile error; pass state through the C-side `void*` argument.
 3. `$extern` is the **only door to the platform**. I/O, threads, atomics, locks, files, sockets, and `malloc`-backed allocators are library code in a per-target root block.
 
@@ -579,29 +584,47 @@ Prefix subtyping (§5.1) makes structural coercion nearly free: a supertype's fi
 
 Values of union type carry a discriminator so `$match` can test them. **Which position a member takes is canonical**: §3.6 makes a union a set with no intrinsic order, so the members are ordered by a rule the compiler fixes, and a member's discriminator is therefore a function of the member set alone — not of the order the members were written in, and not of where else in the program the same union appears. Nothing observable depends on the numbering: a program names members, never tags. Blocks differing only in props are distinguished by that discriminator; no other construct reads it.
 
-### 7.6 Memory: two kinds of storage, no collector and no inference
+### 7.6 Memory: two kinds of storage, no collector
 
 Only `$new` and `$alloc` allocate, and there are no references into value
 fields, so storage is the only thing to manage — and which kind of storage a
 reference names is in its type (§3.5).
 
-**Frame storage** (`$new`) is released when its scope exits. There is no
-allocator, no header, no bookkeeping and no runtime component; the release is a
-scope ending. It is safe because §5.3a prevents a frame-bound value from
-outliving that scope, which is a structural check on inferred types rather than
-an inference of its own. Nothing is annotated and nothing is solved.
+**Frame storage** (`$new`) is a place (§5.3a) in the activation that made it, and is
+released when that activation ends: when its function returns, or when a tail call
+replaces it (§7.7). A file's top level is the outermost frame, and its activation is the
+whole program, so a top-level `$new` lives as long as the program does — `$new` means the
+same in every frame. There is no allocator, no header, no bookkeeping and no runtime
+component. Each `$new` site runs at most once per activation, since repetition is
+recursion and every step of it is an activation of its own, so its storage is simply a
+slot of the frame. It is safe because §5.3a confines places: storage never holds one, a
+function returns only places that came in, and a tail call passes none its activation
+made. Nothing is annotated; the one fact inferred — which places an activation made — is
+read off the source, by following each place to the `$new` that made it.
 
-**Allocated storage** (`$alloc`) comes from `allocator`, an ordinary name
-resolved lexically: the root block declares the default for a target, and
-`$decl allocator …` in a block overrides it for everything lexically inside.
-An allocator releases when the author says so, which makes `$alloc` **unsafe by
-declaration** — the same status as `$extern` (§4.16). A reference used after its
-allocator released it is the author's error.
+**Allocated storage** (`$alloc`) comes from `allocator`, an ordinary name resolved
+lexically and in source order (§4.10) at the point `$alloc` is written: the root block
+declares the default for a target, and `$decl allocator …` in a block overrides it for
+what is written after it there. An allocator is any value with a member
+`$prop alloc $func ($decl size 0) 0`, which is asked for `size` bytes and answers their
+address (§8's raw memory); by convention it also has `free`, taking an address back. The
+root's are `raw_alloc` and `raw_free`; an arena's `free` does nothing, and it releases
+everything at once. `$alloc e` asks the allocator for the storage `e`'s value needs and
+stores the value there. An allocator releases when the author says so, which makes
+`$alloc` **unsafe by declaration** — the same status as `$extern` (§4.16). A reference
+used after its allocator released it is the author's error.
 
-The division is deliberate: the common case is free and safe, and everything
-that outlives a scope is written down. There is no garbage collector, no region
-inference, no implicit region parameters, and no lifetime syntax — the only
-thing the type system carries is which of two kinds a reference has.
+Because the name is resolved where `$alloc` is written, rebinding `allocator` does not
+reach into a library: a list's cells written in the prelude come from the prelude's
+allocator, whatever its caller has bound. A library whose storage should come from its
+caller's allocator takes the allocator as a template generic (§4.9), and a build program
+can replace the root's for a whole program (§9). That is the price of no implicit
+parameters, and it is paid at the library, which says so in its signature.
+
+The division is deliberate: the common case is free and safe, and everything that
+outlives an activation is written down. There is no garbage collector, no region
+inference, no implicit region parameters, and no lifetime syntax — the type system
+carries only which of two kinds a reference has.
 
 References do not record *which* allocator; mixing across allocators is on the
 author.
@@ -814,7 +837,7 @@ These follow from stated rules and are accepted by design:
 13. An implementation is always a static table: its members are props, and a prop cannot capture (§4.10). The receiver is an implicit parameter, passed at the call, and a trait object's only runtime part is its reference.
 14. Storage that outlives the scope it was made in must be written `$alloc`, so a container returned to a caller names an allocator (§5.3a) while one used within a scope is free. The cost lands at the container, not at every use.
 15. There is no optimisation level and no canonical pass pipeline (§9.2), so `emit` must stay correct on unoptimised input and no pass may be assumed to have run. The cost of "optimisation is a library" is paid by the compiler, not by the user.
-16. Frame storage is safe by construction and allocated storage is **unsafe by declaration**: the language guarantees a frame reference never dangles, and says nothing about an allocated one after its allocator released it. There is no collector and nothing is inferred.
+16. Frame storage is safe by construction and allocated storage is **unsafe by declaration**: the language guarantees a frame reference never dangles, and says nothing about an allocated one after its allocator released it. There is no collector, and the one thing inferred — which places an activation made — is read off the source (§5.3a). A tail call may not pass storage its activation made, so a loop that hands storage on writes it `$alloc` and releases it.
 
 ---
 

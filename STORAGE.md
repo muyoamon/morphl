@@ -1,8 +1,11 @@
 # §7.6 storage: design note
 
-Status: **decided, not implemented.** SPEC §7.6 describes two kinds of
-storage; the code has neither. `$new` and `$alloc` both compile to `mpl_alloc`, which is `malloc`
-and is never freed, and there is no `allocator` name in either root block.
+Status: **implemented.** All five plan steps are done; SPEC §3.5, §4.2, §4.2a, §5.3a, §7.6
+and §10 state the result, and this note keeps the reasoning and the measurements.
+
+When this was written, SPEC §7.6 described two kinds of storage and the code had neither:
+`$new` and `$alloc` both compiled to `mpl_alloc`, which is `malloc` and was never freed, and
+there was no `allocator` name in either root block.
 
 | | question | status |
 |---|---|---|
@@ -342,5 +345,8 @@ the scratchpad only (`instr.py` applied to a copy of `stage1/`); nothing was com
    source calls none of the new names. Fixtures: `arena.mpl` (a morphl arena, reset and reused)
    and `alloc_free.mpl` (A4's rewrite freeing through the root allocator, under a 20 MB cap a
    million unreleased cells cannot meet), both compiled-only.
-5. **Docs.** SPEC §5.3a and §7.6 for A0, R2, A4, uniform `$new` and B2, including the lexical
-   consequence; BOOTSTRAP §3, which still says "region inference widens" where SPEC has none.
+5. **Docs.** Done. SPEC §3.5, §4.2 and §4.2a describe a place and a pointer value; §7.6 is
+   rewritten around the activation, the top level as the outermost frame, tail calls, and an
+   allocator as a value with `alloc` resolved in source order where `$alloc` is written, with
+   the lexical consequence for libraries; §10's item 16 admits the one inferred fact. BOOTSTRAP
+   §3 no longer cites region inference, which SPEC has none of.
