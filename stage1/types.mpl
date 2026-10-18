@@ -1624,9 +1624,11 @@ $decl subst_bnd $func ($decl t proto_ty, $decl k 0, $decl r proto_ty)
 // captures." A structural check on a type already inferred: no lifetime
 // variables, no annotations, nothing to solve.
 //
-// An *allocated* reference is still inspected, because what it holds may be
-// frame storage — `&^(&T)` outlives its scope and still points at something
-// that does not.
+// The check stops at a reference, in both directions, because storage never holds a place
+// (§5.3a's A0, STORAGE.md): `$new`, `$alloc`, `$set` and `unbox` all refuse a value
+// carrying one. So a frame reference *is* a place, and an allocated one can never lead to
+// one. That is what makes this cheap enough to ask at every call — without it, the walk
+// went through every list and record behind a `&^`.
 $fwd frame_bound
 
 $decl frame_bound_tys $func ($decl xs tys.node, $decl i 0) $match xs (
@@ -1642,8 +1644,7 @@ $decl frame_bound_fields $func ($decl xs fields.node, $decl i 0) $match xs (
 )
 
 $decl frame_bound $func ($decl t proto_ty, $decl i 0) $match t (
-  $case {$prop tag "ref"}
-    $if ($call is_alloc (t.kind)) ($call frame_bound (t.inner, 0)) true,
+  $case {$prop tag "ref"}   $call not ($call is_alloc (t.kind)),
   $case {$prop tag "block"} ($call frame_bound_fields (t.fields, 0)),
   $case {$prop tag "group"} ($call frame_bound_tys (t.items, 0)),
   // §7.3 keeps captures out of the type, so the flag is the only record of

@@ -832,7 +832,7 @@ $decl tt07 $call check_str ("$traitsof needs a block",
 
 // §5.3a: a literal operand is placed in frame storage, so the object cannot leave the frame.
 $decl tt08 $call check_str ("an object over a literal is frame-bound",
-  $call errs_of ("$decl f $func () $traitsof { $prop k $func () 1 }"), "this function's result holds frame storage (a trait object referring to frame storage), which cannot outlive the scope its $new made it in. Write $alloc there instead (§4.2a, §5.3a)")
+  $call errs_of ("$decl f $func () $traitsof { $prop k $func () 1 }"), "this function's result holds frame storage made in this call (a trait object referring to frame storage), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
 
 $decl tt09 $call check_str ("an object over a top-level name is not",
   $call errs_of ("$decl s { $prop k $func () 1 }  $decl f $func () $traitsof s"), "")
@@ -1145,3 +1145,37 @@ $decl ff07 $call check_str ("str_from_ptr answers an option of a Str",
   "<{tag=s\"none\",},{v:Str,tag=s\"some\",}>")
 
 $decl done15 $call nl ("all FFI tests passed")
+
+// §5.3a's provenance (STORAGE.md): a frame reference is a place. A result may hold one
+// only if it came in (§R, borrowing); storage may hold none (A0); a tail call may not pass
+// one this call made (A4).
+$decl st_pre "$decl ival $func ($decl x 0) x  $decl id_ref $func ($decl p $mut $new 0) p  "
+
+$decl st01 $call check_str ("a result may hand back a place it was given",
+  $call errs_of ($call concat (st_pre, "$decl pass $func ($decl q $mut $new 0) $call id_ref (q)")), "")
+$decl st02 $call check_str ("...and a place reached through a parameter",
+  $call errs_of ("$decl pick $func ($decl b { $decl r $mut $new 0 }) b.r"), "")
+$decl st03 $call check_str ("...and a place its enclosing function made, from a closure",
+  $call errs_of ("$decl use $func () { $decl ctr { $decl n $mut $new 0 }  $decl get $func () ctr.n  $decl ret 0 }.ret"), "")
+$decl st04 $call check_str ("a result may not hold a place this call made",
+  $call errs_of ("$decl own $func () $new 3"),
+  "this function's result holds frame storage made in this call (&Int), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
+$decl st05 $call check_str ("...nor one it lent to a call that hands it back",
+  $call errs_of ($call concat (st_pre, "$decl bad $func () { $decl c $mut $new 0  $decl ret $call id_ref (c) }.ret")),
+  "this function's result holds frame storage made in this call (&mut Int), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
+$decl st06 $call check_str ("storage may not hold a value carrying a place",
+  $call errs_of ("$decl f $func () { $decl loc $mut $new 7  $decl b $mut $new { $decl r loc }  $decl ret 0 }.ret"),
+  "storage cannot hold a place: this value holds frame storage (&mut Int), and only a pointer value may be stored (§5.3a); store $alloc storage instead")
+$decl st07 $call check_str ("...but a place used as a value is read through, and may be",
+  $call errs_of ("$decl f $func ($decl p $mut $new 0) { $decl loc $mut $new 7  $decl w $set p loc  $decl ret 0 }.ret"), "")
+$decl st08 $call check_str ("a tail call may not pass a place this call made",
+  $call errs_of ($call concat (st_pre, "$decl fresh $func ($decl c $new 0, $decl n 0) $if ($call eq_int (n, 0)) ($call ival (c)) ($call fresh ($new n, $call sub (n, 1)))")),
+  "this tail call passes $new storage made in this call, and a tail call ends the call (§7.7): allocate it with $alloc and release it when done, or make the call non-tail")
+$decl st09 $call check_str ("...but may pass one it borrowed",
+  $call errs_of ($call concat (st_pre, "$decl count $func ($decl c $mut $new 0, $decl n 0) $if ($call eq_int (n, 0)) ($call ival (c)) ($call count (c, $call sub (n, 1)))")), "")
+$decl st10 $call check_str ("...or a value read out of its own",
+  $call errs_of ($call concat (st_pre, "$decl scratch $func ($decl n 0, $decl acc 0) $if ($call eq_int (n, 0)) acc ($call scratch ($call sub (n, 1), $call ival ($new n)))")), "")
+$decl st11 $call check_str ("...or its own place to an intrinsic, which ends nothing",
+  $call errs_of ("$decl f $func ($decl n 0) $call box_ptr ($new n)"), "")
+
+$decl done16 $call nl ("all storage tests passed")

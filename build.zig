@@ -244,6 +244,9 @@ pub fn build(b: *std.Build) void {
         // its first call, which this is the first fixture to notice.
         // BOOTSTRAP §2's `run`: exit status, signal and `none`, compared with stage 0.
         .{ .src = "stage1/fixtures/run.mpl", .want = "37710\n" },
+        // §5.3a's borrowing (STORAGE.md §R): places handed back from a parameter, a
+        // capture and the top level, and tail calls passing a borrowed place. 501542.
+        .{ .src = "stage1/fixtures/borrow.mpl", .want = "501542\n" },
         // §8's FFI addresses against a C host: bytes, elements, storage C writes
         // through, and memory C owns read and written through `unbox`.
         .{ .src = "stage1/fixtures/ffi.mpl", .want = "11117493\n",
@@ -361,7 +364,10 @@ pub fn build(b: *std.Build) void {
     // program stage 0 refuses and the checker accepts is one the compiled backend
     // gives a meaning stage 0 never would.
     const reject_step = b.step("test-reject", "Check that programs which must fail are refused by both stages");
-    for ([_]struct { src: []const u8, stage1: []const []const u8, count: []const u8, stage0: []const u8 }{
+    // `stage0 = null` is for a rule stage 0 does not check: BOOTSTRAP §1.3 gives it no
+    // static checking, so a program only the checker refuses still runs there. That
+    // direction is safe — the compiler is stricter, never more permissive.
+    for ([_]struct { src: []const u8, stage1: []const []const u8, count: []const u8, stage0: ?[]const u8 }{
         .{
             .src = "stage1/fixtures/fwd_uninit.mpl",
             .stage1 = &.{
@@ -371,6 +377,20 @@ pub fn build(b: *std.Build) void {
             },
             .count = "errors: 3\n",
             .stage0 = "is not initialized yet",
+        },
+        // §5.3a's provenance (STORAGE.md): a place this call made may not be returned,
+        // stored inside a value, or passed by a tail call.
+        .{
+            .src = "stage1/fixtures/places.mpl",
+            .stage1 = &.{
+                "places.mpl:10:12: this function's result holds frame storage made in this call (&Int)",
+                "places.mpl:11:12: this function's result holds frame storage made in this call (&mut Int)",
+                "places.mpl:12:12: this function's result holds frame storage made in this call (a reference captured by a closure)",
+                "places.mpl:17:18: storage cannot hold a place",
+                "places.mpl:23:60: this tail call passes $new storage made in this call",
+            },
+            .count = "errors: 5\n",
+            .stage0 = null,
         },
     }) |bad| {
         const s1 = b.addRunArtifact(exe);
@@ -382,14 +402,16 @@ pub fn build(b: *std.Build) void {
         reject_step.dependOn(&s1.step);
         test_step.dependOn(&s1.step);
 
-        const s0 = b.addRunArtifact(exe);
-        s0.addArgs(&.{ "--run", bad.src });
-        s0.setCwd(b.path("."));
-        s0.has_side_effects = true;
-        s0.expectStdErrMatch(bad.stage0);
-        s0.expectExitCode(1);
-        reject_step.dependOn(&s0.step);
-        test_step.dependOn(&s0.step);
+        if (bad.stage0) |msg| {
+            const s0 = b.addRunArtifact(exe);
+            s0.addArgs(&.{ "--run", bad.src });
+            s0.setCwd(b.path("."));
+            s0.has_side_effects = true;
+            s0.expectStdErrMatch(msg);
+            s0.expectExitCode(1);
+            reject_step.dependOn(&s0.step);
+            test_step.dependOn(&s0.step);
+        }
     }
 
     // ---------------------------------------------------------------- stage 2
@@ -789,7 +811,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
         .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
-        .{ .src = "stage1/infer_test.mpl", .last = "all FFI tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all storage tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
         .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },

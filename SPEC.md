@@ -411,20 +411,37 @@ and one written `$alloc 0` accepts only allocated.
 
 ### 5.3a Frame storage does not escape
 
-A type is **frame-bound** if a frame reference occurs anywhere in it — directly,
-in a field, behind another reference, or in a closure's captures. Frame-bound
-values are confined by one rule:
+A frame reference is a **place**: the storage itself, in the activation whose `$new` made
+it. `$decl c $new 0` binds `c` to the cell, not to a value that points at one. An
+allocated reference is a **value** — a pointer — and may be copied and stored like any
+other. A type is **frame-bound** if a place occurs in it — directly, in a field, or in a
+closure's captures.
 
-> A frame-bound type may not appear in a function's result, and a frame-bound
-> value may not be written into storage that is not itself frame-bound.
+A place this activation made is **own**. One that came in — through a parameter, a
+capture, or a name in an enclosing frame, the file's top level included — is
+**borrowed**: the activation it belongs to outlives this one. Three rules follow, and
+together they are the whole of it:
 
-That is the whole of it, and it is a structural check on types already inferred
-— no lifetime variables, no annotations, nothing to solve. A `$func` literal
-that captures a frame reference is itself frame-bound, so a closure cannot carry
-one out either (§7.3).
+> **Storage never holds a place.** `$new`, `$alloc` and `$set` refuse a value that
+> carries one. A place used where a value is wanted is read through (§5.4), so
+> `$new $new 0` is one cell and `$set p loc` copies `loc`'s value; what is refused is
+> a place carried *inside* a value.
+>
+> **A function's result may hold only borrowed places.** Returning a place the caller
+> passed in hands it back to its owner; returning an own one is an error.
+>
+> **A tail call may not pass an own place.** A tail call ends the activation (§7.7), so
+> its own storage ends with it. Every tail call counts, whatever the backend makes of it:
+> validity may not depend on whether some other function closes a cycle.
 
-The error is reported where the value would escape, naming the `$new` it came
-from. The fix is always the same: make that storage `$alloc` (§4.2a).
+Which places are own is a question about the source, answered by following each place to
+the `$new` that made it, so nothing is annotated and nothing is solved. Because storage
+never holds a place, an allocated reference never leads to one, and a frame reference
+*is* one: the check never looks behind a reference. A `$func` literal that captures a
+place is frame-bound, so a closure cannot carry an own place out either (§7.3).
+
+The error is reported where the place would escape. The fix: make that storage `$alloc`
+(§4.2a) and release it when done, or, for a tail call, make the call non-tail.
 
 **Parameters.** A parameter's type cannot say whether its argument is frame-bound: a
 closure's captures are not in its type (§7.3), and a trait object's kind is not in its
@@ -434,7 +451,9 @@ value its function returns — reaches the function's result, storage that is no
 frame-bound, or an escaping parameter of another call. Which parameters escape is
 inferred, never written, and is part of the function's type: a function that lets fewer
 of its parameters escape is a subtype of one that lets more. A frame-bound argument may
-not be passed to an escaping parameter, and the error is reported at the call.
+not be passed to an escaping parameter, and the error is reported at the call. A
+parameter whose type is itself a place is the exception that borrowing makes: its type
+does say it is frame storage, so returning it is borrowing, not escaping.
 
 **Consequence for recursive data.** §5.5 makes a recursive value's tail storage,
 so a structure that outlives the function building it must be allocated — a
