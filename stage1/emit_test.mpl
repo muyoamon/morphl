@@ -265,9 +265,17 @@ $decl t22 $call check ("a program using storage emits cleanly",
   $call eq_int (sto_c.nerrs, 0))
 
 // §4.2: one allocation and one store. §7.4 makes `&T` a thin pointer.
-$decl t23 $call check ("$new is an allocation and a store",
-  $if ($call has (sto_c.code, "mpl_alloc((int64_t)sizeof(int64_t))"))
-      ($call has (sto_c.code, "int64_t * ")) false)
+// §7.6: frame storage is a C local, and a top-level `$new` is the program's frame — a
+// `static` in the thunk that initialises it, which `mpl_init` runs once.
+$decl t23 $call check ("a top-level $new is static storage, not an allocation",
+  $if ($call has (sto_c.code, "static int64_t n"))
+      ($if ($call has (sto_c.code, " = &n")) ($call has (sto_c.code, "int64_t * ")) false) false)
+
+$decl loc_c $call compile ("$decl ival $func ($decl x 0) x  $decl f $func ($decl n 0) $call add ($call ival ($new n), 1)  $decl main $func () $call f (4) ")
+
+$decl t23b $call check ("...and one in a function is a plain local, freed by its return",
+  $if ($call has (loc_c.code, "  int64_t n"))
+      ($call not ($call has (loc_c.code, "mpl_alloc((int64_t)sizeof(int64_t))"))) false)
 
 // §4.4: writes *through* storage.
 $decl t24 $call check ("$set writes through the pointer",

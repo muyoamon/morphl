@@ -162,6 +162,12 @@ pub fn build(b: *std.Build) void {
     // has to be ours (§6a).
     const emit_step = b.step("test-emit", "Compile each fixture to C, build it, run it");
     const run0_step = b.step("test-run0", "Run each fixture under stage 0 and check it answers as compiled");
+    // §7.6 makes a `$new` a C local, released by C's return, and §5.3a is the whole of
+    // what makes that sound. A wrong lifetime is a dangling stack pointer, which an
+    // ordinary run may well survive, so every fixture also runs under AddressSanitizer —
+    // with use-after-return detection, which is what catches a local outliving its
+    // function — and UBSan, and must print nothing but its answer.
+    const asan_step = b.step("test-asan", "Run each fixture under AddressSanitizer and UBSan");
     // `host` is an extra C file linked in beside the emitted one: §4.16's fixture
     // needs C functions to bind, and providing them here is the point — a symbol
     // from libc proves nothing about a signature the target supplies itself.
@@ -247,6 +253,9 @@ pub fn build(b: *std.Build) void {
         // §5.3a's borrowing (STORAGE.md §R): places handed back from a parameter, a
         // capture and the top level, and tail calls passing a borrowed place. 501542.
         .{ .src = "stage1/fixtures/borrow.mpl", .want = "501542\n" },
+        // §7.6's frame storage as C locals: a 2,000,000-iteration loop reusing one, a cell
+        // made in an `$if` arm and used after it, a group's, and top-level static storage.
+        .{ .src = "stage1/fixtures/frame.mpl", .want = "2000001002635\n" },
         // §8's FFI addresses against a C host: bytes, elements, storage C writes
         // through, and memory C owns read and written through `unbox`.
         .{ .src = "stage1/fixtures/ffi.mpl", .want = "11117493\n",
@@ -279,6 +288,35 @@ pub fn build(b: *std.Build) void {
             run_bin.expectStdOutEqual(fixture.want);
             emit_step.dependOn(&run_bin.step);
             test_step.dependOn(&run_bin.step);
+
+            if (std.mem.eql(u8, driver, "stage1/emit_c.mpl")) {
+                const acc = b.addSystemCommand(&.{
+                    "cc", "-O0", "-g", "-Wall", "-Wno-unused-function", "-Werror",
+                    "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-o",
+                });
+                const abin = acc.addOutputFileArg("fixture_asan");
+                acc.addFileArg(c_file);
+                if (fixture.host) |h| acc.addFileArg(b.path(h));
+                const arun = std.Build.Step.Run.create(b, "run the emitted binary under ASan");
+                arun.addFileArg(abin);
+                // Leaks are expected: `$alloc` is never released until §7.6's allocators.
+                arun.setEnvironmentVariable("ASAN_OPTIONS", "detect_leaks=0:detect_stack_use_after_return=1");
+                arun.setEnvironmentVariable("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1");
+                arun.expectStdOutEqual(fixture.want);
+                arun.expectStdErrEqual("");
+                asan_step.dependOn(&arun.step);
+                test_step.dependOn(&arun.step);
+
+                // §7.6's point, measured: `frame.mpl`'s 2,000,000 cells fit in one local, so
+                // it runs in a cap that 2,000,000 allocated cells could not.
+                if (std.mem.eql(u8, fixture.src, "stage1/fixtures/frame.mpl")) {
+                    const capped = b.addSystemCommand(&.{ "sh", "-c", "ulimit -v 20000; exec \"$0\"" });
+                    capped.addFileArg(bin);
+                    capped.expectStdOutEqual(fixture.want);
+                    emit_step.dependOn(&capped.step);
+                    test_step.dependOn(&capped.step);
+                }
+            }
         }
 
         // ...and once more under stage 0, which must give the same answer. The two are

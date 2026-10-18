@@ -2542,6 +2542,111 @@ $decl prim_pairs $func ($decl st proto_est, $decl n "", $decl cs T.tys.node,
   $case cs ($call strs.reverse (acc, strs.nil))
 )
 
+// §7.6's frame storage: a `$new` is a C local of the function it stands in, released by
+// C's own return — no allocator, no header, no runtime component. §5.3a is what makes that
+// sound: storage never holds a place, a result holds only places that came in, and a
+// tail call passes none this call made, so nothing can reach the local once its function
+// has returned or its loop has gone round. Each site runs at most once per activation —
+// morphl has no loops — so one local per site is enough, named by the node's §9.3 index.
+//
+// They are declared with the slots, at the top of the function or of a group member's
+// `case`, never where the `$new` stands: a place made inside an `$if` arm is used after
+// the arm, and a C local's lifetime is its C block. A thunk runs once, from `mpl_init`,
+// and its value is the global's (§4.10): its storage is a `static` local, the program's
+// frame, which is §7.6's top level being the outermost frame.
+$decl is_frame_new $func ($decl ts T.tys.node, $decl ty 0) {
+  $decl t   $call T.unroll ($call type_at (ts, ty))
+  $decl ret $match t ($case {$prop tag "ref"} ($call not ($call T.is_alloc (t.kind))), $case t false)
+}.ret
+
+$fwd news_of
+
+$decl news_list $func ($decl ts T.tys.node, $decl xs IR.exprs.node, $decl acc IR.exprs.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $call news_list (ts, $call IR.exprs.val (xs.tail), $call news_of (ts, xs.head, acc)),
+    $case xs acc
+  )
+
+$decl news_slots $func ($decl ts T.tys.node, $decl xs IR.bslots.node, $decl acc IR.exprs.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $call news_slots (ts, $call IR.bslots.val (xs.tail), $call news_of (ts, xs.head.init, acc)),
+    $case xs acc
+  )
+
+$decl news_arms $func ($decl ts T.tys.node, $decl xs IR.arms.node, $decl acc IR.exprs.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $call news_arms (ts, $call IR.arms.val (xs.tail), $call news_of (ts, xs.head.body, acc)),
+    $case xs acc
+  )
+
+// Every `new` of frame kind in a body, in any position: the same walk as `xt_of`. A
+// `$func` literal's body is its own function and is not entered — a `closure` node holds
+// only its captures.
+$decl news_of $func ($decl ts T.tys.node, $decl e IR.proto_expr, $decl acc IR.exprs.node) $match e (
+  $case {$prop tag "new"} {
+    $decl a2  $call news_of (ts, $call IR.eval (e.init), acc)
+    $decl ret $if ($call is_frame_new (ts, e.ty)) ($call IR.exprs.cons (e, a2)) a2
+  }.ret,
+  $case {$prop tag "field"}   ($call news_of (ts, $call IR.eval (e.target), acc)),
+  $case {$prop tag "deref"}   ($call news_of (ts, $call IR.eval (e.src), acc)),
+  $case {$prop tag "copy"}    ($call news_of (ts, $call IR.eval (e.src), acc)),
+  $case {$prop tag "try"}     ($call news_of (ts, $call IR.eval (e.value), acc)),
+  $case {$prop tag "set"}
+    $call news_of (ts, $call IR.eval (e.value), $call news_of (ts, $call IR.eval (e.target), acc)),
+  $case {$prop tag "do"}
+    $call news_of (ts, $call IR.eval (e.then), $call news_of (ts, $call IR.eval (e.first), acc)),
+  $case {$prop tag "if"}
+    $call news_of (ts, $call IR.eval (e.els),
+        $call news_of (ts, $call IR.eval (e.then),
+            $call news_of (ts, $call IR.eval (e.cond), acc))),
+  $case {$prop tag "call"}
+    $call news_list (ts, $call IR.exprs.val (e.args),
+        $call news_of (ts, $call IR.eval (e.callee), acc)),
+  $case {$prop tag "group"}   ($call news_list (ts, $call IR.exprs.val (e.items), acc)),
+  $case {$prop tag "closure"} ($call news_list (ts, $call IR.exprs.val (e.captures), acc)),
+  $case {$prop tag "block"}   ($call news_slots (ts, $call IR.bslots.val (e.slots), acc)),
+  $case {$prop tag "switch"}
+    $call news_of (ts, $call IR.eval (e.default),
+        $call news_arms (ts, $call IR.arms.val (e.arms),
+            $call news_of (ts, $call IR.eval (e.scrut), acc))),
+  $case {$prop tag "tobj"}    ($call news_of (ts, $call IR.eval (e.ref), acc)),
+  $case {$prop tag "tmem"}    ($call news_of (ts, $call IR.eval (e.obj), acc)),
+  $case {$prop tag "addr"}    ($call news_of (ts, $call IR.eval (e.src), acc)),
+  $case e acc
+)
+
+$decl new_local $func ($decl id 0) $call concat ("n", $call int_to_str (id))
+
+// The C type a `new` stores: its node's pointee, as the `new` case reads it.
+$decl new_ctype $func ($decl st proto_est, $decl ts T.tys.node, $decl e IR.proto_expr) {
+  $decl x   e
+  $decl ret $match x (
+      $case {$prop tag "new"} {
+        $decl pid  $call pointee_of (st, ts, x.ty)
+        $decl wnt  $if ($call lt (-1, pid)) pid ($call IR.eval (x.init)).ty
+        $decl ret2 $call c_type (st, ts, wnt)
+      }.ret2,
+      $case x "int64_t"
+    )
+}.ret
+
+$decl emit_news_list $func ($decl st proto_est, $decl ts T.tys.node, $decl xs IR.exprs.node,
+                            $decl stat P.boolean) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call say (st, $call concat ($if stat "  static " "  ", $call concat (
+             $call new_ctype (st, ts, xs.head), $call concat (" ", $call concat (
+             $call new_local (($call IR.eval (xs.head)).id), ";\n"))))))
+        ($call emit_news_list (st, ts, $call IR.exprs.val (xs.tail), stat)),
+  $case xs ()
+)
+
+$decl emit_news $func ($decl st proto_est, $decl ts T.tys.node, $decl body IR.proto_expr,
+                       $decl stat P.boolean)
+  $call emit_news_list (st, ts, $call news_of (ts, body, IR.exprs.nil), stat)
+
 $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
                        $decl dest "", $decl ts T.tys.node) $match e (
   // C has no negative literals: `-9223372036854775808` negates a constant too big for
@@ -2686,8 +2791,12 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     $decl vt  $call c_type (st, ts, wnt)
     $decl tv  $call decl_tmp (st, ts, wnt)
     $decl d1  $call emit_as (st, fi, v, tv, wnt, ts)
-    $decl d0  $call assign (st, dest, $call concat ("(", $call concat (vt,
-                  $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (vt, "))")))))
+    // Frame storage is the local `emit_news` declared for this site; allocated storage
+    // is the allocator's (§7.6).
+    $decl d0  $call assign (st, dest, $if ($call is_frame_new (ts, e.ty))
+                  ($call concat ("&", $call new_local (e.id)))
+                  ($call concat ("(", $call concat (vt,
+                  $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (vt, "))"))))))
     $decl ret   $call say (st, $call concat ("  *", $call concat (dest,
                   $call concat (" = ", $call concat (tv, ";\n")))))
   }.ret,
@@ -2880,6 +2989,7 @@ $decl emit_fn $func ($decl st proto_est, $decl i 0, $decl f IR.proto_fn, $decl t
   $decl h2 $call say (st, $call concat (") {  /* ", $call concat (f.name, " */\n")))
   $decl h3 $call say (st, "  (void)env;\n")
   $decl s0 $call emit_slots (st, $call IR.ints.val (f.slots), ts, 0, np)
+  $decl s1 $call emit_news (st, ts, f.body, f.thunk)
   $decl fr $set st.fnres f.result
   // §6a: whether an indirect tail call in this body reports or drives.
   $decl ir0 $set st.inrep ($call reports (st, i))
@@ -2945,6 +3055,7 @@ $decl emit_member $func ($decl st proto_est, $decl fs IR.fns.node, $decl g IR.in
     // The non-parameter slots live in the case's own block, so members do
     // not collide over a slot number.
     $decl d1  $call emit_slots (st, $call IR.ints.val (f.slots), ts, 0, np)
+    $decl d1n $call emit_news (st, ts, f.body, f.thunk)
     $decl d2  $call emit_as (st, g.head, f.body, "ret", f.result, ts)
     $decl d3  $do ($call emit_return (st)) ($call say (st, "  }\n"))
     $decl ret $call emit_member (st, fs, g.tail, ts, $call add (i, 1))
@@ -3036,6 +3147,7 @@ $decl emit_member_gen $func ($decl st proto_est, $decl fs IR.fns.node, $decl g I
     $decl d0 $call say (st, $call concat ("  case ", $call concat ($call int_to_str (si),
                  $call concat (": {  /* ", $call concat (f.name, " */\n")))))
     $decl d1  $call emit_slots (st, $call IR.ints.val (f.slots), ts, 0, 0)
+    $decl d1n $call emit_news (st, ts, f.body, f.thunk)
     $decl d2  $call copy_qparams (st, $call IR.ints.val (f.params), si, 0)
     $decl d3  $call say (st, $call concat ("  ", $call concat (rc, " ret;\n")))
     $decl fr  $set st.fnres f.result

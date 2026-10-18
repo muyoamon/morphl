@@ -315,14 +315,20 @@ the scratchpad only (`instr.py` applied to a copy of `stage1/`); nothing was com
 
 1. **Measure the rules' reach.** Done: see above. A0 refuses nothing that exists, and no tail call
    passes a place.
-2. **A0, R2 and A4 in the checker.** One piece of inference — which places an activation made —
-   serves all three: A0 tightens, R2 loosens, and A4 refuses own places in tail calls. Fixtures:
-   `test-reject` cases for A0, R's case 5 and `fresh`; accepting ones for R's cases 1–4, `count`
-   and `scratch`.
-3. **`$new` as C locals.** Each `$new` site becomes a local in its function's frame (a C `static`
-   at top level), and the slot holds its address. Fixtures: `scratch` at 2,000,000 iterations, and
-   the A0 and R programs, run under the compiled backend so a wrong lifetime shows as a sanitizer
-   error rather than a leak.
+2. **A0, R2 and A4 in the checker.** Done. Provenance is a walk over the function's source
+   (`owns_x`), not a mark on types: `join` and `union_add` keep one of two equal types whole,
+   so a mark would be dropped in the unsound direction. A0 also let `T.frame_bound` stop at
+   every reference, which kept asking it at every argument level in time. Fixtures:
+   `borrow.mpl` (accepted, both stages) and `places.mpl` (five refusals, in `test-reject`).
+3. **`$new` as C locals.** Done. Each frame-kind `new` site is a local `n<id>` named by its
+   node's §9.3 index, declared with the slots — at the top of the function or of a group
+   member's `case`, never where the `$new` stands, since a place made in an `$if` arm is used
+   after it — and a thunk's is `static`. `frame.mpl` covers a 2,000,000-iteration loop, a cell
+   made in an arm and used after it, a group's cells and top-level storage, and runs in a
+   20 MB cap that the old `mpl_alloc` could not meet even at 60 MB. Every fixture also runs
+   under AddressSanitizer with use-after-return detection, and UBSan (`zig build test-asan`),
+   checked to catch a dangling local made through `box_ptr`/`unbox`. The compiler's own C is
+   unchanged: it uses no `$new`.
 4. **Allocators (B2).** `raw_alloc`/`raw_free` and the root `allocator` with `alloc` and `free`
    (the two-step bootstrap), conformance in inference, the lexical allocator at each `$alloc`, the
    static fast path for the default, then a library arena with a fixture that allocates, releases
