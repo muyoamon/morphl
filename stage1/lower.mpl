@@ -37,6 +37,11 @@ $decl isub sub
 
 $decl strs $specialize P.list ""
 
+$decl mem_strs $func ($decl xs strs.node, $decl s "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head, s)) true ($call mem_strs (xs.tail, s)),
+  $case xs false
+)
+
 $decl mem_str $func ($decl xs strs.node, $decl x "") $match xs (
   $case {$prop tag "cons"} $if ($call eq_str (xs.head, x)) true ($call mem_str (xs.tail, x)),
   $case xs false
@@ -669,6 +674,10 @@ $decl lstate $func () {
   $decl nlifted $mut $alloc 0
   $decl fnbase  $mut $alloc 0
   $decl errs    $mut $alloc Pa.diags.node
+  // §7.6: the `$alloc` sites inference found drawing from an allocator other than the
+  // root's (`infer.mpl`'s `ualloc`). Empty unless a caller supplies it, so a direct
+  // lowering keeps the root's everywhere.
+  $decl ualloc  $mut $alloc strs.node
 }
 
 $decl proto_lst $call lstate ()
@@ -2009,7 +2018,13 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
   $decl tt  $call T.unroll (tgt.ty)
   $decl own $if ($call lt (tgt.mod, 0)) false ($call mod_has (st, tgt.mod, n.field))
   $decl ret $match tt (
-      $case {$prop tag "block"} {
+      // §7.6: the root `allocator`'s members are §8's `raw_alloc` and `raw_free`.
+      $case {$prop tag "block"} $if ($call T.same (tt, T.ffi_alloc)) {
+        $decl nm   $if ($call eq_str (n.field, "free")) "raw_free" "raw_alloc"
+        $decl ft   $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil),
+                       $if ($call eq_str (n.field, "free")) T.t_unit T.t_int)
+        $decl ret3 $call lres ($call IR.e_prim ($call intern (st, ft), nm), ft)
+      }.ret3 {
         $decl f   $call find_fld ($call T.fields.val (tt.fields), n.field, 0)
         $decl ask $if own ($call not ($call and (f.hit, $call is_deref (tgt.ir)))) false
         $decl ret2 $if ask
@@ -3392,7 +3407,24 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     ($if ($call eq_str (k, "alloc")) {
       $decl v    $call as_value (st, $call lower (st, e, $call op (n, 0), false))
       $decl rt   $call T.t_ref_k ("", v.ty, T.k_alloc)
-      $decl ret2 $call lres ($call IR.e_new ($call intern (st, rt), v.ir), rt)
+      // §7.6: from the root allocator, the runtime's own; from any other, its `alloc` member
+      // asked for the storage's size, through §8's `alloc_in`, which the backend emits.
+      $decl sp0  $call P.span_of (n)
+      $decl key  $call concat ($call fshort (st, $call P.sval (st.curfile)), $call concat (":",
+                     $call concat ($call int_to_str (sp0.line), $call concat (":",
+                     $call int_to_str (sp0.col)))))
+      $decl user $call mem_strs ($call strs.val (st.ualloc), key)
+      $decl ret2 $if user {
+        $decl sp   $call P.span_of (n)
+        $decl m    $call as_value (st, $call lower (st, e,
+                       $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "alloc",
+                           sp.line, sp.col), false))
+        $decl ft   $call T.t_func ($call T.tys.cons (m.ty, $call T.tys.cons (v.ty, T.tys.nil)), rt)
+        $decl ret3 $call lres ($call IR.e_call ($call intern (st, rt),
+                       $call IR.e_prim ($call intern (st, ft), "alloc_in"),
+                       $call IR.exprs.cons (m.ir, $call IR.exprs.cons (v.ir, IR.exprs.nil)),
+                       tail), rt)
+      }.ret3 ($call lres ($call IR.e_new ($call intern (st, rt), v.ir), rt))
     }.ret2
     // §4.3: a view, not a value — no node, only a different type.
     ($if ($call P.or ($call eq_str (k, "mut"), $call eq_str (k, "const"))) {

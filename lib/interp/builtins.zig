@@ -47,6 +47,14 @@ pub fn rootScope(arena: Allocator, rt: *Runtime) Error!*Scope {
     _ = try define(scope, try rt.pool.intern("err"), try tagBlock(rt, "err"));
     _ = try define(scope, try rt.pool.intern("none"), try tagBlock(rt, "none"));
 
+    // §7.6's root `allocator`. Stage 0 never frees (BOOTSTRAP §3), so `$alloc` ignores
+    // it; its members are §8's raw-memory intrinsics, which refuse here like the rest of
+    // the FFI group, so `allocator.alloc (n)` fails with the subset's message.
+    _ = try define(scope, try rt.pool.intern("allocator"), try value.propBlock(rt.arena, &.{
+        .{ .name = try rt.pool.intern("alloc"), .value = .{ .builtin = &raw_alloc_b } },
+        .{ .name = try rt.pool.intern("free"), .value = .{ .builtin = &raw_free_b } },
+    }));
+
     return scope;
 }
 
@@ -487,6 +495,9 @@ fn ffiFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return rt.fail(span, "the FFI intrinsics are outside the bootstrap subset (BOOTSTRAP 1.2)", .{});
 }
 
+const raw_alloc_b: value.Builtin = .{ .name = "raw_alloc", .arity = 1, .func = ffiFn };
+const raw_free_b: value.Builtin = .{ .name = "raw_free", .arity = 1, .func = ffiFn };
+
 const table = [_]value.Builtin{
     .{ .name = "add", .arity = 2, .func = addFn },
     .{ .name = "sub", .arity = 2, .func = subFn },
@@ -531,6 +542,8 @@ const table = [_]value.Builtin{
     .{ .name = "run", .arity = 1, .func = runFn },
     .{ .name = "str_ptr", .arity = 1, .func = ffiFn },
     .{ .name = "str_from_ptr", .arity = 2, .func = ffiFn },
+    .{ .name = "raw_alloc", .arity = 1, .func = ffiFn },
+    .{ .name = "raw_free", .arity = 1, .func = ffiFn },
     .{ .name = "array_ptr", .arity = 1, .func = ffiFn },
     .{ .name = "box_ptr", .arity = 1, .func = ffiFn },
     .{ .name = "unbox", .arity = 2, .func = ffiFn },
@@ -557,6 +570,7 @@ test "the root block is complete per BOOTSTRAP 2" {
         // Shapes (§4.15) and platform.
         "err",        "none",       "print", "eprint", "read_file", "write_file", "args",
         "run",        "str_ptr",    "str_from_ptr", "array_ptr", "box_ptr", "unbox",
+        "raw_alloc",  "raw_free",   "allocator",
     }) |name| {
         if (scope.findLocalText(name) == null) {
             std.debug.print("root block is missing '{s}'\n", .{name});

@@ -256,6 +256,11 @@ pub fn build(b: *std.Build) void {
         // §7.6's frame storage as C locals: a 2,000,000-iteration loop reusing one, a cell
         // made in an `$if` arm and used after it, a group's, and top-level static storage.
         .{ .src = "stage1/fixtures/frame.mpl", .want = "2000001002635\n" },
+        // §7.6's allocators: a morphl arena `$alloc` draws from by lexical scope, reset
+        // and reused; and A4's advised rewrite, freeing through the root allocator. Both
+        // reach §8's raw memory, which stage 0 leaves out of the subset.
+        .{ .src = "stage1/fixtures/arena.mpl", .want = "50511058200320\n", .stage0 = false },
+        .{ .src = "stage1/fixtures/alloc_free.mpl", .want = "1\n", .stage0 = false },
         // §8's FFI addresses against a C host: bytes, elements, storage C writes
         // through, and memory C owns read and written through `unbox`.
         .{ .src = "stage1/fixtures/ffi.mpl", .want = "11117493\n",
@@ -307,9 +312,12 @@ pub fn build(b: *std.Build) void {
                 asan_step.dependOn(&arun.step);
                 test_step.dependOn(&arun.step);
 
-                // §7.6's point, measured: `frame.mpl`'s 2,000,000 cells fit in one local, so
-                // it runs in a cap that 2,000,000 allocated cells could not.
-                if (std.mem.eql(u8, fixture.src, "stage1/fixtures/frame.mpl")) {
+                // §7.6's point, measured: `frame.mpl`'s 2,000,000 cells fit in one local and
+                // `alloc_free.mpl`'s million are each released, so both run in a cap that
+                // the cells they make, unreleased, could not meet.
+                if (std.mem.eql(u8, fixture.src, "stage1/fixtures/frame.mpl") or
+                    std.mem.eql(u8, fixture.src, "stage1/fixtures/alloc_free.mpl"))
+                {
                     const capped = b.addSystemCommand(&.{ "sh", "-c", "ulimit -v 20000; exec \"$0\"" });
                     capped.addFileArg(bin);
                     capped.expectStdOutEqual(fixture.want);
@@ -849,7 +857,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
         .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
-        .{ .src = "stage1/infer_test.mpl", .last = "all storage tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all allocator tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
         .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },

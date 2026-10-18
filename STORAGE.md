@@ -329,9 +329,18 @@ the scratchpad only (`instr.py` applied to a copy of `stage1/`); nothing was com
    under AddressSanitizer with use-after-return detection, and UBSan (`zig build test-asan`),
    checked to catch a dangling local made through `box_ptr`/`unbox`. The compiler's own C is
    unchanged: it uses no `$new`.
-4. **Allocators (B2).** `raw_alloc`/`raw_free` and the root `allocator` with `alloc` and `free`
-   (the two-step bootstrap), conformance in inference, the lexical allocator at each `$alloc`, the
-   static fast path for the default, then a library arena with a fixture that allocates, releases
-   and allocates again, and `fresh` rewritten as A4's diagnostic advises.
+4. **Allocators (B2).** Done. `raw_alloc`/`raw_free` are §8 intrinsics; the root `allocator` is
+   bound at a marker type (`T.ffi_alloc`) whose `alloc` and `free` are those two. `$alloc` from
+   the root stays `mpl_alloc`; from any other allocator it is the prim `alloc_in (member,
+   value)`, the member called with the storage's size — an ordinary call node, so no tree walker
+   had to learn a new kind. An allocator is an ordinary block whose members name their receiver,
+   so the call is resolved statically and needs no trait object. **Which `$alloc` sites use a
+   non-root allocator is decided by inference**, in §4.10's source order, and handed to lowering
+   (`ualloc`, by file short name, line and column): lowering binds an entry file's globals up
+   front, and resolving the name itself made an initializer written *above* `$decl allocator`
+   draw from it while inference said the root. No two-step bootstrap was needed: the compiler's
+   source calls none of the new names. Fixtures: `arena.mpl` (a morphl arena, reset and reused)
+   and `alloc_free.mpl` (A4's rewrite freeing through the root allocator, under a 20 MB cap a
+   million unreleased cells cannot meet), both compiled-only.
 5. **Docs.** SPEC §5.3a and §7.6 for A0, R2, A4, uniform `$new` and B2, including the lexical
    consequence; BOOTSTRAP §3, which still says "region inference widens" where SPEC has none.

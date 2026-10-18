@@ -2658,4 +2658,9 @@ $decl tag_block $func ($decl n "", $decl v "")
 // bound at one of these markers instead, and inference and lowering type a call to
 // it there. Both passes share them, so they recognise the same binding.
 $decl ffi_box   $call tag_block ("intrinsic", "box_ptr")
+
+// §7.6's root `allocator`, which `$alloc` draws from unless a block rebinds the name. Its
+// members are §8's `raw_alloc` and `raw_free`; a marker like `ffi_box` lets both passes
+// recognise the root's own binding, which a rebinding never has.
+$decl ffi_alloc $call tag_block ("intrinsic", "allocator")
 $decl ffi_unbox $call tag_block ("intrinsic", "unbox")

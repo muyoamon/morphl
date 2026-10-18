@@ -611,7 +611,13 @@ $decl free_names_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match x
 $decl free_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
   $case {$prop tag "name"}
     $if ($call mem_pstr (acc, n.text)) acc ($call pstrs.cons (n.text, acc)),
-  $case {$prop tag "form"}  ($call free_names_list (n.operands, acc)),
+  // §7.6: `$alloc` draws from the `allocator` in lexical scope, so it reads that name
+  // although it never spells it — and a closure that allocates captures it.
+  $case {$prop tag "form"}
+    $call free_names_list (n.operands,
+        $if ($call eq_str (n.keyword, "alloc"))
+            ($if ($call mem_pstr (acc, "allocator")) acc ($call pstrs.cons ("allocator", acc)))
+            acc),
   $case {$prop tag "group"} ($call free_names_list (n.items, acc)),
   $case {$prop tag "block"} ($call free_names_list (n.items, acc)),
   $case {$prop tag "proj_name"}  ($call free_names (n.target, acc)),

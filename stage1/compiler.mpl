@@ -111,12 +111,14 @@ $decl parse $func ($decl src "", $decl path "") {
 // program and not the type — but a file's type *is* the answer to "does this
 // check?" (§3.3 makes a file a block), and a tool that only reports diagnostics
 // has no use for the tree. `check` is this followed by lowering.
-$decl typed $func ($decl t T.proto_ty, $decl d Pa.diags.node)
-  { $decl ty t  $decl diagnostics d }
+// `ualloc` is inference's record of the `$alloc` sites drawing from an allocator other
+// than the root's (§7.6), which lowering follows.
+$decl typed $func ($decl t T.proto_ty, $decl d Pa.diags.node, $decl ua I.strs.node)
+  { $decl ty t  $decl diagnostics d  $decl ualloc ua }
 
 $decl infer_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "") {
   $decl r   $call I.infer_file (items, I.root_env, base, path)
-  $decl ret $call typed (r.ty, $call Pa.diags.val (r.errs))
+  $decl ret $call typed (r.ty, $call Pa.diags.val (r.errs), $call I.strs.val (r.ualloc))
 }.ret
 
 $decl infer $func ($decl p proto_parsed)
@@ -126,8 +128,9 @@ $decl infer $func ($decl p proto_parsed)
 
 
 $decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "",
-    $decl path "") {
+    $decl path "", $decl ua I.strs.node) {
   $decl st    $call L.lstate ()
+  $decl uas   $set st.ualloc ua
   // The entry file's name, so lowering identifies the entry file's function-valued
   // props exactly as inference does (`opaque_at`) — inference has the path, and a
   // parameter's type is inference's.
@@ -142,7 +145,7 @@ $decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl bas
 $decl check_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "") {
   $decl r   $call infer_ok (items, base, path)
   $decl ret $if ($call Pa.diags.is_nil ($call Pa.diags.val (r.diagnostics)))
-      ($call lower_ok (items, r.ty, base, path))
+      ($call lower_ok (items, r.ty, base, path, $call I.strs.val (r.ualloc)))
       ($call checked (empty_program, $call Pa.diags.val (r.diagnostics)))
 }.ret
 

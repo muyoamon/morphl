@@ -116,7 +116,8 @@ Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
 | Platform | `print eprint read_file write_file args run` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
-| FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox` — as §8 in stage 1, which compiles them; stage 0 has the names and refuses them, since it has no `$extern` (§1.2) |
+| FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox raw_alloc raw_free` — as §8 in stage 1, which compiles them; stage 0 has the names and refuses them, since it has no `$extern` (§1.2) |
+| Storage | `allocator` — §7.6's root allocator, whose `alloc` and `free` are `raw_alloc` and `raw_free`; stage 0 never frees (§3), so its `$alloc` ignores it |
 
 **Platform shapes.** §8 requires failing operations to return `option`/`result` rather than panic, which fixes these signatures:
 

@@ -317,6 +317,11 @@ $decl ctx $func () {
   // needs. Grows and never shrinks: a position typed more than once (a specialised body)
   // is recorded if any typing found a place, which can only make the walk stricter.
   $decl placed   $mut $alloc strs.node
+  // §7.6: the `$alloc` sites whose `allocator` is not the root's, by file short name, line
+  // and column. Inference decides it, in §4.10's source order, and hands the set to
+  // lowering, whose entry-file globals are bound up front and so could not decide it the
+  // same way (`lower_ok`).
+  $decl ualloc   $mut $alloc strs.node
 }
 
 $decl proto_ctx $call ctx ()
@@ -562,12 +567,18 @@ $decl arrp_t  $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 $decl strf_t  $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)),
                   opt_str)
 
+// §8's raw memory, for an allocator written in morphl (§7.6): `raw_alloc (n)` answers an
+// address, 0 when none is to be had, and `raw_free (addr)` gives one back.
+$decl ralloc_t $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_int)
+$decl rfree_t  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_unit)
+
 // BOOTSTRAP §2's `run (argv)`: the process's exit status, or `none` when it could
 // not be started.
 $decl run_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), opt_int)
 
 $decl root_env
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
+  $call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind (
@@ -580,7 +591,7 @@ $decl root_env
     "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
     "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
     "str_ptr", s_i), "str_from_ptr", strf_t), "array_ptr", arrp_t), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
-    "run", run_t),
+    "run", run_t), "raw_alloc", ralloc_t), "raw_free", rfree_t), "allocator", T.ffi_alloc),
     "add_wrap", ii_i), "sub_wrap", ii_i), "mul_wrap", ii_i),
     "add_sat", ii_i), "sub_sat", ii_i), "mul_sat", ii_i),
     "band", ii_i), "bor", ii_i), "bxor", ii_i), "shl", ii_i), "shr", ii_i),
@@ -664,8 +675,16 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
                 $call concat (fld, $call concat ("' from ", $call T.show (tt)))), n))
 )
 
-$decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_projn)
-  $call proj_one (cx, $call deref_ty ($call infer (cx, e, n.target)), n.field, n)
+// §7.6: the root `allocator`'s members are §8's raw-memory intrinsics.
+$decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_projn) {
+  $decl t   $call deref_ty ($call infer (cx, e, n.target))
+  $decl ret $if ($call T.same (t, T.ffi_alloc))
+      ($if ($call eq_str (n.field, "alloc")) ralloc_t
+      ($if ($call eq_str (n.field, "free")) rfree_t
+           ($call err (cx, $call concat ("the root allocator has no member '",
+                $call concat (n.field, "'; it has alloc and free (§7.6)")), n))))
+      ($call proj_one (cx, t, n.field, n))
+}.ret
 
 $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_proji) {
   $decl tt $call T.with_base ($call deref_ty ($call infer (cx, e, n.target)))
@@ -1448,6 +1467,40 @@ $decl infer_mut $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form,
 }.ret
 
 // §4.4: writes *through* storage; the type is the written value's.
+// A file's short name: its basename without `.mpl`, the trade lowering's `mod_short`
+// makes too, so the two passes name a position the same way.
+$decl short_of $func ($decl path "") {
+  $decl sl $call P.last_slash (path, 0, -1)
+  $decl b  $if ($call lt (sl, 0)) path
+               ($call slice (path, $call add (sl, 1), $call len (path)))
+  $decl n  $call len (b)
+  $decl ret  $if ($call lt (4, n))
+      ($if ($call eq_str ($call slice (b, $call sub (n, 4), n), ".mpl"))
+           ($call slice (b, 0, $call sub (n, 4))) b)
+      b
+}.ret
+
+// §7.6: `$alloc` draws from the `allocator` in lexical scope. The root's needs nothing; any
+// other must have an `alloc` member taking a size and answering an address (§8's raw
+// memory, as `raw_alloc` does), which is all `$alloc` asks of it.
+$decl alloc_conforms $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl f   $call lookup (e, "allocator")
+  $decl ret $if ($call not (f.ok)) T.t_unit
+      ($if ($call T.same (f.ty, T.ffi_alloc)) T.t_unit {
+         $decl sp   $call P.span_of (n)
+         $decl key  $call concat ($call short_of ($call sval (cx.file)), $call concat (":",
+                        $call concat ($call int_to_str (sp.line), $call concat (":",
+                        $call int_to_str (sp.col)))))
+         $decl rec  $set cx.ualloc ($call strs.cons (key, $call strs.val (cx.ualloc)))
+         $decl m    $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "alloc",
+                        sp.line, sp.col)
+         $decl mt   $call deref_ty ($call infer (cx, e, m))
+         $decl ret2 $if ($call T.sub (mt, ralloc_t)) T.t_unit
+             ($call err (cx, $call concat ("the allocator in scope cannot serve $alloc: its alloc is ",
+                  $call concat ($call T.show (mt), ", which must take a size and answer an address (§7.6)")), n))
+       }.ret2)
+}.ret
+
 // §5.3a's A0: storage never holds a place. A place used where a value is wanted is read
 // through (§5.4), so `$new $new 0` is one cell and `$set p loc` copies; what this refuses
 // is a place carried *inside* a value — in a field, or captured by a closure.
@@ -2258,16 +2311,6 @@ $decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $ma
 //
 // It collapses two modules that share a basename in different directories, which is
 // the trade lowering's `mod_short` already makes for the same reason.
-$decl short_of $func ($decl path "") {
-  $decl sl $call P.last_slash (path, 0, -1)
-  $decl b  $if ($call lt (sl, 0)) path
-               ($call slice (path, $call add (sl, 1), $call len (path)))
-  $decl n  $call len (b)
-  $decl ret  $if ($call lt (4, n))
-      ($if ($call eq_str ($call slice (b, $call sub (n, 4), n), ".mpl"))
-           ($call slice (b, 0, $call sub (n, 4))) b)
-      b
-}.ret
 
 $decl ct_id $func ($decl cx proto_ctx, $decl tag 0, $decl n Pa.proto_node) {
   $decl sp $call P.span_of (n)
@@ -3391,6 +3434,7 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     // Where it comes from is the `allocator` in lexical scope (§7.6), which
     // is a runtime matter; the type records only that it outlives scopes.
     ($if ($call eq_str (k, "alloc")) {
+      $decl ac $call alloc_conforms (cx, e, n)
       $decl v $call deref_ty ($call infer (cx, e, $call op (n, 0)))
       // §5.3a again: allocated storage is exactly "storage that is not
       // itself frame-bound", so putting a frame reference in one escapes.
@@ -3444,7 +3488,8 @@ $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) 
 
 // ---------------------------------------------------------------------- entry
 
-$decl result $func ($decl t T.proto_ty, $decl ds Pa.diags.node) { $decl ty t  $decl errs ds }
+$decl result $func ($decl t T.proto_ty, $decl ds Pa.diags.node, $decl ua strs.node)
+  { $decl ty t  $decl errs ds  $decl ualloc ua }
 
 // The parser leaves `file` empty; this fills it in once the reader is known.
 $decl stamp_file $func ($decl xs Pa.diags.node, $decl path "", $decl acc Pa.diags.node) $match xs (
@@ -3461,7 +3506,8 @@ $decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base
   $decl rooted $set cx.base base
   $decl named  $set cx.file path
   $decl t      $call infer_block (cx, e0, items, P.proto_span)
-  $decl ret    $call result (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil))
+  $decl ret    $call result (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil),
+                   $call strs.val (cx.ualloc))
 }.ret
 
 // `base` is the directory `$import` resolves from; it defaults to the working

@@ -1179,3 +1179,19 @@ $decl st11 $call check_str ("...or its own place to an intrinsic, which ends not
   $call errs_of ("$decl f $func ($decl n 0) $call box_ptr ($new n)"), "")
 
 $decl done16 $call nl ("all storage tests passed")
+
+// §7.6's allocators: `$alloc` draws from the `allocator` in lexical scope, which must have
+// an `alloc` taking a size and answering an address; the root's members are §8's raw memory.
+$decl al01 $call check_str ("the root allocator's members are raw memory",
+  $call field_ty ("$decl x allocator.alloc", "x"), "[Int]->Int")
+$decl al02 $call check_str ("...and free takes an address",
+  $call errs_of ("$decl c $alloc 1  $decl x $call allocator.free ($call box_ptr (c))"), "")
+$decl al03 $call check_str ("an allocator of one's own serves $alloc",
+  $call errs_of ("$decl a { $prop alloc $func ($decl n 0) $call raw_alloc (n) }  $decl allocator a  $decl f $func () $alloc 5"), "")
+$decl al04 $call check_str ("...if its alloc answers an address",
+  $call errs_of ("$decl a { $prop alloc $func ($decl n 0) \"x\" }  $decl allocator a  $decl f $func () $alloc 5"),
+  "the allocator in scope cannot serve $alloc: its alloc is [Int]->Str, which must take a size and answer an address (§7.6)")
+$decl al05 $call check_str ("...and only below it, in source order",
+  $call errs_of ("$decl a { $prop alloc $func ($decl n 0) \"x\" }  $decl f $func () $alloc 5  $decl allocator a"), "")
+
+$decl done17 $call nl ("all allocator tests passed")
