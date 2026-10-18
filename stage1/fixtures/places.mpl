@@ -1,5 +1,6 @@
 // §5.3a's provenance (STORAGE.md), the refusing side: a place this call made may not be
-// returned (§R), stored inside a value (A0), or passed by a tail call (A4). Each is a
+// returned (§R), stored inside a value (A0), or passed by a tail call (A4) — including a
+// trait object §6's coercion makes over this call's own storage. Each is a
 // static rule stage 0 does not check, so only stage 1 is asked to refuse.
 
 $decl ival $func ($decl x 0) x
@@ -21,3 +22,15 @@ $decl keep $func () {
 // Passed by a tail call: the next iteration reuses this frame.
 $decl fresh $func ($decl c $new 0, $decl n 0)
   $if ($call eq_int (n, 0)) ($call ival (c)) ($call fresh ($new n, $call sub (n, 1)))
+
+// §6's coercion makes a trait object referring to the argument's own storage. A tail call
+// through a function value ends this call before the callee runs (§6a's trampoline), and
+// a cell the caller lent outlives it.
+$decl shape { $prop area $func () 0 }
+$decl seven { $decl v 7  $prop area $func () seven.v }
+$decl k     $mut $alloc $func ($decl t $traitsof shape, $decl n 0) 0
+$decl hop   $func ($decl r seven, $decl n 0) $call k (r, n)
+$decl stash $func ($decl c $mut $new $traitsof shape, $decl r seven) {
+  $decl w   $set c r
+  $decl ret 0
+}.ret

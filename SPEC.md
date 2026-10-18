@@ -443,7 +443,12 @@ Which places are own is a question about the source, answered by following each 
 the `$new` that made it, so nothing is annotated and nothing is solved. Because storage
 never holds a place, an allocated reference never leads to one, and a frame reference
 *is* one: the check never looks behind a reference. A `$func` literal that captures a
-place is frame-bound, so a closure cannot carry an own place out either (§7.3).
+place is frame-bound, so a closure cannot carry an own place out either (§7.3). A trait
+object refers to its referent (§6), and one that §6's coercion makes from a value refers
+to that value's own storage — a name's slot, or fresh frame storage — so it is own when
+that storage is this activation's: coercing this call's own parameter in a tail call is
+the same error as passing its `$new`, and storing such an object in a cell a caller lent
+is the same error as storing the `$new`.
 
 The error is reported where the place would escape. The fix: make that storage `$alloc`
 (§4.2a) and release it when done, or, for a tail call, make the call non-tail.

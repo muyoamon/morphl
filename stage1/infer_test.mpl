@@ -928,10 +928,12 @@ $decl co06 $call check_str ("...of allocated storage is not",
       "$decl h $func () { $decl r $alloc { $prop area $func () 2 }  $decl w $set cur r  $decl ret 0 }.ret")),
   "")
 
-$decl co07 $call check_str ("...and frame trait storage holds a local",
+// §5.3a's A0: storage never holds a place, and a trait object over a local is one. The
+// type cannot tell this call's cell from one a caller lent, which would outlive the local.
+$decl co07 $call check_str ("...and nor does frame trait storage, whoever's cell it is",
   $call errs_of ($call concat (co_pre,
       "$decl h $func () { $decl c $mut $new $traitsof shape  $decl r { $prop area $func () 2 }  $decl w $set c r  $decl ret 0 }.ret")),
-  "")
+  "storage cannot hold a place: this trait object would refer to frame storage (§6, §5.3a); store a reference to $alloc storage instead")
 
 $decl co08 $call check_str ("$set of an expression into trait storage",
   $call errs_of ($call concat (co_pre, "$decl w $set cur { $prop area $func () 2 }")), "a trait object refers to its value, so this must be a name or a reference (§6); $traitsof makes one from an expression")
@@ -1195,3 +1197,20 @@ $decl al05 $call check_str ("...and only below it, in source order",
   $call errs_of ("$decl a { $prop alloc $func ($decl n 0) \"x\" }  $decl f $func () $alloc 5  $decl allocator a"), "")
 
 $decl done17 $call nl ("all allocator tests passed")
+
+// §6's coercion makes a trait object referring to the argument's own storage: a name's
+// slot, or fresh frame storage. A tail call ends both (§7.7), and a cell outlives them.
+$decl tr_pre "$decl shape { $prop area $func () 0 }  $decl seven { $decl v 7  $prop area $func () seven.v }  $decl k $mut $alloc $func ($decl t $traitsof shape, $decl n 0) 0  "
+
+$decl tc01 $call check_str ("a tail call may not coerce this call's own parameter",
+  $call errs_of ($call concat (tr_pre, "$decl hop $func ($decl r seven, $decl n 0) $call k (r, n)")),
+  "this tail call makes a trait object referring to storage of this call (§6), and a tail call ends the call (§7.7): pass a reference the caller lent, or $alloc storage, or make the call non-tail")
+$decl tc02 $call check_str ("...but may coerce a global",
+  $call errs_of ($call concat (tr_pre, "$decl g $func ($decl n 0) $call k (seven, n)")), "")
+$decl tc03 $call check_str ("...or a reference the caller lent",
+  $call errs_of ($call concat (tr_pre, "$decl g $func ($decl r $new seven, $decl n 0) $call k (r, n)")), "")
+$decl tc04 $call check_str ("a cell the caller lent may not hold an object over this call's parameter",
+  $call errs_of ("$decl shape { $prop area $func () 0 }  $decl seven { $decl v 7  $prop area $func () seven.v }  $decl stash $func ($decl c $mut $new $traitsof shape, $decl r seven) { $decl w $set c r  $decl ret 0 }.ret"),
+  "storage cannot hold a place: this trait object would refer to frame storage (§6, §5.3a); store a reference to $alloc storage instead")
+
+$decl done18 $call nl ("all trait storage tests passed")

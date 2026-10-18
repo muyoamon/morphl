@@ -322,6 +322,10 @@ $decl ctx $func () {
   // lowering, whose entry-file globals are bound up front and so could not decide it the
   // same way (`lower_ok`).
   $decl ualloc   $mut $alloc strs.node
+  // §6's coercion of a value — not a reference — to a trait parameter: the object refers to
+  // the argument's own storage, a name's slot or fresh frame storage, rather than to a
+  // place the argument holds. By position, for `owns_arg`.
+  $decl slotref  $mut $alloc strs.node
 }
 
 $decl proto_ctx $call ctx ()
@@ -1235,6 +1239,21 @@ $decl owns_any $func ($decl cx proto_ctx, $decl e owns.node, $decl xs Pa.nodes.n
   $case xs false
 )
 
+// An argument, as passed. One coerced to a trait object (`slotref`) refers to its own
+// storage: a name's slot, own when the name is bound here, or fresh frame storage, always
+// own. Anything else is what it holds.
+$decl owns_arg $func ($decl cx proto_ctx, $decl e owns.node, $decl x Pa.proto_node)
+  $if ($call in_strs ($call strs.val (cx.slotref), $call fn_key_of (cx, x)))
+      ($match x ($case {$prop tag "name"} ($call bound_here (e, x.text)), $case x true))
+      ($call owns_x (cx, e, x))
+
+$decl owns_args $func ($decl cx proto_ctx, $decl e owns.node, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call owns_arg (cx, e, xs.head)) true
+        ($call owns_args (cx, e, $call Pa.nodes.val (xs.tail))),
+  $case xs false
+)
+
 $decl owns_arms $func ($decl cx proto_ctx, $decl e owns.node, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"}
     $if ($call owns_x (cx, e, $call op (xs.head, 1))) true
@@ -1296,7 +1315,7 @@ $decl owns_form $func ($decl cx proto_ctx, $decl e owns.node, $decl x Pa.proto_n
       ($if ($call eq_str (k, "call"))
           ($if ($call placed_at (cx, x))
                ($if ($call owns_x (cx, e, $call op (x, 0))) true
-                    ($call owns_any (cx, e, $call group_items ($call op (x, 1)))))
+                    ($call owns_args (cx, e, $call group_items ($call op (x, 1)))))
                false)
       ($if ($call eq_str (k, "if"))
           ($if ($call owns_x (cx, e, $call op (x, 1))) true ($call owns_x (cx, e, $call op (x, 2))))
@@ -1343,10 +1362,18 @@ $decl owns_x $func ($decl cx proto_ctx, $decl e owns.node, $decl x Pa.proto_node
 $decl tail_arg_err $func ($decl cx proto_ctx, $decl x Pa.proto_node)
   $do ($call err (cx, "this tail call passes $new storage made in this call, and a tail call ends the call (§7.7): allocate it with $alloc and release it when done, or make the call non-tail", x)) ()
 
+// §6's coercion makes a trait object referring to the argument's own storage, which a
+// tail call ends just as it ends a `$new`'s.
+$decl tail_obj_err $func ($decl cx proto_ctx, $decl x Pa.proto_node)
+  $do ($call err (cx, "this tail call makes a trait object referring to storage of this call (§6), and a tail call ends the call (§7.7): pass a reference the caller lent, or $alloc storage, or make the call non-tail", x)) ()
+
 $decl tail_args $func ($decl cx proto_ctx, $decl e owns.node, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"}
     $do ($if ($call placed_at (cx, xs.head))
-             ($if ($call owns_x (cx, e, xs.head)) ($call tail_arg_err (cx, xs.head)) ()) ())
+             ($if ($call owns_arg (cx, e, xs.head))
+                  ($if ($call in_strs ($call strs.val (cx.slotref), $call fn_key_of (cx, xs.head)))
+                       ($call tail_obj_err (cx, xs.head)) ($call tail_arg_err (cx, xs.head))) ())
+             ())
         ($call tail_args (cx, e, $call Pa.nodes.val (xs.tail))),
   $case xs ()
 )
@@ -1531,9 +1558,13 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
         $decl fr   $call P.and ($call P.not ($call T.is_trait (val)),
                        $call traitsof_frame (cx, x, raw))
         $decl ret2 $if ($call not ($call eq_str (cw, ""))) ($call err (cx, cw, x))
-            ($if ($call P.and ($call P.and ($call T.is_trait (tgt.inner), fr),
-                     $call T.is_alloc (tgt.kind)))
-                 ($call err (cx, "this trait object would refer to frame storage, which allocated storage outlives (§5.3a); store a reference to $alloc storage instead", x))
+            ($if ($call P.and ($call T.is_trait (tgt.inner), fr))
+                 // §5.3a's A0, for storage of either kind: a trait object referring to frame
+                 // storage is a place, and storage never holds one — a frame cell the caller
+                 // lent outlives this call as surely as allocated storage does.
+                 ($if ($call T.is_alloc (tgt.kind))
+                      ($call err (cx, "this trait object would refer to frame storage, which allocated storage outlives (§5.3a); store a reference to $alloc storage instead", x))
+                      ($call err (cx, "storage cannot hold a place: this trait object would refer to frame storage (§6, §5.3a); store a reference to $alloc storage instead", x)))
         // §5.3: `&const T` is a read-only view, so nothing writes through it. Nothing in
         // stage 1 did — `$const` is outside the bootstrap subset — until §4.10 made a
         // member's receiver one, which is what makes a member that writes need `$mut`.
@@ -2032,8 +2063,22 @@ $decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_
   $decl why $call concat ("argument ", $call concat ($call int_to_str (i), " is "))
   // What is passed holds a place when the parameter takes storage and the argument is
   // one, or when the value read through it holds one (§5.4) — recorded for `owns_x`.
-  $decl pl  $call note_placed (cx, x, $match p ($case {$prop tag "ref"} raw,
-                                                $case p ($call deref_ty (raw))))
+  // A value coerced to a trait object passes the object, which refers to the value's own
+  // storage (`tobj_of`): frame-bound as `traitsof_frame` says, and own as `owns_arg` says.
+  $decl tco $if ($call T.is_trait (p))
+                ($call P.and ($call not ($call T.is_trait ($call deref_ty (raw))),
+                              $match raw ($case {$prop tag "ref"} false, $case raw true)))
+                false
+  $decl pl  $if tco
+                ($if ($call traitsof_frame (cx, x, raw))
+                     ($set cx.placed ($call strs.cons ($call fn_key_of (cx, x),
+                          $call strs.val (cx.placed))))
+                     ($call strs.val (cx.placed)))
+                ($call note_placed (cx, x, $match p ($case {$prop tag "ref"} raw,
+                                                     $case p ($call deref_ty (raw)))))
+  $decl sr  $if tco ($set cx.slotref ($call strs.cons ($call fn_key_of (cx, x),
+                                                        $call strs.val (cx.slotref))))
+                ($call strs.val (cx.slotref))
   $decl cw  $call coerce_why (x, raw, p)
   $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1))) ($call arg_escapes (cx, x, raw, p, i)) raw
   // A callee still being typed: its escaping parameters come later (`func_close`).
