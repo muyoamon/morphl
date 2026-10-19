@@ -104,7 +104,7 @@ pub fn build(b: *std.Build) void {
     });
     const style_run = b.addRunArtifact(style_exe);
     style_run.setCwd(b.path("."));
-    style_run.addArgs(&.{ "stage1", "stage1/fixtures" });
+    style_run.addArgs(&.{ "stage1", "stage1/fixtures", "std" });
     style_run.has_side_effects = true;
     const style_step = b.step("test-style", "Check stage 1's morphl source against STYLE.md");
     style_step.dependOn(&style_run.step);
@@ -765,6 +765,37 @@ pub fn build(b: *std.Build) void {
     // its C host, passed as `mplc`'s trailing `cc` arguments, one finds its modules
     // through §4.14's search roots (`-L`, `pre`) — and a program that does not link
     // must make `mplc` fail.
+    // The standard library (STDLIB.md): each module's test, compiled by `mplc` with the
+    // repository as its search root — `std/` modules import one another as "std/core",
+    // and §4.14's roots are how a program finds them — run plain and under ASan with
+    // UBSan. Compiled-only, since the library is outside stage 0's subset (STDLIB.md, P5).
+    // A test's `main` answers how many checks passed and a failing one panics, so the
+    // count is the verdict and a run that stopped early cannot match it.
+    const std_step = b.step("test-std", "Build and run the standard library's tests");
+    for ([_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "std/core_test.mpl", .want = "16\n" },
+        .{ .src = "std/list_test.mpl", .want = "20\n" },
+    }) |fx| {
+        for ([_]bool{ false, true }) |asan| {
+            const build_exe = std.Build.Step.Run.create(b, if (asan) "mplc std test (asan)" else "mplc std test");
+            build_exe.addFileArg(mplc_bin);
+            build_exe.addArgs(&.{ fx.src, "-L", ".", "-o" });
+            const exe_out = build_exe.addOutputFileArg("prog");
+            if (asan) build_exe.addArgs(&.{ "-fsanitize=address,undefined", "-fno-omit-frame-pointer" });
+            build_exe.setCwd(b.path("."));
+            build_exe.has_side_effects = true;
+            build_exe.expectExitCode(0);
+            const run_exe = std.Build.Step.Run.create(b, if (asan) "run std test (asan)" else "run std test");
+            run_exe.addFileArg(exe_out);
+            // The runtime never frees (BOOTSTRAP §3), so leak reports are noise.
+            if (asan) run_exe.setEnvironmentVariable("ASAN_OPTIONS", "detect_leaks=0:detect_stack_use_after_return=1");
+            run_exe.has_side_effects = true;
+            run_exe.expectStdOutEqual(fx.want);
+            std_step.dependOn(&run_exe.step);
+            test_step.dependOn(&run_exe.step);
+        }
+    }
+
     const link_step = b.step("test-link", "mplc -o builds a working executable");
     for ([_]struct { src: []const u8, want: []const u8, extra: []const []const u8 = &.{},
                      pre: []const []const u8 = &.{} }{

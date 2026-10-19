@@ -280,9 +280,12 @@ and is the second version.
 
 §4.15 makes an expected failure a value and `$try` the only non-local exit. §8 says "the root
 block defines `option` and `result` before any of these", but stage 1's root has only the
-`none` and `err` shapes, so one of two things has to happen: the root gains the two names, or
-`std/core` defines them. The root is recommended, because §8 puts them there so that the
-platform group can answer them. Either way the shapes are:
+`none` and `err` shapes. **`std/core` defines the rest, for now.** `option T` is generic, so in
+the root it would be a template — and both root blocks (`infer.mpl`'s `root_env`, stage 0's
+`builtins.zig`) bind names to plain types, which cannot hold one. That is new machinery in
+both stages for something a module can say. So the root keeps `none` and `err`, `std/core`
+builds `some`, `is_some`, `is_none`, `or_else`, `map_opt` and `fail` on them, and the platform
+group goes on answering the shapes directly. The shapes are:
 
 - **`option`** is `none` or `{$prop tag "some" $decl v …}` — what `str_to_int` already answers.
 - **`result`** is a value or `{$prop tag "err" $decl e …}`. A block with more fields is a
@@ -300,8 +303,8 @@ and under ASan like `test-asan`.
 ## Plan
 
 1. P1, P3, P4, P6 and P9 are done, so nothing blocks the first modules.
-2. **`std/core`, `std/list`, `std/io`, `std/mem`, `std/test`** — what needs only P1. `test-std`
-   with them.
+2. **`std/core`, `std/list`** — done, with `zig build test-std`. **`std/io`, `std/mem`,
+   `std/test`** next; none needs anything further from the compiler.
 3. **`std/str`** with the builder, and **`std/vec`** over P3.
 4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`.
 5. **P7, P8**, then the per-element-type candidates of D3a where a representation earns one.
