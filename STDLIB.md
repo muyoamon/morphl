@@ -10,7 +10,7 @@ for the decisions that shape it.
 
 | | question | recommended |
 |---|---|---|
-| P | which compiler gaps come first | polymorphic arrays, an import search root; bounds with `map` |
+| P | which compiler gaps come first | polymorphic arrays; bounds with `map` |
 | D1 | where it lives and how it is named | a `std/` directory, `$import "std/list"` |
 | D2 | its relation to `stage1/prelude.mpl` | separate: the prelude stays the compiler's subset library |
 | D3 | how generic code says what it needs of `T` | bounds for structure, trait objects for runtime behaviour |
@@ -85,11 +85,14 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   buffer cannot be written. §8 already gives the polymorphic form — `$call array (n,
   example)` — and `unbox` shows how a polymorphic intrinsic is typed (a marker binding,
   typed at the call). *Required.*
-- **P4. A search root for `$import`.** `$import` resolves relative to the importing file
-  only, so there is nowhere for `std/` to be found from. §4.14 says "the build program
-  supplies the resolver (search roots and an explicit name→file map)". The smallest version:
-  `mplc` tries the importing file's directory, then a library root (`-L <dir>`, defaulting to
-  the `std/` beside the compiler). Stage 0 needs the same rule for its tests. *Required.*
+- **P4. A search root for `$import`.** **Done.** A name resolves against the entry file's
+  directory, as before, then against each library root in order (`Pa.resolve_import`,
+  shared by both passes, since the resolved path is a module's identity). `mplc` takes any
+  number of `-L <dir>` after the file; `C.parse` takes the list. There is **no default
+  root**: a compiled `mplc` cannot find its own location, since §8's `args` drops the
+  program name — so `test-std` passes `-L .`, and `std/` modules import one another as
+  `"std/core"`. Stage 0's loader has no roots, which costs nothing while the library is
+  compiled-only (P5). `stage1/fixtures/libroot.mpl`, in `test-link`.
 - **P5. Stage 0 cannot run it.** The library will use `Float`, overloads, the FFI and
   allocators, all outside BOOTSTRAP §1's subset. So its tests are compiled-only, like
   `arena.mpl`'s — which costs the stage-0/compiled differential for library code. Accepted,
@@ -296,7 +299,7 @@ and under ASan like `test-asan`.
 
 ## Plan
 
-1. **P3, P4** — polymorphic arrays, the import search root. (P1, P6 and P9 are done.)
+1. **P3** — polymorphic arrays. (P1, P4, P6 and P9 are done.)
 2. **`std/core`, `std/list`, `std/io`, `std/mem`, `std/test`** — what needs only P1. `test-std`
    with them.
 3. **`std/str`** with the builder, and **`std/vec`** over P3.
@@ -309,7 +312,7 @@ and under ASan like `test-asan`.
 
 | | options | recommended |
 |---|---|---|
-| P | which prerequisites, and in which order | P3, P4 first (P1, P6, P9 done); P2 before `map` |
+| P | which prerequisites, and in which order | P3 first (P1, P4, P6, P9 done); P2 before `map` |
 | D1 | location and naming | `std/`, module-qualified |
 | D2 | prelude and `std/` | separate |
 | D3 | generic requirements | bounds; a passed function for `_by`; trait objects for heterogeneous behaviour; not an overloaded operation |

@@ -204,6 +204,8 @@ $decl ctx $func () {
   // Where `$import` resolves from. §4.14 makes import names logical and hands
   // resolution to the build program; this is the stage-1 stand-in.
   $decl base   $mut $alloc ""
+  // The library roots `$import` falls back to, in order (`Pa.resolve_import`).
+  $decl roots  $mut $alloc strs.node
   // The file currently being typed. A diagnostic belongs to the file whose
   // source raised it, which is not the file the checker was invoked on as
   // soon as anything is imported.
@@ -2767,10 +2769,6 @@ $decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n prot
 
 // -------------------------------------------------------------- $import (§4.14)
 
-$decl resolve_path $func ($decl base "", $decl nm "")
-  $if ($call eq_str (base, "")) ($call concat (nm, ".mpl"))
-      ($call concat (base, $call concat ("/", $call concat (nm, ".mpl"))))
-
 // §8's `read_file` answers an option, and **flattening it to a string loses the one
 // distinction that matters**: a file that could not be read and a file that is empty
 // both became `""`, so importing an empty module reported "cannot read" for a file that
@@ -2895,7 +2893,7 @@ $fwd need_module
 $decl key_imports $func ($decl cx proto_ctx, $decl ns strs.node, $decl n Pa.proto_node,
                          $decl acc 0) $match ns (
   $case {$prop tag "cons"} {
-    $decl k   $call resolve_path (cx.base, ns.head)
+    $decl k   $call Pa.resolve_import ($call sval (cx.base), $call strs.val (cx.roots), ns.head)
     $decl ld  $call need_module (cx, k, ns.head, n)
     $decl h   ($call mod_find ($call eval_mods (cx.mods), k)).ifh
     $decl ret $call key_imports (cx, $call strs.val (ns.tail), n, $call T.hmix (acc, h))
@@ -2989,7 +2987,7 @@ $decl need_module $func ($decl cx proto_ctx, $decl key "", $decl nm "", $decl n 
 
 $decl infer_import $func ($decl cx proto_ctx, $decl n proto_form) {
   $decl nm  $call str_of ($call op (n, 0))
-  $decl key $call resolve_path (cx.base, nm)
+  $decl key $call Pa.resolve_import ($call sval (cx.base), $call strs.val (cx.roots), nm)
   $decl ret $call need_module (cx, key, nm, n)
 }.ret
 
@@ -3728,9 +3726,10 @@ $decl stamp_file $func ($decl xs Pa.diags.node, $decl path "", $decl acc Pa.diag
 
 // §3.3: "A source file is a block."
 $decl infer_file $func ($decl items Pa.nodes.node, $decl e0 env.node, $decl base "",
-    $decl path "") {
+    $decl path "", $decl roots strs.node) {
   $decl cx     $call ctx ()
   $decl rooted $set cx.base base
+  $decl libs   $set cx.roots roots
   $decl named  $set cx.file path
   $decl t      $call infer_block (cx, e0, items, P.proto_span)
   $decl ret    $call result (t, $call Pa.diags.reverse (cx.errs, Pa.diags.nil),

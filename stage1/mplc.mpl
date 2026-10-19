@@ -1,6 +1,8 @@
 // `mplc <file.mpl>` — a real command-line driver, emitting C on stdout — and
 // `mplc <file.mpl> -o <exe> [cc args…]`, which hands the C to §9.1's `link` instead,
-// with every argument after the executable passed on to `cc`.
+// with every argument after the executable passed on to `cc`. Any number of
+// `-L <dir>` right after the file are §4.14's search roots, tried in order after the
+// file's own directory (`Pa.resolve_import`).
 //
 // This is what §8's `args`, `at` and `alen` were missing a C backend for. Until
 // they were emitted, no driver could be compiled at all: every one of them opens
@@ -12,16 +14,31 @@ $decl P  $import "prelude"
 
 $decl argv $call args ()
 
-$decl path $if ($call lt (0, $call alen (argv)))
-    ($call P.sval ($call at (argv, 0)))
-    ($call panic ("usage: mplc <file.mpl> [-o <exe> [cc args...]]"))
+$decl usage "usage: mplc <file.mpl> [-L <dir>]... [-o <exe> [cc args...]]"
+$decl nargv $call alen (argv)
+$decl arg_at $func ($decl i 0) $if ($call lt (i, nargv)) ($call P.sval ($call at (argv, i))) ""
+
+$decl path $if ($call lt (0, nargv)) ($call arg_at (0)) ($call panic (usage))
+
+// The `-L <dir>` pairs from position `i` on, in order, and where they end.
+$decl lib_roots $func ($decl i 0, $decl acc Pa.pstrs.node)
+  $if ($call eq_str ($call arg_at (i), "-L"))
+      ($if ($call lt ($call add (i, 1), nargv))
+           ($call lib_roots ($call add (i, 2), $call Pa.pstrs.cons ($call arg_at ($call add (i, 1)),
+               acc)))
+           ($call panic (usage)))
+      ($call Pa.pstrs.reverse (acc, Pa.pstrs.nil))
+$decl lib_end $func ($decl i 0)
+  $if ($call eq_str ($call arg_at (i), "-L")) ($call lib_end ($call add (i, 2))) i
+
+$decl roots $call lib_roots (1, Pa.pstrs.nil)
+$decl o_at  $call lib_end (1)
 
 // `-o <exe>`, or "" to print the C.
-$decl out_path $if ($call lt (2, $call alen (argv)))
-    ($if ($call eq_str ($call P.sval ($call at (argv, 1)), "-o"))
-         ($call P.sval ($call at (argv, 2)))
-         ($call panic ("usage: mplc <file.mpl> [-o <exe> [cc args...]]")))
-    ""
+$decl out_path $if ($call lt ($call add (o_at, 1), nargv))
+    ($if ($call eq_str ($call arg_at (o_at), "-o")) ($call arg_at ($call add (o_at, 1)))
+         ($call panic (usage)))
+    ($if ($call lt (o_at, nargv)) ($call panic (usage)) "")
 
 $decl rf  $call read_file (path)
 $decl src $match rf (
@@ -72,14 +89,15 @@ $decl warn_all $func ($decl ds Pa.diags.node) $match ds (
 )
 
 // The arguments after `-o <exe>`, which go to `cc`.
-$decl nextra $if ($call lt (3, $call alen (argv))) ($call sub ($call alen (argv), 3)) 0
+$decl xbase  $call add (o_at, 2)
+$decl nextra $if ($call lt (xbase, nargv)) ($call sub (nargv, xbase)) 0
 $decl extra  $call array (nextra, "")
 
 $decl fill_extra $func ($decl i 0)
   $if ($call lt (i, nextra))
       ($do {
          $decl c   $call at (extra, i)
-         $decl w   $set c ($call P.sval ($call at (argv, $call add (i, 3))))
+         $decl w   $set c ($call arg_at ($call add (i, xbase)))
          $decl ret ()
        }.ret ($call fill_extra ($call add (i, 1))))
       ()
@@ -87,7 +105,7 @@ $decl fill_extra $func ($decl i 0)
 $decl filled $call fill_extra (0)
 
 $decl main $func () {
-  $decl ckd $call C.check ($call C.parse (src, path))
+  $decl ckd $call C.check ($call C.parse (src, path, roots))
   $decl cd  $call Pa.diags.val (ckd.diagnostics)
   $decl nc  $call Pa.diags.length (cd, 0)
   $decl g1  $if ($call lt (0, nc)) ($call panic ($call first_msg (cd, "check", nc))) ""

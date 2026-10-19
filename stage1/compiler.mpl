@@ -47,10 +47,13 @@ $decl V  $import "verify"
 // (§10.9) — and §9.3 binds that to every pass in every project, not just to
 // the compiler's own modules.
 
-$decl parsed $func ($decl a Pa.nodes.node, $decl p "", $decl b "", $decl d Pa.diags.node)
-  { $decl ast a  $decl path p  $decl base b  $decl diagnostics d }
+// `roots` are the library roots `$import` falls back to after `base` (§4.14's search
+// roots, `Pa.resolve_import`): appended last, as §10.9 asks of an interface.
+$decl parsed $func ($decl a Pa.nodes.node, $decl p "", $decl b "", $decl d Pa.diags.node,
+                    $decl rs I.strs.node)
+  { $decl ast a  $decl path p  $decl base b  $decl diagnostics d  $decl roots rs }
 
-$decl proto_parsed $call parsed (Pa.nodes.nil, "", "", Pa.diags.nil)
+$decl proto_parsed $call parsed (Pa.nodes.nil, "", "", Pa.diags.nil, I.strs.nil)
 
 $decl checked $func ($decl pr IR.proto_program, $decl d Pa.diags.node)
   { $decl program pr  $decl diagnostics d }
@@ -92,12 +95,12 @@ $decl empty_program $call IR.program (T.tys.nil, IR.fns.nil, IR.groups.nil, 0, I
 
 // ------------------------------------------------------------------- parse
 
-$decl parse $func ($decl src "", $decl path "") {
+$decl parse $func ($decl src "", $decl path "", $decl roots I.strs.node) {
   $decl p $call Pa.parse (src)
   // The parser is handed a string and does not know where it came from; the
   // reader stamps the file in (parser.mpl says so above `diag`).
   $decl ret $call parsed ($call Pa.nodes.val (p.exprs), path, $call P.dirname (path),
-                 $call I.stamp_file (p.errs, path, Pa.diags.nil))
+                 $call I.stamp_file (p.errs, path, Pa.diags.nil), roots)
 }.ret
 
 // ------------------------------------------------------------------- check
@@ -116,21 +119,23 @@ $decl parse $func ($decl src "", $decl path "") {
 $decl typed $func ($decl t T.proto_ty, $decl d Pa.diags.node, $decl ua I.strs.node)
   { $decl ty t  $decl diagnostics d  $decl ualloc ua }
 
-$decl infer_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "") {
-  $decl r   $call I.infer_file (items, I.root_env, base, path)
+$decl infer_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "",
+                      $decl roots I.strs.node) {
+  $decl r   $call I.infer_file (items, I.root_env, base, path, roots)
   $decl ret $call typed (r.ty, $call Pa.diags.val (r.errs), $call I.strs.val (r.ualloc))
 }.ret
 
 $decl infer $func ($decl p proto_parsed)
   $if ($call Pa.diags.is_nil ($call Pa.diags.val (p.diagnostics)))
-      ($call infer_ok ($call Pa.nodes.val (p.ast), p.base, p.path))
+      ($call infer_ok ($call Pa.nodes.val (p.ast), p.base, p.path, $call I.strs.val (p.roots)))
       ($call typed (T.t_bot, $call Pa.diags.val (p.diagnostics)))
 
 
 $decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl base "",
-    $decl path "", $decl ua I.strs.node) {
+    $decl path "", $decl ua I.strs.node, $decl roots I.strs.node) {
   $decl st    $call L.lstate ()
   $decl uas   $set st.ualloc ua
+  $decl rts   $set st.roots roots
   // The entry file's name, so lowering identifies the entry file's function-valued
   // props exactly as inference does (`opaque_at`) — inference has the path, and a
   // parameter's type is inference's.
@@ -142,16 +147,17 @@ $decl lower_ok $func ($decl items Pa.nodes.node, $decl fty T.proto_ty, $decl bas
   $decl ret   $call checked (prog, st.errs)
 }.ret
 
-$decl check_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "") {
-  $decl r   $call infer_ok (items, base, path)
+$decl check_ok $func ($decl items Pa.nodes.node, $decl base "", $decl path "",
+                      $decl roots I.strs.node) {
+  $decl r   $call infer_ok (items, base, path, roots)
   $decl ret $if ($call Pa.diags.is_nil ($call Pa.diags.val (r.diagnostics)))
-      ($call lower_ok (items, r.ty, base, path, $call I.strs.val (r.ualloc)))
+      ($call lower_ok (items, r.ty, base, path, $call I.strs.val (r.ualloc), roots))
       ($call checked (empty_program, $call Pa.diags.val (r.diagnostics)))
 }.ret
 
 $decl check $func ($decl p proto_parsed)
   $if ($call Pa.diags.is_nil ($call Pa.diags.val (p.diagnostics)))
-      ($call check_ok ($call Pa.nodes.val (p.ast), p.base, p.path))
+      ($call check_ok ($call Pa.nodes.val (p.ast), p.base, p.path, $call I.strs.val (p.roots)))
       ($call checked (empty_program, $call Pa.diags.val (p.diagnostics)))
 
 // ------------------------------------------------------------------ verify

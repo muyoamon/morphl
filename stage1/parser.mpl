@@ -857,6 +857,36 @@ $decl lit_key $func ($decl n proto_node) $match n (
   $case n ""
 )
 
+// §4.14: "Names are logical. The build program supplies the resolver (search roots and
+// an explicit name→file map)." A name resolves against `base` — the entry file's
+// directory, as it always has — and then against each library root in order, and the
+// first that names a file is the module. When none does, the answer is `base`'s path, so
+// a missing module is reported exactly where and as it was. Shared, because a module's
+// resolved path is its identity in both passes (§4.14: "all imports of the same resolved
+// file yield the same module"), and with no roots it reads nothing.
+$decl join_path $func ($decl dir "", $decl nm "")
+  $if ($call eq_str (dir, "")) ($call concat (nm, ".mpl"))
+      ($call concat (dir, $call concat ("/", $call concat (nm, ".mpl"))))
+
+$decl is_file $func ($decl path "") {
+  $decl r   $call read_file (path)
+  $decl ret $match r ($case {$prop tag "some"} true, $case r false)
+}.ret
+
+$decl resolve_in $func ($decl roots pstrs.node, $decl nm "", $decl dflt "") $match roots (
+  $case {$prop tag "cons"} {
+    $decl p   $call join_path (roots.head, nm)
+    $decl ret $if ($call is_file (p)) p ($call resolve_in ($call pstrs.val (roots.tail), nm, dflt))
+  }.ret,
+  $case roots dflt
+)
+
+$decl resolve_import $func ($decl base "", $decl roots pstrs.node, $decl nm "") {
+  $decl here $call join_path (base, nm)
+  $decl ret  $if ($call pstrs.is_nil (roots)) here
+                 ($if ($call is_file (here)) here ($call resolve_in (roots, nm, here)))
+}.ret
+
 // §4.9's application inference: where each generic of a `$func`-bodied template is read
 // from. "Inference matches the shape of each parameter default one level deep" — a
 // default that is exactly `T` makes `T` that argument's type (`kind` 0); a default that

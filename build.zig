@@ -757,19 +757,25 @@ pub fn build(b: *std.Build) void {
 
     // §9.1's `link`: `mplc <file> -o <exe>` writes the C beside the executable and
     // runs `cc` on it through BOOTSTRAP §2's `run`, so the executable is built by the
-    // compiler and not by this file. Three fixtures — one imports a module, one needs
-    // its C host, passed as `mplc`'s trailing `cc` arguments — and a program that does
-    // not link must make `mplc` fail.
+    // compiler and not by this file. Four fixtures — one imports a module, one needs
+    // its C host, passed as `mplc`'s trailing `cc` arguments, one finds its modules
+    // through §4.14's search roots (`-L`, `pre`) — and a program that does not link
+    // must make `mplc` fail.
     const link_step = b.step("test-link", "mplc -o builds a working executable");
-    for ([_]struct { src: []const u8, want: []const u8, extra: []const []const u8 = &.{} }{
+    for ([_]struct { src: []const u8, want: []const u8, extra: []const []const u8 = &.{},
+                     pre: []const []const u8 = &.{} }{
         .{ .src = "stage1/fixtures/fact.mpl", .want = "3628800\n" },
         .{ .src = "stage1/fixtures/import.mpl", .want = "57\n" },
         .{ .src = "stage1/fixtures/ffi.mpl", .want = "11117493\n",
            .extra = &.{"stage1/fixtures/ffi_host.c"} },
+        .{ .src = "stage1/fixtures/libroot.mpl", .want = "23\n",
+           .pre = &.{ "-L", "stage1/fixtures/lib" } },
     }) |fx| {
         const build_exe = std.Build.Step.Run.create(b, "mplc -o");
         build_exe.addFileArg(mplc_bin);
-        build_exe.addArgs(&.{ fx.src, "-o" });
+        build_exe.addArg(fx.src);
+        build_exe.addArgs(fx.pre);
+        build_exe.addArg("-o");
         const exe_out = build_exe.addOutputFileArg("prog");
         build_exe.addArgs(fx.extra);
         build_exe.setCwd(b.path("."));
@@ -794,6 +800,19 @@ pub fn build(b: *std.Build) void {
         bad.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
         link_step.dependOn(&bad.step);
         test_step.dependOn(&bad.step);
+    }
+    {
+        // Without its search root the same program does not resolve, and says so where it
+        // always did: a root is a fallback after the entry's directory, never a substitute.
+        const noroot = std.Build.Step.Run.create(b, "mplc without -L");
+        noroot.addFileArg(mplc_bin);
+        noroot.addArg("stage1/fixtures/libroot.mpl");
+        noroot.setCwd(b.path("."));
+        noroot.has_side_effects = true;
+        noroot.addCheck(.{ .expect_stderr_match = "cannot read the file for $import \"std/lr_twice\"" });
+        noroot.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        link_step.dependOn(&noroot.step);
+        test_step.dependOn(&noroot.step);
     }
 
     // `mplc` reports a non-fatal diagnostic on stderr and keeps stdout the C. It could

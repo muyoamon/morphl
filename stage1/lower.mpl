@@ -670,6 +670,8 @@ $decl lstate $func () {
   // sees "the root block plus what it imports, nothing else" — so both have
   // to be reachable from wherever an import is lowered.
   $decl base    $mut $alloc ""
+  // The library roots `$import` falls back to (`Pa.resolve_import`), from `compiler`.
+  $decl roots   $mut $alloc strs.node
   $decl rootenv $mut $alloc benv.node
   // Functions lifted out of `$func` literals, newest first, and the index
   // the first of them will get. The top-level `$decl`s take the indices
@@ -2791,10 +2793,6 @@ $decl str_of $func ($decl n Pa.proto_node) $match n (
   $case n ""
 )
 
-$decl resolve_path $func ($decl base "", $decl nm "")
-  $if ($call eq_str (base, "")) ($call concat (nm, ".mpl"))
-      ($call concat (base, $call concat ("/", $call concat (nm, ".mpl"))))
-
 $decl find_completing $func ($decl xs Pa.nodes.node, $decl nm "") $match xs (
   $case {$prop tag "cons"}
     $if ($call and ($call is_form (xs.head, "decl"),
@@ -3160,7 +3158,7 @@ $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n 
 
 $decl lower_import $func ($decl st proto_lst, $decl n proto_form) {
   $decl nm  $call str_of ($call op (n, 0))
-  $decl key $call resolve_path (st.base, nm)
+  $decl key $call Pa.resolve_import ($call P.sval (st.base), $call strs.val (st.roots), nm)
   $decl hit $call find_mod_path (st.mods, key)
   $decl ret $match hit (
       // §4.14: "Loaded once. All imports of the same resolved file yield the
