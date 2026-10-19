@@ -333,8 +333,15 @@ fn intToStrFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return value.strVal(rt.arena, try std.fmt.allocPrint(rt.arena, "{d}", .{v}));
 }
 
+/// §8's `str_to_int`: exactly §2.1's integer-literal grammar — an optional `-`, then one
+/// or more decimal digits, in `Int`'s range. Zig's `parseInt` also takes `+` and `_`
+/// between digits, which no morphl literal has, so the text is checked first: a string
+/// that does not spell an integer literal is `none`, not a guess.
 fn strToIntFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const s = try wantStr(rt, args, 0, "str_to_int", span);
+    const digits = if (s.len > 0 and s[0] == '-') s[1..] else s;
+    if (digits.len == 0) return tagBlock(rt, "none");
+    for (digits) |c| if (c < '0' or c > '9') return tagBlock(rt, "none");
     const v = std.fmt.parseInt(i64, s, 10) catch {
         return tagBlock(rt, "none");
     };
@@ -851,6 +858,15 @@ test "str_to_int returns the option shape that $try none expects" {
 
     const bad = try strToIntFn(&rt, &.{value.litStr("4x")}, span);
     try std.testing.expectEqualStrings("none", bad.block.findText("tag").?.str.bytes);
+
+    // §2.1's literal grammar and nothing more: no separator, no `+`, no bare sign; the
+    // bottom of the range does parse.
+    inline for (.{ "1_0", "+5", "-", "", " 5" }) |t| {
+        const r = try strToIntFn(&rt, &.{value.litStr(t)}, span);
+        try std.testing.expectEqualStrings("none", r.block.findText("tag").?.str.bytes);
+    }
+    const lo = try strToIntFn(&rt, &.{value.litStr("-9223372036854775808")}, span);
+    try std.testing.expectEqual(@as(i64, std.math.minInt(i64)), lo.block.findText("v").?.int);
 }
 
 test "eq, to_int and to_str take the subset's candidates and refuse a Float" {

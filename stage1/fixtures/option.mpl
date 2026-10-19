@@ -12,12 +12,17 @@
 //
 //   42            parses                                   ->  42
 //   12x           does not                                 ->  -1
-//   1_0           `_` separates digits, as stage 0 allows  ->  10
+//   1_0           not a literal: §2.1 has no separator     ->  -1
+//   +5            nor a `+`                                ->  -1
+//   -7            a literal's `-`                          ->  -7
 //   233           U+00E9, two bytes of UTF-8 (§3.1)        ->   2
 //   55296         a surrogate, which has no encoding       ->  -1
 //   a missing path                                         ->   0
 //
-// 42 - 1 + 10 + 2 - 1 + 0 = 52.
+// `str_to_int` accepts exactly §2.1's integer literals, which is what two
+// implementations can agree on without one inheriting the other's parser.
+//
+// 42 - 1 - 1 - 1 - 7 + 2 - 1 + 0 = 33.
 
 $decl num $func ($decl s "") {
   $decl r $call str_to_int (s)
@@ -47,7 +52,8 @@ $decl file_len $func ($decl p "") {
 
 $decl main $func () {
   $decl a   $call add ($call num ("42"), $call num ("12x"))
-  $decl b   $call add (a, $call num ("1_0"))
+  $decl b0  $call add (a, $call num ("1_0"))
+  $decl b   $call add (b0, $call add ($call num ("+5"), $call num ("-7")))
   $decl c   $call add (b, $call code_len (233))
   $decl d   $call add (c, $call code_len (55296))
   $decl ret $call add (d, $call file_len ("/nonexistent/morphl/fixture"))

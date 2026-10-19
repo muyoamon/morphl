@@ -192,7 +192,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/coerce.mpl", .want = "321\n" },
         .{ .src = "stage1/fixtures/scope.mpl", .want = "17\n" },
         .{ .src = "stage1/fixtures/alloc.mpl", .want = "41\n" },
-        .{ .src = "stage1/fixtures/option.mpl", .want = "52\n" },
+        .{ .src = "stage1/fixtures/option.mpl", .want = "33\n" },
         .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n" },
         .{ .src = "stage1/fixtures/prop_union.mpl", .want = "9\n" },
         // §3.3's top-level `$prop`s. All four shapes §1.1 allows, because each takes a
