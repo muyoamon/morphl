@@ -570,6 +570,10 @@ $decl lstate $func () {
   $decl tpend  $mut $alloc T.tys.node
   $decl ntypes $mut $alloc 0
   $decl nslots $mut $alloc 0
+  // How many §5.7 type-only positions enclose what is being lowered (`type_only`). A
+  // generic inferred by application has a type and no value (`tyhole`), so reading one
+  // anywhere else is reported.
+  $decl tonly  $mut $alloc 0
   // The type of each slot allocated so far, newest first (§7.2).
   $decl sltys  $mut $alloc IR.ints.node
   // Identities for opaque prop values; §4.10 makes two distinct
@@ -1475,7 +1479,9 @@ $fwd lower_prop
 // the first slots, so the signature and the frame would stop agreeing.
 $decl type_only $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
   $decl keep $call take_slots (st)
+  $decl tin  $set st.tonly ($call add ($call P.ival (st.tonly), 1))
   $decl v    $call lval ($call lower (st, e, n, false))
+  $decl tout $set st.tonly ($call sub ($call P.ival (st.tonly), 1))
   $decl back $call restore_slots (st, keep)
   $decl ret  v
 }.ret
@@ -2705,21 +2711,31 @@ $decl subst_ct_l $func ($decl body Pa.proto_node, $decl gs strs.node, $decl args
   $case gs body
 )
 
-$decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
-                       $decl argn Pa.proto_node, $decl n Pa.proto_node) {
-  $decl ng   $call strs.length (r.generics, 0)
-  $decl args $if ($call eq_int (ng, 1)) ($call Pa.nodes.cons (argn, Pa.nodes.nil))
-                 ($call group_items (argn))
-  $decl na   $call Pa.nodes.length (args, 0)
-  $decl ret  $if ($call not ($call eq_int (ng, na)))
-      ($call lres ($call IR.e_unit ($call err (st, $call concat ("this template has ",
-           $call concat ($call int_to_str (ng), $call concat (" generic parameters, found ",
-           $call int_to_str (na)))), n)), T.t_bot)) {
+// §4.9 lets a template's body be any expression, and the build paths below lower a
+// block. A `$func` body is lowered as the block `{ $prop $fn <body> }` and the function
+// read back off it, which makes it a prop function: lifted once per memo key, and named
+// and placed with the specialisation, exactly as `P.list`'s members are. `$fn` cannot be
+// written in source — an identifier may not start with `$` (§2.1) — so no template
+// written as such a block is mistaken for one. Wrapped here rather than where the
+// template is recorded, so `tmpl_ctg` reads the body as written, which is what
+// inference's compile-time generics are computed from.
+$decl fn_wrap $func ($decl b Pa.proto_node) {
+  $decl sp  $call P.span_of (b)
+  $decl ret $call Pa.n_block ($call Pa.nodes.cons ($call Pa.n_form ("prop",
+                $call Pa.nodes.cons ($call Pa.n_name ("$fn", sp.line, sp.col),
+                    $call Pa.nodes.cons (b, Pa.nodes.nil)), sp.line, sp.col), Pa.nodes.nil),
+                sp.line, sp.col)
+}.ret
+
+$decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                       $decl args Pa.nodes.node, $decl n Pa.proto_node) {
+  $decl ret {
         $decl keys $call arg_keys (st, e, args, IR.ints.nil)
         $decl r0   $call tmpl_ctg (st, r)
-        $decl r    $call tmpl_rec_x (r0.id, r0.generics,
-                       $call subst_ct_l (r0.body, r0.generics, args, r0.ctg), r0.env,
-                       r0.key, r0.file, r0.iid, r0.ctg, true,
+        $decl b0   $call subst_ct_l (r0.body, r0.generics, args, r0.ctg)
+        $decl isfn $call is_form (b0, "func")
+        $decl r    $call tmpl_rec_x (r0.id, r0.generics, $if isfn ($call fn_wrap (b0)) b0,
+                       r0.env, r0.key, r0.file, r0.iid, r0.ctg, true,
                        $call spec_vals (st, r0.generics, args, r0.ctg, ""))
         $decl hit  $call find_spec (st.specs, r.id, keys, r.vk)
         $decl inst $call inst_body (r.body)
@@ -2736,7 +2752,22 @@ $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
               $if inst ($call spec_build_inst (st, e, r, args, keys, n))
                   ($call spec_build_props (st, e, r, args, keys, n))
           )
-      }.ret2
+        $decl ret3 $if ($if isfn ($call lt (-1, ret2.mod)) false)
+                       ($call lower_prop (st, ret2.mod, "$fn", n)) ret2
+      }.ret3
+}.ret
+
+$decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                       $decl argn Pa.proto_node, $decl n Pa.proto_node) {
+  $decl ng   $call strs.length (r.generics, 0)
+  $decl args $if ($call eq_int (ng, 1)) ($call Pa.nodes.cons (argn, Pa.nodes.nil))
+                 ($call group_items (argn))
+  $decl na   $call Pa.nodes.length (args, 0)
+  $decl ret  $if ($call not ($call eq_int (ng, na)))
+      ($call lres ($call IR.e_unit ($call err (st, $call concat ("this template has ",
+           $call concat ($call int_to_str (ng), $call concat (" generic parameters, found ",
+           $call int_to_str (na)))), n)), T.t_bot))
+      ($call spec_args (st, e, r, args, n))
 }.ret
 
 // ----------------------------------------------------------- $import (§4.14)
@@ -3391,6 +3422,58 @@ $decl lower_ffi $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form
   $decl ret $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
 }.ret
 
+// §4.9's application, lowering's half of `infer.mpl`'s `infer_apply`. The arguments are
+// lowered once, as they stand, exactly as an overloaded call's are; each generic is read
+// off their types where `Pa.app_sources` says; and the template is specialised through
+// the explicit path with each generic bound to a `tyhole` — a node standing for an
+// interned type, which is all an inferred generic is. So an application and an explicit
+// `$specialize` at the same types share a memo entry, and so their lifted functions.
+$decl int_node $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "int"} n.value,
+  $case n -1
+)
+
+$decl tyhole $func ($decl st proto_lst, $decl t T.proto_ty, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl ret $call Pa.n_form ("tyhole", $call Pa.nodes.cons ($call Pa.n_int ($call intern (st, t),
+                sp.line, sp.col), Pa.nodes.nil), sp.line, sp.col)
+}.ret
+
+$decl app_lty $func ($decl s Pa.proto_app_src, $decl rs lres_list.node) {
+  $decl at  $if ($if ($call lt (-1, s.arg)) ($call lt (s.arg, $call lres_list.length (rs, 0)))
+                false) ($call lres_list.nth (rs, s.arg)).ty T.t_bot
+  $decl ft  $call T.unroll ($call deref_ty (at))
+  $decl ret $if ($call eq_int (s.kind, 0)) at
+      ($match ft (
+        $case {$prop tag "func"}
+          $if ($call eq_int (s.kind, 2)) ($call T.tval (ft.result))
+              ($if ($call lt (s.pos, $call T.tys.length ($call T.tys.val (ft.params), 0)))
+                   ($call T.tys.nth ($call T.tys.val (ft.params), s.pos)) T.t_bot),
+        $case ft T.t_bot))
+}.ret
+
+$decl app_holes $func ($decl st proto_lst, $decl ss Pa.app_srcs.node, $decl rs lres_list.node,
+                       $decl n Pa.proto_node, $decl acc Pa.nodes.node) $match ss (
+  $case {$prop tag "cons"}
+    $call app_holes (st, $call Pa.app_srcs.val (ss.tail), rs, n,
+        $call Pa.nodes.cons ($call tyhole (st, $call app_lty (ss.head, rs), n), acc)),
+  $case ss ($call Pa.nodes.reverse (acc, Pa.nodes.nil))
+)
+
+$decl lower_apply $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
+                         $decl tail P.boolean, $decl r proto_tmpl) {
+  $decl xs   $call group_items ($call op (n, 1))
+  $decl rs   $call lower_raws (st, e, xs, lres_list.nil)
+  $decl hs   $call app_holes (st, $call Pa.app_sources (r.body, r.generics, Pa.app_srcs.nil),
+                 rs, n, Pa.nodes.nil)
+  $decl f    $call as_value (st, $call spec_args (st, e, r, hs, n))
+  $decl ps   $call params_of (f.ty)
+  $decl as   $call finish_raws (st, rs, xs, ps, IR.exprs.nil, T.tys.nil)
+  $decl ty   $call result_of (f.ty)
+  $decl cf   $call short_callee (st, f, $call IR.exprs.length (as.irs, 0), n)
+  $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
+}.ret
+
 $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean) {
   $decl k n.keyword
@@ -3598,11 +3681,22 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     ($if ($call eq_str (k, "call")) {
       $decl f0   $call as_value (st, $call lower (st, e, $call op (n, 0), false))
       $decl fw   $call ffi_l (f0)
-      $decl ret2 $if ($call eq_str (fw, "")) ($call lower_call (st, e, n, tail, f0))
-                     ($call lower_ffi (st, e, n, tail, fw))
+      $decl ts   $if ($call lt (f0.tmpl, 0)) tmpls_list.nil ($call find_tmpl (st.tmpls, f0.tmpl))
+      $decl ret2 $match ts (
+          $case {$prop tag "cons"} ($call lower_apply (st, e, n, tail, ts.head)),
+          $case ts $if ($call eq_str (fw, "")) ($call lower_call (st, e, n, tail, f0))
+                       ($call lower_ffi (st, e, n, tail, fw)))
+    }.ret2
+    // An inferred generic (`lower_apply`): its type, and no value to read.
+    ($if ($call eq_str (k, "tyhole")) {
+      $decl ti   $call int_node ($call op (n, 0))
+      $decl t    $call ty_at (st, ti)
+      $decl bad  $if ($call lt (0, $call P.ival (st.tonly))) 0
+                     ($call err (st, "a generic inferred by application has a type and no value; write the $specialize to give it one (§4.9)", n))
+      $decl ret2 $call lres ($call IR.e_panic (ti, "an inferred generic has no value"), t)
     }.ret2
       ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-           " is not lowered yet")), n)), T.t_unit)))))))))))))))))))
+           " is not lowered yet")), n)), T.t_unit))))))))))))))))))))
 }.ret
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,

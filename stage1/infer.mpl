@@ -2208,6 +2208,9 @@ $decl check_typed $func ($decl cx proto_ctx, $decl ps T.tys.node, $decl as Pa.no
   $case as true
 )
 
+// Below `specialize_with`, which it needs.
+$fwd infer_apply
+
 $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl ft   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
   $decl args $call group_items ($call op (n, 1))
@@ -2242,10 +2245,9 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
       }.ret2,
       // §3.6: a call on ⊥ stays ⊥ rather than reporting a second error.
       $case {$prop tag "bottom"} T.t_bot,
-      // §4.9 would infer `T` from the argument shapes; BOOTSTRAP.md §1.1
-      // drops that, so the call site has to say what it means.
-      $case {$prop tag "tmpl"} ($call err (cx,
-          "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)", n)),
+      // §4.9: application infers the generics from the argument shapes. Stage 0 does
+      // not (BOOTSTRAP.md §1.1 keeps it out of the subset), and stage 1 never relies on it.
+      $case {$prop tag "tmpl"} ($call infer_apply (cx, e, ft.id, args, n)),
       $case ft ($call err (cx, $call concat ($call T.show (ft), " is not callable"), n))
     )
 }.ret
@@ -2599,20 +2601,15 @@ $decl subst_ct $func ($decl body Pa.proto_node, $decl gs strs.node, $decl args P
 // Defined below `ct_init`, which it needs.
 $fwd ct_args_check
 
-$decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
-                             $decl argn Pa.proto_node, $decl n Pa.proto_node) {
+// The template `id` at argument types `ats`. `args` are the argument expressions an
+// explicit `$specialize` wrote, which its compile-time generics are read from; an
+// application (§4.9, `infer_apply`) has none and infers no compile-time generic, so it
+// passes the empty list and every use of `args` below is the identity on it.
+$decl specialize_at $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
+                           $decl args Pa.nodes.node, $decl ats T.tys.node,
+                           $decl n Pa.proto_node) {
   $decl r  $call find_tmpl (cx.tmpls, id)
-  $decl ng $call strs.length (r.generics, 0)
-  // §2.3 again: with one generic the whole operand is the argument; with
-  // several it has to be a group.
-  $decl args $if ($call eq_int (ng, 1))
-      ($call Pa.nodes.cons (argn, Pa.nodes.nil))
-      ($call group_items (argn))
-  $decl na  $call Pa.nodes.length (args, 0)
-  $decl ats $call infer_tys (cx, e, args, T.tys.nil)
-  $decl ret $if ($call not ($call eq_int (ng, na)))
-      ($call err (cx, $call concat ("this template has ", $call concat ($call int_to_str (ng),
-          $call concat (" generic parameters, found ", $call int_to_str (na)))), n)) {
+  $decl ret {
         $decl chk  $call ct_args_check (cx, e, r.generics, args, r.ctg)
         $decl key  $call concat ($call memo_key (id, ats, ""), $call ct_vals (cx, r.generics, args,
             r.ctg, ""))
@@ -2667,6 +2664,93 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
               $decl ret3 ty
             }.ret3)
       }.ret2
+}.ret
+
+$decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
+                             $decl argn Pa.proto_node, $decl n Pa.proto_node) {
+  $decl r  $call find_tmpl (cx.tmpls, id)
+  $decl ng $call strs.length (r.generics, 0)
+  // §2.3 again: with one generic the whole operand is the argument; with
+  // several it has to be a group.
+  $decl args $if ($call eq_int (ng, 1))
+      ($call Pa.nodes.cons (argn, Pa.nodes.nil))
+      ($call group_items (argn))
+  $decl na  $call Pa.nodes.length (args, 0)
+  $decl ats $call infer_tys (cx, e, args, T.tys.nil)
+  $decl ret $if ($call not ($call eq_int (ng, na)))
+      ($call err (cx, $call concat ("this template has ", $call concat ($call int_to_str (ng),
+          $call concat (" generic parameters, found ", $call int_to_str (na)))), n))
+      ($call specialize_at (cx, e, id, args, ats, n))
+}.ret
+
+// §4.9: "If a template's body is a `$func`, then `$call t args` means `$call
+// ($specialize t inferred) args`." Each generic is read off the argument types where
+// `Pa.app_sources` says, the template is specialised at those exactly as an explicit
+// `$specialize` would be — so the two share a memo entry — and the call is then checked
+// against the specialised signature, with the arguments typed once, as an overloaded
+// call does. "Application never infers a compile-time generic."
+$decl is_bot_ty $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "bottom"} true,
+  $case t false
+)
+
+$decl app_ty $func ($decl cx proto_ctx, $decl s Pa.proto_app_src, $decl rs T.tys.node,
+                    $decl g "", $decl n Pa.proto_node) {
+  $decl at  $if ($call lt (-1, s.arg))
+                ($if ($call lt (s.arg, $call T.tys.length (rs, 0))) ($call T.tys.nth (rs, s.arg))
+                     T.t_bot) T.t_bot
+  $decl ft  $call T.unroll ($call deref_ty (at))
+  $decl got $if ($call eq_int (s.kind, 0)) at
+      ($match ft (
+        $case {$prop tag "func"}
+          $if ($call eq_int (s.kind, 2)) ($call T.tval (ft.result))
+              ($if ($call lt (s.pos, $call T.tys.length ($call T.tys.val (ft.params), 0)))
+                   ($call T.tys.nth ($call T.tys.val (ft.params), s.pos)) T.t_bot),
+        $case ft T.t_bot))
+  $decl why $if ($call lt (s.arg, 0)) "no parameter default is shaped by it"
+                ($if ($call lt (s.arg, $call T.tys.length (rs, 0)))
+                     "its argument is not a function of that shape" "its argument is not passed")
+  $decl ret $if ($call is_bot_ty (got))
+      ($call err (cx, $call concat ("cannot infer '", $call concat (g, $call concat ("' from this call: ",
+          $call concat (why, "; write the $specialize (§4.9)")))), n))
+      got
+}.ret
+
+$decl app_tys $func ($decl cx proto_ctx, $decl ss Pa.app_srcs.node, $decl rs T.tys.node,
+                     $decl gs strs.node, $decl n Pa.proto_node, $decl acc T.tys.node) $match ss (
+  $case {$prop tag "cons"} $match gs (
+    $case {$prop tag "cons"}
+      $call app_tys (cx, $call Pa.app_srcs.val (ss.tail), rs, gs.tail, n,
+          $call T.tys.cons ($call app_ty (cx, ss.head, rs, gs.head, n), acc)),
+    $case gs ($call T.tys.reverse (acc, T.tys.nil))),
+  $case ss ($call T.tys.reverse (acc, T.tys.nil))
+)
+
+$decl has_bot $func ($decl ts T.tys.node) $match ts (
+  $case {$prop tag "cons"} $if ($call is_bot_ty (ts.head)) true ($call has_bot (ts.tail)),
+  $case ts false
+)
+
+$decl infer_apply $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
+                         $decl args Pa.nodes.node, $decl n Pa.proto_node) {
+  $decl r   $call find_tmpl (cx.tmpls, id)
+  $decl rs  $call arg_types (cx, e, args, T.tys.nil)
+  $decl ret $if ($call not ($call is_form (r.body, "func")))
+      ($call err (cx, "$call on a template needs its body to be a $func, which §4.9 infers its generics from; write the $specialize", n))
+      ($if ($call not ($call Pa.ctgs.is_nil (r.ctg)))
+      ($call err (cx, "this template has a compile-time generic, which application never infers; write the $specialize (§4.9)", n)) {
+        $decl ats  $call app_tys (cx, $call Pa.app_sources (r.body, r.generics, Pa.app_srcs.nil),
+                       rs, r.generics, n, T.tys.nil)
+        $decl ft   $if ($call has_bot (ats)) T.t_bot
+                       ($call deref_ty ($call specialize_at (cx, e, id, Pa.nodes.nil, ats, n)))
+        $decl ret2 $match ft (
+            $case {$prop tag "func"} {
+              $decl ok   $call check_typed (cx, $call T.tys.val (ft.params), args, rs, n, 1,
+                             $call T.cints.val (ft.esc))
+              $decl ret3 $if ok ($call T.tval (ft.result)) T.t_bot
+            }.ret3,
+            $case ft T.t_bot)
+      }.ret2)
 }.ret
 
 // §4.9 steps 2 and 3: type the substituted expression with ordinary rules, and

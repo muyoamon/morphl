@@ -2870,6 +2870,12 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     $call say (st, $call concat ("  ", $call concat (dest, $if e.v " = 1;\n" " = 0;\n"))),
   $case {$prop tag "unit"}
     $call say (st, $call concat ("  ", $call concat (dest, " = 0;\n"))),
+  // An inferred generic's value (`lower.mpl`'s `tyhole`), which lowering reports anywhere
+  // but a type-only position — so this is reached only in code nothing runs, such as a
+  // parameter default's `$func` literal, lifted while its type was derived. `mpl_panic`
+  // does not return, so `dest` is never read. The message is the compiler's own ASCII.
+  $case {$prop tag "panic"}
+    $call say (st, $call concat ("  mpl_panic(\"", $call concat (e.msg, "\");\n"))),
   $case {$prop tag "str"} ($call assign (st, dest, $call c_str_lit (e.text))),
   $case {$prop tag "local"}
     $call say (st, $call concat ("  ", $call concat (dest,

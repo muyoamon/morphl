@@ -235,6 +235,11 @@ pub fn build(b: *std.Build) void {
         // §4.10: a member's parameter default naming its own block is the block's type, not
         // the receiver, directly, through a specialisation and on `$mut` storage. 4111.
         .{ .src = "stage1/fixtures/self_param.mpl", .want = "4111\n" },
+        // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
+        // argument, from a function argument's parameter and result, from a module's
+        // template, and a template applying itself in tail position. Stage 0 refuses
+        // application (BOOTSTRAP.md §1.1). 2000251.
+        .{ .src = "stage1/fixtures/apply.mpl", .want = "2000251\n", .stage0 = false },
         // §6's trait objects: coercion at a call and at `$set`, `$traitsof` of a name, of
         // `$mut` storage and of an expression, `$impl` over an `Int`, and `$match` on an
         // object. 87.

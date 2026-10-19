@@ -10,7 +10,7 @@ for the decisions that shape it.
 
 | | question | recommended |
 |---|---|---|
-| P | which compiler gaps come first | application inference and `$func`-bodied templates, polymorphic arrays, an import search root; bounds with `map` |
+| P | which compiler gaps come first | polymorphic arrays, an import search root; bounds with `map` |
 | D1 | where it lives and how it is named | a `std/` directory, `$import "std/list"` |
 | D2 | its relation to `stage1/prelude.mpl` | separate: the prelude stays the compiler's subset library |
 | D3 | how generic code says what it needs of `T` | bounds for structure, trait objects for runtime behaviour |
@@ -48,10 +48,13 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
     → "$template generic parameters must be plain names"
 ```
 
-- **P1. Application inference (§4.9), which stage 1 does not implement.** Without it every
-  generic call is `$call ($specialize L.map Int Str) (xs, f)`, and a library of generic
-  functions is unusable in practice. §4.9 specifies it narrowly — one level of parameter
-  default shapes, first match wins, nothing deeper — which keeps it implementable. *Required.*
+- **P1. Application inference (§4.9).** **Done.** `$call t args` on a template whose body
+  is a `$func` infers each generic from the parameter defaults' shapes (`Pa.app_sources`,
+  shared by both passes), specialises through the explicit path — so the two share a memo
+  entry and their functions — and checks the call against the result. An inferred generic
+  has a type and no value, so reading one as a value (a defaulted argument, or `T` in the
+  body) is reported. Stage 0 still refuses it: BOOTSTRAP §1.1 keeps it out of the subset,
+  so the library's tests are compiled-only anyway (P5). `stage1/fixtures/apply.mpl`.
 - **P2. Template bounds (§4.9), which the parser refuses.** `$template (K ($traitsof ord))`
   is how `map` says its keys compare and how `eq` and `show` are reached generically. A call
   through a generic already resolves statically to the argument type's member once the
@@ -74,12 +77,9 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   in D4, so it comes first. **Fixed:** a member's parameter defaults are typed with the
   declaring name bound to the block, its body with it bound to the receiver
   (`stage1/fixtures/self_param.mpl`, 4111).
-- **P9. Lowering a template whose body is a `$func`.** Inference accepts `$decl max
-  $template T $func (…) …`; lowering refuses its `$specialize` — "this template's body is not
-  a block with props or $decls, which is the only shape lowered so far". The block form
-  (`$template T { $prop max $func (…) … }`, reached as `($specialize m Int).max`) works today,
-  so the library can be written that way meanwhile, but §4.9's application inference (P1) is
-  defined for exactly the `$func` form. *Required with P1.*
+- **P9. Lowering a template whose body is a `$func`.** **Done**, as the block
+  `{ $prop $fn <body> }` with the function read back off it — so it is lifted once per
+  memo key and named and placed like `P.list`'s members.
 - **P3. Arrays of any type.** The root's `array`, `at` and `alen` are monomorphic at `Str`
   (BOOTSTRAP §2 kept them so for stage 0), so a vector, a hash map, sorting `Int`s or a byte
   buffer cannot be written. §8 already gives the polymorphic form — `$call array (n,
@@ -296,8 +296,7 @@ and under ASan like `test-asan`.
 
 ## Plan
 
-1. **P1 with P9, P3, P4** — application inference and the `$func`-bodied template it needs,
-   polymorphic arrays, the import search root. (P6 is done.)
+1. **P3, P4** — polymorphic arrays, the import search root. (P1, P6 and P9 are done.)
 2. **`std/core`, `std/list`, `std/io`, `std/mem`, `std/test`** — what needs only P1. `test-std`
    with them.
 3. **`std/str`** with the builder, and **`std/vec`** over P3.
@@ -310,7 +309,7 @@ and under ASan like `test-asan`.
 
 | | options | recommended |
 |---|---|---|
-| P | which prerequisites, and in which order | P1 with P9, P3, P4 first (P6 done); P2 before `map` |
+| P | which prerequisites, and in which order | P3, P4 first (P1, P6, P9 done); P2 before `map` |
 | D1 | location and naming | `std/`, module-qualified |
 | D2 | prelude and `std/` | separate |
 | D3 | generic requirements | bounds; a passed function for `_by`; trait objects for heterogeneous behaviour; not an overloaded operation |

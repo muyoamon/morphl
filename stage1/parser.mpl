@@ -857,6 +857,64 @@ $decl lit_key $func ($decl n proto_node) $match n (
   $case n ""
 )
 
+// §4.9's application inference: where each generic of a `$func`-bodied template is read
+// from. "Inference matches the shape of each parameter default one level deep" — a
+// default that is exactly `T` makes `T` that argument's type (`kind` 0); a default that
+// is a `$func` literal whose parameter defaults or body are exactly `T` makes it the
+// corresponding parameter type (`kind` 1, `pos` its index) or result type (`kind` 2)
+// of the argument's function type. The first in parameter order wins, and the call is
+// checked against the rest. `arg` is -1 when nothing names the generic. Shared, so the
+// two passes infer the same generics and so build the same memo key.
+$decl app_src $func ($decl a -1, $decl k 0, $decl j 0) { $decl arg a  $decl kind k  $decl pos j }
+$decl proto_app_src $call app_src (-1, 0, 0)
+$decl app_srcs      $specialize P.list proto_app_src
+
+$decl app_items $func ($decl n proto_node) $match n (
+  $case {$prop tag "group"} ($call nodes.val (n.items)),
+  $case {$prop tag "unit"}  nodes.nil,
+  $case n ($call nodes.cons (n, nodes.nil))
+)
+
+$decl is_named $func ($decl n proto_node, $decl g "") $match n (
+  $case {$prop tag "name"} ($call eq_str (n.text, g)),
+  $case n false
+)
+
+// The default of a `$decl` parameter, or unit for anything else.
+$decl param_default $func ($decl d proto_node)
+  $if ($call is_kw (d, "decl")) ($call operand (d, 1)) ($call n_unit (0, 0))
+
+// Which parameter of a `$func` literal is defaulted to exactly `g`, or -1.
+$decl app_in_params $func ($decl ps nodes.node, $decl g "", $decl j 0) $match ps (
+  $case {$prop tag "cons"}
+    $if ($call is_named ($call param_default (ps.head), g)) j
+        ($call app_in_params ($call nodes.val (ps.tail), g, $call add (j, 1))),
+  $case ps -1
+)
+
+$decl app_find $func ($decl ps nodes.node, $decl g "", $decl i 0) $match ps (
+  $case {$prop tag "cons"} {
+    $decl df  $call param_default (ps.head)
+    $decl fj  $if ($call is_kw (df, "func"))
+                  ($call app_in_params ($call app_items ($call operand (df, 0)), g, 0)) -1
+    $decl fr  $if ($call is_kw (df, "func")) ($call is_named ($call operand (df, 1), g)) false
+    $decl ret $if ($call is_named (df, g)) ($call app_src (i, 0, 0))
+                  ($if ($call lt (-1, fj)) ($call app_src (i, 1, fj))
+                  ($if fr ($call app_src (i, 2, 0))
+                       ($call app_find ($call nodes.val (ps.tail), g, $call add (i, 1)))))
+  }.ret,
+  $case ps ($call app_src (-1, 0, 0))
+)
+
+// One source per generic, in the generics' order. `fnb` is the template's `$func` body.
+$decl app_sources $func ($decl fnb proto_node, $decl gs pstrs.node, $decl acc app_srcs.node)
+  $match gs (
+    $case {$prop tag "cons"}
+      $call app_sources (fnb, $call pstrs.val (gs.tail), $call app_srcs.cons (
+          $call app_find ($call app_items ($call operand (fnb, 0)), gs.head, 0), acc)),
+    $case gs ($call app_srcs.reverse (acc, app_srcs.nil))
+  )
+
 // A compile-time generic bound to a literal is replaced by the literal, everywhere
 // its scope reaches. That is the substitution §4.9 says it is not — "by reference,
 // never textual" — made safe by what a literal is: evaluating one has no effect, so

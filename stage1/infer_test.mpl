@@ -555,10 +555,22 @@ $decl t65 $call check_str ("the wrong number of arguments is reported",
   "this template has 2 generic parameters, found 1")
 $decl t66 $call check_str ("specializing a non-template is reported",
   $call errs_of ("$decl x $specialize 1 0"), "$specialize expects a template, found Int")
-// BOOTSTRAP.md §1.1 drops §4.9's `$call`-time inference of `T`.
-$decl t67 $call check_str ("calling a template directly is reported",
-  $call errs_of ("$decl id $template T $func ($decl x T) x  $decl y $call id 5"),
-  "$call on a template needs an explicit $specialize first (BOOTSTRAP.md §1.1)")
+// §4.9's application: a default that is exactly `T`, and a `$func` default mentioning it.
+// (Stage 0 still refuses it — BOOTSTRAP.md §1.1 keeps it out of the subset.)
+$decl t67 $call check_str ("application infers T from an argument",
+  $call field_ty ("$decl id $template T $func ($decl x T) x  $decl y $call id (\"s\")", "y"), "Str")
+$decl t67b $call check_str ("application reads a function argument's result type",
+  $call field_ty ("$decl run $template R $func ($decl g $func () R) $call g ()  $decl y $call run ($func () 4)", "y"),
+  "Int")
+$decl t67c $call check_str ("a generic no argument shapes is reported",
+  $call errs_of ("$decl id $template T $func ($decl x T) x  $decl y $call id ()"),
+  "cannot infer 'T' from this call: its argument is not passed; write the $specialize (§4.9)")
+$decl t67d $call check_str ("application needs a $func body",
+  $call errs_of ("$decl b $template T { $prop k $func ($decl x T) x }  $decl y $call b (1)"),
+  "$call on a template needs its body to be a $func, which §4.9 infers its generics from; write the $specialize")
+$decl t67e $call check_str ("a compile-time generic is never inferred",
+  $call errs_of ("$decl s $template N $func ($decl x N) { $prop k N }  $decl y $call s (1)"),
+  "this template has a compile-time generic, which application never infers; write the $specialize (§4.9)")
 
 // The prelude's list, specialized — recursive data inside a template body.
 // §5.5 requires the recursion to pass through storage, so the tail is storage;
