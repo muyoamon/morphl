@@ -252,7 +252,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/run.mpl", .want = "37710\n" },
         // §5.3a's borrowing (STORAGE.md §R): places handed back from a parameter, a
         // capture and the top level, and tail calls passing a borrowed place. 501542.
-        .{ .src = "stage1/fixtures/borrow.mpl", .want = "501542\n" },
+        .{ .src = "stage1/fixtures/borrow.mpl", .want = "501592\n" },
         // §7.6's frame storage as C locals: a 2,000,000-iteration loop reusing one, a cell
         // made in an `$if` arm and used after it, a group's, and top-level static storage.
         .{ .src = "stage1/fixtures/frame.mpl", .want = "2000001002635\n" },
@@ -439,8 +439,10 @@ pub fn build(b: *std.Build) void {
                 "places.mpl:24:60: this tail call passes $new storage made in this call",
                 "places.mpl:32:55: this tail call makes a trait object referring to storage of this call",
                 "places.mpl:34:20: storage cannot hold a place: this trait object would refer to frame storage",
+                "places.mpl:42:15: this function's result holds frame storage made in this call",
+                "places.mpl:46:15: this function's result holds frame storage made in this call",
             },
-            .count = "errors: 7\n",
+            .count = "errors: 9\n",
             .stage0 = null,
         },
     }) |bad| {
@@ -862,7 +864,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/lexer_test.mpl", .last = "all lexer tests passed\n" },
         .{ .src = "stage1/parser_test.mpl", .last = "all parser tests passed\n" },
         .{ .src = "stage1/types_test.mpl", .last = "all class-key tests passed\n" },
-        .{ .src = "stage1/infer_test.mpl", .last = "all trait storage tests passed\n" },
+        .{ .src = "stage1/infer_test.mpl", .last = "all borrowing tests passed\n" },
         .{ .src = "stage1/ir_test.mpl", .last = "all typed-tree tests passed\n" },
         .{ .src = "stage1/lower_test.mpl", .last = "all lowering tests passed\n" },
         .{ .src = "stage1/emit_test.mpl", .last = "all C backend tests passed\n" },

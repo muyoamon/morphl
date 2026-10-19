@@ -1006,11 +1006,13 @@ $decl es03 $call check_str ("a parameter only called does not escape",
 $decl es04 $call check_str ("...and its type says so",
   $call field_ty ("$decl run $func ($decl f $func () 0) $call add ($call f (), 1)", "run"), "[[]->Int]->Int")
 
-$decl es05 $call check_str ("returning a parameter makes it escape",
-  $call field_ty ("$decl id $func ($decl f $func () 0) f", "id"), "esc(0)[[]->Int]->[]->Int")
+// §5.3a's borrowing: a parameter that reaches only the result goes back to its owner, so
+// it is borrowed, not escaping — and the result is frame-bound when the argument was.
+$decl es05 $call check_str ("returning a parameter borrows it",
+  $call field_ty ("$decl id $func ($decl f $func () 0) f", "id"), "brw(0)[[]->Int]->[]->Int")
 
 $decl es06 $call check_str ("...and so does returning a closure that captures it",
-  $call field_ty ("$decl wrap $func ($decl f $func () 0) $func () $call f ()", "wrap"), "esc(0)[[]->Int]->[]->Int")
+  $call field_ty ("$decl wrap $func ($decl f $func () 0) $func () $call f ()", "wrap"), "brw(0)[[]->Int]->[]->Int")
 
 $decl es07 $call check_str ("passing it on to an escaping parameter makes it escape",
   $call field_ty ($call concat (es_pre, "$decl pass $func ($decl g $func () 0) $call save (g)"),
@@ -1214,3 +1216,24 @@ $decl tc04 $call check_str ("a cell the caller lent may not hold an object over 
   "storage cannot hold a place: this trait object would refer to frame storage (§6, §5.3a); store a reference to $alloc storage instead")
 
 $decl done18 $call nl ("all trait storage tests passed")
+
+// §5.3a's borrowing for trait- and function-typed parameters: handed back, not escaped.
+$decl bw_pre "$decl shape { $prop area $func () 0 }  $decl tri { $decl b 6  $prop area $func () tri.b }  $decl bigger $func ($decl a $traitsof shape, $decl b $traitsof shape) $if ($call lt ($call a.area (), $call b.area ())) b a  "
+
+$decl bw01 $call check_str ("a function handing back a trait parameter borrows it",
+  $call errs_of ($call concat (bw_pre, "$decl use $func () { $decl loc { $prop area $func () 5 }  $decl w $call bigger ($traitsof loc, $traitsof tri)  $decl ret $call w.area () }.ret")), "")
+$decl bw02 $call check_str ("...and what it hands back is the caller's own place",
+  $call errs_of ($call concat (bw_pre, "$decl bad $func () { $decl loc { $prop area $func () 5 }  $decl ret $call bigger ($traitsof loc, $traitsof tri) }.ret")),
+  "this function's result holds frame storage made in this call (a trait object referring to frame storage), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
+$decl bw03 $call check_str ("...so it may not be stored",
+  $call errs_of ($call concat (bw_pre, "$decl cell $mut $alloc $traitsof shape  $decl bad $func () { $decl loc { $prop area $func () 5 }  $decl w $set cell ($call bigger ($traitsof loc, $traitsof tri))  $decl ret 0 }.ret")),
+  "this value holds frame storage (a trait object referring to frame storage), which cannot outlive the scope its $new made it in. Write $alloc there instead (§4.2a, §5.3a)")
+$decl bw04 $call check_str ("a wrapper passing them on borrows them in turn",
+  $call field_ty ($call concat (bw_pre, "$decl pick $func ($decl a $traitsof shape, $decl b $traitsof shape) $call bigger (a, b)"), "pick"),
+  "brw(0,1)[trait{area:[]->Int,},trait{area:[]->Int,}]->trait{area:[]->Int,}")
+
+$decl bw05 $call check_str ("a join keeps the frame-bound side, whichever arm it is in",
+  $call errs_of ($call concat (bw_pre, "$decl bad $func ($decl c $union (false, true)) { $decl loc { $prop area $func () 5 }  $decl ret $if c ($traitsof loc) ($traitsof tri) }.ret")),
+  "this function's result holds frame storage made in this call (a trait object referring to frame storage), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
+
+$decl done19 $call nl ("all borrowing tests passed")

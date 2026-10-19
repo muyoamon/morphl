@@ -768,6 +768,20 @@ $decl ci_str $func ($decl xs cints.node, $decl acc "") $match xs (
   $case xs acc
 )
 
+// `esc` holds escapes as a parameter's index and borrows as 64 plus it (`infer.mpl`'s
+// `with_brw`); this renders one half, the borrows with the 64 taken off.
+$decl ci_str_half $func ($decl xs cints.node, $decl brw P.boolean, $decl acc "") $match xs (
+  $case {$prop tag "cons"} {
+    $decl b    $call lt (63, xs.head)
+    $decl keep $if brw b ($call not (b))
+    $decl ret  $call ci_str_half ($call cints.val (xs.tail), brw,
+        $if keep ($call concat (acc, $call concat ($if ($call eq_str (acc, "")) "" ",",
+                      $call int_to_str ($if b ($call isub (xs.head, 64)) xs.head))))
+                 acc)
+  }.ret,
+  $case xs acc
+)
+
 $decl t_func_x $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean,
     $decl rm P.boolean, $decl es cints.node, $decl mk cints.node) {
   $decl hv0 $call hmix ($call hmix (15, $call hash_tys (ps, 0)), $call hash_of (r))
@@ -1018,11 +1032,13 @@ $decl show $func ($decl t proto_ty) $match t (
                                  $call concat ($call show_props (t.props, ""), "}"))),
   $case {$prop tag "group"}  $call concat ("(", $call concat ($call show_tys (t.items, "", true), ")")),
   $case {$prop tag "func"} {
-    $decl es  $call ci_str ($call cints.val (t.esc), "")
+    $decl es  $call ci_str_half ($call cints.val (t.esc), false, "")
+    $decl bs  $call ci_str_half ($call cints.val (t.esc), true, "")
     $decl ret $call concat ($if t.rmut "mut" "",
         $call concat ($if ($call eq_str (es, "")) "" ($call concat ("esc(", $call concat (es, ")"))),
+        $call concat ($if ($call eq_str (bs, "")) "" ($call concat ("brw(", $call concat (bs, ")"))),
         $call concat ("[", $call concat ($call show_tys (t.params, "", true),
-        $call concat ("]->", $call show (t.result))))))
+        $call concat ("]->", $call show (t.result)))))))
   }.ret,
   $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual, t.kind), $call show (t.inner)),
   $case {$prop tag "array"}  $call concat ("[]", $call show (t.elem)),
@@ -1701,6 +1717,39 @@ $decl mark_deep $func ($decl t proto_ty, $decl m 0) $match t (
   $case {$prop tag "union"} $call t_union ($call mark_tys ($call tys.val (t.members), m, tys.nil)),
   $case {$prop tag "rec"}   $call t_rec ($call mark_deep (t.body, m)),
   $case {$prop tag "with"}  $call t_with ($call mark_deep (t.base, m), $call props.val (t.props)),
+  $case t t
+)
+
+// A value of this type refers to frame storage: every function and trait type in it is
+// flagged as frame-bound. For a call whose result borrows a frame-bound argument (§5.3a):
+// the type the callee declared cannot say that, because its parameter's could not.
+$fwd make_frame
+
+$decl make_frame_tys $func ($decl xs tys.node, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call make_frame_tys ($call tys.val (xs.tail),
+        $call tys.cons ($call make_frame (xs.head), acc)),
+  $case xs ($call tys.reverse (acc, tys.nil))
+)
+
+$decl make_frame_fields $func ($decl xs fields.node, $decl acc fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $call make_frame_fields ($call fields.val (xs.tail),
+        $call fields.cons ($call field (xs.head.name, $call make_frame (xs.head.ty)), acc)),
+  $case xs ($call fields.reverse (acc, fields.nil))
+)
+
+$decl make_frame $func ($decl t proto_ty) $match t (
+  $case {$prop tag "func"}
+    $call t_func_x ($call tys.val (t.params), $call tval (t.result), true, t.rmut,
+        $call cints.val (t.esc), $call cints.val (t.marks)),
+  $case {$prop tag "trait"} $call t_trait_q ($call fields.val (t.members), true, t.qual),
+  $case {$prop tag "block"}
+    $call raw_block ($call make_frame_fields ($call fields.val (t.fields), fields.nil),
+        $call props.val (t.props)),
+  $case {$prop tag "group"} $call t_group ($call make_frame_tys ($call tys.val (t.items), tys.nil)),
+  $case {$prop tag "union"} $call t_union ($call make_frame_tys ($call tys.val (t.members), tys.nil)),
+  $case {$prop tag "with"}  $call t_with ($call make_frame (t.base), $call props.val (t.props)),
   $case t t
 )
 
@@ -2550,8 +2599,16 @@ $decl is_base $func ($decl t proto_ty) $match t (
   $case t false
 )
 
-$decl join $func ($decl a proto_ty, $decl b proto_ty)
-  $if ($call sub (a, b)) b ($if ($call sub (b, a)) a ($call union2 (a, b)))
+// §5.3a: `frame` is not part of a type's identity, so of two equal types the one kept
+// need not be the frame-bound one — `$if c ($traitsof loc) ($traitsof tri)` kept the
+// second arm's and let a trait object over this call's own `loc` be returned. A join is
+// frame-bound if either side is.
+$decl join $func ($decl a proto_ty, $decl b proto_ty) {
+  $decl r   $if ($call sub (a, b)) b ($if ($call sub (b, a)) a ($call union2 (a, b)))
+  $decl ret $if ($call frame_bound (r, 0)) r
+                ($if ($call P.or ($call frame_bound (a, 0), $call frame_bound (b, 0)))
+                     ($call make_frame (r)) r)
+}.ret
 
 // `T & ¬P`, as far as a union can express it: drop the members `P` covers.
 //

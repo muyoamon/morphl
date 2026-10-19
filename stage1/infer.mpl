@@ -275,6 +275,13 @@ $decl ctx $func () {
   // each `depth * 64 + index`, until the function at that depth takes its own.
   $decl nmark   $mut $alloc 0
   $decl escd    $mut $alloc T.cints.node
+  // §5.3a's borrowing for function- and trait-typed parameters: the marks that reached a
+  // function's *result* (`brwd`), which make those parameters borrowed rather than
+  // escaping; and, while one call's arguments are checked, the marks and frame-boundness
+  // of the arguments its result borrows (`bmarks`, `bframe`).
+  $decl brwd    $mut $alloc T.cints.node
+  $decl bmarks  $mut $alloc T.cints.node
+  $decl bframe  $mut $alloc $union (false, true)
   // Calls to a function still being typed, whose escaping parameters are not known yet:
   // checked when it closes (`func_close`). Function bodies are numbered in the order
   // they start, so one body's own calls — and its nested ones' — are a range.
@@ -961,6 +968,13 @@ $decl extern_callee $func ($decl cx proto_ctx, $decl c Pa.proto_node) $match c (
 // which §5.3a asks for; that needs provenance the type does not carry.
 // A parameter's mark reaching an escape point is not an error here: it makes that
 // parameter escape, and the caller is checked instead (§5.3a, `arg_escapes`).
+// The marks a function's result carries: its parameters it borrows (§5.3a).
+$decl note_borrows $func ($decl cx proto_ctx, $decl t T.proto_ty)
+  $if ($call lt (0, $call ival (cx.nmark)))
+      ($set cx.brwd ($call T.ci_union ($call T.marks_of (t, T.cints.nil),
+          $call T.cints.val (cx.brwd))))
+      ($call T.cints.val (cx.brwd))
+
 $decl note_marks $func ($decl cx proto_ctx, $decl t T.proto_ty)
   $if ($call lt (0, $call ival (cx.nmark)))
       ($set cx.escd ($call T.ci_union ($call T.marks_of (t, T.cints.nil),
@@ -1041,6 +1055,23 @@ $decl esc_split $func ($decl xs T.cints.node, $decl d 0, $decl mine T.cints.node
         ($call esc_split ($call T.cints.val (xs.tail), d, mine,
             $call T.cints.cons (xs.head, rest))),
   $case xs { $decl own mine  $decl others rest }
+)
+
+// Borrows are kept in a function type's `esc` beside its escapes, as `64 + i` for "the
+// result borrows parameter `i`": a mark's parameter index is below 64 (`pmark`), so
+// nothing that asks whether `i` escapes can mistake one for the other.
+$decl brw_take $func ($decl cx proto_ctx, $decl d 0) {
+  $decl sp  $call esc_split ($call T.cints.val (cx.brwd), d, T.cints.nil, T.cints.nil)
+  $decl put $set cx.brwd sp.others
+  $decl ret sp.own
+}.ret
+
+$decl with_brw $func ($decl es T.cints.node, $decl bs T.cints.node) $match bs (
+  $case {$prop tag "cons"}
+    $call with_brw ($if ($call T.ci_mem (es, $call add (64, bs.head))) es
+                        ($call T.cints.cons ($call add (64, bs.head), es)),
+        $call T.cints.val (bs.tail)),
+  $case bs ($call T.ci_sort (es, T.cints.nil))
 )
 
 $decl esc_take $func ($decl cx proto_ctx, $decl d 0) {
@@ -1432,8 +1463,8 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
                       ($call err (cx, $call concat ("this function's result holds frame storage made in this call (",
                            $call concat ($call T.show_frame ($call T.first_frame (res0, 0)),
                            "), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")), n))
-                      ($do ($call note_marks (cx, res0)) res0))
-                 ($do ($call note_marks (cx, res0)) res0)
+                      ($do ($call note_borrows (cx, res0)) res0))
+                 ($do ($call note_borrows (cx, res0)) res0)
   $decl tc   $call tail_check (cx, e, own0, $call op (n, 1))
   // ...and its closure clause: a literal that captured frame storage is itself
   // frame-bound, so returning *it* is an escape too — caught one level out.
@@ -1453,7 +1484,11 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   $decl back $set cx.curfn mr.outer
   $decl pop  $set cx.fstack ($if ($call lt (0, mk))
                   ($call pop_frame ($call fframes.val (cx.fstack))) ($call fframes.val (cx.fstack)))
-  $decl ret  $call T.t_func_esc (tys, res, capf, mine, $call T.keep_below (capm, lim, T.cints.nil))
+  // A parameter whose marks reached only the result is borrowed: the caller gets it back,
+  // owned by whoever owned the argument (`infer_call`), rather than losing it (§5.3a).
+  $decl brws $call brw_take (cx, d)
+  $decl ret  $call T.t_func_esc (tys, res, capf, $call with_brw (mine, brws),
+                 $call T.keep_below (capm, lim, T.cints.nil))
 }.ret
 
 // A call passing an argument to a parameter the callee lets escape (§5.3a): refused if
@@ -1526,6 +1561,37 @@ $decl alloc_conforms $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
              ($call err (cx, $call concat ("the allocator in scope cannot serve $alloc: its alloc is ",
                   $call concat ($call T.show (mt), ", which must take a size and answer an address (§7.6)")), n))
        }.ret2)
+}.ret
+
+// What a borrowed argument lends the call's result: its marks, and whether it is
+// frame-bound — directly, or as the trait object §6's coercion makes over frame storage.
+$decl note_barg $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
+                       $decl p T.proto_ty) {
+  $decl m   $set cx.bmarks ($call T.ci_union ($call T.marks_of (raw, T.cints.nil),
+                $call T.cints.val (cx.bmarks)))
+  $decl fb  $if ($call T.frame_bound (raw, 0)) true
+                ($if ($call T.is_trait (p))
+                     ($if ($call T.is_trait ($call deref_ty (raw))) false
+                          ($call traitsof_frame (cx, x, raw)))
+                     false)
+  $decl ret $if fb ($set cx.bframe true) false
+}.ret
+
+$decl mark_all $func ($decl t T.proto_ty, $decl ms T.cints.node) $match ms (
+  $case {$prop tag "cons"} $call mark_all ($call T.mark_deep (t, ms.head), $call T.cints.val (ms.tail)),
+  $case ms t
+)
+
+// `T.join`, keeping both sides' parameter marks (§5.3a): of two equal types it keeps one
+// whole, and a mark only the other carried would be a parameter's flow lost — `bigger`
+// returning `$if c b a` would borrow one parameter instead of both. Only while marks are
+// being tracked, since walking for them costs a pass over each type.
+$decl join_m $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl b T.proto_ty) {
+  $decl r   $call T.join (a, b)
+  $decl ret $if ($call lt (0, $call ival (cx.nmark)))
+      ($call mark_all (r, $call T.ci_union ($call T.marks_of (a, T.cints.nil),
+          $call T.marks_of (b, T.cints.nil))))
+      r
 }.ret
 
 // §5.3a's A0: storage never holds a place. A place used where a value is wanted is read
@@ -1884,7 +1950,7 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
   $decl dout     $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
   $decl tries    $call tval (cx.tryset)
   $decl restored $set cx.tryset saved
-  $decl res0     $call T.join (body, tries)
+  $decl res0     $call join_m (cx, body, tries)
   $decl gone     $set cx.inprog ($call drop_prog ($call hint_list.val (cx.inprog), id,
                      hint_list.nil))
   // `μR.R` is uninhabited: a function whose only result is its own recursive
@@ -1912,7 +1978,7 @@ $decl infer_func $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   // §4.15: "The enclosing function's inferred return type gains
   // `type(e) & pat` as union members." Joining with ⊥ is the identity, so a
   // function with no `$try` is unaffected.
-  $decl res  $call T.join (body, tries)
+  $decl res  $call join_m (cx, body, tries)
   // §5.3a's first clause — the frame this `$func` returns to is gone by the time the
   // caller has the value — and the rest of it, in `func_close`.
   $decl ret  $call func_close (cx, e, n, ps, r.tys, res, mr, -1)
@@ -2081,6 +2147,12 @@ $decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_
                 ($call strs.val (cx.slotref))
   $decl cw  $call coerce_why (x, raw, p)
   $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1))) ($call arg_escapes (cx, x, raw, p, i)) raw
+  // §5.3a's borrowing: an argument whose parameter the callee's result borrows lends what
+  // it carries to the result — and for a callee still being typed, whose borrows are not
+  // known yet, every function- or trait-typed argument does, which can only be stricter.
+  $decl bw  $if ($if ($call T.ci_mem (es, $call add (63, i))) true
+                     ($if ($call lt (-1, pd)) ($call T.markable (p)) false))
+                ($call note_barg (cx, x, raw, p)) ()
   // A callee still being typed: its escaping parameters come later (`func_close`).
   // Only an argument that could be refused or could carry a mark is worth keeping,
   // and nearly none is — keeping every one made each closing function rescan them.
@@ -2215,8 +2287,21 @@ $decl infer_ffi $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form,
 
 $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl w   $call ffi_which (e, $call op (n, 0))
-  $decl r   $if ($call eq_str (w, "")) ($call infer_call_std (cx, e, n))
+  // This call's own borrow record, saved and restored around it so a call nested in an
+  // argument keeps its own.
+  $decl sm  $call T.cints.val (cx.bmarks)
+  $decl sf  $call P.bval (cx.bframe)
+  $decl z1  $set cx.bmarks T.cints.nil
+  $decl z2  $set cx.bframe false
+  $decl r0  $if ($call eq_str (w, "")) ($call infer_call_std (cx, e, n))
                 ($call infer_ffi (cx, e, n, w))
+  // A result that borrows a frame-bound argument is frame-bound, and carries what the
+  // argument carried — so the caller's own §5.3a sees where it came from.
+  $decl bm  $call T.cints.val (cx.bmarks)
+  $decl r1  $if ($call P.bval (cx.bframe)) ($call T.make_frame (r0)) r0
+  $decl r   $call mark_all (r1, bm)
+  $decl b1  $set cx.bmarks sm
+  $decl b2  $set cx.bframe sf
   $decl pl  $call note_placed (cx, n, r)
   $decl ret r
 }.ret
@@ -2229,7 +2314,7 @@ $decl infer_if $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) 
                                 $call T.show (c)), n)))
   $decl a   $call infer (cx, e, $call op (n, 1))
   $decl b   $call infer (cx, e, $call op (n, 2))
-  $decl ret $call T.join (a, b)
+  $decl ret $call join_m (cx, a, b)
 }.ret
 
 // §4.8a: the value is the first member; the type is the union of all of them.
@@ -2289,7 +2374,7 @@ $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.pro
     // §4.7: narrowed to `type(e) & P` — as a selection, not an intersection.
     $decl e2  $call narrow (e, scrut, $if tro st ($call T.restrict (st, pt)))
     $decl bt  $call infer (cx, e2, $call op (a, 1))
-    $decl ret $call infer_arms (cx, e, scrut, st, rest, $call T.join (acc, bt))
+    $decl ret $call infer_arms (cx, e, scrut, st, rest, $call join_m (cx, acc, bt))
   }.ret,
   $case arms acc
 )
@@ -3247,7 +3332,7 @@ $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.pro
         $decl dout     $set cx.fdepth ($call sub ($call ival (cx.fdepth), 1))
         $decl tries    $call tval (cx.tryset)
         $decl restored $set cx.tryset saved
-        $decl res0     $call T.join (body, tries)
+        $decl res0     $call join_m (cx, body, tries)
         $decl res      $if ($call T.same (res0, $call T.t_var (id))) T.t_bot ($call close_rec (cx,
             res0, id, n))
         // §5.3a, for a `$fwd`-completing `$decl` — see `func_close`.

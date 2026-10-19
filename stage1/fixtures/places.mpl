@@ -34,3 +34,16 @@ $decl stash $func ($decl c $mut $new $traitsof shape, $decl r seven) {
   $decl w   $set c r
   $decl ret 0
 }.ret
+
+// A borrowed trait result over this call's own local is this call's own place; and a join
+// is frame-bound if either arm is, whichever arm that is.
+$decl bigger $func ($decl a $traitsof shape, $decl b $traitsof shape)
+  $if ($call lt ($call a.area (), $call b.area ())) b a
+$decl own_big $func () {
+  $decl loc { $prop area $func () 5 }
+  $decl ret $call bigger ($traitsof loc, $traitsof seven)
+}.ret
+$decl own_arm $func ($decl c $union (false, true)) {
+  $decl loc { $prop area $func () 5 }
+  $decl ret $if c ($traitsof loc) ($traitsof seven)
+}.ret

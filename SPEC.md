@@ -469,13 +469,18 @@ The error is reported where the place would escape. The fix: make that storage `
 closure's captures are not in its type (§7.3), and a trait object's kind is not in its
 trait (§6). So the rule is applied to the function instead. A parameter **escapes** when
 its value — or anything frame-bound it could carry, such as a closure it holds or a
-value its function returns — reaches the function's result, storage that is not
-frame-bound, or an escaping parameter of another call. Which parameters escape is
-inferred, never written, and is part of the function's type: a function that lets fewer
-of its parameters escape is a subtype of one that lets more. A frame-bound argument may
-not be passed to an escaping parameter, and the error is reported at the call. A
-parameter whose type is itself a place is the exception that borrowing makes: its type
-does say it is frame storage, so returning it is borrowing, not escaping.
+value its function returns — reaches storage, or an escaping parameter of another call.
+A frame-bound argument may not be passed to an escaping parameter, and the error is
+reported at the call.
+
+A parameter that reaches the function's **result** is not escaping but **borrowed**, as a
+place-typed parameter is: the result goes back to the caller, who owns what it lent. So a
+call's result is frame-bound when it borrows a frame-bound argument — `bigger (a, b)`,
+returning one of two trait objects, may be given one over the caller's own local, and
+its result is that caller's place, under the same three rules as any other. Which
+parameters escape and which are borrowed is inferred, never written, and is part of the
+function's type, rendered `esc(…)` and `brw(…)` in diagnostics: a function that lets fewer
+of its parameters escape, or borrows fewer, is a subtype of one that does more.
 
 **Consequence for recursive data.** §5.5 makes a recursive value's tail storage,
 so a structure that outlives the function building it must be allocated — a

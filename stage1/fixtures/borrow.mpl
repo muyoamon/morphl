@@ -3,9 +3,10 @@
 // in an enclosing frame — and a tail call may pass one it borrowed. All of these were
 // refused before borrowing (§R).
 //
-// 30 + 5 + 7 + 1000 + 500500 = 501542: what `main` wrote through `pass`'s result, what
-// `use` wrote through its method's, the top-level cell read through `peek`, `count`
-// passing `main`'s cell down 1000 tail calls, and `scratch` reading values out of its own.
+// 30 + 5 + 7 + 1000 + 500500 + 50 = 501592: what `main` wrote through `pass`'s result,
+// what `use` wrote through its method's, the top-level cell read through `peek`, `count`
+// passing `main`'s cell down 1000 tail calls, `scratch` reading values out of its own, and
+// `bigger` handing back the trait object over `use_big`'s own local it was given.
 
 $decl ival $func ($decl x 0) x
 
@@ -37,6 +38,18 @@ $decl scratch $func ($decl n 0, $decl acc 0)
   $if ($call eq_int (n, 0)) acc
       ($call scratch ($call sub (n, 1), $call ival ($new $call add (acc, n))))
 
+// A trait-typed parameter handed back is borrowed too: `bigger` returns one of the objects
+// it was given, so a caller may pass one over its own local and read the result.
+$decl shape  { $prop area $func () 0 }
+$decl tri    { $decl b 6  $prop area $func () tri.b }
+$decl bigger $func ($decl a $traitsof shape, $decl b $traitsof shape)
+  $if ($call lt ($call a.area (), $call b.area ())) b a
+$decl use_big $func () {
+  $decl loc { $prop area $func () 50 }
+  $decl w   $call bigger ($traitsof loc, $traitsof tri)
+  $decl ret $call w.area ()
+}.ret
+
 $decl main $func () {
   $decl c    $mut $new 1
   $decl d    $call pass (c)
@@ -47,5 +60,5 @@ $decl main $func () {
   $decl cell $mut $new 0
   $decl k    $call count (cell, 1000)
   $decl got  $call add ($call add ($call ival (c), $call use ()), $call ival ($call peek ()))
-  $decl ret  $call add (got, $call add (k, $call scratch (1000, 0)))
+  $decl ret  $call add ($call add (got, $call add (k, $call scratch (1000, 0))), $call use_big ())
 }.ret
