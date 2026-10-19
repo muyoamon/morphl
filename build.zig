@@ -232,6 +232,9 @@ pub fn build(b: *std.Build) void {
         // §4.10's receiver: top level, a member taken as a value, a block local to a
         // function, `$mut` storage, and a copy. 48.
         .{ .src = "stage1/fixtures/receiver.mpl", .want = "48\n" },
+        // §4.10: a member's parameter default naming its own block is the block's type, not
+        // the receiver, directly, through a specialisation and on `$mut` storage. 4111.
+        .{ .src = "stage1/fixtures/self_param.mpl", .want = "4111\n" },
         // §6's trait objects: coercion at a call and at `$set`, `$traitsof` of a name, of
         // `$mut` storage and of an expression, `$impl` over an `Int`, and `$match` on an
         // object. 87.

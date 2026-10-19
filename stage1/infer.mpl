@@ -1934,11 +1934,16 @@ $decl infer_params $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.node
 // unknown is the result: bind the name to `[params] -> R`, type the body, and
 // close `R` over it. §5.5's own example then comes out exactly as the spec
 // states it — the μ binds the *return* type, giving a list type.
+//
+// `pe` is where the parameter defaults are typed, when that differs from `e`: a
+// member's (§4.10, `recv_one`), whose defaults see the declaring name as the block's
+// type and whose body sees it as the receiver. Empty means `e`.
 $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
-    $decl n Pa.proto_node) {
+    $decl n Pa.proto_node, $decl pe env.node) {
   $decl ps       $call group_items ($call op (n, 0))
   $decl id       $call fresh (cx)
-  $decl r        $call infer_params (cx, e, ps, T.tys.nil, e)
+  $decl penv     $if ($call env.is_nil (pe)) e pe
+  $decl r        $call infer_params (cx, penv, ps, T.tys.nil, e)
   $decl mr       $call mark_params (cx, ps, r.tys, r.env, 0, 0, n)
   $decl self     $call T.t_func (r.tys, $call T.t_var (id))
   $decl benv     $call bind (mr.env, nm, self)
@@ -3008,7 +3013,7 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   $decl ty $if ($call lt (-1, fe.id))
       ($call infer_fwd_body (cx, s.env, init, fe.id))
       ($if ($call is_form (init, "func"))
-          ($call infer_rec_func (cx, s.env, nm, init))
+          ($call infer_rec_func (cx, s.env, nm, init, env.nil))
       ($if ($call is_form (init, "template"))
           ($call infer (cx, $call self_tmpl_env (cx, s.env, nm, init), init)) {
             $decl id  $call fresh (cx)
@@ -3223,7 +3228,7 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
   $decl q0   $call bval (cx.quiet)
   $decl qq   $set cx.quiet ($if rcv true q0)
   $decl ret0 $if ($call is_form (init, "func"))
-      ($call infer_rec_func (cx, pe, nm, init)) {
+      ($call infer_rec_func (cx, pe, nm, init, env.nil)) {
         $decl raw $call infer (cx, $if ($call is_form (init, "template"))
                                         ($call self_tmpl_env (cx, pe, nm, init)) pe, init)
         $decl ret2   $if ($call lt (-1, id)) ($call close_rec (cx, raw, id, it)) raw
@@ -3435,16 +3440,24 @@ $decl replace_prop_ty $func ($decl xs T.props.node, $decl nm "", $decl t T.proto
 // fails and the declaration is `$mut`, it is retyped against a mutable one and its type
 // marked; otherwise the read-only typing stands, and so do its errors. The trial is loud
 // with its diagnostics rolled back, because a quiet `err` records nothing to count.
+//
+// A parameter default is a type-only position (§5.7), where "the declaring name is the
+// block's complete type, so a member takes another value of its own type as `$prop
+// same_w $func ($decl other rect) …`" (§4.10). So the defaults see `rn` as the block and
+// only the body sees it as the receiver.
 $decl recv_one $func ($decl cx proto_ctx, $decl pe env.node, $decl it Pa.proto_node, $decl rn "",
     $decl bt T.proto_ty, $decl mutok P.boolean, $decl acc T.props.node) {
   $decl nm   $call name_of ($call op (it, 0))
   $decl init $call op (it, 1)
   $decl e0   $call Pa.diags.val (cx.errs)
-  $decl ty0  $call infer_rec_func (cx, $call bind (pe, rn, $call T.t_ref ("const", bt)), nm, init)
+  $decl dpe  $call bind (pe, rn, bt)
+  $decl rpe  $call bind (pe, rn, $call T.t_ref ("const", bt))
+  $decl ty0  $call infer_rec_func (cx, rpe, nm, init, dpe)
   $decl bad  $call lt ($call Pa.diags.length (e0, 0), $call Pa.diags.length (cx.errs, 0))
   $decl ty   $if ($call and (bad, mutok)) {
     $decl back $set cx.errs e0
-    $decl tm   $call infer_rec_func (cx, $call bind (pe, rn, $call T.t_ref ("mut", bt)), nm, init)
+    $decl mpe  $call bind (pe, rn, $call T.t_ref ("mut", bt))
+    $decl tm   $call infer_rec_func (cx, mpe, nm, init, dpe)
     $decl ret2 $call T.with_rmut (tm)
   }.ret2 ty0
   $decl ret  $call replace_prop_ty (acc, nm, ty, T.props.nil)

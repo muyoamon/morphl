@@ -813,9 +813,10 @@ $decl tt02 $call check_str ("$traitsof takes an expression literal",
   $call field_ty ("$decl x $traitsof { $prop k $func ($decl n 0) n }", "x"), "trait{k:[Int]->Int,}")
 
 // A parameter default naming the declaration in progress is §5.7's type-only position, so the
-// prototype is recursive through its prop, and that occurrence is `Self`.
+// prototype is recursive through its prop, and that occurrence is `Self` — the block's type,
+// not the receiver's reference (§4.10).
 $decl tt03 $call check_str ("the operand's own type is Self",
-  $call field_ty ("$decl s { $prop eq $func ($decl o s) true }  $decl x $traitsof s", "x"), "trait{eq:[&const b0]->true,}")
+  $call field_ty ("$decl s { $prop eq $func ($decl o s) true }  $decl x $traitsof s", "x"), "trait{eq:[b0]->true,}")
 
 $decl tt04 $call check_str ("a member is read through the object",
   $call field_ty ("$decl s { $prop area $func () 3 }  $decl o $traitsof s  $decl x o.area", "x"), "[]->Int")
