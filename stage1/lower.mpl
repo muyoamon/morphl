@@ -3392,18 +3392,30 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
   $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
 }.ret
 
-// §8's `box_ptr` and `unbox`, bound at marker types (`T.ffi_box`) because the root
-// block cannot say "for any T". Inference typed the call; here the intrinsic is given
-// the monomorphic signature this call needs — `(&T) -> Int` with the storage passed
-// as itself, or `(Int, T) -> &^T` — so the backend sees an ordinary prim call.
+// §8's `box_ptr` and `unbox`, and its arrays, bound at marker types (`T.ffi_box`)
+// because the root block cannot say "for any T". Inference typed the call; here the
+// intrinsic is given the monomorphic signature this call needs — `(&T) -> Int` with the
+// storage passed as itself, `(Int, T) -> &^T`, `(Int, T) -> [T]`, `([T], Int) -> &mut T`
+// or `([T]) -> Int` — so the backend sees an ordinary prim call.
 $decl ffi_l $func ($decl f proto_lres) {
   $decl x   f.ir
+  $decl t   f.ty
   $decl ret $match x (
       $case {$prop tag "prim"}
-        $if ($call T.same (f.ty, T.ffi_box)) "box_ptr"
-            ($if ($call T.same (f.ty, T.ffi_unbox)) "unbox" ""),
+        $if ($call T.same (t, T.ffi_box)) "box_ptr"
+        ($if ($call T.same (t, T.ffi_unbox)) "unbox"
+        ($if ($call T.same (t, T.ffi_array)) "array"
+        ($if ($call T.same (t, T.ffi_at)) "at"
+        ($if ($call T.same (t, T.ffi_alen)) "alen"
+        ($if ($call T.same (t, T.ffi_aptr)) "array_ptr" ""))))),
       $case x ""
     )
+}.ret
+
+// An array's element type, read the way inference's `arr_elem` reads it.
+$decl elem_of $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "array"} ($call T.tval (t.elem)), $case t T.t_bot)
 }.ret
 
 $decl lower_ffi $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
@@ -3413,8 +3425,13 @@ $decl lower_ffi $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form
   // A parameter typed as storage is what keeps `lower_args` from reading through.
   $decl ps  $if box ($call T.tys.cons ($call T.t_ref ("", T.t_int), T.tys.nil)) T.tys.nil
   $decl as  $call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps)
-  $decl ty  $if box T.t_int ($call T.t_ref_k ("mut", $call ps_head ($call ps_tail (as.tys)),
-                T.k_alloc))
+  $decl a0  $call ps_head (as.tys)
+  $decl a1  $call ps_head ($call ps_tail (as.tys))
+  $decl ty  $if box T.t_int
+            ($if ($call eq_str (w, "array")) ($call T.t_array (a1))
+            ($if ($call eq_str (w, "at")) ($call T.t_ref ("mut", $call elem_of (a0)))
+            ($if ($call eq_str (w, "unbox")) ($call T.t_ref_k ("mut", a1, T.k_alloc))
+                 T.t_int)))
   $decl ft  $call T.t_func (as.tys, ty)
   $decl cf  $call IR.e_prim ($call intern (st, ft), w)
   $decl ret $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)

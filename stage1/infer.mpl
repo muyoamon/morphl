@@ -556,24 +556,17 @@ $decl eq4  $call T.t_over ($call T.tys.cons (ii_b, $call T.tys.cons (ff_b,
 $decl toint $call ov2 (s_oi, f_oi)
 $decl tostr $call ov2 (i_s, f_s)
 
-// §8's arrays, monomorphic like the rest of the bootstrap root block
-// (BOOTSTRAP.md §2): the only array stage 1 handles is `args ()`, an array of
-// `Str`. §7.6 makes `at` return a base+index handle rather than an interior
-// pointer, which is a reference — so reading one is §5.4's transparency, and
-// `$decl p $call at (a, 0)` binds a reference, not a copy.
+// §8's arrays are polymorphic, so `array`, `at`, `alen` and `array_ptr` are bound at
+// markers (`T.ffi_array` and the rest) and each call is typed in `infer_ffi`. `args` and
+// `run` are `[Str]`: what the host hands over is strings. §7.6 makes `at` return a
+// base+index handle rather than an interior pointer, which is a reference — so reading
+// one is §5.4's transparency, and `$decl p $call at (a, 0)` binds a reference, not a copy.
 $decl arr_str $call T.t_array (T.t_str)
 $decl args_t  $call T.t_func (T.tys.nil, arr_str)
-$decl array_t $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_str, T.tys.nil)),
-    arr_str)
-$decl at_t     $call T.t_func ($call T.tys.cons (arr_str, $call T.tys.cons (T.t_int, T.tys.nil)),
-                               $call T.t_ref ("mut", T.t_str))
-$decl alen_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
 
 // §8's FFI addresses are `Int`s — §3.1 has one integer type, and an address is one
-// as far as `$extern`'s ABI mapping is concerned. `str_ptr` and `array_ptr` are
-// monomorphic; `box_ptr` and `unbox` are bound at `T.ffi_box` / `T.ffi_unbox`
-// and typed in `infer_ffi`.
-$decl arrp_t  $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_int)
+// as far as `$extern`'s ABI mapping is concerned. `str_ptr` is monomorphic; `box_ptr`,
+// `unbox` and `array_ptr` are bound at markers and typed in `infer_ffi`.
 
 // `str_from_ptr (addr, n)`: §4.16's "bytes received from C become a `Str` only
 // through a validating library function returning `option Str`".
@@ -603,7 +596,7 @@ $decl root_env
   $call bind ($call bind (env.nil,
     "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
     "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
-    "str_ptr", s_i), "str_from_ptr", strf_t), "array_ptr", arrp_t), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
+    "str_ptr", s_i), "str_from_ptr", strf_t), "array_ptr", T.ffi_aptr), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
     "run", run_t), "raw_alloc", ralloc_t), "raw_free", rfree_t), "allocator", T.ffi_alloc),
     "add_wrap", ii_i), "sub_wrap", ii_i), "mul_wrap", ii_i),
     "add_sat", ii_i), "sub_sat", ii_i), "mul_sat", ii_i),
@@ -616,7 +609,7 @@ $decl root_env
     "read_file", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_str)),
     "write_file", $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
                                   $call T.union2 (T.t_unit, t_err))),
-    "array", array_t), "at", at_t), "alen", alen_t), "args", args_t),
+    "array", T.ffi_array), "at", T.ffi_at), "alen", T.ffi_alen), "args", args_t),
     "err", t_err), "none", t_none)
 
 // ------------------------------------------------------------------ the walk
@@ -2264,7 +2257,59 @@ $decl ffi_which $func ($decl e env.node, $decl c Pa.proto_node) {
   $decl f   $call lookup (e, nm)
   $decl ret $if ($call not (f.ok)) ""
       ($if ($call and ($call eq_str (nm, "box_ptr"), $call T.same (f.ty, T.ffi_box))) nm
-      ($if ($call and ($call eq_str (nm, "unbox"), $call T.same (f.ty, T.ffi_unbox))) nm ""))
+      ($if ($call and ($call eq_str (nm, "unbox"), $call T.same (f.ty, T.ffi_unbox))) nm
+      ($if ($call and ($call eq_str (nm, "array"), $call T.same (f.ty, T.ffi_array))) nm
+      ($if ($call and ($call eq_str (nm, "at"), $call T.same (f.ty, T.ffi_at))) nm
+      ($if ($call and ($call eq_str (nm, "alen"), $call T.same (f.ty, T.ffi_alen))) nm
+      ($if ($call and ($call eq_str (nm, "array_ptr"), $call T.same (f.ty, T.ffi_aptr))) nm
+           ""))))))
+}.ret
+
+$decl is_bot_ty $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "bottom"} true,
+  $case t false
+)
+
+// The element type of an array argument, or ⊥ after reporting what it was instead.
+$decl arr_elem $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl w "", $decl n Pa.proto_node) {
+  $decl u   $call T.unroll (t)
+  $decl ret $match u (
+      $case {$prop tag "array"} ($call T.tval (u.elem)),
+      $case {$prop tag "bottom"} T.t_bot,
+      $case u ($call err (cx, $call concat (w, $call concat (" takes an array, found ",
+                  $call T.show (u))), n)))
+}.ret
+
+$decl want_int $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl what "", $decl n Pa.proto_node)
+  $if ($call T.sub (t, T.t_int)) true
+      ($do ($call err (cx, $call concat (what, $call concat (" is ", $call concat ($call T.show (t),
+               ", expected Int"))), n)) false)
+
+// §8's arrays: `array (n, example)` is `n` copies of the example, `[T]` at its type, and
+// what it holds is storage — so A0 holds for it as for `$alloc` (§5.3a): no place inside.
+// `at (a, i)` is the element's storage, `&mut T`; `alen (a)` and `array_ptr (a)` are `Int`.
+$decl infer_arr $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form, $decl w "",
+                       $decl args Pa.nodes.node, $decl na 0) {
+  $decl need $if ($call or ($call eq_str (w, "array"), $call eq_str (w, "at"))) 2 1
+  $decl ret  $if ($call not ($call eq_int (na, need)))
+      ($call err (cx, $call concat (w, $call concat (" takes ", $call concat ($call int_to_str (need),
+          $if ($call eq_int (need, 1)) " argument" " arguments"))), n))
+      ($if ($call eq_str (w, "array")) {
+         $decl k    $call want_int (cx, $call deref_ty ($call infer (cx, e,
+                        $call Pa.nodes.nth (args, 0))), "array's length", n)
+         $decl v    $call deref_ty ($call infer (cx, e, $call Pa.nodes.nth (args, 1)))
+         $decl np   $call no_place (cx, v, n)
+         $decl ret2 $if k ($call T.t_array (v)) T.t_bot
+       }.ret2 {
+         $decl el   $call arr_elem (cx, $call deref_ty ($call infer (cx, e,
+                        $call Pa.nodes.nth (args, 0))), w, n)
+         $decl ok   $if ($call eq_str (w, "at"))
+                        ($call want_int (cx, $call deref_ty ($call infer (cx, e,
+                             $call Pa.nodes.nth (args, 1))), "at's index", n)) true
+         $decl ret2 $if ($call is_bot_ty (el)) T.t_bot
+                        ($if ($call eq_str (w, "at")) ($if ok ($call T.t_ref ("mut", el)) T.t_bot)
+                             T.t_int)
+       }.ret2)
 }.ret
 
 // `box_ptr (r)`: the address of storage, so the argument must be a reference and is
@@ -2274,7 +2319,9 @@ $decl ffi_which $func ($decl e env.node, $decl c Pa.proto_node) {
 $decl infer_ffi $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form, $decl w "") {
   $decl args $call group_items ($call op (n, 1))
   $decl na   $call Pa.nodes.length (args, 0)
-  $decl ret  $if ($call eq_str (w, "box_ptr"))
+  $decl ret  $if ($if ($call eq_str (w, "box_ptr")) false ($call not ($call eq_str (w, "unbox"))))
+      ($call infer_arr (cx, e, n, w, args, na))
+      ($if ($call eq_str (w, "box_ptr"))
       ($if ($call eq_int (na, 1)) {
          $decl t    $call T.unroll ($call infer (cx, e, $call Pa.nodes.nth (args, 0)))
          $decl ret2 $match t (
@@ -2291,7 +2338,7 @@ $decl infer_ffi $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form,
          // §5.3a's A0 holds for C's memory too: what `unbox` names is storage.
          $decl np   $call no_place (cx, v, n)
          $decl ret2 $if ok ($call T.t_ref_k ("mut", v, T.k_alloc)) T.t_bot
-       }.ret2 ($call err (cx, "unbox takes two arguments, an address and an example", n)))
+       }.ret2 ($call err (cx, "unbox takes two arguments, an address and an example", n))))
 }.ret
 
 $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
@@ -2691,11 +2738,6 @@ $decl specialize_with $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
 // `$specialize` would be — so the two share a memo entry — and the call is then checked
 // against the specialised signature, with the arguments typed once, as an overloaded
 // call does. "Application never infers a compile-time generic."
-$decl is_bot_ty $func ($decl t T.proto_ty) $match t (
-  $case {$prop tag "bottom"} true,
-  $case t false
-)
-
 $decl app_ty $func ($decl cx proto_ctx, $decl s Pa.proto_app_src, $decl rs T.tys.node,
                     $decl g "", $decl n Pa.proto_node) {
   $decl at  $if ($call lt (-1, s.arg))

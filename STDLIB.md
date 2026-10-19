@@ -10,7 +10,7 @@ for the decisions that shape it.
 
 | | question | recommended |
 |---|---|---|
-| P | which compiler gaps come first | polymorphic arrays; bounds with `map` |
+| P | which compiler gaps come first | bounds (P2) with `map`; P7 and P8 for D3a |
 | D1 | where it lives and how it is named | a `std/` directory, `$import "std/list"` |
 | D2 | its relation to `stage1/prelude.mpl` | separate: the prelude stays the compiler's subset library |
 | D3 | how generic code says what it needs of `T` | bounds for structure, trait objects for runtime behaviour |
@@ -80,11 +80,11 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
 - **P9. Lowering a template whose body is a `$func`.** **Done**, as the block
   `{ $prop $fn <body> }` with the function read back off it — so it is lifted once per
   memo key and named and placed like `P.list`'s members.
-- **P3. Arrays of any type.** The root's `array`, `at` and `alen` are monomorphic at `Str`
-  (BOOTSTRAP §2 kept them so for stage 0), so a vector, a hash map, sorting `Int`s or a byte
-  buffer cannot be written. §8 already gives the polymorphic form — `$call array (n,
-  example)` — and `unbox` shows how a polymorphic intrinsic is typed (a marker binding,
-  typed at the call). *Required.*
+- **P3. Arrays of any type.** **Done.** `array`, `at`, `alen` and `array_ptr` are bound at
+  markers and each call is typed from its arguments (`infer_ffi`, `lower_ffi`), as `box_ptr`
+  and `unbox` are; an array's elements are held to A0. The backend and stage 0 never
+  assumed `Str` and needed nothing. `args` and `run` stay `[Str]`.
+  `stage1/fixtures/arrays_any.mpl`, in both stages.
 - **P4. A search root for `$import`.** **Done.** A name resolves against the entry file's
   directory, as before, then against each library root in order (`Pa.resolve_import`,
   shared by both passes, since the resolved path is a module's identity). `mplc` takes any
@@ -299,7 +299,7 @@ and under ASan like `test-asan`.
 
 ## Plan
 
-1. **P3** — polymorphic arrays. (P1, P4, P6 and P9 are done.)
+1. P1, P3, P4, P6 and P9 are done, so nothing blocks the first modules.
 2. **`std/core`, `std/list`, `std/io`, `std/mem`, `std/test`** — what needs only P1. `test-std`
    with them.
 3. **`std/str`** with the builder, and **`std/vec`** over P3.
@@ -312,7 +312,7 @@ and under ASan like `test-asan`.
 
 | | options | recommended |
 |---|---|---|
-| P | which prerequisites, and in which order | P3 first (P1, P4, P6, P9 done); P2 before `map` |
+| P | which prerequisites, and in which order | P1, P3, P4, P6, P9 done; P2 before `map` |
 | D1 | location and naming | `std/`, module-qualified |
 | D2 | prelude and `std/` | separate |
 | D3 | generic requirements | bounds; a passed function for `_by`; trait objects for heterogeneous behaviour; not an overloaded operation |

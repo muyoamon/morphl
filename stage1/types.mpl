@@ -2721,3 +2721,11 @@ $decl ffi_box   $call tag_block ("intrinsic", "box_ptr")
 // recognise the root's own binding, which a rebinding never has.
 $decl ffi_alloc $call tag_block ("intrinsic", "allocator")
 $decl ffi_unbox $call tag_block ("intrinsic", "unbox")
+
+// §8's arrays are polymorphic too — "`$call array (n, example)` → `&mut [T]`" — and were
+// bound monomorphic at `Str` while only the bootstrap used them (BOOTSTRAP §2). `args`
+// and `run` stay at `[Str]`, since what the host hands over is strings.
+$decl ffi_array $call tag_block ("intrinsic", "array")
+$decl ffi_at    $call tag_block ("intrinsic", "at")
+$decl ffi_alen  $call tag_block ("intrinsic", "alen")
+$decl ffi_aptr  $call tag_block ("intrinsic", "array_ptr")

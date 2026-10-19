@@ -1161,6 +1161,24 @@ $decl ff07 $call check_str ("str_from_ptr answers an option of a Str",
   $call field_ty ("$decl x $call str_from_ptr (0, 0)", "x"),
   "<{tag=s\"none\",},{v:Str,tag=s\"some\",}>")
 
+// §8's arrays at any element type (STDLIB.md, P3), typed per call like `unbox`.
+$decl ff08 $call check_str ("an array takes its element type from the example",
+  $call field_ty ("$decl x $call array (3, 0)", "x"), "[]Int")
+$decl ff09 $call check_str ("at is the element's storage",
+  $call field_ty ("$decl a $call array (2, { $decl k 1 })  $decl x $call at (a, 0)", "x"),
+  "&mut {k:Int,}")
+$decl ff10 $call check_str ("at takes an array",
+  $call errs_of ("$decl x $call at (5, 0)"), "at takes an array, found Int")
+$decl ff11 $call check_str ("an array's length is an Int",
+  $call errs_of ("$decl x $call array (\"3\", 0)"), "array's length is Str, expected Int")
+// An argument is a value position (§5.4), so `array (2, c)` holds `c`'s Int; a place can
+// only reach an array inside a value.
+$decl ff12 $call check_str ("an array holds no place (A0)",
+  $call errs_of ("$decl f $func () { $decl c $mut $new 0  $decl a $call array (2, { $decl r c })  $decl ret 0 }.ret"),
+  "storage cannot hold a place: this value holds frame storage (&mut Int), and only a pointer value may be stored (§5.3a); store $alloc storage instead")
+$decl ff13 $call check_str ("a user's at shadows the intrinsic",
+  $call field_ty ("$decl at $func ($decl a 0, $decl b 0) \"s\"  $decl x $call at (1, 2)", "x"), "Str")
+
 $decl done15 $call nl ("all FFI tests passed")
 
 // §5.3a's provenance (STORAGE.md): a frame reference is a place. A result may hold one

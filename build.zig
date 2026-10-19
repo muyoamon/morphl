@@ -211,6 +211,9 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/extern.mpl", .want = "185\n",
            .host = "stage1/fixtures/extern_host.c" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
+        // §8's arrays at any element type — `Int`, a record, `Bool`, an array — each call
+        // typed from its own arguments (STDLIB.md, P3). 5012.
+        .{ .src = "stage1/fixtures/arrays_any.mpl", .want = "5012\n" },
         .{ .src = "stage1/fixtures/write.mpl", .want = "161\n" },
         .{ .src = "stage1/fixtures/fwd_init.mpl", .want = "126\n" },
         .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n" },
@@ -698,6 +701,7 @@ pub fn build(b: *std.Build) void {
     // diagnostics to stdout ahead of the C, and `mplc` prints only the C.
     for ([_][]const u8{
         "stage1/fixtures/arrays.mpl",
+        "stage1/fixtures/arrays_any.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

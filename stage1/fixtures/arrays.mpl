@@ -7,9 +7,8 @@
 // element's size — so all three are emitted inline, and the array type becomes
 // a C struct of a pointer and a length, like §3.1's `Str`.
 //
-// The element type is always `Str` here because BOOTSTRAP §2 keeps the root
-// block monomorphic: `array_t` is `(Int, Str) -> array Str`. So stage 1 has
-// exactly one array type, which is also what `args ()` answers.
+// The element type is `Str` here, which is what `args ()` answers; `arrays_any.mpl`
+// has the rest, since §8's arrays are polymorphic (STDLIB.md, P3).
 //
 // 3 + 2 + 2 + 5 + 0 = 12.
 $decl P $import "../prelude"
