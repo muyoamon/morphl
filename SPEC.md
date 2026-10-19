@@ -369,6 +369,18 @@ Binds a C function. `symbol` is a string literal; `sig` is a type-only position 
 
 **ABI mapping.** A block is a C struct in `$decl` order (props cost nothing; they are not present at runtime). Groups likewise. `&T` and `&mut T` are thin pointers (`T*`); `&const T` may be fat, so only exact-type references cross — coerce before the call. `Int` → `int64_t`, `Float` → `double`. `Str` is pointer + length; a library `cstr` adapter produces NUL-terminated strings, and bytes received from C become a `Str` only through a validating library function returning `option Str`. `array` does not map directly (its references are fat); a library function exposes its base pointer. A `$func` is a **bare code pointer** — §7.3's pair does not cross, because C has nowhere to put the environment word, and rule 2 is what makes dropping it sound; a function pointer received *from* C becomes a pair whose environment is the pointer itself.
 
+**C types the mapping cannot name.** §3.1 has one integer type, so the mapping alone can only
+say `int64_t`, and a C function taking an `int`, a `size_t` or a `const char *` — every libc
+function — would be declared wrongly. So `symbol` may be the C prototype itself, types only:
+`$extern "int puts(const char *)" $func ($decl s 0) 0`. It is declared as written, which
+agrees with any header that declares it too, with the name parenthesised so that a
+function-like macro of that name is not expanded; each argument is converted to its declared
+C type and the result back, so an `int` arrives sign-extended and a `void` result is unit. A
+pointer is an `Int` address (§8's `str_ptr`, `box_ptr`), a reference, or a callback's code
+pointer, and a pointer result is an address. The prototype and the signature must take the
+same number of parameters. A type the subset of C declarators does not cover — a function
+pointer parameter, say — is written through a `typedef` the build supplies.
+
 **Rules.**
 1. Extern calls are **unsafe by declaration** — the same status as `$alloc` (§4.2a). Memory returned by C is outside every frame and every allocator; wrapping it as a reference is the author's responsibility. The compiler treats every extern call as opaque.
 2. **C callbacks must be capture-free.** A `$func` maps to a C function pointer only if its captured set is empty (closures capture by copy, so the set is static per literal). Captures are not in the type (§7.3), so this is a property of the *expression* in the argument position: it holds when the compiler can see which `$func` literal the value came from, and a closure arriving through a mutable function slot is rejected because it cannot be seen. Otherwise it is a compile error; pass state through the C-side `void*` argument.

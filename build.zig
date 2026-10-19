@@ -261,6 +261,9 @@ pub fn build(b: *std.Build) void {
         // reach §8's raw memory, which stage 0 leaves out of the subset.
         .{ .src = "stage1/fixtures/arena.mpl", .want = "50511058200320\n", .stage0 = false },
         .{ .src = "stage1/fixtures/alloc_free.mpl", .want = "1\n", .stage0 = false },
+        // §4.16 with a C prototype in the symbol: libc bound directly, an `int` result
+        // sign-extended, a pointer result as an address, and one used as a value.
+        .{ .src = "stage1/fixtures/libc.mpl", .want = "hello\n205132\n", .stage0 = false },
         // §8's FFI addresses against a C host: bytes, elements, storage C writes
         // through, and memory C owns read and written through `unbox`.
         .{ .src = "stage1/fixtures/ffi.mpl", .want = "11117493\n",

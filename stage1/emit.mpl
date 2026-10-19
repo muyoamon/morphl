@@ -1506,6 +1506,159 @@ $decl is_func_ty $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0) {
   $decl ret $match t ($case {$prop tag "func"} true, $case t false)
 }.ret
 
+// ------------------------------------------- §4.16: a C prototype in the symbol
+//
+// §3.1 has one integer type, so the ABI mapping alone can only say `int64_t`, and a C
+// function taking an `int` or a `const char *` — every libc one — could not be bound: the
+// declaration conflicted with the header that already declared it, and an `int` result
+// read as 64 bits has garbage in its upper half. So the symbol may be the C prototype
+// itself, types only: `$extern "int puts(const char *)" sig`. It is emitted verbatim,
+// which a header's own declaration agrees with; each argument is cast to its declared C
+// type and the result cast back, C's own conversion doing the sign or zero extension. A
+// pointer is an `Int` address (§8), a reference, or a callback's code pointer. A plain
+// symbol keeps the mapping above.
+
+$decl find_byte $func ($decl s "", $decl b 0, $decl i 0)
+  $if ($call lt (i, $call len (s)))
+      ($if ($call eq_int ($call byte (s, i), b)) i ($call find_byte (s, b, $call add (i, 1))))
+      -1
+
+$decl rfind_byte $func ($decl s "", $decl b 0, $decl i 0)
+  $if ($call lt (i, 0)) -1
+      ($if ($call eq_int ($call byte (s, i), b)) i ($call rfind_byte (s, b, $call sub (i, 1))))
+
+$decl is_space $func ($decl b 0)
+  $call P.or ($call eq_int (b, 32), $call P.or ($call eq_int (b, 9), $call eq_int (b, 10)))
+
+$decl skip_sp $func ($decl s "", $decl i 0)
+  $if ($call lt (i, $call len (s)))
+      ($if ($call is_space ($call byte (s, i))) ($call skip_sp (s, $call add (i, 1))) i)
+      i
+
+$decl back_sp $func ($decl s "", $decl j 0)
+  $if ($call lt (0, j))
+      ($if ($call is_space ($call byte (s, $call sub (j, 1))))
+           ($call back_sp (s, $call sub (j, 1))) j)
+      j
+
+$decl trim $func ($decl s "") {
+  $decl a   $call skip_sp (s, 0)
+  $decl b   $call back_sp (s, $call len (s))
+  $decl ret $if ($call lt (a, b)) ($call slice (s, a, b)) ""
+}.ret
+
+$decl is_idb $func ($decl b 0)
+  $call P.or ($call P.or ($call P.and ($call lt (96, b), $call lt (b, 123)),
+                          $call P.and ($call lt (64, b), $call lt (b, 91))),
+              $call P.or ($call P.and ($call lt (47, b), $call lt (b, 58)), $call eq_int (b, 95)))
+
+// Where the identifier ending at `j` starts.
+$decl id_start $func ($decl s "", $decl j 0)
+  $if ($call lt (0, j))
+      ($if ($call is_idb ($call byte (s, $call sub (j, 1))))
+           ($call id_start (s, $call sub (j, 1))) j)
+      j
+
+$decl xt_proto $func ($decl y "") $call lt (-1, $call find_byte (y, 40, 0))
+
+$decl xt_head $func ($decl y "") $call trim ($call slice (y, 0, $call find_byte (y, 40, 0)))
+
+// The C name: the identifier before the `(`, or the symbol itself.
+$decl xt_cname $func ($decl y "")
+  $if ($call xt_proto (y)) {
+    $decl h   $call xt_head (y)
+    $decl ret $call slice (h, $call id_start (h, $call len (h)), $call len (h))
+  }.ret y
+
+$decl xt_cret $func ($decl y "") {
+  $decl h   $call xt_head (y)
+  $decl ret $call trim ($call slice (h, 0, $call id_start (h, $call len (h))))
+}.ret
+
+$decl split_commas $func ($decl s "", $decl from 0, $decl i 0, $decl acc strs.node)
+  $if ($call lt (i, $call len (s)))
+      ($if ($call eq_int ($call byte (s, i), 44))
+           ($call split_commas (s, $call add (i, 1), $call add (i, 1),
+               $call strs.cons ($call trim ($call slice (s, from, i)), acc)))
+           ($call split_commas (s, from, $call add (i, 1), acc)))
+      ($call strs.reverse ($call strs.cons ($call trim ($call slice (s, from, i)), acc), strs.nil))
+
+// The parameters' C types; `()` and `(void)` are none.
+$decl xt_cparams $func ($decl y "") {
+  $decl p   $call find_byte (y, 40, 0)
+  $decl q   $call rfind_byte (y, 41, $call sub ($call len (y), 1))
+  $decl in  $if ($call lt (p, q)) ($call trim ($call slice (y, $call add (p, 1), q))) ""
+  $decl ret $if ($call P.or ($call eq_str (in, ""), $call eq_str (in, "void"))) strs.nil
+                ($call split_commas (in, 0, 0, strs.nil))
+}.ret
+
+$decl c_is_ptr $func ($decl ct "") $call lt (-1, $call find_byte (ct, 42, 0))
+
+$decl is_ref_at $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
+  $if ($call lt (i, 0)) false {
+    $decl t   $call type_at (ts, i)
+    $decl ret $match t ($case {$prop tag "ref"} true, $case t false)
+  }.ret
+
+// One argument, cast to the C type it is declared with.
+$decl xt_conv $func ($decl st proto_est, $decl ts T.tys.node, $decl ct "", $decl pi 0, $decl a "")
+  $call concat ("(", $call concat (ct, $call concat (")",
+      $if ($call c_is_ptr (ct))
+          ($if ($call P.and ($call lt (-1, pi), $call is_func_ty (st, ts, pi)))
+               ($call concat (a, ".code"))
+               ($if ($call is_ref_at (st, ts, pi)) a ($call concat ("(intptr_t)", a))))
+          a)))
+
+$decl xt_conv_args $func ($decl st proto_est, $decl ts T.tys.node, $decl cps strs.node,
+                          $decl ps T.tys.node, $decl as strs.node, $decl acc "",
+                          $decl first P.boolean) $match as (
+  $case {$prop tag "cons"} {
+    $decl ct  $match cps ($case {$prop tag "cons"} cps.head, $case cps "int64_t")
+    $decl one $call xt_conv (st, ts, ct, $call ps_id (ts, ps), as.head)
+    $decl ret $call xt_conv_args (st, ts, $match cps (
+                    $case {$prop tag "cons"} ($call strs.val (cps.tail)), $case cps strs.nil),
+                $call ps_rest (ps), as.tail,
+                $call concat (acc, $call concat ($if first "" ", ", one)), false)
+  }.ret,
+  $case as acc
+)
+
+// The call, and its result as morphl holds it: `void` is unit, a pointer an address.
+// The name is parenthesised, in the declaration and at every call: a C library may also
+// define a function-like macro of that name (glibc's `strchr` is C23's `_Generic`), and
+// `(name)(…)` is C's way of reaching the function itself.
+$decl xt_call $func ($decl st proto_est, $decl ts T.tys.node, $decl y "", $decl ps T.tys.node,
+                     $decl as strs.node)
+  $call concat ("(", $call concat ($call xt_cname (y), $call concat (")(", $call concat (
+      $call xt_conv_args (st, ts, $call xt_cparams (y), ps, as, "", true), ")"))))
+
+// `R (name)(params);`, the prototype with its name parenthesised (see `xt_call`).
+$decl xt_decl $func ($decl y "") {
+  $decl p   $call find_byte (y, 40, 0)
+  $decl ret $call concat ($call xt_cret (y), $call concat (" (", $call concat ($call xt_cname (y),
+                $call concat (")", $call concat ($call slice (y, p, $call len (y)), ";\n")))))
+}.ret
+
+$decl xt_back $func ($decl st proto_est, $decl ts T.tys.node, $decl y "", $decl ri 0,
+                     $decl c "") {
+  $decl rt  $call xt_cret (y)
+  $decl mt  $if ($call lt (-1, ri)) ($call c_type (st, ts, ri)) "int64_t"
+  $decl ret $if ($call c_is_ptr (rt)) ($call concat ("(int64_t)(intptr_t)(", $call concat (c, ")")))
+                ($call concat ("(", $call concat (mt, $call concat (")(", $call concat (c, ")")))))
+}.ret
+
+// A prototype's parameter count has to be the signature's.
+$decl xt_chk $func ($decl st proto_est, $decl y "", $decl np 0)
+  $if ($call eq_int ($call strs.length ($call xt_cparams (y), 0), np)) ()
+      ($call eerr (st, $call concat ("$extern \"", $call concat (y,
+           "\": the C prototype and the signature take different numbers of parameters (§4.16)"))))
+
+$decl xt_names $func ($decl k 0, $decl n 0, $decl acc strs.node)
+  $if ($call lt (k, n))
+      ($call xt_names ($call add (k, 1), n,
+           $call strs.cons ($call concat ("x", $call int_to_str (k)), acc)))
+      ($call strs.reverse (acc, strs.nil))
+
 // One argument on its way to C. Everything but a function crosses as itself;
 // a function crosses as its **code pointer**, cast to the signature §4.16 gives
 // it, because C has no place to put §7.3's environment word. §4.16 rule 2 is what
@@ -1559,7 +1712,8 @@ $decl xts      $specialize P.list proto_xt
 
 $decl has_xt $func ($decl xs xts.node, $decl y "") $match xs (
   $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head.sym, y)) true ($call has_xt (xs.tail, y)),
+    $if ($call eq_str ($call xt_cname (xs.head.sym), $call xt_cname (y))) true
+        ($call has_xt (xs.tail, y)),
   $case xs false
 )
 
@@ -1625,7 +1779,7 @@ $decl xts_of_fns $func ($decl fs IR.fns.node, $decl acc xts.node) $match fs (
 )
 
 $decl xt_sym $func ($decl st proto_est, $decl y "")
-  $call concat ("mpl_x_", y)
+  $call concat ("mpl_x_", $call xt_cname (y))
 
 // `extern R sym(T0, T1);` — the declaration §4.16's ABI mapping asks for. The
 // parameter *names* are omitted: a prototype needs only types, and a name here
@@ -1794,7 +1948,25 @@ $decl emit_fp $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0)
 $decl emit_xt $func ($decl st proto_est, $decl ts T.tys.node, $decl x proto_xt) {
   $decl t $call type_at (ts, x.ty)
   $decl ret $match t (
-      $case {$prop tag "func"} {
+      $case {$prop tag "func"} $if ($call xt_proto (x.sym)) {
+        // The prototype verbatim, then the wrapper a value of the symbol points at.
+        $decl ps   $call T.tys.val (t.params)
+        $decl np   $call T.tys.length (ps, 0)
+        $decl rf   $call IR.find_ty (ts, t.result)
+        $decl ri   $if rf.hit rf.id -1
+        $decl c0   $call xt_chk (st, x.sym, np)
+        $decl d0   $call say (st, $call xt_decl (x.sym))
+        $decl wc   $if rf.hit ($call c_type (st, ts, rf.id)) "int64_t"
+        $decl cl   $call xt_call (st, ts, x.sym, ps, $call xt_names (0, np, strs.nil))
+        $decl ret3 $call say (st, $call concat ("static ", $call concat (wc,
+                       $call concat (" ", $call concat ($call xt_sym (st, x.sym),
+                       $call concat ("(void *env", $call concat ($call xt_wparams (st, ts, ps, 0, ""),
+                       $call concat (") { (void)env; ",
+                       $if ($call eq_str ($call xt_cret (x.sym), "void"))
+                           ($call concat (cl, "; return 0; }\n"))
+                           ($call concat ("return ", $call concat (
+                               $call xt_back (st, ts, x.sym, ri, cl), "; }\n")))))))))))
+      }.ret3 {
         $decl ps $call T.tys.val (t.params)
         $decl np $call T.tys.length (ps, 0)
         $decl rf $call IR.find_ty (ts, t.result)
@@ -2316,8 +2488,15 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
       // A tail call to a C function cannot be a loop and needs no trampoline:
       // §7.7 is a rule about morphl functions, and C's stack is C's business —
       // an extern is opaque (§4.16 rule 1), so it does not tail-call back in.
-      ($call ffi_ret (st, ts, e.ty, dest, $call concat (xnm,
-          $call concat ("(", $call concat ($call ffi_args (st, ts, ps, as, "", true), ")")))))
+      ($if ($call xt_proto (xnm)) {
+         $decl cl   $call xt_call (st, ts, xnm, ps, as)
+         $decl ret3 $if ($call eq_str ($call xt_cret (xnm), "void"))
+             ($do ($call say (st, $call concat ("  ", $call concat (cl, ";\n"))))
+                  ($call assign (st, dest, "0")))
+             ($call assign (st, dest, $call xt_back (st, ts, xnm, e.ty, cl)))
+       }.ret3
+       ($call ffi_ret (st, ts, e.ty, dest, $call concat (xnm,
+          $call concat ("(", $call concat ($call ffi_args (st, ts, ps, as, "", true), ")"))))))
     ($if ($call not ($call eq_str (pnm, ""))) {
       // §8's operators inline; nothing else in the root block has a C form
       // this slice can emit.

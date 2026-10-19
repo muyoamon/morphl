@@ -605,4 +605,14 @@ $decl t70 $call check ("...and a coercion at a call takes the name's own storage
 $decl t71 $call check ("no trait, no trait-object type",
   $call not ($call has (clo_c.code, "mpl_tobj")))
 
+// §4.16 with a C prototype in the symbol: emitted with its name parenthesised, so it agrees
+// with a header's declaration and a function-like macro of that name is not expanded; an
+// argument cast to its C type and the result back.
+$decl xp_c $call compile ("$decl abs $extern \"int abs(int)\" $func ($decl n 0) 0  $decl main $func () $call abs (-3) ")
+
+$decl t72 $call check ("a C prototype is declared as written, its name parenthesised",
+  $call has (xp_c.code, "int (abs)(int);"))
+$decl t73 $call check ("...and called with each argument cast to its C type",
+  $call has (xp_c.code, "(int64_t)((abs)((int)"))
+
 $decl done $call nl ("all C backend tests passed")
