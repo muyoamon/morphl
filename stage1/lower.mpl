@@ -1898,14 +1898,43 @@ $decl global_of $func ($decl x IR.proto_expr) $match x ($case {$prop tag "global
 
 $decl is_name_node $func ($decl n Pa.proto_node) $match n ($case {$prop tag "name"} true, $case n false)
 
+// A trait member that is not a function — `$prop name ""`, §9's test interface — has no
+// lifted function for the table to name, and a trait object erases the type that holds
+// its value (§6). So it gets one: a zero-argument function answering the value, which is
+// compile-time (§4.10) and so a constant. A read through the object calls it (`lower_proj`).
+//
+// Exported, because a table lives in the shared header (`emit_tables`) and every module's
+// output may call it. Named in a space of its own — `<module>_tmem`, ranked off the
+// module's counter — since `pub` puts a name in `fn_key`'s member space, where a member's
+// rank would collide with the counter's (the same collision default wrappers had).
+$decl scalar_fn $func ($decl st proto_lst, $decl v proto_lres) {
+  $decl o   $call take_slots (st)
+  $decl idx $call reserve_lifted (st)
+  $decl f   $call IR.fn_p ("(trait member)", IR.ints.nil, $call intern (st, v.ty),
+                $call take_slots (st), v.ir, false, false, IR.ints.nil,
+                $call P.sval (st.curfile), $call next_rank (st), true,
+                $call concat ($call P.sval (st.curmod), "_tmem"))
+  $decl put $call put_lifted (st, idx, f)
+  $decl b   $call restore_slots (st, o)
+  $decl ret idx
+}.ret
+
+$decl is_func_ty $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "func"} true, $case t false)
+}.ret
+
 // §6: the implementation a value of a conforming type has — each member, in the trait's
-// order, as the lifted function its prop's identity names (§4.10).
+// order, as the lifted function its prop's identity names (§4.10), or `scalar_fn`'s.
 $decl tobj_fns $func ($decl st proto_lst, $decl ps T.props.node, $decl ms T.fields.node,
     $decl n Pa.proto_node, $decl acc IR.ints.node) $match ms (
   $case {$prop tag "cons"} {
     $decl r   $call lval ($call prop_from_ty (st, ps, ms.head.name, n))
+    $decl g   $call global_of (r.ir)
+    $decl fi  $if ($if ($call lt (g, 0)) ($call not ($call is_func_ty (r.ty))) false)
+                  ($call scalar_fn (st, r)) g
     $decl ret $call tobj_fns (st, ps, $call T.fields.val (ms.tail), n,
-                  $call IR.ints.cons ($call global_of (r.ir), acc))
+                  $call IR.ints.cons (fi, acc))
   }.ret,
   $case ms ($call IR.ints.reverse (acc, IR.ints.nil))
 )
@@ -2053,7 +2082,15 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
         $decl ret2 $if ($call lt (ix, 0))
             ($call lres ($call IR.e_unit ($call err (st, $call concat ("no member '",
                 $call concat (n.field, "' in this trait")), n)), T.t_bot))
-            ($call lres ($call IR.e_tmem ($call intern (st, mt), tgt.ir, ix), mt))
+            ($if ($call is_func_ty (mt))
+                 ($call lres ($call IR.e_tmem ($call intern (st, mt), tgt.ir, ix), mt))
+                 // A scalar member: its table entry answers it (`scalar_fn`).
+                 {
+                   $decl ft   $call T.t_func (T.tys.nil, mt)
+                   $decl ret3 $call lres ($call IR.e_call ($call intern (st, mt),
+                                  $call IR.e_tmem ($call intern (st, ft), tgt.ir, ix),
+                                  IR.exprs.nil, false), mt)
+                 }.ret3)
       }.ret2,
       // §4.12: an added prop, from the `$impl`'s override where its source is known and by
       // its identity in the type otherwise — exactly a block's props.

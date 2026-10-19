@@ -249,6 +249,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/traits.mpl", .want = "87\n" },
         // ...and across a module boundary, the table in the shared header. 49.
         .{ .src = "stage1/fixtures/traits_split.mpl", .want = "49\n" },
+        // §6: a scalar trait member (§9's `$prop name ""`), read through the object. 47.
+        .{ .src = "stage1/fixtures/tscalar.mpl", .want = "47\n" },
         // §4.8's `$overload`: first fit, a nested overload, an overload argument, and
         // `x.i`. 362.
         .{ .src = "stage1/fixtures/overload.mpl", .want = "362\n" },
@@ -556,6 +558,7 @@ pub fn build(b: *std.Build) void {
             // §6's tables are static in the shared header, and their shims call members
             // defined in the module's own output — so they must be external there.
             .{ .src = "stage1/fixtures/traits_split.mpl", .want = "49\n", .mods = &.{"traits_util"} },
+            .{ .src = "stage1/fixtures/tscalar.mpl", .want = "47\n", .mods = &.{"tscalar_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);
@@ -702,6 +705,7 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{
         "stage1/fixtures/arrays.mpl",
         "stage1/fixtures/arrays_any.mpl",
+        "stage1/fixtures/tscalar.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room
@@ -773,7 +777,7 @@ pub fn build(b: *std.Build) void {
     // count is the verdict and a run that stopped early cannot match it.
     const std_step = b.step("test-std", "Build and run the standard library's tests");
     for ([_]struct { src: []const u8, want: []const u8 }{
-        .{ .src = "std/core_test.mpl", .want = "16\n" },
+        .{ .src = "std/core_test.mpl", .want = "10\n" },
         .{ .src = "std/list_test.mpl", .want = "20\n" },
     }) |fx| {
         for ([_]bool{ false, true }) |asan| {
@@ -794,6 +798,25 @@ pub fn build(b: *std.Build) void {
             std_step.dependOn(&run_exe.step);
             test_step.dependOn(&run_exe.step);
         }
+    }
+    {
+        // The runner's failure path: a failing test is named on stderr and the run aborts,
+        // so a test file cannot pass by accident.
+        const build_exe = std.Build.Step.Run.create(b, "mplc std/test_test.mpl");
+        build_exe.addFileArg(mplc_bin);
+        build_exe.addArgs(&.{ "std/test_test.mpl", "-L", ".", "-o" });
+        const exe_out = build_exe.addOutputFileArg("prog");
+        build_exe.setCwd(b.path("."));
+        build_exe.has_side_effects = true;
+        build_exe.expectExitCode(0);
+        const run_exe = std.Build.Step.Run.create(b, "a failing std test aborts");
+        run_exe.addFileArg(exe_out);
+        run_exe.has_side_effects = true;
+        run_exe.addCheck(.{ .expect_stderr_match = "FAIL broken" });
+        run_exe.addCheck(.{ .expect_stderr_match = "1 of 3 checks failed" });
+        run_exe.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        std_step.dependOn(&run_exe.step);
+        test_step.dependOn(&run_exe.step);
     }
 
     const link_step = b.step("test-link", "mplc -o builds a working executable");

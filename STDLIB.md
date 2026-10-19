@@ -298,13 +298,28 @@ group goes on answering the shapes directly. The shapes are:
 §9 makes a test any block conforming to `{$prop name ""  $prop run $func () true}`, and the
 runner library code. `std/test` is that runner, and each `std/` module has a test file run by
 `zig build test-std`: compiled by `mplc` and run, since stage 0 cannot run the library (P5),
-and under ASan like `test-asan`.
+and under ASan like `test-asan`. **Done**, and three things came out of writing it:
+
+- **`run` answers `C.bool`, not `true`.** §3.2 makes `true` a type of its own, so §9's
+  prototype read literally describes a test that cannot fail. §9's text may want the same
+  correction.
+- **A scalar trait member needed a compiler fix.** `name` is a `Str` prop, and a trait
+  object's table held only functions, so inference accepted `t.name` and `verify` refused
+  the tree. A scalar member now gets a zero-argument function in the table and a read
+  through the object calls it (`lower.mpl`'s `scalar_fn`; `stage1/fixtures/tscalar.mpl`).
+- **Tests are handed over one at a time, not as a list.** A top-level block is storage of
+  the outermost frame, and §5.3a keeps a trait object over frame storage out of `$alloc`ed
+  storage such as a list's cells — the rule working as written. So `T.check (r, t)` takes
+  each test, a `results` record tallies them, failures go to stderr as they happen, and
+  `T.finish (r)` answers the count or panics. `T.expect (r, name, ok)` is the inline form.
+  Discovery stays a build-time job (§9: "reflection lives in the compiler library at build
+  time"), which a build program would do by writing the `check` calls.
 
 ## Plan
 
 1. P1, P3, P4, P6 and P9 are done, so nothing blocks the first modules.
-2. **`std/core`, `std/list`** — done, with `zig build test-std`. **`std/io`, `std/mem`,
-   `std/test`** next; none needs anything further from the compiler.
+2. **`std/core`, `std/list`, `std/test`** — done, with `zig build test-std`. **`std/io`,
+   `std/mem`** next; neither needs anything further from the compiler.
 3. **`std/str`** with the builder, and **`std/vec`** over P3.
 4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`.
 5. **P7, P8**, then the per-element-type candidates of D3a where a representation earns one.
