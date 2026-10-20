@@ -17,6 +17,17 @@ $decl why     $func ($decl a 0, $decl b 0) {
   $decl ret $match r ($case {$prop tag "err"} r.e, $case r "ok")
 }.ret
 $decl parsed  $func ($decl s "") $call C.or_else ($call str_to_int (s), -1)
+
+// A type with its own equality and order: by `k`, so two of one `k` are equal and ordered
+// neither way, whatever their tags.
+$decl ieq eq
+$decl ilt lt
+$decl kv $func ($decl k 0, $decl tag "") {
+  $decl p   { $decl key k  $decl name tag
+    $prop eq $func ($decl o p) $call ieq (p.key, o.key)
+    $prop lt $func ($decl o p) $call ilt (p.key, o.key) }
+  $decl ret p
+}.ret
 $decl doubled $func ($decl s "")
   $call C.map_opt ($call str_to_int (s), $func ($decl n 0) $call int_to_str ($call mul (n, 2)))
 
@@ -48,6 +59,24 @@ $decl t_try  { $prop name "$try passes a value on and hands a failure up"
     $call C.and ($call eq ($call why (8, 2), "ok"), $call eq ($call why (8, 0), "division by zero")) }
 $decl t_val  { $prop name "ival reads storage"
   $prop run $func () $call eq ($call C.ival ($mut $alloc 7), 7) }
+$decl t_eq   { $prop name "equal and unequal, through eq_proto"
+  $prop run $func ()
+    $call C.and ($call C.equal ($call kv (3, "a"), $call kv (3, "b")),
+                 $call C.unequal ($call kv (3, "a"), $call kv (4, "a"))) }
+$decl t_ord  { $prop name "the comparisons, through ord_proto"
+  $prop run $func ()
+    $call C.and ($call C.and ($call C.less ($call kv (1, ""), $call kv (2, "")),
+                              $call C.greater ($call kv (2, ""), $call kv (1, ""))),
+                 $call C.and ($call C.less_eq ($call kv (2, ""), $call kv (2, "")),
+                              $call C.not ($call C.greater_eq ($call kv (1, ""),
+                                                              $call kv (2, ""))))) }
+$decl lo $call kv (1, "lo")
+$decl hi $call kv (9, "hi")
+$decl t_maxo { $prop name "max_ord and min_ord, and a tie keeps the first"
+  $prop run $func ()
+    $call C.and ($call C.and ($call eq (($call C.max_ord (lo, hi)).name, "hi"),
+                              $call eq (($call C.min_ord (lo, hi)).name, "lo")),
+                 $call eq (($call C.max_ord ($call kv (5, "one"), $call kv (5, "two"))).name, "one")) }
 
 $decl main $func () {
   $decl r   $call T.results ()
@@ -61,5 +90,8 @@ $decl main $func () {
   $decl a8  $call T.check (r, t_map)
   $decl a9  $call T.check (r, t_try)
   $decl a10 $call T.check (r, t_val)
+  $decl a11 $call T.check (r, t_eq)
+  $decl a12 $call T.check (r, t_ord)
+  $decl a13 $call T.check (r, t_maxo)
   $decl ret $call T.finish (r)
 }.ret

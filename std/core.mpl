@@ -30,6 +30,44 @@ $decl min_float $func ($decl a 0.0, $decl b 0.0) $if ($call lt (b, a)) b a
 $decl max $overload (max_int, max_float)
 $decl min $overload (min_int, min_float)
 
+// ------------------------------------------------------- equality and order
+
+// A type's own equality and order are its members (STDLIB.md, D4): `eq` and `lt` taking
+// another value *of that type*. There is no `Self` (TRAITS.md), so "of that type" is the
+// prototype's generic, and a function asking for it uses an F-bound, which is checked at
+// each specialisation (§4.9):
+//
+//   $decl pt { $decl x 0  $prop eq $func ($decl o pt) …  $prop lt $func ($decl o pt) … }
+//   $call C.max_ord (p, q)       // T = pt; pt conforms to ord_proto pt
+//
+// Inside a type, a member named `eq` or `lt` shadows the intrinsic for the whole block —
+// alias it first, `$decl ieq eq`. `Int`, `Str` and the rest have no props, so they conform
+// to neither; `max` and `min` above are their forms.
+$decl eq_proto  $template T { $prop eq $func ($decl other T) bool }
+$decl ord_proto $template T {
+  $prop eq ($specialize eq_proto T).eq
+  $prop lt $func ($decl other T) bool
+}
+
+$decl equal   $template ($decl T $traitsof ($specialize eq_proto T))
+  $func ($decl a T, $decl b T) $call a.eq (b)
+$decl unequal $template ($decl T $traitsof ($specialize eq_proto T))
+  $func ($decl a T, $decl b T) $call not ($call a.eq (b))
+
+$decl less       $template ($decl T $traitsof ($specialize ord_proto T))
+  $func ($decl a T, $decl b T) $call a.lt (b)
+$decl greater    $template ($decl T $traitsof ($specialize ord_proto T))
+  $func ($decl a T, $decl b T) $call b.lt (a)
+$decl less_eq    $template ($decl T $traitsof ($specialize ord_proto T))
+  $func ($decl a T, $decl b T) $call not ($call b.lt (a))
+$decl greater_eq $template ($decl T $traitsof ($specialize ord_proto T))
+  $func ($decl a T, $decl b T) $call not ($call a.lt (b))
+// On a tie the first: `max_ord (a, b)` is `a` unless `a < b`.
+$decl max_ord    $template ($decl T $traitsof ($specialize ord_proto T))
+  $func ($decl a T, $decl b T) $if ($call a.lt (b)) b a
+$decl min_ord    $template ($decl T $traitsof ($specialize ord_proto T))
+  $func ($decl a T, $decl b T) $if ($call b.lt (a)) b a
+
 // ---------------------------------------------------------- reading storage
 
 // §5.4 makes a reference transparent only where a value is expected, and a `$decl`
