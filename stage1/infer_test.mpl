@@ -831,18 +831,24 @@ $decl tt01 $call check_str ("$traitsof a name gives its props' signatures",
 $decl tt02 $call check_str ("$traitsof takes an expression literal",
   $call field_ty ("$decl x $traitsof { $prop k $func ($decl n 0) n }", "x"), "trait{k:[Int]->Int,}")
 
-// A parameter default naming the declaration in progress is §5.7's type-only position, so the
-// prototype is recursive through its prop, and that occurrence is `Self` — the block's type,
-// not the receiver's reference (§4.10).
-$decl tt03 $call check_str ("the operand's own type is Self",
-  $call field_ty ("$decl s { $prop eq $func ($decl o s) true }  $decl x $traitsof s", "x"), "trait{eq:[b0]->true,}")
+// TRAITS.md: a trait is its props' signatures as written. A parameter defaulted to the
+// declaring name is that concrete type in the trait — not `Self`, which no longer exists —
+// so an object over the block takes an `s` and nothing else.
+$decl tt03 $call check_str ("a trait records the declaring name as that type",
+  $call errs_of ("$decl s { $prop eq $func ($decl o s) true }  $decl x $traitsof s  $decl y $call x.eq (s)"),
+  "")
+$decl tt03b $call check ("...so another type is refused",
+  $call not ($call eq_str ($call errs_of (
+      "$decl s { $prop eq $func ($decl o s) true }  $decl x $traitsof s  $decl y $call x.eq (5)"), "")))
 
 $decl tt04 $call check_str ("a member is read through the object",
   $call field_ty ("$decl s { $prop area $func () 3 }  $decl o $traitsof s  $decl x o.area", "x"), "[]->Int")
 
-$decl tt05 $call check_str ("a member mentioning Self is not callable through it (§6)",
+// Every member of a trait object is callable: every implementation has the trait's shape,
+// so there is no object-safety rule left to apply (TRAITS.md).
+$decl tt05 $call check_str ("a member taking its block's type is callable through an object",
   $call errs_of ("$decl s { $prop eq $func ($decl o s) true }  $decl o $traitsof s  $decl x o.eq"),
-  "member 'eq' mentions Self, so it is not callable through a trait object (§6)")
+  "")
 
 $decl tt06 $call check_str ("a trait object has only its members",
   $call errs_of ("$decl s { $prop k $func () 1  $decl w 2 }  $decl o $traitsof s  $decl x o.w"), "this trait has no member 'w'")

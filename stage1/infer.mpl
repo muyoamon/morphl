@@ -655,21 +655,17 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
   $case {$prop tag "union"} $call proj_members (cx, tt.members, fld, n, T.t_bot),
   // Projection is the one place a recursive type has to be looked inside.
   $case {$prop tag "rec"}   $call proj_one (cx, $call T.unroll (tt), fld, n),
-  // §6: a trait object is read through its members. One that mentions `Self` is not
-  // callable through it — the referent's type is erased, so nothing could check an
-  // argument of that type — though it is still part of the trait, callable through a bound.
+  // §6: a trait object is read through its members, every one of them: a trait is its
+  // members' signatures as written, so every implementation has its shape (TRAITS.md).
   $case {$prop tag "trait"} {
     $decl f   $call T.find_field (tt.members, fld)
     $decl ret $if ($call eq_str (f.name, ""))
         ($call err (cx, $call concat ("this trait has no member '", $call concat (fld, "'")), n))
-        ($if ($call T.mentions_bnd ($call T.tval (f.ty), 0))
+        ($if ($call P.and ($call needs_mut ($call T.tval (f.ty)), $call eq_str (tt.qual, "")))
              ($call err (cx, $call concat ("member '", $call concat (fld,
-                 "' mentions Self, so it is not callable through a trait object (§6)")), n))
-             ($if ($call P.and ($call needs_mut ($call T.tval (f.ty)), $call eq_str (tt.qual, "")))
-                  ($call err (cx, $call concat ("member '", $call concat (fld,
-                      "' needs a mutable receiver, and this trait object is read-only (§4.10, §6)")),
-                      n))
-                  ($call T.trait_member (tt, fld, tt))))
+                 "' needs a mutable receiver, and this trait object is read-only (§4.10, §6)")),
+                 n))
+             ($call T.trait_member (tt, fld, tt)))
   }.ret,
   // §4.12: an added prop, or else whatever the base has.
   $case {$prop tag "with"} {
@@ -795,14 +791,14 @@ $decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
       ($call err (cx, $call concat ("$traitsof needs a block, found ", $call T.show (t)), n))
 }.ret
 
-// §4.12: every member the trait describes, each at a subtype of the trait's member type
-// with the result's type for `Self`. No defaults, so a missing member is an error.
+// §4.12: every member the trait describes, each at a subtype of the trait's member type.
+// No defaults, so a missing member is an error.
 $decl impl_members $func ($decl cx proto_ctx, $decl ms T.fields.node, $decl ps T.props.node,
     $decl tr T.proto_ty, $decl rt T.proto_ty, $decl n proto_form) $match ms (
   $case {$prop tag "cons"} {
     $decl nm   ms.head.name
     $decl p    $call T.find_prop (ps, nm)
-    $decl want $call T.trait_member (tr, nm, rt)
+    $decl want $call T.trait_member (tr, nm, tr)
     $decl chk  $if ($call eq_str (p.name, ""))
         ($call err (cx, $call concat ("this $impl does not implement '", $call concat (nm,
             "', and a trait has no defaults (§4.12)")), n))

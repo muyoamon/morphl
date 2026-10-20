@@ -1,6 +1,7 @@
 # Traits without `Self`: design note
 
-Status: **agreed in discussion, not implemented.**
+Status: **steps 1 and 2 done** — `Self` is gone and every member of a trait object is
+callable. Self-referencing traits (step 3) and bounds in the `$decl` syntax (step 4) remain.
 
 §6 builds a trait "over a distinguished type `Self`", and `$traitsof` makes one by abstracting
 every occurrence of the value's own type into it. This note removes `Self`. A trait is its
@@ -210,13 +211,15 @@ program meaning "another implementation" writes `$traitsof` there.
 
 1. **Fix the shim's receiver copy** (above). **Done.**
 2. **Drop `Self`**: `$traitsof` as written, conformance as member subtyping, the object-safety
-   rule gone, `tt03`/`tt05` updated. Nothing in the compiler's own source changes.
+   rule gone, `tt03`/`tt05` updated. Nothing in the compiler's own source changes. **Done**
+   (`stage1/fixtures/trait_written.mpl`; `types_test`'s `trs05` now pins both directions).
 3. **Self-referencing traits by §5.5** (design point 7), with the `size : [] -> !` case as its
    regression test.
 4. **Bounds (P2) in this syntax**, F-bounds included — then `std/core`'s `eq_proto` and
    `ord_proto`, and `STDLIB.md`'s capability traits (`sized`, `seq`, `indexed`, `builder`)
    built on them.
-5. **SPEC** §4.9, §4.13, §6, §10, §12 as above, landing with step 2.
+5. **SPEC** §4.9, §4.13, §6, §10, §12 as above, landing with step 2. **Done**, except §4.9's
+   generic-parameter syntax, which lands with step 4.
 
 ## Open questions
 

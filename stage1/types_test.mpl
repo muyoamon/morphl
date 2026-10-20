@@ -476,9 +476,10 @@ $decl ktr06 $call check ("trait: frame is NOT in the key (same ignores it, as fo
 $decl ktr07 $call check ("a trait is not the block with the same fields",
   $call differ ($call ktr ("a", kint), $call kblk ("a", kint)))
 
-// `Self` is the trait's binder: `bnd 0` in a member, replaced by whatever conforms.
+// A trait is a binder: `bnd 0` in a member is the trait itself (a trait naming itself,
+// §5.5), and `trait_member` puts in whatever it is given for it.
 $decl kself $call T.t_func ($call k1 ($call T.t_bnd (0)), kint)
-$decl ktr08 $call check ("trait_member puts the given type for Self",
+$decl ktr08 $call check ("trait_member puts the given type for the trait's own index",
   $call T.same ($call T.trait_member ($call ktr ("area", kself), "area", kstr),
                 $call T.t_func ($call k1 (kstr), kint)))
 $decl ktr09 $call check ("...and answers bottom for a member it does not have",
@@ -547,12 +548,17 @@ $decl trs03 $call check ("...nor one whose prop has the wrong type",
 $decl trs04 $call check ("a prop's value is never compared: different values both conform",
   $call P.and ($call T.sub ($call kprop ("name", $call T.cv_opaque (1), kfn), kname),
                $call T.sub ($call kprop ("name", $call T.cv_opaque (2), kfn), kname)))
-// The prototype idiom: a block whose prop names the block itself is a μ, and conforming
-// puts that block for `Self`.
+// TRAITS.md: a trait is its members as written, so a member taking `bnd 0` takes the trait
+// itself — any implementation. A block whose prop takes the trait conforms; one whose prop
+// takes only its own concrete type does not, since a parameter is contravariant and the
+// trait is not a subtype of the block. (It did, when the block stood in for `Self`.)
 $decl kproto $call T.t_rec ($call kprop ("area", kop,
     $call T.t_func ($call k1 ($call T.t_bnd (0)), kint)))
-$decl trs05 $call check ("a recursive block conforms with itself for Self",
-  $call T.sub (kproto, kshape))
+$decl kdyn   $call kprop ("area", kop, $call T.t_func ($call k1 (kshape), kint))
+$decl trs05 $call check ("a block taking the trait conforms to a trait taking itself",
+  $call T.sub (kdyn, kshape))
+$decl trs05b $call check ("...and one taking only its own type does not",
+  $call P.not ($call T.sub (kproto, kshape)))
 $decl trs06 $call check ("a reference to a conforming block conforms (a trait object refers)",
   $call T.sub ($call T.t_ref ("const", $call kprop ("name", kop, kfn)), kname))
 $decl trs07 $call check ("trait width: more members is a subtype of fewer",

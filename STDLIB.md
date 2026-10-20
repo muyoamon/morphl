@@ -167,9 +167,9 @@ static (§6, "Bounds"). A trait object carries its implementation and dispatches
 - **Passing the operation** where the caller's ordering is not the type's own — `sort_by`,
   `find_by`. An ordinary function argument, an indirect call per use.
 - **Trait objects** for heterogeneous runtime behaviour: a list of things that can each show
-  themselves. Not for `eq` or `lt`: §6's object safety refuses a member that mentions `Self`
-  through a trait object, and the current compiler does — "member 'eq' mentions Self, so it is
-  not callable through a trait object (§6)". `show` is object-safe, so it works both ways.
+  themselves. A trait has no `Self` (TRAITS.md), so every member of an object is callable;
+  but a trait over a concrete type fixes the argument's type, so "compare me with another of
+  my own type" for *any* type is the F-bound, not an object.
 
 **Not chosen: overloading the operation.** Making `std/core`'s `eq` an `$overload` of the
 primitive equalities with a bounded template as its last candidate looks like one `find` for
@@ -238,14 +238,14 @@ block — it cannot see the fields. So:
 
 - **A type opts in with a member**: `$prop eq $func ($decl other pt) …` and `$prop show
   $func () …` — the receiver is implicit (§4.10) and the declaring name in a default is the
-  type itself, which `$traitsof` abstracts to `Self`. `std/core` gives the prototypes the
-  bounds are made from (`eq_proto`, `show_proto`, `ord_proto`). Needs P6.
+  type itself. `std/core` gives the prototypes the bounds are made from, as F-bounded
+  templates (`eq_proto T`, `ord_proto T`) and `show_proto` (TRAITS.md). Needs P6 and P2.
 - **A member named after an intrinsic shadows it inside the type**, because a prop is
   visible throughout its block: `eq`'s body calling `eq` on a field calls itself. The idiom
   is the one stage 1 already uses for `isub` — `$decl ieq eq` above the type.
 - **`show` writes into a builder** (`$prop show $func ($decl b S.builder) …`) rather than
   returning a `Str`: a nested record rendering its children by `concat` is D6's O(n²) trap.
-  The builder is not `Self`, so `show` stays object-safe.
+  It takes no value of its own type, so a `show` object needs no F-bound.
 - **Primitives** have no props; D3a is how a container over them gets the same interface.
 - **Writing them by hand** is the first version, and costs a few lines per type.
 - **Generating them at build time** is §9's answer to reflection — "reflection lives in the

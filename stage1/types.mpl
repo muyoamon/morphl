@@ -1541,12 +1541,6 @@ $decl rop_bnd   $func ($decl r proto_ty)            $call rop ("bnd", 0, r)
 // wrapped around the whole type — §5.5's knot, tied.
 $decl rop_abs   $func ($decl i 0)                   $call rop ("abs", i, t_bot)
 
-// Replace every subterm equal to `r` by the bound variable of a binder about to be wrapped
-// around the whole type — §4.13's "every occurrence of `e`'s type abstracted as `Self`".
-// Marked by `i = -9` rather than by its kind, so the check at every node is one integer
-// compare and the other rewrites pay nothing for it.
-$decl rop_abst  $func ($decl r proto_ty)            $call rop ("abst", -9, r)
-
 $decl proto_rop $call rop ("", 0, t_bot)
 
 $fwd remap
@@ -1577,10 +1571,7 @@ $decl remap_props $func ($decl xs props.node, $decl o proto_rop, $decl d 0,
 
 $fwd remap_go
 
-$decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0)
-  $if ($call eq_int (o.i, -9))
-      ($if ($call same (t, o.ty)) ($call tval ($call t_bnd (d))) ($call remap_go (t, o, d)))
-      ($call remap_go (t, o, d))
+$decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $call remap_go (t, o, d)
 
 $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "var"}
@@ -2381,14 +2372,14 @@ $decl conforms $func ($decl ps props.node, $decl ms fields.node, $decl self prot
   $case {$prop tag "cons"} {
     $decl p   $call find_prop (ps, ms.head.name)
     $decl ret $if ($call eq_str (p.name, "")) false
-        ($if ($call sub_seen ($call tval (p.ty), $call trait_member (b, ms.head.name, self), st))
+        ($if ($call sub_seen ($call tval (p.ty), $call trait_member (b, ms.head.name, b), st))
              ($call conforms (ps, $call fields.val (ms.tail), self, b, st)) false)
   }.ret,
   $case ms true
 )
 
-// A trait against a trait: width, unordered. `Self` stays the bound variable on both
-// sides — both views describe one referent, so it is one abstract type, not two.
+// A trait against a trait: width, unordered. Index 0 is each trait itself, so a member
+// naming its own trait compares as the two traits do (§5.5's assumption, in `sub_seen`).
 $decl members_sub $func ($decl xs fields.node, $decl ms fields.node, $decl st proto_actx)
     $match ms (
   $case {$prop tag "cons"} {
@@ -2406,38 +2397,39 @@ $decl is_trait $func ($decl t proto_ty) $match t ($case {$prop tag "trait"} true
 // §5.3's `&mut T <: &const T` for the referent it is.
 $decl sub_tqual $func ($decl a "", $decl b "") $if ($call eq_str (b, "")) true ($call eq_str (a, b))
 
-// Both `self` and `alt` become `Self`: for a μ they are its unrolled body and the μ itself,
-// which §5.5 makes one type and `T.same` keeps apart, and a receiver retyped after the knot
-// is tied (§4.10) holds the first where a recursive mention holds the second.
-$decl trait_members_of $func ($decl xs props.node, $decl self proto_ty, $decl alt proto_ty,
-    $decl acc fields.node) $match xs (
-  $case {$prop tag "cons"} {
-    $decl t1   $call remap ($call tval (xs.head.ty), $call rop_abst (self), 0)
-    $decl ret $call trait_members_of ($call props.val (xs.tail), self, alt, $call fields.cons (
-        $call field (xs.head.name, $call remap (t1, $call rop_abst (alt), 0)), acc))
-  }.ret,
+// A trait is its props' signatures **as written** (TRAITS.md): nothing is abstracted, so a
+// parameter defaulted to the declaring name is that concrete type in the trait, and every
+// implementation has one shape. A trait is still a binder — index 0 is the trait itself,
+// which a trait naming itself needs (§5.5) — so each member type goes under it shifted.
+$decl trait_members_of $func ($decl xs props.node, $decl acc fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $call trait_members_of ($call props.val (xs.tail), $call fields.cons (
+        $call field (xs.head.name, $call remap ($call tval (xs.head.ty), $call rop_shift (1), 0)),
+        acc)),
   $case xs acc
 )
 
-// §4.13: the trait of a value of type `t` — its props' signatures, `t` abstracted as `Self`
-// — with the object's kind and qualifier (§6). ⊥ for a type with no props to take: both
+// §4.13: the trait of a value of type `t` — its props' signatures, as written (TRAITS.md) —
+// with the object's kind and qualifier (§6). ⊥ for a type with no props to take: both
 // passes ask, and lowering derives what inference solved, so the two must agree.
 $decl trait_of $func ($decl t proto_ty, $decl fr P.boolean, $decl q "") $match t (
-  // A μ's bound variable is the block, and so is `Self`: the trait's binder takes its place.
+  // A μ is read as its unrolling, so its props mention the μ itself, closed — the concrete
+  // recursive type, as written, rather than a bound variable of the μ.
   $case {$prop tag "rec"} {
-    $decl b   $call tval (t.body)
+    // `tval`: `unroll` is in a group still being solved here, so its result is §5.5's
+    // placeholder, which a `$match` would narrow to and nothing could project from.
+    $decl b   $call tval ($call unroll (t))
     $decl ret $match b (
         $case {$prop tag "block"}
-          ($call t_trait_q ($call trait_members_of ($call props.val (b.props), b, t, fields.nil),
-              fr, q)),
+          ($call t_trait_q ($call trait_members_of ($call props.val (b.props), fields.nil), fr, q)),
         $case b t_bot
       )
   }.ret,
   $case {$prop tag "block"}
-    ($call t_trait_q ($call trait_members_of ($call props.val (t.props), t, t, fields.nil), fr, q)),
+    ($call t_trait_q ($call trait_members_of ($call props.val (t.props), fields.nil), fr, q)),
   // §4.12's non-block base with props added: its props are the members too.
   $case {$prop tag "with"}
-    ($call t_trait_q ($call trait_members_of ($call props.val (t.props), t, t, fields.nil), fr, q)),
+    ($call t_trait_q ($call trait_members_of ($call props.val (t.props), fields.nil), fr, q)),
   $case t t_bot
 )
 
