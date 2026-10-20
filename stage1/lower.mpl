@@ -1430,11 +1430,18 @@ $decl is_ref_ty $func ($decl t T.proto_ty) $match t ($case {$prop tag "ref"} tru
 $decl has_recvfn $func ($decl st proto_lst, $decl i 0)
   $call P.not ($call rcv_list.is_nil ($call find_rcv ($call rcv_list.val (st.recvfns), i)))
 
+$decl is_name_at $func ($decl n Pa.proto_node) $match n ($case {$prop tag "name"} true, $case n false)
+
 // §4.10: a member that names its receiver is a closure over it, so a projection onto one
-// builds the closure from the target it was projected from — the target's reference when
-// the receiver is `$mut` storage, so the member writes what the declaration can.
+// builds the closure from the target it was projected from. "The receiver is a
+// reference", so the capture is the target's **own storage**, read-only or not: the
+// target if it is a reference already, a name's storage (`addr`), and only a temporary
+// through fresh frame storage — exactly how `$traitsof` makes its referent (`tobj_of`).
+// A copy of the value used to stand in for a read-only receiver, so `$traitsof a` inside a
+// member referred to the copy: on the heap here, which hid it, and in a trait object's
+// shim's frame, which did not (stack-use-after-return).
 $decl recv_wrap $func ($decl st proto_lst, $decl raw proto_lres, $decl tgt proto_lres,
-    $decl r proto_lres) {
+    $decl x Pa.proto_node, $decl r proto_lres) {
   $decl ir  r.ir
   $decl ret $match ir (
       $case {$prop tag "global"}
@@ -1443,7 +1450,10 @@ $decl recv_wrap $func ($decl st proto_lst, $decl raw proto_lres, $decl tgt proto
           // off a parameter of block type reaches the member through its type's props
           // and has no module, and the receiver is still what it was reached through.
           $decl rv   $call find_rcv ($call rcv_list.val (st.recvfns), ir.fn)
-          $decl cap  $if ($call is_ref_ty ($call rcv_ty (rv))) raw.ir tgt.ir
+          $decl rk   $call intern (st, $call rcv_ty (rv))
+          $decl cap  $if ($call is_ref_ty ($call T.unroll (raw.ty))) raw.ir
+                         ($if ($call is_name_at (x)) ($call IR.e_addr (rk, raw.ir))
+                              ($call IR.e_new (rk, tgt.ir)))
           $decl ret2 $call lres ($call IR.e_closure (ir.ty, ir.fn,
                          $call IR.exprs.cons (cap, IR.exprs.nil)), r.ty)
         }.ret2 r,
@@ -2065,13 +2075,14 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
         $decl f   $call find_fld ($call T.fields.val (tt.fields), n.field, 0)
         $decl ask $if own ($call not ($call and (f.hit, $call is_deref (tgt.ir)))) false
         $decl ret2 $if ask
-            ($call recv_wrap (st, raw, tgt, $call lower_prop (st, tgt.mod, n.field, n)))
+            ($call recv_wrap (st, raw, tgt, n.target, $call lower_prop (st, tgt.mod, n.field, n)))
             ($if f.hit
             ($call lres ($call IR.e_field ($call intern (st, f.ty), tgt.ir, f.idx), f.ty))
             ($if ($call lt (tgt.mod, 0))
-                 ($call recv_wrap (st, raw, tgt,
+                 ($call recv_wrap (st, raw, tgt, n.target,
                      $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n)))
-                 ($call recv_wrap (st, raw, tgt, $call lower_prop (st, tgt.mod, n.field, n)))))
+                 ($call recv_wrap (st, raw, tgt, n.target,
+                     $call lower_prop (st, tgt.mod, n.field, n)))))
       }.ret2,
       // §6: a member through a trait object, by its place in the trait's sorted members,
       // with the object for `Self`.
@@ -2095,8 +2106,9 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
       // §4.12: an added prop, from the `$impl`'s override where its source is known and by
       // its identity in the type otherwise — exactly a block's props.
       $case {$prop tag "with"}
-        $if own ($call recv_wrap (st, raw, tgt, $call lower_prop (st, tgt.mod, n.field, n)))
-            ($call recv_wrap (st, raw, tgt,
+        $if own ($call recv_wrap (st, raw, tgt, n.target,
+                     $call lower_prop (st, tgt.mod, n.field, n)))
+            ($call recv_wrap (st, raw, tgt, n.target,
                 $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n))),
       $case {$prop tag "union"} {
         $decl f $call common_fld ($call T.tys.val (tt.members), n.field, fld_found_proto)
@@ -3778,8 +3790,13 @@ $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
 // §7.2's frame: the parameters take the first slots, in order, then every
 // `$decl` in the body. The counter left over is the frame size.
 
+// `de` is where the defaults are lowered when that differs from `e`: a member's, whose
+// defaults see the declaring name as the block's type (§4.10, a type-only position) while
+// its body sees the receiver, a reference. Empty means `e`. Inference splits the same way
+// (`infer_rec_func`'s `pe`).
 $decl bind_params $func ($decl st proto_lst, $decl e benv.node, $decl ps Pa.nodes.node,
-                         $decl ts T.tys.node, $decl acc IR.ints.node) $match ps (
+                         $decl ts T.tys.node, $decl acc IR.ints.node, $decl de benv.node)
+    $match ps (
   $case {$prop tag "cons"} {
     $decl nm $call name_of ($call op (ps.head, 0))
     // §3.4: "each default fixes the parameter's type". Inference already
@@ -3788,7 +3805,8 @@ $decl bind_params $func ($decl st proto_lst, $decl e benv.node, $decl ps Pa.node
     $decl ty $match ts (
         $case {$prop tag "cons"} ts.head,
         $case ts {
-          $decl d    $call type_only (st, e, $call op (ps.head, 1))
+          $decl de2  $if ($call benv.is_nil (de)) e de
+          $decl d    $call type_only (st, de2, $call op (ps.head, 1))
           $decl ret2 d.ty
         }.ret2
       )
@@ -3797,7 +3815,7 @@ $decl bind_params $func ($decl st proto_lst, $decl e benv.node, $decl ps Pa.node
     $decl e2  $call benv.cons ($call bind_ent (nm, "local", sl, ty), e)
     $decl rt  $match ts ($case {$prop tag "cons"} ($call T.tys.val (ts.tail)), $case ts T.tys.nil)
     $decl ret  $call bind_params (st, e2, ps.tail, rt,
-                 $call IR.ints.cons (tid, acc))
+                 $call IR.ints.cons (tid, acc), de)
   }.ret,
   $case ps ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))
 )
@@ -3805,11 +3823,12 @@ $decl bind_params $func ($decl st proto_lst, $decl e benv.node, $decl ps Pa.node
 // Lower one `$func` whose type inference already solved. `fty` is that type, so
 // the parameter types come from it rather than from re-reading the defaults.
 $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
-                        $decl n Pa.proto_node, $decl fty T.proto_ty, $decl ev IR.ints.node) {
+                        $decl n Pa.proto_node, $decl fty T.proto_ty, $decl ev IR.ints.node,
+                        $decl de benv.node) {
   $decl reset $call take_slots (st)
   $decl ps    $call group_items ($call op (n, 0))
   $decl ptys  $match fty ($case {$prop tag "func"} ($call T.tys.val (fty.params)), $case fty T.tys.nil)
-  $decl b     $call bind_params (st, e, ps, ptys, IR.ints.nil)
+  $decl b     $call bind_params (st, e, ps, ptys, IR.ints.nil, de)
   // The body is in tail position: it *is* the function's result (§7.7).
   $decl body  $call lval ($call lower (st, b.env, $call op (n, 1), true))
   // §4.15 widens the *inferred* result to include what `$try` can return, so
@@ -3992,13 +4011,13 @@ $decl recv_enter $func ($decl st proto_lst, $decl nm "", $decl init Pa.proto_nod
 
 $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm "",
                              $decl pn Pa.proto_node, $decl fty T.proto_ty, $decl rk 0,
-                             $decl ets IR.ints.node) {
+                             $decl ets IR.ints.node, $decl de benv.node) {
   $decl o $call take_slots (st)
   // Marked here rather than inside `lower_func`, which also serves an entry-file
   // top-level `$decl` — §4.14 lets an importer project a *member*, and nothing
   // imports the entry file. `rk` is its source-order index, not a counter: see
   // `prop_rank`.
-  $decl f   $call IR.fn_member ($call lower_func (st, pe, nm, pn, fty, ets), rk)
+  $decl f   $call IR.fn_member ($call lower_func (st, pe, nm, pn, fty, ets, de), rk)
   $decl b   $call restore_slots (st, o)
   $decl ret f
 }.ret
@@ -4015,6 +4034,9 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   $decl rt    $call rcv_ty (rv)
   $decl pe    $if ($call eq_str (rn, "")) pe0
                   ($call benv.cons ($call bind_ent (rn, "capture", 0, rt), pe0))
+  // The defaults see the declaring name as the block (§4.10): the receiver's pointee.
+  $decl dpe   $if ($call eq_str (rn, "")) pe0
+                  ($call benv.cons ($call bind_ent (rn, "capture", 0, $call deref_ty (rt)), pe0))
   $decl ets   $if ($call eq_str (rn, "")) IR.ints.nil
                   ($call IR.ints.cons ($call intern (st, rt), IR.ints.nil))
   // The index is reserved before the body exists, because the body may name
@@ -4046,7 +4068,8 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // where `cc` refused the C it produced.
   $decl sn    $call take_snap (st)
   $decl q0    $call places (st)
-  $decl lf0   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0), ets)
+  $decl lf0   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0), ets,
+                  dpe)
   $decl again $call lt (q0, $call places (st))
   // Everything the first pass built is discarded, exactly as a self-naming
   // `$prop` discards it: the siblings it lowered were lowered against this
@@ -4064,7 +4087,8 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // goes in front of the placeholder, which `find_mdone` therefore stops at.
   $decl p1  $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
   $decl lf  $if again
-      ($call lower_prop_body (st, pe, nm, pn, fty, $call prop_rank (m.props, nm, 0), ets)) lf0
+      ($call lower_prop_body (st, pe, nm, pn, fty, $call prop_rank (m.props, nm, 0), ets, dpe))
+      lf0
   $decl put $call put_lifted (st, idx, lf)
   $decl ret $call lres ($call IR.e_global ($call intern (st, fty), idx), fty)
   // Restored after the result is computed, not before: a nested `$import` inside
@@ -4427,14 +4451,16 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
                ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps),
                    $call P.sval (st.curfile)))
   $decl reg $if ($call lt (md, 0)) 0 ($call note_opaqs (st, md, ps))
-  // Captured at the block's own type for a value, at a reference to it for `$mut` storage —
-  // and for an `$impl`'s override at the `$impl`'s result, which is what the `$decl` over
-  // it holds (§4.12).
+  // Captured as a reference (§4.10: "the receiver is a reference with the qualifier of
+  // what the block was declared as") — read-only for a value, mutable for `$mut` storage —
+  // to the block, or for an `$impl`'s override to the `$impl`'s result, which is what the
+  // `$decl` over it holds (§4.12). See `recv_wrap`.
   $decl imp $call and ($call eq_int ($call P.ival (st.rbline), x.line),
                 $call eq_int ($call P.ival (st.rbcol), x.col))
   $decl rty $if imp ($call T.impl_ty ($call T.tval (st.rbase), $call T.props.val (a.prps))) ty
   $decl rct $if ($call eq_str (rq, "mut"))
-                ($call T.t_ref_k ("mut", rty, $if ($call eq_str (rk, "alloc")) T.k_alloc "")) rty
+                ($call T.t_ref_k ("mut", rty, $if ($call eq_str (rk, "alloc")) T.k_alloc ""))
+                ($call T.t_ref ("const", rty))
   $decl rcv $set st.recvs ($if ($call and (mine, $call not ($call lt (md, 0))))
                 ($call rcv_list.cons ($call rcv_ent (md, rn, rct), st.recvs))
                 ($call rcv_list.val (st.recvs)))

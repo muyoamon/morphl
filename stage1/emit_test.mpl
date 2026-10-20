@@ -595,8 +595,12 @@ $decl t66 $call check ("a trait object is the referent and its table",
 $decl t67 $call check ("the table is static and its entry a shim",
   $if ($call has (tr_c.code, "static void *const *mpl_tbl"))
       ($call has (tr_c.code, "(void *)mpl_tsh")) false)
-$decl t68 $call check ("the shim builds the member's environment from the referent",
-  $call has (tr_c.code, " e; e.c0 = *("))
+// §4.10: the receiver is a reference, so the member's environment holds the referent's
+// address — a copy (`e.c0 = *(…)env`) made in the shim's frame dangled once the member
+// handed back an object over it.
+$decl t68 $call check ("the shim passes the referent, not a copy of it",
+  $if ($call has (tr_c.code, " e; e.c0 = (")) ($call not ($call has (tr_c.code, " e; e.c0 = *(")))
+      false)
 $decl t69 $call check ("a member through the object is the table's entry and the referent",
   $if ($call has (tr_c.code, ".tbl[0];")) ($call has (tr_c.code, ".ref;")) false)
 $decl t70 $call check ("...and a coercion at a call takes the name's own storage",

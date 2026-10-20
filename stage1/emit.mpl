@@ -2041,6 +2041,9 @@ $decl emit_xts $func ($decl st proto_est, $decl ts T.tys.node, $decl xs xts.node
 // through them rather than duplicated.
 $decl is_direct_callee $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
   $case {$prop tag "prim"} true,
+  // A closure *literal* names its function: the call is made to it directly, with the
+  // environment the literal built (`emit_call`), never through §6a's trampoline.
+  $case {$prop tag "closure"} true,
   $case {$prop tag "global"}
     $if ($call is_global (st, c)) true
         ($call not ($call eq_str ($call alias_prim (st, c.fn), ""))),
@@ -2131,8 +2134,16 @@ $decl any_reports $func ($decl st proto_est)
 // because an alias reports exactly when the function it names does.
 $decl callee_reports $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
   $case {$prop tag "global"} ($call reports (st, $call res_fn (st, c.fn))),
+  $case {$prop tag "closure"} ($call reports (st, c.fn)),
   $case c false
 )
+
+$decl is_closure_node $func ($decl c IR.proto_expr) $match c (
+  $case {$prop tag "closure"} true,
+  $case c false
+)
+
+$decl closure_fn $func ($decl c IR.proto_expr) $match c ($case {$prop tag "closure"} c.fn, $case c -1)
 
 // One union member per participating signature: the arguments of a pending call,
 // which the driver has to hold across the hop.
@@ -2544,7 +2555,21 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
             $decl ret3  $if ($call callee_reports (st, cal))
                 ($call say (st, $call concat ("  mpl_tcdrive(&", $call concat (dest, ");\n"))))
                 ()
-          }.ret3 {
+          }.ret3
+          ($if ($call is_closure_node (cal)) {
+            // A closure literal: the function is known, so it is called directly
+            // with the literal's environment. Not merely faster — a receiver's
+            // closure (§4.10) captures the target's own storage, which may be this
+            // frame's, and §6a's trampoline would make the call after the frame
+            // had gone. A direct call keeps it alive for the call's duration.
+            $decl fv   $call into_tmp (st, fi, cal, ts)
+            $decl d0   $call assign (st, dest,
+                           $call concat ($call fn_name (st, $call closure_fn (cal)),
+                           $call concat ("(", $call concat (fv, $call concat (".env",
+                           $call concat ($call join_args (as, "", false), ")"))))))
+            $decl ret4 $if ($call callee_reports (st, cal))
+                ($call say (st, $call concat ("  mpl_tcdrive(&", $call concat (dest, ");\n")))) ()
+          }.ret4 {
             // §7.3: through the pair. The signature comes from the static
             // type at the call site, since every function value has the
             // same shape and carries none of it.
@@ -2570,7 +2595,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
                       ($call say (st, $call concat ("  mpl_tcdrive(&",
                                 $call concat (dest, ");\n")))) ()
                 }.ret4
-          }.ret3) {
+          }.ret3)) {
             // §6a: the parameters are updated *in parallel* — every new
             // argument is already in a temporary — then the loop re-enters,
             // at another member's state if this is a mutual call.

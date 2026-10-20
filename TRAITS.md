@@ -154,7 +154,10 @@ Measured before writing this:
   in the shim's frame (`mpl_env e; e.c0 = *env;`), so `$traitsof a` in `a.rest` refers to
   storage that dies with the shim. ASan: stack-use-after-return; stage 0 answers 10, the
   compiled program 2. §4.10 makes the receiver a reference, so the backend's copy is the
-  bug. It is to be fixed first, separately.
+  bug. **Fixed:** a receiver is captured as the target's own storage, member defaults see
+  the block as inference's do, and a call to a closure literal is direct rather than
+  through §6a's trampoline, which would have run it after the caller's frame was gone
+  (`stage1/fixtures/recv_ref.mpl`).
 
 ## SPEC changes
 
@@ -205,8 +208,7 @@ program meaning "another implementation" writes `$traitsof` there.
 
 ## Plan
 
-1. **Fix the shim's receiver copy** (above). Independent, and a memory-safety bug in code the
-   checker accepts.
+1. **Fix the shim's receiver copy** (above). **Done.**
 2. **Drop `Self`**: `$traitsof` as written, conformance as member subtyping, the object-safety
    rule gone, `tt03`/`tt05` updated. Nothing in the compiler's own source changes.
 3. **Self-referencing traits by §5.5** (design point 7), with the `size : [] -> !` case as its
