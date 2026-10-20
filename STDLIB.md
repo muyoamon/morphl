@@ -20,6 +20,7 @@ for the decisions that shape it.
 | D6 | how strings are built | a builder, joined pairwise |
 | D7 | how failure is reported | `option` and `result` shapes `$try` already matches |
 | D8 | how it is tested | compiled-only, through §9's test interface |
+| D9 | how containers compose | values carrying their methods; type-changing operations as `std/seq` algorithms over capabilities |
 
 ## What exists
 
@@ -112,6 +113,15 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   passes, on a value and on a template. Stage 0 needs it only if a stage-0 test uses it, and
   the library's tests are compiled-only (P5). *Required by D3a.*
 
+- **P11. A receiver member reached through a parameter's type, too early, is called bare.**
+  A function whose parameter is a block type with receiver members — a list wrapper (D9) —
+  reaches them through the parameter's *type*. When that is lowered before the block literal
+  the props come from, lowering defers the miss (`prop_pending`), cannot know the member
+  names its receiver, builds no closure, and emits a call with a `NULL` environment; the
+  member reads its receiver and segfaults. Found probing D9: `total_len ($decl xs
+  ($call strs.empty ()))`. Generic functions are unaffected — a generic is lowered at
+  specialisation, after the literal. *Required by D9*, since a function taking a list is
+  the commonest thing a program writes.
 ## D1. Location and naming
 
 A top-level `std/` directory of ordinary modules, imported by name:
@@ -334,6 +344,74 @@ and under ASan like `test-asan`. **Done**, and three things came out of writing 
   Discovery stays a build-time job (§9: "reflection lives in the compiler library at build
   time"), which a build program would do by writing the `check` calls.
 
+## D9. Containers as values with capabilities
+
+A list today is a bare union and its operations live on the specialised module:
+`$call ints.length (xs, 0)`. A bare union has no props, so it conforms to no trait, and code
+generic over "any sequence" cannot be written. D9 makes a container a **value that carries
+its operations**, and the operations that change the element type **free algorithms** over
+any value with the right capabilities (TRAITS.md's traits, as bounds).
+
+**Probed before writing this** (all compiled, under ASan):
+
+1. **A list value can carry members.** `ints.of (cells)` answers a block
+   `{ $decl cells c … }` whose props reach the cells through the receiver (§4.10), so
+   `$call xs.push (5)`, `xs.rest ()` and `xs.is_empty ()` work on any list value. Props have no
+   layout, so the wrapper is the cells' own C struct — no indirection, no allocation.
+2. **`rest` returns the same wrapper type**, by calling `of` again inside the template.
+3. **A partial bound needs no element type.** `$decl S $traitsof ($specialize seq_s S)`, where
+   `seq_s S` lists only `is_empty` and `rest`, is checked at each call and `S` is inferred from
+   the argument. The body may still use `head` and `first`, which mention the element type,
+   because §4.9 types it at the concrete `S`. This answers TRAITS.md's open question about a
+   generic named only inside a bound: do not name it.
+4. **A template-valued member cannot read its receiver.** `map` as a member records its body
+   while the wrapper is being typed, when the receiver is still §5.5's placeholder, so
+   `w.cells` has nothing to project from at specialisation. So a member that introduces a type
+   is not a member.
+5. **Free algorithms over any sequence work.** `fold (xs, acc, f)` and `map (xs, f)` infer `S`
+   from `xs` and the rest from `f`; `map` builds a `std/list` list of the result type.
+6. **P11** (above): a non-generic function taking a wrapper parameter can crash. A blocker.
+
+### The design
+
+- **A list value is a wrapper.** `ints.of (cells)` and `ints.empty ()` make one; `ints.node`
+  stays the cells' type, and `xs.cells` reaches them for code that wants to `$match`.
+- **Its methods are the operations that keep the element type and need no generic:**
+  `is_empty`, `head` (panics when empty — a bug, §4.15, like `nth`), `first` (an option),
+  `rest`, `push`, `length`, `reverse`, `append`, `nth`, `take`, `drop`, `filter`, `any`, `all`,
+  `find`, `sort_by`.
+- **`std/seq` holds the capabilities and the free algorithms.**
+  - Capabilities, each the members that do not mention the element type (point 3):
+    `seq_of S { is_empty, rest }`, `sized_of S { length }`. `indexed` waits for `std/vec`.
+  - Algorithms over any conforming `S`: `count`, `fold`, `map` (to a list), `for_each`, `any`,
+    `all`, `find`, `to_list`; bounded by the element's order or equality: `contains`,
+    `index_of` (`eq_proto`), `sort`, `max_of`, `min_of`, `is_sorted` (`ord_proto`). These
+    replace `ord_list E` and the template members `contains`/`index_of`, which point 4 rules
+    out as methods anyway.
+- **A parameter typed "a list of T"** has an empty one as its default:
+  `$decl xs ($call ints.empty ())`. A prop cannot hold it (§4.10: a call is not constant),
+  so there is no `ints.t`. Needs P11.
+
+### Mutation
+
+**A member cannot assign a plain field of its receiver**, even a mutable one: §4.4, "`$set`
+writes *through* storage … never replaces a block field: `$set x.a 1` works if field `a` holds
+storage (`$decl a $new 0`), and is an error if `a` is a value field". Checked: `$set c.n …` on
+a `$mut` receiver is refused by both stages ("`$set` needs storage on the left, found Int"),
+and a field holding a `$mut` cell is written through it, directly and through a trait object.
+So a list stays a value — `push` answers a new list — and a container that changes in place
+(`std/vec`'s growable buffer, a builder) holds its state in `$mut $alloc` cells, as
+`std/mem`'s arena does.
+
+### Decisions
+
+| | decided |
+|---|---|
+| D9a | replace the module-style API |
+| D9b | `std/seq` its own module |
+| D9c | `is_empty`/`head`/`rest` for algorithms; `first` as the option form for callers |
+| D9d | P11 first, then the list, then `std/seq`, then `std/io` migrated |
+
 ## Plan
 
 1. P1, P3, P4, P6 and P9 are done, so nothing blocks the first modules.
@@ -359,3 +437,4 @@ and under ASan like `test-asan`. **Done**, and three things came out of writing 
 | D6 | strings | a builder |
 | D7 | failure | `option` and `result` in the root, as §8 says; shapes `$try` matches |
 | D8 | tests | compiled-only, `test-std`, under ASan |
+| D9 | containers | decided: replace the API, `std/seq` its own module, P11 first |
