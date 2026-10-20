@@ -3869,6 +3869,32 @@ $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
 // §7.2's frame: the parameters take the first slots, in order, then every
 // `$decl` in the body. The counter left over is the frame size.
 
+// P11: whether a type carries a function-valued prop whose source lowering has not seen
+// yet. A parameter's type is inference's, so a body can reach a member through it before
+// the code building the block is lowered — and a deferred read (`prop_pending`) cannot
+// know the member names its receiver, so it would be called with no environment. The
+// default builds a value of the type (§3.4), so lowering it registers the source first.
+$decl unseen_props $func ($decl st proto_lst, $decl ps T.props.node) $match ps (
+  $case {$prop tag "cons"} {
+    $decl c   ps.head.value
+    $decl hit $match c (
+        $case {$prop tag "copaque"}
+          ($call lt ($call prop_by_id ($call opq_list.val (st.opaqs), c.id, ps.head.name), 0)),
+        $case c false
+      )
+    $decl ret $if hit true ($call unseen_props (st, $call T.props.val (ps.tail)))
+  }.ret,
+  $case ps false
+)
+
+$decl src_unseen $func ($decl st proto_lst, $decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t (
+      $case {$prop tag "block"} ($call unseen_props (st, $call T.props.val (t.props))),
+      $case t false
+    )
+}.ret
+
 // `de` is where the defaults are lowered when that differs from `e`: a member's, whose
 // defaults see the declaring name as the block's type (§4.10, a type-only position) while
 // its body sees the receiver, a reference. Empty means `e`. Inference splits the same way
@@ -3881,13 +3907,14 @@ $decl bind_params $func ($decl st proto_lst, $decl e benv.node, $decl ps Pa.node
     // §3.4: "each default fixes the parameter's type". Inference already
     // solved a top-level function's, and passes it in; a `$func` literal
     // lifted out of an expression has none, so its defaults are the source.
+    $decl de2 $if ($call benv.is_nil (de)) e de
     $decl ty $match ts (
-        $case {$prop tag "cons"} ts.head,
-        $case ts {
-          $decl de2  $if ($call benv.is_nil (de)) e de
-          $decl d    $call type_only (st, de2, $call op (ps.head, 1))
-          $decl ret2 d.ty
-        }.ret2
+        $case {$prop tag "cons"} {
+          $decl seen $if ($call src_unseen (st, ts.head))
+                         ($call type_only (st, de2, $call op (ps.head, 1))).ty ts.head
+          $decl ret2 ts.head
+        }.ret2,
+        $case ts ($call type_only (st, de2, $call op (ps.head, 1))).ty
       )
     $decl tid $call intern (st, ty)
     $decl sl  $call fresh_slot (st, tid)
@@ -4884,6 +4911,18 @@ $decl resolve_one $func ($decl st proto_lst, $decl p proto_pend) {
           $call concat (p.name, "' is not reachable: no block in this program carries it")), p.node)) {
         $decl reset $call take_slots (st)
         $decl v     $call lval ($call lower_prop (st, mid, p.name, p.node))
+        // P11: a member that names its receiver needs it as its environment, and a read
+        // deferred here built no closure — so it would be called with none. Every route
+        // to that is meant to be closed before this (`src_unseen`); say so if one is not.
+        $decl vir   v.ir
+        $decl rcv   $match vir (
+            $case {$prop tag "global"}
+              $if ($call has_recvfn (st, vir.fn))
+                  ($call err (st, $call concat ("'", $call concat (p.name,
+                      "' names its receiver and was reached before its block was lowered")),
+                      p.node)) 0,
+            $case vir 0
+          )
         // Not `pub` by accident: the read may be in any module's output, and this
         // function lives in the entry file's. Named from the prop's identity rather
         // than ranked off a counter: `pub` puts a name in the member space, where a

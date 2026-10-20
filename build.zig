@@ -238,6 +238,10 @@ pub fn build(b: *std.Build) void {
         // §4.10: a member's parameter default naming its own block is the block's type, not
         // the receiver, directly, through a specialisation and on `$mut` storage. 4111.
         .{ .src = "stage1/fixtures/self_param.mpl", .want = "4111\n" },
+        // P11: a non-generic function taking a block whose members read their receiver,
+        // reached through the parameter's type before the block is built — in the entry
+        // file, a module member and a `$fwd`'d function. 3294.
+        .{ .src = "stage1/fixtures/recv_param.mpl", .want = "3294\n" },
         // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
         // argument, from a function argument's parameter and result, from a module's
         // template, and a template applying itself in tail position. Stage 0 refuses
@@ -727,6 +731,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/self_trait.mpl",
         "stage1/fixtures/bounds.mpl",
         "stage1/fixtures/local_rec0.mpl",
+        "stage1/fixtures/recv_param.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

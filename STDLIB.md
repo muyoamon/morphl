@@ -114,14 +114,20 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   the library's tests are compiled-only (P5). *Required by D3a.*
 
 - **P11. A receiver member reached through a parameter's type, too early, is called bare.**
-  A function whose parameter is a block type with receiver members — a list wrapper (D9) —
-  reaches them through the parameter's *type*. When that is lowered before the block literal
-  the props come from, lowering defers the miss (`prop_pending`), cannot know the member
-  names its receiver, builds no closure, and emits a call with a `NULL` environment; the
-  member reads its receiver and segfaults. Found probing D9: `total_len ($decl xs
-  ($call strs.empty ()))`. Generic functions are unaffected — a generic is lowered at
-  specialisation, after the literal. *Required by D9*, since a function taking a list is
-  the commonest thing a program writes.
+  **Done.** A function whose parameter is a block type with receiver members — a list
+  wrapper (D9) — reaches them through the parameter's *type*, which is inference's. When
+  that is lowered before the block literal the props come from, lowering deferred the miss
+  (`prop_pending`), could not know the member names its receiver, built no closure, and
+  emitted a call with a `NULL` environment: a segfault in the entry file, a `cc` type error
+  in a module member. Found probing D9 (`total_len ($decl xs ($call strs.empty ()))`).
+  §3.4 is the fix: a default builds a value of its parameter's type, so when the type
+  carries a prop whose source is not registered yet (`src_unseen`), `bind_params` lowers
+  the default (type-only) before the body, which registers the literal; no other parameter
+  pays for it. A deferred read that still resolves
+  to a receiver member is now a diagnostic rather than a crash (`resolve_one`).
+  Generic functions were never affected — a generic is lowered at specialisation, after
+  the literal. `stage1/fixtures/recv_param.mpl` (3294), in both stages.
+
 ## D1. Location and naming
 
 A top-level `std/` directory of ordinary modules, imported by name:
@@ -370,7 +376,7 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
    is not a member.
 5. **Free algorithms over any sequence work.** `fold (xs, acc, f)` and `map (xs, f)` infer `S`
    from `xs` and the rest from `f`; `map` builds a `std/list` list of the result type.
-6. **P11** (above): a non-generic function taking a wrapper parameter can crash. A blocker.
+6. **P11** (above): a non-generic function taking a wrapper parameter could crash. Fixed.
 
 ### The design
 
@@ -390,7 +396,7 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
     out as methods anyway.
 - **A parameter typed "a list of T"** has an empty one as its default:
   `$decl xs ($call ints.empty ())`. A prop cannot hold it (§4.10: a call is not constant),
-  so there is no `ints.t`. Needs P11.
+  so there is no `ints.t`. Needed P11, now fixed.
 
 ### Mutation
 
