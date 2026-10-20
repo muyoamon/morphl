@@ -128,6 +128,26 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   Generic functions were never affected — a generic is lowered at specialisation, after
   the literal. `stage1/fixtures/recv_param.mpl` (3294), in both stages.
 
+- **P12. A wrapper's member taking another wrapper left every member unsolved — a checker
+  bug.** **Done.** `append ($decl ys w)` — §4.10's "another value of its own type" — inside
+  `of` made `$call ($call ints.empty ()).push (3)` unprojectable: `push` answered `v1`, `of`'s
+  placeholder. A block built inside its own recursive constructor closes twice, first over
+  itself (the default names it) and then over the constructor, whose placeholder its members'
+  results still mention — and the second close asked `occurs_own_props`, which did not see
+  through the first close's `μ`. Fixed there, and `close_rec` closing over a `μ` reuses its
+  binder (`μx. μy. F(x, y)` is `μy. F(y, y)`) rather than nesting two. That uncovered a second
+  half: `unroll`'s memo is keyed by `same`, which ignores a prop's type, so the settled `μ` was
+  handed the mid-knot one's unrolling, placeholders and all. An unrolling still holding a
+  placeholder anywhere is no longer stored (`occurs_all (t, -1)`). Neither half is about
+  templates. `stage1/fixtures/wrap_self.mpl` (6205), in both stages.
+- **P13. Joining the receiver with another value of its type loses the members.**
+  `$prop me $func ($decl o w, $decl f true) $if f w o` checks, but `$call ($call x.me (x,
+  true)).get ()` is refused — "cannot project '.get' from `&const {v:Int,get=…,me=…}`" —
+  where stage 0 answers. Returning `w` alone is fine; so is building a new value through the
+  constructor, which is what every `std/list` method does, so nothing here needs it. Probably
+  the join of the receiver (`&const` of the block) with the default's type, which is the
+  block's in-progress type (§4.10). Open.
+
 ## D1. Location and naming
 
 A top-level `std/` directory of ordinary modules, imported by name:
@@ -380,8 +400,11 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
 
 ### The design
 
-- **A list value is a wrapper.** `ints.of (cells)` and `ints.empty ()` make one; `ints.node`
-  stays the cells' type, and `xs.cells` reaches them for code that wants to `$match`.
+- **A list value is a wrapper.** `ints.of (cells)`, `ints.empty ()` and `ints.from_array (a)`
+  make one; `ints.node` stays the cells' type, and `xs.cells` reaches them for code that wants
+  to `$match`. **Done**, with `ints.cell` holding the same operations over bare cells, which
+  the methods are written in and `std/io`'s joiner uses. `std/io` moved with it, since its API
+  hands lists out and its `unlines` used `map`.
 - **Its methods are the operations that keep the element type and need no generic:**
   `is_empty`, `head` (panics when empty — a bug, §4.15, like `nth`), `first` (an option),
   `rest`, `push`, `length`, `reverse`, `append`, `nth`, `take`, `drop`, `filter`, `any`, `all`,

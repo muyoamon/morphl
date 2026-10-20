@@ -1,16 +1,19 @@
 // std/list: an immutable singly linked list, `$specialize L.list <example>` per element
-// type — `$decl ints $specialize L.list 0` — with the operations as its members, so
-// `$call ints.length (xs)` needs nothing inferred. `map` and `fold` introduce a second
-// type and are templates themselves, whose generics §4.9's application reads off the
-// function argument: `$call ints.map (xs, $func ($decl n 0) …)`.
+// type — `$decl ints $specialize L.list 0`. A list is a **value carrying its operations**
+// (STDLIB.md, D9): `$call ints.empty ()` and `$call ints.of (cells)` make one, and
+// `$call xs.push (3)`, `$call xs.length ()` and `$call xs.rest ()` work on any list value,
+// with nothing inferred. A parameter typed "a list of `Int`" is defaulted to an empty one,
+// `$decl xs ($call ints.empty ())`, since a type is the type of an expression.
 //
-// The operations that need the elements' own equality or order come in two forms. The `_by`
-// form takes the function (`find`, `sort_by`). The bounded form uses the element's members
-// (`std/core`'s `eq_proto`/`ord_proto`, TRAITS.md): `contains` and `index_of` are members
-// here, their generic read off the value searched for; `sort`, `is_sorted`, `max_of` and
-// `min_of` take no such value, so they live in `ord_list E`, specialised once per element
-// type beside `list E` — `$decl pts $specialize L.ord_list p` — whose bound is checked there.
-// `Int` and `Str` conform to neither prototype, so for them the `_by` forms are the ones.
+// The methods are the operations that keep the element type. Those that make another —
+// `map`, `fold` — and those needing the element's own equality or order — `contains`,
+// `sort` — are free algorithms over any sequence, in `std/seq`: a template-valued member
+// cannot read its receiver (D9, point 4). `head` panics on an empty list, which is a bug
+// (§4.15), and `first` is the option form; algorithms use `is_empty`/`head`/`rest`.
+//
+// The wrapper is only props over one field, `cells` — the `node` union, for code that wants
+// to `$match` — so it is the cells' own C struct, and a method costs a call. `cell` holds the
+// same operations over bare cells, which is what the methods are written in.
 //
 // Every recursion is a tail call, so §7.7 makes each a loop: a list's length bounds
 // nothing but its memory. `sort_by`'s halving recursion is the exception, and it is
@@ -25,166 +28,144 @@ $decl list $template T {
   // through storage — `$alloc`, since a list is what a function hands back (§5.3a).
   $prop node $union (nil, { $prop tag "cons"  $decl head T  $decl tail $alloc node })
 
-  $prop cons $func ($decl h T, $decl t node) { $prop tag "cons"  $decl head h  $decl tail $alloc t }
+  $prop cell {
+    $prop cons $func ($decl h T, $decl t node) { $prop tag "cons"  $decl head h  $decl tail $alloc t }
 
-  // A list read out of storage (§5.4), as `C.ival` reads an `Int`.
-  $prop val $func ($decl xs node) xs
+    // A list read out of storage (§5.4), as `C.ival` reads an `Int`.
+    $prop val $func ($decl xs node) xs
 
-  $prop is_nil $func ($decl xs node) $match xs (
-    $case {$prop tag "cons"} false,
-    $case xs true
-  )
+    $prop is_nil $func ($decl xs node) $match xs (
+      $case {$prop tag "cons"} false,
+      $case xs true
+    )
+    $prop head $func ($decl xs node) $match xs (
+      $case {$prop tag "cons"} xs.head,
+      $case xs ($call panic ("head of an empty list"))
+    )
+    $prop first $func ($decl xs node) $match xs (
+      $case {$prop tag "cons"} $call C.some (xs.head),
+      $case xs none
+    )
+    // The empty list's rest is itself.
+    $prop rest $func ($decl xs node) $match xs (
+      $case {$prop tag "cons"} $call val (xs.tail),
+      $case xs xs
+    )
 
-  $prop length $func ($decl xs node, $decl acc 0) $match xs (
-    $case {$prop tag "cons"} $call length (xs.tail, $call add (acc, 1)),
-    $case xs acc
-  )
+    $prop length $func ($decl xs node, $decl acc 0) $match xs (
+      $case {$prop tag "cons"} $call length (xs.tail, $call add (acc, 1)),
+      $case xs acc
+    )
 
-  // `xs` reversed in front of `acc`.
-  $prop reverse $func ($decl xs node, $decl acc node) $match xs (
-    $case {$prop tag "cons"} $call reverse (xs.tail, $call cons (xs.head, acc)),
-    $case xs acc
-  )
+    // `xs` reversed in front of `acc`.
+    $prop reverse $func ($decl xs node, $decl acc node) $match xs (
+      $case {$prop tag "cons"} $call reverse (xs.tail, $call cons (xs.head, acc)),
+      $case xs acc
+    )
 
-  $prop append $func ($decl xs node, $decl ys node) $call reverse ($call reverse (xs, nil), ys)
+    $prop append $func ($decl xs node, $decl ys node) $call reverse ($call reverse (xs, nil), ys)
 
-  // Out of range is a bug, not an expected failure, so it panics (§4.15).
-  $prop nth $func ($decl xs node, $decl i 0) $match xs (
-    $case {$prop tag "cons"}
-      $if ($call eq (i, 0)) xs.head ($call nth (xs.tail, $call sub (i, 1))),
-    $case xs ($call panic ("nth: index out of range"))
-  )
-
-  // The first `n`, or all of a shorter list; and what follows them.
-  $prop take $func ($decl xs node, $decl n 0, $decl acc node) $match xs (
-    $case {$prop tag "cons"}
-      $if ($call lt (0, n)) ($call take (xs.tail, $call sub (n, 1), $call cons (xs.head, acc)))
-          ($call reverse (acc, nil)),
-    $case xs ($call reverse (acc, nil))
-  )
-  $prop drop $func ($decl xs node, $decl n 0) $match xs (
-    $case {$prop tag "cons"} $if ($call lt (0, n)) ($call drop (xs.tail, $call sub (n, 1))) xs,
-    $case xs xs
-  )
-
-  $prop any $func ($decl xs node, $decl p $func ($decl x T) C.bool) $match xs (
-    $case {$prop tag "cons"} $if ($call p (xs.head)) true ($call any (xs.tail, p)),
-    $case xs false
-  )
-  $prop all $func ($decl xs node, $decl p $func ($decl x T) C.bool) $match xs (
-    $case {$prop tag "cons"} $if ($call p (xs.head)) ($call all (xs.tail, p)) false,
-    $case xs true
-  )
-
-  // The first element `p` accepts, as an option (§8).
-  $prop find $func ($decl xs node, $decl p $func ($decl x T) C.bool) $match xs (
-    $case {$prop tag "cons"}
-      $if ($call p (xs.head)) ($call C.some (xs.head)) ($call find (xs.tail, p)),
-    $case xs none
-  )
-
-  $prop filter $func ($decl xs node, $decl p $func ($decl x T) C.bool, $decl acc node)
-    $match xs (
+    // Out of range is a bug, not an expected failure, so it panics (§4.15).
+    $prop nth $func ($decl xs node, $decl i 0) $match xs (
       $case {$prop tag "cons"}
-        $call filter (xs.tail, p, $if ($call p (xs.head)) ($call cons (xs.head, acc)) acc),
+        $if ($call eq (i, 0)) xs.head ($call nth (xs.tail, $call sub (i, 1))),
+      $case xs ($call panic ("nth: index out of range"))
+    )
+
+    // The first `n`, or all of a shorter list; and what follows them.
+    $prop take $func ($decl xs node, $decl n 0, $decl acc node) $match xs (
+      $case {$prop tag "cons"}
+        $if ($call lt (0, n)) ($call take (xs.tail, $call sub (n, 1), $call cons (xs.head, acc)))
+            ($call reverse (acc, nil)),
       $case xs ($call reverse (acc, nil))
     )
+    $prop drop $func ($decl xs node, $decl n 0) $match xs (
+      $case {$prop tag "cons"} $if ($call lt (0, n)) ($call drop (xs.tail, $call sub (n, 1))) xs,
+      $case xs xs
+    )
 
-  // A stable merge sort by `less`: halves, so equal elements keep their order because
-  // `merge` takes from the left unless the right is strictly less. Not named `lt`, which
-  // would shadow the intrinsic `sort_by` needs.
-  $prop merge $func ($decl xs node, $decl ys node,
-                     $decl less $func ($decl a T, $decl b T) C.bool, $decl acc node) $match xs (
-    $case {$prop tag "cons"} $match ys (
-      $case {$prop tag "cons"}
-        $if ($call less (ys.head, xs.head))
-            ($call merge (xs, ys.tail, less, $call cons (ys.head, acc)))
-            ($call merge (xs.tail, ys, less, $call cons (xs.head, acc))),
-      $case ys ($call reverse (acc, xs))),
-    $case xs ($call reverse (acc, ys))
-  )
-  $prop sort_by $func ($decl xs node, $decl less $func ($decl a T, $decl b T) C.bool) {
-    $decl n   $call length (xs, 0)
-    $decl h   $call div (n, 2)
-    $decl ret $if ($call lt (n, 2)) xs
-                  ($call merge ($call sort_by ($call take (xs, h, nil), less),
-                                $call sort_by ($call drop (xs, h), less), less, nil))
-  }.ret
-
-  // The elements of an array, in order (§8).
-  // No block around the recursion: §7.7 would make it a frame per element.
-  $prop of_array $func ($decl a $call array (0, T), $decl i 0, $decl acc node)
-    $if ($call lt (0, i))
-        ($call of_array (a, $call sub (i, 1), $call cons ($call at (a, $call sub (i, 1)), acc)))
-        acc
-  $prop from_array $func ($decl a $call array (0, T)) $call of_array (a, $call alen (a), nil)
-
-  // Whether `x` is an element, by the element's own `eq` (`std/core`'s `eq_proto`). A
-  // template, so a list whose element has no `eq` — `list Int` — is still a list; `E` is
-  // `x`'s type, which is the element's.
-  $prop contains $template ($decl E $traitsof ($specialize C.eq_proto E))
-    $func ($decl xs node, $decl x E) $match xs (
-      $case {$prop tag "cons"} $if ($call x.eq (xs.head)) true ($call contains (xs.tail, x)),
+    $prop any $func ($decl xs node, $decl p $func ($decl x T) C.bool) $match xs (
+      $case {$prop tag "cons"} $if ($call p (xs.head)) true ($call any (xs.tail, p)),
       $case xs false
     )
-  // The position of the first element equal to `x`, as an option.
-  $prop index_of $template ($decl E $traitsof ($specialize C.eq_proto E))
-    $func ($decl xs node, $decl x E, $decl i 0) $match xs (
+    $prop all $func ($decl xs node, $decl p $func ($decl x T) C.bool) $match xs (
+      $case {$prop tag "cons"} $if ($call p (xs.head)) ($call all (xs.tail, p)) false,
+      $case xs true
+    )
+
+    // The first element `p` accepts, as an option (§8).
+    $prop find $func ($decl xs node, $decl p $func ($decl x T) C.bool) $match xs (
       $case {$prop tag "cons"}
-        $if ($call x.eq (xs.head)) ($call C.some (i))
-            ($call index_of (xs.tail, x, $call add (i, 1))),
+        $if ($call p (xs.head)) ($call C.some (xs.head)) ($call find (xs.tail, p)),
       $case xs none
     )
 
-  // `f` of every element. `B` comes from `f`'s result, and the new list is `list B` —
-  // the template specialising itself (§4.9), memoised per element type.
-  $prop map_go $template B $func ($decl xs node, $decl f $func ($decl x T) B,
-                                  $decl acc ($specialize list B).node) $match xs (
-    $case {$prop tag "cons"}
-      $call map_go (xs.tail, f, $call ($specialize list B).cons ($call f (xs.head), acc)),
-    $case xs $call ($specialize list B).reverse (acc, ($specialize list B).nil)
-  )
-  $prop map $template B $func ($decl xs node, $decl f $func ($decl x T) B)
-    $call map_go (xs, f, ($specialize list B).nil)
+    $prop filter $func ($decl xs node, $decl p $func ($decl x T) C.bool, $decl acc node)
+      $match xs (
+        $case {$prop tag "cons"}
+          $call filter (xs.tail, p, $if ($call p (xs.head)) ($call cons (xs.head, acc)) acc),
+        $case xs ($call reverse (acc, nil))
+      )
 
-  // Left to right: `f (f (acc, x0), x1)` and so on. `R` comes from `acc`.
-  $prop fold $template R $func ($decl xs node, $decl acc R,
-                                $decl f $func ($decl a R, $decl x T) R) $match xs (
-    $case {$prop tag "cons"} $call fold (xs.tail, $call f (acc, xs.head), f),
-    $case xs acc
-  )
-}
+    // A stable merge sort by `less`: halves, so equal elements keep their order because
+    // `merge` takes from the left unless the right is strictly less. Not named `lt`, which
+    // would shadow the intrinsic `sort_by` needs.
+    $prop merge $func ($decl xs node, $decl ys node,
+                       $decl less $func ($decl a T, $decl b T) C.bool, $decl acc node) $match xs (
+      $case {$prop tag "cons"} $match ys (
+        $case {$prop tag "cons"}
+          $if ($call less (ys.head, xs.head))
+              ($call merge (xs, ys.tail, less, $call cons (ys.head, acc)))
+              ($call merge (xs.tail, ys, less, $call cons (xs.head, acc))),
+        $case ys ($call reverse (acc, xs))),
+      $case xs ($call reverse (acc, ys))
+    )
+    $prop sort_by $func ($decl xs node, $decl less $func ($decl a T, $decl b T) C.bool) {
+      $decl n   $call length (xs, 0)
+      $decl h   $call div (n, 2)
+      $decl ret $if ($call lt (n, 2)) xs
+                    ($call merge ($call sort_by ($call take (xs, h, nil), less),
+                                  $call sort_by ($call drop (xs, h), less), less, nil))
+    }.ret
 
-// The operations needing the elements' order (`std/core`'s `ord_proto`), for a list of
-// `E`s: `$decl ord $specialize L.ord_list p`, then `$call ord.sort (xs)` on a
-// `($specialize L.list p)` list — the same list type, since §4.9 memoises per argument.
-$decl ord_list $template ($decl E $traitsof ($specialize C.ord_proto E)) {
-  // Stable, as `sort_by` is.
-  $prop sort $func ($decl xs ($specialize list E).node)
-    $call ($specialize list E).sort_by (xs, $func ($decl a E, $decl b E) $call a.lt (b))
-  $prop sorted_go $func ($decl xs ($specialize list E).node, $decl prev E) $match xs (
-    $case {$prop tag "cons"} $if ($call xs.head.lt (prev)) false ($call sorted_go (xs.tail, xs.head)),
-    $case xs true
-  )
-  $prop is_sorted $func ($decl xs ($specialize list E).node) $match xs (
-    $case {$prop tag "cons"} $call sorted_go (xs.tail, xs.head),
-    $case xs true
-  )
-  // The greatest and the least, as options; on a tie the first.
-  $prop max_go $func ($decl xs ($specialize list E).node, $decl best E) $match xs (
-    $case {$prop tag "cons"} $call max_go (xs.tail, $call C.max_ord (best, xs.head)),
-    $case xs best
-  )
-  $prop min_go $func ($decl xs ($specialize list E).node, $decl best E) $match xs (
-    $case {$prop tag "cons"} $call min_go (xs.tail, $call C.min_ord (best, xs.head)),
-    $case xs best
-  )
-  $prop max_of $func ($decl xs ($specialize list E).node) $match xs (
-    $case {$prop tag "cons"} $call C.some ($call max_go (xs.tail, xs.head)),
-    $case xs none
-  )
-  $prop min_of $func ($decl xs ($specialize list E).node) $match xs (
-    $case {$prop tag "cons"} $call C.some ($call min_go (xs.tail, xs.head)),
-    $case xs none
-  )
+    // The elements of an array, in order (§8).
+    // No block around the recursion: §7.7 would make it a frame per element.
+    $prop of_array $func ($decl a $call array (0, T), $decl i 0, $decl acc node)
+      $if ($call lt (0, i))
+          ($call of_array (a, $call sub (i, 1), $call cons ($call at (a, $call sub (i, 1)), acc)))
+          acc
+  }
+
+  // A list value over `c`. Each member reads the receiver (§4.10), so `xs.push` is a
+  // closure over `xs`; one that answers a list answers it through `of` again.
+  $prop of $func ($decl c node) {
+    $decl w   {
+      $decl cells c
+      $prop is_empty $func () $call cell.is_nil (w.cells)
+      $prop head     $func () $call cell.head (w.cells)
+      $prop first    $func () $call cell.first (w.cells)
+      $prop rest     $func () $call of ($call cell.rest (w.cells))
+      $prop push     $func ($decl x T) $call of ($call cell.cons (x, w.cells))
+      $prop length   $func () $call cell.length (w.cells, 0)
+      $prop reverse  $func () $call of ($call cell.reverse (w.cells, nil))
+      // A parameter defaulted to `w` is a list of the same type (§4.10: the declaring name,
+      // in a member's default, is the block's type).
+      $prop append   $func ($decl ys w) $call of ($call cell.append (w.cells, ys.cells))
+      $prop nth      $func ($decl i 0) $call cell.nth (w.cells, i)
+      $prop take     $func ($decl n 0) $call of ($call cell.take (w.cells, n, nil))
+      $prop drop     $func ($decl n 0) $call of ($call cell.drop (w.cells, n))
+      $prop filter   $func ($decl p $func ($decl x T) C.bool)
+        $call of ($call cell.filter (w.cells, p, nil))
+      $prop any      $func ($decl p $func ($decl x T) C.bool) $call cell.any (w.cells, p)
+      $prop all      $func ($decl p $func ($decl x T) C.bool) $call cell.all (w.cells, p)
+      $prop find     $func ($decl p $func ($decl x T) C.bool) $call cell.find (w.cells, p)
+      $prop sort_by  $func ($decl less $func ($decl a T, $decl b T) C.bool)
+        $call of ($call cell.sort_by (w.cells, less))
+    }
+    $decl ret w
+  }.ret
+
+  $prop empty      $func () $call of (nil)
+  $prop from_array $func ($decl a $call array (0, T))
+    $call of ($call cell.of_array (a, $call alen (a), nil))
 }

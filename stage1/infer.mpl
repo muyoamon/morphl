@@ -456,7 +456,14 @@ $decl close_rec $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl i 0, $decl 
   // A prop's type counts as well: a prototype naming itself only in a member's parameter
   // (§4.10) is recursive, and `$traitsof` needs the μ to find `Self` in it.
   $decl ret $if ($if ($call occurs (r, i)) true ($call T.occurs_own_props (r, i))) {
-    $decl m     $call T.close_var (r, i)
+    // Closing over a type that is already a `μ` reuses its binder, since `μx. μy. F(x, y)`
+    // is `μy. F(y, y)`: the placeholder is the whole result, and so is the `μ`'s own
+    // variable. A list wrapper's `of` is the case (`T.occurs_own_props`), and two binders
+    // for one type would make it two types.
+    $decl m     $match r (
+        $case {$prop tag "rec"} ($call T.t_rec ($call T.remap (r.body, $call T.rop_abs (i), 0))),
+        $case r ($call T.close_var (r, i))
+      )
     $decl noted $if ($call T.unguarded_rec (m))
         ($call err (cx, $call concat (
             "this recursive type has no layout: it recurs through a value, not storage. Write $new at the recursive position (§5.5). Inferred ",

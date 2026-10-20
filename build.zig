@@ -242,6 +242,10 @@ pub fn build(b: *std.Build) void {
         // reached through the parameter's type before the block is built — in the entry
         // file, a module member and a `$fwd`'d function. 3294.
         .{ .src = "stage1/fixtures/recv_param.mpl", .want = "3294\n" },
+        // A block built inside its own recursive constructor, with a member taking another
+        // of its type: the constructor's result closes twice, and `unroll`'s memo must not
+        // keep a mid-knot unrolling. At the top level and in a template. 6205.
+        .{ .src = "stage1/fixtures/wrap_self.mpl", .want = "6205\n" },
         // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
         // argument, from a function argument's parameter and result, from a module's
         // template, and a template applying itself in tail position. Stage 0 refuses
@@ -732,6 +736,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/bounds.mpl",
         "stage1/fixtures/local_rec0.mpl",
         "stage1/fixtures/recv_param.mpl",
+        "stage1/fixtures/wrap_self.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

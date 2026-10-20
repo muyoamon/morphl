@@ -1916,6 +1916,15 @@ $decl close_var $func ($decl t proto_ty, $decl i 0)
 // which is what type identity means here anyway (§5.5 makes alpha-equivalence
 // structural), so handing back the entry built for a structurally equal `rec`
 // is handing back the same type.
+//
+// Except in its props' types, which `same` ignores and conformance and member calls
+// read. So a `rec` still holding a placeholder anywhere — a prop's type included — is
+// not stored: it is mid-knot, and a settled `rec` equal to it would be handed its stale
+// members. A list wrapper built inside its own constructor is the case: its members
+// answered the constructor's placeholder until it closed (STDLIB.md, D9). Only a miss
+// pays for the walk, and a miss already rebuilds the whole body.
+$fwd occurs_all
+
 $decl unroll_ent   $func ($decl k proto_ty, $decl v proto_ty) { $decl key k  $decl val v }
 $decl proto_unroll_ent $call unroll_ent (t_bot, t_bot)
 $decl unrolls      $specialize P.list proto_unroll_ent
@@ -1936,8 +1945,8 @@ $decl unroll $func ($decl t proto_ty) $match t (
     $decl f $call unroll_find (unroll_cache, t)
     $decl ret $if f.hit ($call tval (f.val)) {
       $decl u $call subst_bnd (t.body, 0, t)
-      $decl s $set unroll_cache ($call unrolls.cons ($call unroll_ent (t, u),
-                  $call unrolls.val (unroll_cache)))
+      $decl s $set unroll_cache ($if ($call occurs_all (t, -1)) ($call unrolls.val (unroll_cache))
+                  ($call unrolls.cons ($call unroll_ent (t, u), $call unrolls.val (unroll_cache))))
       $decl ret2 u
     }.ret2
   }.ret,
@@ -2084,7 +2093,8 @@ $decl mentions_bnd $func ($decl t proto_ty, $decl k 0) $match t (
 // skips props' types — they are outside a block's identity — but a prototype that names
 // itself only in a member's parameter (§4.10's "another value of its own type") has to
 // close into a μ too, or `$traitsof` would find a placeholder where `Self` should be.
-$fwd occurs_all
+// `i` of -1 asks about any placeholder at all, which `unroll`'s memo needs; ids are never
+// negative.
 
 $decl occurs_all_tys $func ($decl xs tys.node, $decl i 0) $match xs (
   $case {$prop tag "cons"} $if ($call occurs_all ($call tval (xs.head), i)) true
@@ -2105,7 +2115,7 @@ $decl occurs_all_props $func ($decl xs props.node, $decl i 0) $match xs (
 )
 
 $decl occurs_all $func ($decl t proto_ty, $decl i 0) $match t (
-  $case {$prop tag "var"}   $call eq_int (t.id, i),
+  $case {$prop tag "var"}   $if ($call eq_int (i, -1)) true ($call eq_int (t.id, i)),
   $case {$prop tag "block"}
     $if ($call occurs_all_fields (t.fields, i)) true ($call occurs_all_props (t.props, i)),
   $case {$prop tag "group"} $call occurs_all_tys (t.items, i),
@@ -2127,6 +2137,12 @@ $decl occurs_all $func ($decl t proto_ty, $decl i 0) $match t (
 // where a prototype naming itself in a member's parameter puts it (§4.10). `occurs` cannot
 // see it, since a prop is not layout; walking every type `close_rec` closes for it costs 5%
 // of a self-emit, and nothing deeper is a prototype's own prop.
+//
+// A `μ` is seen through, because its body's props are still the type's own. A block built
+// inside a recursive function — a list wrapper's `of` (STDLIB.md, D9) — closes twice: first
+// over itself, when a member's default names it (§4.10), and then over the function's
+// placeholder, which its members' results still mention. Without this the second close
+// found nothing and the placeholder survived in every member's type.
 $decl occurs_own_props_tys $func ($decl xs tys.node, $decl i 0) $match xs (
   $case {$prop tag "cons"} {
     $decl h   $call tval (xs.head)
@@ -2142,6 +2158,7 @@ $decl occurs_own_props_tys $func ($decl xs tys.node, $decl i 0) $match xs (
 $decl occurs_own_props $func ($decl t proto_ty, $decl i 0) $match t (
   $case {$prop tag "block"} $call occurs_all_props (t.props, i),
   $case {$prop tag "union"} $call occurs_own_props_tys ($call tys.val (t.members), i),
+  $case {$prop tag "rec"}   $call occurs_own_props (t.body, i),
   $case t false
 )
 // A member's type with `self` for `Self` (§6): conformance instantiates it at the
