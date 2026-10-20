@@ -231,6 +231,8 @@ $decl varms $func ($decl st proto_vst, $decl cx proto_vcx, $decl xs IR.arms.node
 // covers a prim, a closure value and anything else §6a cannot turn into a loop.
 $decl callee_fn $func ($decl e IR.proto_expr) $match e (
   $case {$prop tag "global"} e.fn,
+  // A closure literal names its function too: a local `$func` calling itself is one.
+  $case {$prop tag "closure"} e.fn,
   $case e -1
 )
 

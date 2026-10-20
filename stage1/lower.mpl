@@ -574,6 +574,15 @@ $decl lstate $func () {
   // generic inferred by application has a type and no value (`tyhole`), so reading one
   // anywhere else is reported.
   $decl tonly  $mut $alloc 0
+  // A `$func` literal a block's `$decl` binds (`lower_item`): its name, handed to the
+  // literal's lowering, and then, while that body is lowered, the function it names —
+  // its lifted index, its type, and its captures' types — so naming it inside its own
+  // body is a closure over itself (STDLIB.md, P10).
+  $decl recname $mut $alloc ""
+  $decl scname  $mut $alloc ""
+  $decl scidx   $mut $alloc -1
+  $decl scty    $mut $alloc T.proto_ty
+  $decl scets   $mut $alloc IR.ints.node
   // The type of each slot allocated so far, newest first (§7.2).
   $decl sltys  $mut $alloc IR.ints.node
   // Identities for opaque prop values; §4.10 makes two distinct
@@ -1726,12 +1735,29 @@ $decl intern_cands $func ($decl st proto_lst, $decl cs T.tys.node, $decl id 0) $
   $case cs id
 )
 
+// A local `$func` named inside its own body: the closure over itself — its lifted index,
+// with its own captures read back in order, which is the closure the enclosing frame holds.
+$decl self_caps $func ($decl xs IR.ints.node, $decl i 0, $decl acc IR.exprs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call self_caps ($call IR.ints.val (xs.tail), $call add (i, 1),
+        $call IR.exprs.cons ($call IR.e_capture (xs.head, i), acc)),
+  $case xs ($call IR.exprs.reverse (acc, IR.exprs.nil))
+)
+$decl self_closure $func ($decl st proto_lst) {
+  $decl t   $call T.tval (st.scty)
+  $decl ret $call lres ($call IR.e_closure ($call intern (st, t), $call P.ival (st.scidx),
+                $call self_caps ($call IR.ints.val (st.scets), 0, IR.exprs.nil)), t)
+}.ret
+
 $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
   $decl nm $call name_of (n)
   $decl f  $call lookup (e, nm)
   $decl ret $if ($call not (f.hit))
-      ($call lres ($call IR.e_unit ($call err (st, $call concat ("unknown name '",
-           $call concat (nm, "'")), n)), T.t_bot))
+      ($if ($if ($call eq_str ($call P.sval (st.scname), "")) false
+                ($call eq_str (nm, $call P.sval (st.scname))))
+           ($call self_closure (st))
+           ($call lres ($call IR.e_unit ($call err (st, $call concat ("unknown name '",
+                $call concat (nm, "'")), n)), T.t_bot)))
     ($if ($call eq_str (f.bnd.kind, "prop"))
       // §4.10: a prop is compile-time, so naming one is not reading a slot —
       // it is asking the module what that prop's value lowered to.
@@ -2303,7 +2329,15 @@ $decl free_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $match
 $decl free_names $func ($decl n Pa.proto_node, $decl acc strs.node) $match n (
   $case {$prop tag "name"}
     $if ($call mem_str (acc, n.text)) acc ($call strs.cons (n.text, acc)),
-  $case {$prop tag "form"}  ($call free_names_list ($call Pa.nodes.val (n.operands), acc)),
+  // §7.6: `$alloc` draws from the `allocator` in lexical scope, so it reads that name
+  // although it never spells it — `Pa.free_names`'s rule, which this copy lacked. A closure
+  // that allocated from a local arena captured nothing, and its `$alloc` then read the
+  // enclosing frame's slot of that number from its own frame.
+  $case {$prop tag "form"}
+    ($call free_names_list ($call Pa.nodes.val (n.operands),
+        $if ($call eq_str (n.keyword, "alloc"))
+            ($if ($call mem_str (acc, "allocator")) acc ($call strs.cons ("allocator", acc)))
+            acc)),
   $case {$prop tag "group"} ($call free_names_list ($call Pa.nodes.val (n.items), acc)),
   $case {$prop tag "block"} ($call free_names_list ($call Pa.nodes.val (n.items), acc)),
   $case {$prop tag "proj_name"}  ($call free_names (n.target, acc)),
@@ -3494,6 +3528,46 @@ $decl lower_ffi $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form
 // the explicit path with each generic bound to a `tyhole` — a node standing for an
 // interned type, which is all an inferred generic is. So an application and an explicit
 // `$specialize` at the same types share a memo entry, and so their lifted functions.
+// A `$func` literal lifted: its body lowered in its own frame, with the enclosing slot space
+// put aside. `self` is the name a block's `$decl` gives it when the body names it (P10):
+// then the body is lowered twice, as a prop that names itself is — the first pass only to
+// learn the result type the self-reference has, rolled back, and the second against it —
+// with `self` resolving to the closure over this very function (`self_closure`). The
+// self-reference is cleared for any literal nested in the body, whose captures differ.
+$decl lam_res $func ($decl i 0, $decl t T.proto_ty) { $decl idx i  $decl ty t }
+
+$decl lower_lam_pass $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.proto_node,
+                            $decl ets IR.ints.node, $decl self "", $decl sty T.proto_ty) {
+  $decl outer $call take_slots (st)
+  $decl idx   $call reserve_lifted (st)
+  $decl s0    $set st.scname self
+  $decl s1    $set st.scidx idx
+  $decl s2    $set st.scty sty
+  $decl s3    $set st.scets ets
+  $decl lf    $call lower_func (st, ce, "lambda", n, T.t_bot, ets)
+  $decl back  $call restore_slots (st, outer)
+  $decl put   $call put_lifted (st, idx, lf)
+  $decl ret   $call lam_res (idx, $call fn_ty (st, lf))
+}.ret
+
+$decl lower_lambda $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.proto_node,
+                          $decl ets IR.ints.node, $decl self "") {
+  $decl o_n $call P.sval (st.scname)
+  $decl o_i $call P.ival (st.scidx)
+  $decl o_t $call T.tval (st.scty)
+  $decl o_e $call IR.ints.val (st.scets)
+  $decl ret $if ($call eq_str (self, "")) ($call lower_lam_pass (st, ce, n, ets, "", T.t_bot)) {
+    $decl sn   $call take_snap (st)
+    $decl p1   $call lower_lam_pass (st, ce, n, ets, self, T.t_bot)
+    $decl rb   $call put_snap (st, sn)
+    $decl ret2 $call lower_lam_pass (st, ce, n, ets, self, p1.ty)
+  }.ret2
+  $decl r0  $set st.scname o_n
+  $decl r1  $set st.scidx o_i
+  $decl r2  $set st.scty o_t
+  $decl r3  $set st.scets o_e
+}.ret
+
 $decl int_node $func ($decl n Pa.proto_node) $match n (
   $case {$prop tag "int"} n.value,
   $case n -1
@@ -3647,7 +3721,12 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     // pair behind. Its frame is its own, so the enclosing slot space is put
     // aside and restored.
     ($if ($call eq_str (k, "func")) {
+      // The name a block's `$decl` gives this literal, taken so a literal nested in its body
+      // does not see it; `self` only when the body names it (P10).
+      $decl rnm  $call P.sval (st.recname)
+      $decl clr  $set st.recname ""
       $decl fns  $call free_names (n, strs.nil)
+      $decl self $if ($call eq_str (rnm, "")) "" ($if ($call mem_strs (fns, rnm)) rnm "")
       $decl cs   $call caps (fns, e, benv.nil)
       $decl vals $call cap_exprs (st, cs, IR.exprs.nil)
       // The captures are found the same way at every evaluation, so they come
@@ -3665,12 +3744,10 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
             ($call lres ($call IR.e_closure ($call intern (st, hit.head.ty), hit.head.idx, vals),
                  hit.head.ty)),
           $case hit {
-            $decl outer $call take_slots (st)
             $decl ets   $call cap_tys (st, cs, IR.ints.nil)
-            $decl lf    $call lower_func (st, $call cap_env (cs, 0, e), "lambda", n, T.t_bot, ets)
-            $decl back  $call restore_slots (st, outer)
-            $decl idx   $call add_lifted (st, lf)
-            $decl fty   $call fn_ty (st, lf)
+            $decl lw    $call lower_lambda (st, $call cap_env (cs, 0, e), n, ets, self)
+            $decl idx   lw.idx
+            $decl fty   lw.ty
             $decl memo $set st.fnmemo ($if ($call eq_str (fk, "")) ($call fnm_list.val (st.fnmemo))
                            ($call fnm_list.cons ($call fnm_ent (fk, idx, fty), st.fnmemo)))
             $decl ret3    $call lres ($call IR.e_closure ($call intern (st, fty), idx, vals), fty)
@@ -4348,7 +4425,9 @@ $decl lower_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto
   $if ($call is_form (it, "decl")) {
     $decl nm  $call name_of ($call op (it, 0))
     $decl rs  $call recv_enter (st, nm, $call op (it, 1))
+    $decl rn0 $set st.recname ($if ($call is_form ($call op (it, 1), "func")) nm "")
     $decl v   $call lval ($call lower (st, a.env, $call op (it, 1), false))
+    $decl rn1 $set st.recname ""
     $decl rb  $call recv_put (st, rs)
     $decl id  $call intern (st, v.ty)
     $decl ir  $call with_pending (a.pend, v.ir, id)
@@ -4547,6 +4626,8 @@ $decl self_tails $func ($decl e IR.proto_expr, $decl i 0) $match e (
     $decl c $call IR.eval (e.callee)
     $decl ret $match c (
         $case {$prop tag "global"} ($if e.tail ($call eq_int (c.fn, i)) false),
+        // A local `$func` calling itself is a closure over itself (P10).
+        $case {$prop tag "closure"} ($if e.tail ($call eq_int (c.fn, i)) false),
         $case c false
       )
   }.ret,

@@ -1396,6 +1396,19 @@ $decl alias_xsym $func ($decl st proto_est, $decl i 0)
 // The *group* case is safe resolved: if the target is a member then this code is
 // inside that group's function and its dispatch loop exists, and if it is not
 // then `st.grp` is nil and `state_of` answers -1.
+$decl cap_slot $func ($decl e IR.proto_expr) $match e ($case {$prop tag "capture"} e.slot, $case e -1)
+$decl caps_in_order $func ($decl xs IR.exprs.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int ($call cap_slot (xs.head), i))
+        ($call caps_in_order ($call IR.exprs.val (xs.tail), $call add (i, 1))) false,
+  $case xs true
+)
+$decl is_self_closure $func ($decl e IR.proto_expr, $decl fi 0) $match e (
+  $case {$prop tag "closure"}
+    $if ($call eq_int (e.fn, fi)) ($call caps_in_order ($call IR.exprs.val (e.captures), 0)) false,
+  $case e false
+)
+
 $decl tail_state $func ($decl st proto_est, $decl c IR.proto_expr, $decl fi 0) $match c (
   $case {$prop tag "global"} {
     $decl fn $call res_fn (st, c.fn)
@@ -1405,6 +1418,9 @@ $decl tail_state $func ($decl st proto_est, $decl c IR.proto_expr, $decl fi 0) $
     // change. Otherwise the state to jump to.
     $decl ret $if ($call eq_int (s, -1)) ($if ($call eq_int (c.fn, fi)) -2 -1) s
   }.ret,
+  // A local `$func` calling itself (lowering's `self_closure`): the same function, so the
+  // loop (§7.7) — its environment is unchanged, being the closure over its own captures.
+  $case {$prop tag "closure"} $if ($call eq_int (c.fn, fi)) -2 -1,
   $case c -1
 )
 
@@ -3134,7 +3150,11 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     $decl en $call env_name (e.fn)
     $decl d2 $call assign (st, $call concat (dest, ".code"),
                  $call concat ("(void *)", $call fn_name (st, e.fn)))
-    $decl ret  $if ($call IR.exprs.is_nil (cs))
+    $decl ret  $if ($call is_self_closure (e, fi))
+        // The closure over this very function and its own captures, in order — a local
+        // `$func` naming itself (P10) — is the environment this call already has.
+        ($call assign (st, $call concat (dest, ".env"), "env"))
+      ($if ($call IR.exprs.is_nil (cs))
         ($call assign (st, $call concat (dest, ".env"), "0")) {
           $decl ev $call fresh_tmp (st)
           $decl d0 $call say (st, $call concat ("  ", $call concat (en,
@@ -3144,7 +3164,7 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
           $decl d1 $call emit_env (st, fi, cs, ev, 0, ts)
           $decl ret2  $call assign (st, $call concat (dest, ".env"),
                        $call concat ("(void *)", ev))
-        }.ret2
+        }.ret2)
   }.ret,
   // §6: a trait object is its referent's address and its implementation's table.
   $case {$prop tag "tobj"} {

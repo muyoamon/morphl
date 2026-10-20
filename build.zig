@@ -263,6 +263,10 @@ pub fn build(b: *std.Build) void {
         // §4.9's bounds in TRAITS.md's syntax — an F-bound, a trait bound, and a plain generic
         // beside a bounded one — checked at specialisation. 55.
         .{ .src = "stage1/fixtures/bounds.mpl", .want = "55\n" },
+        // P10: a `$func` a block binds may name itself — a loop, a doubly recursive call,
+        // and a helper allocating from a local arena it captures. 2000736.
+        .{ .src = "stage1/fixtures/local_rec.mpl", .want = "2000736\n", .stage0 = false },
+        .{ .src = "stage1/fixtures/local_rec0.mpl", .want = "2000610\n" },
         // §4.8's `$overload`: first fit, a nested overload, an overload argument, and
         // `x.i`. 362.
         .{ .src = "stage1/fixtures/overload.mpl", .want = "362\n" },
@@ -722,6 +726,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/trait_written.mpl",
         "stage1/fixtures/self_trait.mpl",
         "stage1/fixtures/bounds.mpl",
+        "stage1/fixtures/local_rec0.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

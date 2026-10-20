@@ -76,10 +76,13 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
 - **P9. Lowering a template whose body is a `$func`.** **Done**, as the block
   `{ $prop $fn <body> }` with the function read back off it — so it is lifted once per
   memo key and named and placed like `P.list`'s members.
-- **P10. A local recursive `$func` does not lower.** `{ $decl go $func (…) … $call go (…) … }`
-  inside another function runs under stage 0 and type-checks, and lowering reports `unknown
-  name 'go'`. Found writing `std/mem`'s tests: §7.6 makes an allocator lexical, so code using
-  a local arena wants its helpers local too. *Wanted; worked around in the tests.*
+- **P10. A local recursive `$func`.** **Done.** Inside its own body the name a block's
+  `$decl` gives a `$func` is the closure over itself — its own index and captures, lowered
+  twice as a self-naming prop is — so a tail call to it is a loop and a call elsewhere reuses
+  its environment. Writing the test found a second bug: lowering's own `free_names` lacked
+  `$alloc`'s implicit read of `allocator`, so a closure allocating from a local arena
+  captured nothing and read the enclosing frame's slot from its own. A literal nested in the
+  body does not see the name yet. `stage1/fixtures/local_rec*.mpl`.
 - **P3. Arrays of any type.** **Done.** `array`, `at`, `alen` and `array_ptr` are bound at
   markers and each call is typed from its arguments (`infer_ffi`, `lower_ffi`), as `box_ptr`
   and `unbox` are; an array's elements are held to A0. The backend and stage 0 never
