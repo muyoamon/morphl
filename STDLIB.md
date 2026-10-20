@@ -417,6 +417,18 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
     `index_of` (`eq_proto`), `sort`, `max_of`, `min_of`, `is_sorted` (`ord_proto`). These
     replace `ord_list E` and the template members `contains`/`index_of`, which point 4 rules
     out as methods anyway.
+  - **Done**, with `std/seq_test.mpl` (23), which runs them over a list and over a sequence
+    that is not one (a countdown block). Three things the design did not say:
+    - **The element type is never the algorithm's generic**, since nothing names it. Where it
+      must be named, a helper takes one element as an example and reads `E` off it
+      (`sorted_go`, `max_go`, `sort_as`), behind an emptiness check, as `head` panics. That
+      is also where `eq_proto`/`ord_proto` sit. The cost: sorting `Int`s is refused, as it
+      should be, but the diagnostic points at the helper's call inside `std/seq.mpl`, not at
+      the caller's line.
+    - **`to_list (xs, into)` takes a list to collect after**, because the result's element
+      type has to come from somewhere: `$call Q.to_list (xs, $call ints.empty ())`.
+    - **`sort` needs a `sort_by` member**, which a `std/list` list has. A capability cannot
+      say so (`sort_by` mentions the element type), so it is checked when the body is typed.
 - **A parameter typed "a list of T"** has an empty one as its default:
   `$decl xs ($call ints.empty ())`. A prop cannot hold it (§4.10: a call is not constant),
   so there is no `ints.t`. Needed P11, now fixed.
