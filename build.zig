@@ -257,6 +257,9 @@ pub fn build(b: *std.Build) void {
         // TRAITS.md: a trait is its props as written — a member taking its block's own type
         // is callable through an object, and "any implementation" is `$traitsof`. 221.
         .{ .src = "stage1/fixtures/trait_written.mpl", .want = "221\n" },
+        // TRAITS.md, design point 7: a trait naming itself, by its block's name and through
+        // a specialisation of its template, tied by §5.5. 116.
+        .{ .src = "stage1/fixtures/self_trait.mpl", .want = "116\n" },
         // §4.8's `$overload`: first fit, a nested overload, an overload argument, and
         // `x.i`. 362.
         .{ .src = "stage1/fixtures/overload.mpl", .want = "362\n" },
@@ -714,6 +717,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/tscalar.mpl",
         "stage1/fixtures/recv_ref.mpl",
         "stage1/fixtures/trait_written.mpl",
+        "stage1/fixtures/self_trait.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

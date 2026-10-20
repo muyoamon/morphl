@@ -841,6 +841,22 @@ $decl tt03b $call check ("...so another type is refused",
   $call not ($call eq_str ($call errs_of (
       "$decl s { $prop eq $func ($decl o s) true }  $decl x $traitsof s  $decl y $call x.eq (5)"), "")))
 
+// TRAITS.md, design point 7: a trait naming itself is tied by §5.5, so its own members are
+// in it — `bigger [!]` before, which nothing conformed to — through the block's name and
+// through a specialisation of the template being typed.
+$decl tt03c $call check_str ("a trait naming itself by its block's name closes",
+  $call errs_of ($call concat ("$decl p { $prop area $func () 0  $prop big $func ($decl o $traitsof p) true }",
+      $call concat ("  $decl q { $prop area $func () 1  $prop big $func ($decl o $traitsof p) true }",
+          "  $decl u $func ($decl s $traitsof p) 0  $decl v $call u (q)"))), "")
+$decl tt03d $call check_str ("...and its members are typed against it",
+  $call errs_of ("$decl p { $decl k 1  $prop size $func () p.k  $prop big $func ($decl o $traitsof p) $call lt ($call o.size (), 2) }"),
+  "")
+$decl tt03e $call check_str ("a trait naming its own specialisation closes",
+  $call errs_of ($call concat ("$decl s $template T { $prop first $func () T  $prop rest $func () $traitsof $alloc ($specialize s T) }",
+      $call concat ("  $decl t $traitsof ($specialize s 0)",
+          "  $decl c { $prop first $func () 4  $prop rest $func () $traitsof c }  $decl u $func ($decl x t) 0  $decl v $call u (c)"))),
+  "")
+
 $decl tt04 $call check_str ("a member is read through the object",
   $call field_ty ("$decl s { $prop area $func () 3 }  $decl o $traitsof s  $decl x o.area", "x"), "[]->Int")
 

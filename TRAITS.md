@@ -1,7 +1,7 @@
 # Traits without `Self`: design note
 
-Status: **steps 1 and 2 done** — `Self` is gone and every member of a trait object is
-callable. Self-referencing traits (step 3) and bounds in the `$decl` syntax (step 4) remain.
+Status: **steps 1–3 done** — `Self` is gone, every member of a trait object is callable,
+and a trait naming itself is tied by §5.5. Bounds in the `$decl` syntax (step 4) remain.
 
 §6 builds a trait "over a distinguished type `Self`", and `$traitsof` makes one by abstracting
 every occurrence of the value's own type into it. This note removes `Self`. A trait is its
@@ -214,7 +214,25 @@ program meaning "another implementation" writes `$traitsof` there.
    rule gone, `tt03`/`tt05` updated. Nothing in the compiler's own source changes. **Done**
    (`stage1/fixtures/trait_written.mpl`; `types_test`'s `trs05` now pins both directions).
 3. **Self-referencing traits by §5.5** (design point 7), with the `size : [] -> !` case as its
-   regression test.
+   regression test. **Done** (`stage1/fixtures/self_trait.mpl`, `infer_test`'s `tt03c`–`tt03e`):
+   - **By the block's name.** While a block with a receiver name is typed, `$traitsof` of the
+     name is a placeholder; a projection off it reads the block's members so far; when the
+     block is done the placeholder is closed into `μ. trait_of (block)` and substituted back
+     into its props (`infer.mpl`'s `close_self`).
+   - **Through a specialisation.** `$traitsof ($specialize seq T)` inside `seq` reaches the
+     memo's in-progress placeholder; it answers a trait placeholder recorded against it, and
+     `specialize_at` closes that the same way once the body is typed.
+   - **A prototype's example of a trait-typed result is made from `$alloc`ed storage**:
+     `$traitsof $alloc ($specialize seq T)`. `$traitsof` of a temporary is fresh frame storage
+     (§4.13), which §5.3a keeps from escaping a function, and a template's body has no
+     receiver to point at. The checker said so before this step too.
+   - **`T.is_trait` sees through a μ**, and emit lays a μ around a trait out as `mpl_tobj` —
+     including a member type nobody interned, which `fn_sig` used to emit as `int64_t`.
+   - **Lowering still derives a self-referencing trait with ⊥ inside** (`bigger : [trait{…,
+     bigger : !}]`): it builds a block's trait from its props lazily, and does not re-run
+     §5.5. Every trait object is `mpl_tobj` and its table is laid out by member *name*, so
+     the C is right; the imprecision is in the IR's types. Lowering taking `$traitsof` sites'
+     types from inference, as it takes `ualloc`'s sites, would remove it.
 4. **Bounds (P2) in this syntax**, F-bounds included — then `std/core`'s `eq_proto` and
    `ord_proto`, and `STDLIB.md`'s capability traits (`sized`, `seq`, `indexed`, `builder`)
    built on them.

@@ -2391,7 +2391,13 @@ $decl members_sub $func ($decl xs fields.node, $decl ms fields.node, $decl st pr
   $case ms true
 )
 
-$decl is_trait $func ($decl t proto_ty) $match t ($case {$prop tag "trait"} true, $case t false)
+// A μ around a trait is a trait type too (TRAITS.md, design point 7): one that names itself.
+$decl is_trait_node $func ($decl b proto_ty) $match b ($case {$prop tag "trait"} true, $case b false)
+$decl is_trait $func ($decl t proto_ty) $match t (
+  $case {$prop tag "trait"} true,
+  $case {$prop tag "rec"} $call is_trait_node ($call tval (t.body)),
+  $case t false
+)
 
 // §6: a mutable trait object stands where a read-only one is expected, never the reverse —
 // §5.3's `&mut T <: &const T` for the referent it is.

@@ -385,7 +385,9 @@ $decl c_type $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0) {
       // §5.5's `μ` is laid out as its unrolling, under its own index's name:
       // one struct however the type was spelled, which is what makes the
       // index a C struct name at all.
-      $case {$prop tag "rec"} ($call ty_name (ts, i)),
+      // A μ around a trait (TRAITS.md, design point 7) is a trait object like any other.
+      $case {$prop tag "rec"}
+        $if ($call T.is_trait ($call T.unroll (t))) "mpl_tobj" ($call ty_name (ts, i)),
       // §7.2: "Groups are laid out elementwise" — a struct whose members
       // have positions instead of names, which is what `.n` indexes.
       $case {$prop tag "group"} ($call ty_name (ts, i)),
@@ -945,13 +947,23 @@ $decl union_members $func ($decl t0 T.proto_ty) {
 // The function-pointer type a call through a closure is cast to. §7.3 gives
 // every function the same value shape, so the signature has to come from the
 // static type at the call site — which is exactly what it is for.
+// A signature part that was never interned: a function value and a trait object have one
+// C type whatever their type (§7.3, §6) — including a trait closed into a μ (TRAITS.md, design
+// point 7), whose members name it and so were not interned when the μ was. Anything else
+// missing is the old placeholder.
+$decl miss_ctype $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "trait"} "mpl_tobj", $case {$prop tag "func"} "mpl_fun",
+                      $case t "int64_t")
+}.ret
+
 $decl sig_params $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node,
                         $decl acc "") $match ps (
   $case {$prop tag "cons"} {
     $decl f $call IR.find_ty (ts, ps.head)
     $decl ret $call sig_params (st, ts, $call T.tys.val (ps.tail),
                 $call concat (acc, $call concat (", ",
-                    $if f.hit ($call c_type (st, ts, f.id)) "int64_t")))
+                    $if f.hit ($call c_type (st, ts, f.id)) ($call miss_ctype (ps.head)))))
   }.ret,
   $case ps acc
 )
@@ -962,7 +974,7 @@ $decl fn_sig $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0) {
       $case {$prop tag "func"} {
         $decl rf $call IR.find_ty (ts, t.result)
         $decl ret2  $call concat ("(", $call concat (
-            $if rf.hit ($call c_type (st, ts, rf.id)) "int64_t",
+            $if rf.hit ($call c_type (st, ts, rf.id)) ($call miss_ctype (t.result)),
             $call concat ("(*)(void *",
             $call concat ($call sig_params (st, ts, $call T.tys.val (t.params), ""),
                           "))"))))

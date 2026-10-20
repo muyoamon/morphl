@@ -104,6 +104,12 @@ $decl memo_ent   $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty 
 $decl proto_memo $call memo_ent ("", T.t_bot)
 $decl memo_list  $specialize P.list proto_memo
 
+// TRAITS.md, design point 7, through §4.9: a `$traitsof` of a specialisation still being
+// typed (`$traitsof ($specialize seq T)` inside `seq`) is answered by the trait placeholder
+// `rt`, recorded against the memo's placeholder `ph`; `specialize_at` closes it.
+$decl st_pair  $func ($decl p 0, $decl r 0) { $decl ph p  $decl rt r }
+$decl st_pairs $specialize P.list ($call st_pair (0, 0))
+
 // §4.14: "**Loaded once.** All imports of the same resolved file yield the same
 // block", and "**Cycles are an error.**" `state` is "loading" while a module is
 // being typed, which is what turns a cycle into a diagnostic instead of a hang.
@@ -272,6 +278,16 @@ $decl ctx $func () {
   $decl rbase   $mut $alloc T.proto_ty
   $decl rbline  $mut $alloc -1
   $decl rbcol   $mut $alloc -1
+  // TRAITS.md, design point 7: while a block with a receiver name is typed, `$traitsof` of
+  // that name is §5.5's placeholder `stid` — not a trait built from members still being
+  // typed, which captured them as ⊥. `stblk` is the block so far, which a projection off
+  // the placeholder reads its members from; `stuse` says the placeholder was reached, so
+  // `infer_block` closes it into the recursive trait when the block is done.
+  $decl stname  $mut $alloc ""
+  $decl stid    $mut $alloc -1
+  $decl stuse   $mut $alloc $union (false, true)
+  $decl stblk   $mut $alloc T.proto_ty
+  $decl strps   $mut $alloc st_pairs.node
   // §5.3a for parameters: how many marked parameters are in scope — so a program with
   // none pays nothing for the walks — and the marks that have reached an escape point,
   // each `depth * 64 + index`, until the function at that depth takes its own.
@@ -637,6 +653,21 @@ $decl proj_members $func ($decl cx proto_ctx, $decl ms T.tys.node, $decl fld "",
 
 $decl needs_mut $func ($decl t T.proto_ty) $match t ($case {$prop tag "func"} t.rmut, $case t false)
 
+// A member off the self-trait placeholder, read from the block typed so far — the same
+// members the trait will have once it is closed (`close_self`). ⊥ before the block's type
+// exists, which is the provisional pass's, whose diagnostics are swallowed.
+$decl proj_self $func ($decl cx proto_ctx, $decl fld "", $decl n Pa.proto_node) {
+  $decl tr  $call T.trait_of ($call T.tval (cx.stblk), false, "")
+  $decl ret $match tr (
+      $case {$prop tag "trait"} {
+        $decl f    $call T.find_field (tr.members, fld)
+        $decl ret2 $if ($call eq_str (f.name, ""))
+            ($call err (cx, $call concat ("this trait has no member '", $call concat (fld, "'")), n))
+            ($call T.trait_member (tr, fld, $call T.t_var ($call ival (cx.stid))))
+      }.ret2,
+      $case tr T.t_bot)
+}.ret
+
 $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
     $decl n Pa.proto_node) $match tt (
   $case {$prop tag "block"} {
@@ -673,6 +704,11 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
     $decl ret $if ($call eq_str (p.name, "")) ($call proj_one (cx, $call T.tval (tt.base), fld, n))
                   ($call T.tval (p.ty))
   }.ret,
+  // The self-trait placeholder (design point 7): its members are the block's so far.
+  $case {$prop tag "var"}
+    $if ($call eq_int (tt.id, $call ival (cx.stid))) ($call proj_self (cx, fld, n))
+        ($call err (cx, $call concat ("cannot project '.",
+            $call concat (fld, $call concat ("' from ", $call T.show (tt)))), n)),
   $case tt ($call err (cx, $call concat ("cannot project '.",
                 $call concat (fld, $call concat ("' from ", $call T.show (tt)))), n))
 )
@@ -777,10 +813,52 @@ $decl coerce_why $func ($decl x Pa.proto_node, $decl raw T.proto_ty, $decl want 
       ""
 }.ret
 
-$decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+// Both below, beside the helpers they need.
+$fwd infer_traitsof_of
+$fwd infer_traitsof_ty
+
+$decl self_trait_at $func ($decl cx proto_ctx, $decl x Pa.proto_node) $match x (
+  $case {$prop tag "name"}
+    $if ($call eq_str ($call sval (cx.stname), "")) false
+        ($call eq_str (x.text, $call sval (cx.stname))),
+  $case x false
+)
+
+$decl infer_traitsof $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
+  $if ($call self_trait_at (cx, $call op (n, 0)))
+      ($do ($set cx.stuse true) ($call T.t_var ($call ival (cx.stid))))
+      ($call infer_traitsof_of (cx, e, n))
+
+// Whether `id` is a specialisation's placeholder still in the memo, and the trait
+// placeholder already recorded for it, or -1.
+$decl memo_has_var $func ($decl xs memo_list.node, $decl id 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int ($call var_id (xs.head.ty), id)) true ($call memo_has_var (xs.tail, id)),
+  $case xs false
+)
+$decl rt_for $func ($decl xs st_pairs.node, $decl ph 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.ph, ph)) xs.head.rt ($call rt_for (xs.tail, ph)),
+  $case xs -1
+)
+$decl spec_self_trait $func ($decl cx proto_ctx, $decl ph 0) {
+  $decl have $call rt_for ($call st_pairs.val (cx.strps), ph)
+  $decl rt   $if ($call lt (-1, have)) have ($call fresh (cx))
+  $decl put  $set cx.strps ($if ($call lt (-1, have)) ($call st_pairs.val (cx.strps))
+                 ($call st_pairs.cons ($call st_pair (ph, rt), cx.strps)))
+  $decl ret  $call T.t_var (rt)
+}.ret
+
+$decl infer_traitsof_of $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl x   $call op (n, 0)
   $decl t0  $call infer (cx, e, x)
   $decl t   $call deref_ty (t0)
+  $decl pv  $call var_id (t)
+  $decl ret $if ($if ($call lt (-1, pv)) ($call memo_has_var ($call eval_memo (cx.memo), pv)) false)
+      ($call spec_self_trait (cx, pv)) ($call infer_traitsof_ty (cx, x, t0, t, n))
+}.ret
+
+$decl infer_traitsof_ty $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl t0 T.proto_ty,
+                               $decl t T.proto_ty, $decl n proto_form) {
   $decl fr  $call traitsof_frame (cx, x, t0)
   // §6: "one made from `$mut` storage is mutable".
   $decl tr  $call T.tval (t0)
@@ -2650,6 +2728,14 @@ $fwd ct_args_check
 // explicit `$specialize` wrote, which its compile-time generics are read from; an
 // application (§4.9, `infer_apply`) has none and infers no compile-time generic, so it
 // passes the empty list and every use of `args` below is the identity on it.
+// Design point 7's closing step: `μ. trait_of (t)` with the placeholder bound, and the
+// placeholder replaced by it throughout `t`'s props.
+$decl close_self $func ($decl t T.proto_ty, $decl id 0) {
+  $decl tr  $call T.trait_of (t, false, "")
+  $decl mu  $call T.t_rec ($call T.remap (tr, $call T.rop_abs (id), 0))
+  $decl ret $call T.remap (t, $call T.rop_var (id, mu), 0)
+}.ret
+
 $decl specialize_at $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                            $decl args Pa.nodes.node, $decl ats T.tys.node,
                            $decl n Pa.proto_node) {
@@ -2687,7 +2773,11 @@ $decl specialize_at $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
               $decl body $call subst_ct (r.body, r.generics, args, r.ctg)
               $decl ty0  $call infer (cx, benv, body)
               // §5.5 discharges the placeholder if the body reached back.
-              $decl ty1 $call close_rec (cx, ty0, $call var_id (ph), n)
+              $decl ty1r $call close_rec (cx, ty0, $call var_id (ph), n)
+              // And a `$traitsof` of this specialisation inside its own body (design
+              // point 7) is closed the same way, into the trait of what it became.
+              $decl rtv  $call rt_for ($call st_pairs.val (cx.strps), $call var_id (ph))
+              $decl ty1  $if ($call lt (-1, rtv)) ($call close_self (ty1r, rtv)) ty1r
               // A body that reached itself saw `R` there, and `R` cannot be
               // projected from — `($specialize box T).mk` inside `box` failed. So it
               // is typed once more against the first pass's answer, which is what a
@@ -3616,6 +3706,16 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
                                $call eq_int ($call ival (cx.rcol), x.col)))
   $decl rn     $if mine ($call sval (cx.rname)) ""
   $decl rq     $call sval (cx.rqual)
+  // Design point 7: this block's `$traitsof rn` is a placeholder until the block is done.
+  $decl so_n   $call sval (cx.stname)
+  $decl so_i   $call ival (cx.stid)
+  $decl so_u   $call bval (cx.stuse)
+  $decl so_b   $call T.tval (cx.stblk)
+  $decl sid    $if ($call eq_str (rn, "")) so_i ($call fresh (cx))
+  $decl sn1    $set cx.stname ($if ($call eq_str (rn, "")) so_n rn)
+  $decl si1    $set cx.stid sid
+  $decl su1    $set cx.stuse ($if ($call eq_str (rn, "")) so_u false)
+  $decl sb1    $set cx.stblk ($if ($call eq_str (rn, "")) so_b T.t_bot)
   // Read now: typing the items may reach another `$impl`, which sets these afresh.
   $decl isimp  $call P.and ($call eq_int ($call ival (cx.rbline), x.line),
                    $call eq_int ($call ival (cx.rbcol), x.col))
@@ -3650,10 +3750,19 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   // prop's `ty` is outside the block's identity (§5.1), so replacing it moves nothing.
   $decl bt0  $if isimp ($call T.impl_ty (rbase, $call T.props.val (s.prps)))
                  ($call T.t_block (flds, s.prps))
+  $decl sb2  $set cx.stblk ($if ($call eq_str (rn, "")) ($call T.tval (cx.stblk)) bt0)
   $decl prps $if ($call eq_str (rn, "")) ($call T.props.val (s.prps))
                  ($call recv_props (cx, pe, items, rn, bt0, $call eq_str (rq, "mut"),
                      $call T.props.val (s.prps)))
-  $decl t1   $call T.t_block (flds, prps)
+  $decl t1u  $call T.t_block (flds, prps)
+  // The placeholder closed: the trait of the finished block, with `stid` as the bound
+  // variable of a μ around it, substituted back into the block's props (§5.5).
+  $decl used $if ($call eq_str (rn, "")) false ($call bval (cx.stuse))
+  $decl t1   $if used ($call close_self (t1u, sid)) t1u
+  $decl sn2  $set cx.stname so_n
+  $decl si2  $set cx.stid so_i
+  $decl su2  $set cx.stuse ($if ($call eq_str (rn, "")) ($call bval (cx.stuse)) so_u)
+  $decl sb3  $set cx.stblk so_b
   // §5.3a, for mutual recursion: a parameter found to escape only after its function had
   // closed — a `$fwd` member passing its own to a later one, or a body nested in a
   // recursive one — leaves a hint, and everything typed after that function saw its
