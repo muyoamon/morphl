@@ -80,6 +80,10 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
 - **P9. Lowering a template whose body is a `$func`.** **Done**, as the block
   `{ $prop $fn <body> }` with the function read back off it — so it is lifted once per
   memo key and named and placed like `P.list`'s members.
+- **P10. A local recursive `$func` does not lower.** `{ $decl go $func (…) … $call go (…) … }`
+  inside another function runs under stage 0 and type-checks, and lowering reports `unknown
+  name 'go'`. Found writing `std/mem`'s tests: §7.6 makes an allocator lexical, so code using
+  a local arena wants its helpers local too. *Wanted; worked around in the tests.*
 - **P3. Arrays of any type.** **Done.** `array`, `at`, `alen` and `array_ptr` are bound at
   markers and each call is typed from its arguments (`infer_ffi`, `lower_ffi`), as `box_ptr`
   and `unbox` are; an array's elements are held to A0. The backend and stage 0 never
@@ -264,6 +268,12 @@ container now would make every use name two generics, for a benefit no program h
 yet — and the compiler's own measurement (STORAGE.md, C) found per-phase arenas would not have
 helped it.
 
+**`std/mem`'s arena is the first allocator.** `$decl allocator $call M.arena (cap)` binds one;
+its state is its own cells, reached through the receiver (§4.10), so a program may hold as
+many as it likes. Lexical resolution means it serves the `$alloc`s written in that scope and
+no others — a function written elsewhere still draws from its own scope's allocator, which is
+exactly why a container wanting a caller's arena needs the allocator as a generic.
+
 ## D6. Building strings
 
 `concat` copies both operands, so building a string by appending is O(n²) — CLAUDE.md's
@@ -318,8 +328,8 @@ and under ASan like `test-asan`. **Done**, and three things came out of writing 
 ## Plan
 
 1. P1, P3, P4, P6 and P9 are done, so nothing blocks the first modules.
-2. **`std/core`, `std/list`, `std/test`** — done, with `zig build test-std`. **`std/io`,
-   `std/mem`** next; neither needs anything further from the compiler.
+2. **`std/core`, `std/list`, `std/test`, `std/io`, `std/mem`** — done, with
+   `zig build test-std`.
 3. **`std/str`** with the builder, and **`std/vec`** over P3.
 4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`.
 5. **P7, P8**, then the per-element-type candidates of D3a where a representation earns one.

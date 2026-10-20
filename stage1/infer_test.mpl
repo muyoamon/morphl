@@ -404,6 +404,13 @@ $decl t44w $call check_str ("a block declared inside a function has its receiver
   $call errs_of ($call concat ("$decl f $func () { $decl r { $decl w 2  $prop g $func () r.w }",
       "  $decl ret $call r.g () }.ret")), "")
 
+// A member is typed provisionally, quietly, before its receiver's type exists. A block in
+// the member's body used to end that quiet pass early, so its placeholder errors came out
+// as real ones — "cannot project '.top' from v3" for `std/mem`'s arena.
+$decl t44w2 $call check_str ("a member whose body is a block reads its receiver",
+  $call errs_of ($call concat ("$decl f $func () { $decl r { $decl w 2  $prop g $func () ",
+      "{ $decl p r.w  $decl ret p }.ret }  $decl ret $call r.g () }.ret")), "")
+
 $decl t44x $call check_str ("a parameter sharing the declaring name is not the receiver",
   $call field_ty ("$decl b { $decl w 3  $prop g $func ($decl b 0) b }  $decl t $call b.g (5)", "t"),
   "Int")

@@ -3624,9 +3624,20 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl isimp  $call P.and ($call eq_int ($call ival (cx.rbline), x.line),
                    $call eq_int ($call ival (cx.rbcol), x.col))
   $decl rbase  $call T.tval (cx.rbase)
+  // Restored, not cleared: this block may itself sit inside a quiet pass — a member's
+  // provisional typing (`prop_pass`), whose body is a `{ … }.ret` — and clearing the flag
+  // made the rest of that pass report the placeholder errors it exists to swallow.
+  //
+  // And the quiet pass leaves no specialisation behind: §4.9's memo would hand the loud
+  // pass an answer whose errors were swallowed — a body typed at a placeholder, or a
+  // depth-limit chain — and the loud pass would never type it to report them. So the
+  // outermost quiet pass puts the memo back as it found it; inside one, repeats still hit.
+  $decl q0     $call bval (cx.quiet)
+  $decl mm0    $call eval_memo (cx.memo)
   $decl hushed $set cx.quiet true
   $decl peA    $call prop_pass (cx, pe0, items, pe0, rn)
-  $decl heard  $set cx.quiet false
+  $decl heard  $set cx.quiet q0
+  $decl unmemo $set cx.memo ($if q0 ($call eval_memo (cx.memo)) mm0)
   $decl pe     $call prop_pass (cx, pe0, items, peA, rn)
   $decl s      $call bst (pe)
   $decl walked $call infer_items (cx, s, pe, items, items)

@@ -779,6 +779,8 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { src: []const u8, want: []const u8 }{
         .{ .src = "std/core_test.mpl", .want = "10\n" },
         .{ .src = "std/list_test.mpl", .want = "20\n" },
+        .{ .src = "std/io_test.mpl", .want = "11\n" },
+        .{ .src = "std/mem_test.mpl", .want = "6\n" },
     }) |fx| {
         for ([_]bool{ false, true }) |asan| {
             const build_exe = std.Build.Step.Run.create(b, if (asan) "mplc std test (asan)" else "mplc std test");
