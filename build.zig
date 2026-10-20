@@ -794,7 +794,7 @@ pub fn build(b: *std.Build) void {
     const std_step = b.step("test-std", "Build and run the standard library's tests");
     for ([_]struct { src: []const u8, want: []const u8 }{
         .{ .src = "std/core_test.mpl", .want = "13\n" },
-        .{ .src = "std/list_test.mpl", .want = "20\n" },
+        .{ .src = "std/list_test.mpl", .want = "28\n" },
         .{ .src = "std/io_test.mpl", .want = "11\n" },
         .{ .src = "std/mem_test.mpl", .want = "6\n" },
     }) |fx| {

@@ -4,6 +4,14 @@
 // type and are templates themselves, whose generics §4.9's application reads off the
 // function argument: `$call ints.map (xs, $func ($decl n 0) …)`.
 //
+// The operations that need the elements' own equality or order come in two forms. The `_by`
+// form takes the function (`find`, `sort_by`). The bounded form uses the element's members
+// (`std/core`'s `eq_proto`/`ord_proto`, TRAITS.md): `contains` and `index_of` are members
+// here, their generic read off the value searched for; `sort`, `is_sorted`, `max_of` and
+// `min_of` take no such value, so they live in `ord_list E`, specialised once per element
+// type beside `list E` — `$decl pts $specialize L.ord_list p` — whose bound is checked there.
+// `Int` and `Str` conform to neither prototype, so for them the `_by` forms are the ones.
+//
 // Every recursion is a tail call, so §7.7 makes each a loop: a list's length bounds
 // nothing but its memory. `sort_by`'s halving recursion is the exception, and it is
 // log₂ n deep.
@@ -111,6 +119,23 @@ $decl list $template T {
         acc
   $prop from_array $func ($decl a $call array (0, T)) $call of_array (a, $call alen (a), nil)
 
+  // Whether `x` is an element, by the element's own `eq` (`std/core`'s `eq_proto`). A
+  // template, so a list whose element has no `eq` — `list Int` — is still a list; `E` is
+  // `x`'s type, which is the element's.
+  $prop contains $template ($decl E $traitsof ($specialize C.eq_proto E))
+    $func ($decl xs node, $decl x E) $match xs (
+      $case {$prop tag "cons"} $if ($call x.eq (xs.head)) true ($call contains (xs.tail, x)),
+      $case xs false
+    )
+  // The position of the first element equal to `x`, as an option.
+  $prop index_of $template ($decl E $traitsof ($specialize C.eq_proto E))
+    $func ($decl xs node, $decl x E, $decl i 0) $match xs (
+      $case {$prop tag "cons"}
+        $if ($call x.eq (xs.head)) ($call C.some (i))
+            ($call index_of (xs.tail, x, $call add (i, 1))),
+      $case xs none
+    )
+
   // `f` of every element. `B` comes from `f`'s result, and the new list is `list B` —
   // the template specialising itself (§4.9), memoised per element type.
   $prop map_go $template B $func ($decl xs node, $decl f $func ($decl x T) B,
@@ -127,5 +152,39 @@ $decl list $template T {
                                 $decl f $func ($decl a R, $decl x T) R) $match xs (
     $case {$prop tag "cons"} $call fold (xs.tail, $call f (acc, xs.head), f),
     $case xs acc
+  )
+}
+
+// The operations needing the elements' order (`std/core`'s `ord_proto`), for a list of
+// `E`s: `$decl ord $specialize L.ord_list p`, then `$call ord.sort (xs)` on a
+// `($specialize L.list p)` list — the same list type, since §4.9 memoises per argument.
+$decl ord_list $template ($decl E $traitsof ($specialize C.ord_proto E)) {
+  // Stable, as `sort_by` is.
+  $prop sort $func ($decl xs ($specialize list E).node)
+    $call ($specialize list E).sort_by (xs, $func ($decl a E, $decl b E) $call a.lt (b))
+  $prop sorted_go $func ($decl xs ($specialize list E).node, $decl prev E) $match xs (
+    $case {$prop tag "cons"} $if ($call xs.head.lt (prev)) false ($call sorted_go (xs.tail, xs.head)),
+    $case xs true
+  )
+  $prop is_sorted $func ($decl xs ($specialize list E).node) $match xs (
+    $case {$prop tag "cons"} $call sorted_go (xs.tail, xs.head),
+    $case xs true
+  )
+  // The greatest and the least, as options; on a tie the first.
+  $prop max_go $func ($decl xs ($specialize list E).node, $decl best E) $match xs (
+    $case {$prop tag "cons"} $call max_go (xs.tail, $call C.max_ord (best, xs.head)),
+    $case xs best
+  )
+  $prop min_go $func ($decl xs ($specialize list E).node, $decl best E) $match xs (
+    $case {$prop tag "cons"} $call min_go (xs.tail, $call C.min_ord (best, xs.head)),
+    $case xs best
+  )
+  $prop max_of $func ($decl xs ($specialize list E).node) $match xs (
+    $case {$prop tag "cons"} $call C.some ($call max_go (xs.tail, xs.head)),
+    $case xs none
+  )
+  $prop min_of $func ($decl xs ($specialize list E).node) $match xs (
+    $case {$prop tag "cons"} $call C.some ($call min_go (xs.tail, xs.head)),
+    $case xs none
   )
 }

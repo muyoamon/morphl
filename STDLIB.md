@@ -248,6 +248,11 @@ block — it cannot see the fields. So:
   `greater`, `greater_eq`, `max_ord` and `min_ord` over them. A bound is written
   `$decl T $traitsof ($specialize C.ord_proto T)`. `Int` and `Str` have no props, so they
   conform to neither; `max`/`min` are their forms.
+- **`std/list` has the bounded forms beside the `_by` ones.** `contains` and `index_of` are
+  members of `list T`, template-valued so `list Int` still types, their generic read off the
+  value searched for. `sort`, `is_sorted`, `max_of` and `min_of` take no element, so §4.9's
+  application has nothing to read a generic from; they live in `ord_list E`, specialised
+  beside `list E` (`$decl ord $specialize L.ord_list p`), whose bound is checked there.
 - **Writing them by hand** is the first version, and costs a few lines per type.
 - **Generating them at build time** is §9's answer to reflection — "reflection lives in the
   compiler library at build time": a build program walks the AST and writes the members. That
