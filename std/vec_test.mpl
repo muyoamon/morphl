@@ -16,6 +16,35 @@ $decl pvec $specialize V.vec pt
 $decl fill $func ($decl v ($call ivec.new (0)), $decl i 0, $decl n 0)
   $if ($call lt (i, n)) ($do ($call v.push (i)) ($call fill (v, $call add (i, 1), n))) ()
 
+$decl isv  $specialize V.sorted_vec 0
+$decl ilt  lt
+$decl less $func ($decl a 0, $decl b 0) $call ilt (a, b)
+// 0 .. 999 in no order: i * 389 mod 1000, each once.
+$decl scramble $func ($decl s ($call isv.new (less, 0)), $decl i 0)
+  $if ($call lt (i, 1000))
+      ($do ($call s.insert ($call mod ($call mul (i, 389), 1000)))
+           ($call scramble (s, $call add (i, 1))))
+      ()
+// How many of 0 .. 999 `search` finds.
+$decl found $func ($decl s ($call isv.new (less, 0)), $decl x 0, $decl n 0)
+  $if ($call lt (x, 1000))
+      ($call found (s, $call add (x, 1),
+                    $if ($call C.is_some ($call s.search (x))) ($call add (n, 1)) n))
+      n
+// Whether `v`'s elements never decrease, read by position.
+$decl ordered $func ($decl s ($call isv.new (less, 0)), $decl i 1)
+  $if ($call lt (i, $call s.length ()))
+      ($if ($call lt ($call s.get (i), $call s.get ($call sub (i, 1)))) false
+           ($call ordered (s, $call add (i, 1))))
+      true
+// Records ordered by key alone, so equal keys show the order they were inserted in.
+$decl kvec $specialize V.sorted_vec pt
+$decl by_x $func ($decl a pt, $decl b pt) $call ilt (a.x, b.x)
+$decl ys   $func ($decl s ($call kvec.new (by_x, 0)), $decl i 0, $decl acc 0)
+  $if ($call lt (i, $call s.length ()))
+      ($call ys (s, $call add (i, 1), $call add ($call mul (acc, 10), ($call s.get (i)).y)))
+      acc
+
 $decl sum $func ($decl xs ($call ($call ivec.new (0)).items ()))
   $call Q.fold (xs, 0, $func ($decl a 0, $decl x 0) $call add (a, x))
 
@@ -68,5 +97,28 @@ $decl main $func () {
   $decl c17 $call T.expect (r, "map over items",
                 $call eq ($call ($call Q.map ($call pv.items (), $func ($decl p pt) p.x)).nth (1),
                           5))
+  $decl sv2 $call isv.new (less, 0)
+  $decl sc  $call scramble (sv2, 0)
+  $decl c18 $call T.expect (r, "sorted_vec keeps its order",
+                $call C.and ($call eq ($call sv2.length (), 1000), $call ordered (sv2, 1)))
+  $decl c19 $call T.expect (r, "...so search finds everything", $call eq ($call found (sv2, 0, 0), 1000))
+  $decl c20 $call T.expect (r, "...and std/seq's search too, through indexed_of",
+                $call eq ($call C.or_else ($call Q.search_by (sv2, 777, less), -1), 777))
+  $decl c21 $call T.expect (r, "remove", $call C.and ($call sv2.remove (500),
+                                                      $call eq ($call sv2.length (), 999)))
+  $decl c22 $call T.expect (r, "...of an absent one", $call C.not ($call sv2.remove (500)))
+  $decl c23 $call T.expect (r, "...keeps the order", $call C.and ($call ordered (sv2, 1),
+                $call eq ($call C.or_else ($call sv2.search (501), -1), 500)))
+  $decl c24 $call T.expect (r, "min and max",
+                $call C.and ($call eq ($call C.or_else ($call sv2.min (), -1), 0),
+                             $call eq ($call C.or_else ($call sv2.max (), -1), 999)))
+  $decl e3  $call isv.new (less, 0)
+  $decl c25 $call T.expect (r, "...of nothing", $call C.is_none ($call e3.min ()))
+  $decl kv  $call kvec.new (by_x, 0)
+  $decl i1  $call kv.insert ({ $decl x 2  $decl y 1 })
+  $decl i2  $call kv.insert ({ $decl x 1  $decl y 2 })
+  $decl i3  $call kv.insert ({ $decl x 2  $decl y 3 })
+  $decl i4  $call kv.insert ({ $decl x 1  $decl y 4 })
+  $decl c26 $call T.expect (r, "equal elements keep their order", $call eq ($call ys (kv, 0, 0), 2413))
   $decl ret $call T.finish (r)
 }.ret

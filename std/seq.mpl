@@ -1,25 +1,34 @@
 // std/seq: what a sequence can do, and the algorithms over any value that can (STDLIB.md, D9).
 //
-// A **capability** is a trait of the members that do not mention the element type, so one
-// trait serves every element type and a bound names only the sequence (D9, point 3):
-// `seq_of S` is `is_empty` and `rest`, `sized_of S` is `length`. A `std/list` list has both.
+// A **capability** is a trait, and its generics are exactly the types its members mention:
+//
+// - `seq_of S` is `is_empty` and `rest`. `rest` answers the sequence itself, so the trait is
+//   a template over the type that conforms — a list's `rest` is a list, a countdown's a
+//   countdown.
+// - `sized` is `length`, which mentions nothing, so it is a plain trait.
+// - `indexed_of E` is `length` and `get`, random access. `get` answers the element, so the
+//   trait is a template over `E`. A `std/vec` vec conforms; a `std/list` list does not, since
+//   its positional read is `nth` and O(n), and "indexed" promises better.
+//
 // An algorithm takes `$decl S $traitsof ($specialize seq_of S)` and its body may still call
 // `head`, which does mention the element type, because §4.9 types the body at the concrete
 // `S`. Its generics are read off its arguments (§4.9's application), so a call needs none:
 // `$call Q.count (xs)`, `$call Q.map (xs, $func ($decl n 0) …)`.
 //
-// The element type is never a generic of the algorithm itself — nothing would say what it
-// is — so where it must be named, a helper takes one element as an example and reads the
-// generic off that (`E`). That is also where the element's own equality or order is
-// required, as `std/core`'s `eq_proto`/`ord_proto` bounds, checked at the call.
+// Inference never reads a generic out of a bound, so an element type `E` must come from an
+// argument: the value searched for, a function over elements, or — where the algorithm takes
+// neither — one element passed to a helper as an example (`sort`, `max_of`). That is also
+// where the element's own equality or order is required, as `std/core`'s `eq_proto`/
+// `ord_proto` bounds, checked at the call.
 //
 // Every recursion is a tail call, so §7.7 makes each a loop.
 
 $decl C $import "std/core"
 $decl L $import "std/list"
 
-$decl seq_of   $template S { $prop is_empty $func () C.bool  $prop rest $func () S }
-$decl sized_of $template S { $prop length $func () 0 }
+$decl seq_of     $template S { $prop is_empty $func () C.bool  $prop rest $func () S }
+$decl sized      { $prop length $func () 0 }
+$decl indexed_of $template E { $prop length $func () 0  $prop get $func ($decl i 0) E }
 
 // --------------------------------------------------------------- any sequence
 
@@ -133,3 +142,39 @@ $decl sort_as $template ($decl S $traitsof ($specialize seq_of S),
     $call xs.sort_by ($func ($decl a ex, $decl b ex) $call C.less (a, b))
 $decl sort $template ($decl S $traitsof ($specialize seq_of S))
   $func ($decl xs S) $if ($call xs.is_empty ()) xs ($call sort_as (xs, $call xs.head ()))
+
+// ------------------------------------------------------- random access, sorted
+
+// The first position of `x` in `xs`, sorted by `less`, as an option — O(log n) through
+// `indexed_of`. Halving to the leftmost element not less than `x` finds the first of equal
+// ones; it is `x` when `x` is not less than it either.
+//
+// **`xs` must be sorted by `less`**, and nothing checks it: sortedness is a fact about the
+// values, not the type, so no trait can say it (a marker prop would be a claim, not a
+// proof), and checking costs the O(n) the search exists to avoid — `is_sorted` is there for
+// a caller who wants to. Unsorted input is still safe and never wrong: a `some i` has been
+// compared with element `i` both ways, so it is always a position holding `x`. What it
+// loses is completeness — `none` for a value that is present, and with duplicates not
+// necessarily the first. A container that keeps its order by construction, `std/vec`'s
+// `sorted_vec`, cannot be misused this way.
+$decl lower_go $template (E, $decl S $traitsof ($specialize indexed_of E))
+  $func ($decl xs S, $decl x E, $decl less $func ($decl a E, $decl b E) C.bool,
+         $decl lo 0, $decl hi 0)
+    $if ($call lt (lo, hi)) {
+      $decl mid  $call div ($call add (lo, hi), 2)
+      $decl ret2 $if ($call less ($call xs.get (mid), x))
+                     ($call lower_go (xs, x, less, $call add (mid, 1), hi))
+                     ($call lower_go (xs, x, less, lo, mid))
+    }.ret2 lo
+$decl search_by $template (E, $decl S $traitsof ($specialize indexed_of E))
+  $func ($decl xs S, $decl x E, $decl less $func ($decl a E, $decl b E) C.bool) {
+    $decl i   $call lower_go (xs, x, less, 0, $call xs.length ())
+    $decl ret $if ($call lt (i, $call xs.length ()))
+                  ($if ($call less (x, $call xs.get (i))) none ($call C.some (i))) none
+  }.ret
+
+// The same by the element's own `lt` (`std/core`'s `ord_proto`).
+$decl search $template ($decl E $traitsof ($specialize C.ord_proto E),
+                        $decl S $traitsof ($specialize indexed_of E))
+  $func ($decl xs S, $decl x E)
+    $call search_by (xs, x, $func ($decl a x, $decl b x) $call C.less (a, b))

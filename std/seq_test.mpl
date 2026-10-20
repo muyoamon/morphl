@@ -6,8 +6,10 @@ $decl C $import "std/core"
 $decl L $import "std/list"
 $decl Q $import "std/seq"
 $decl T $import "std/test"
+$decl V $import "std/vec"
 
 $decl ints $specialize L.list 0
+$decl ivec $specialize V.vec 0
 $decl strs $specialize L.list ""
 
 $decl upto $func ($decl n 0, $decl acc ($call ints.empty ()))
@@ -29,8 +31,8 @@ $decl down $func ($decl n 0) {
   $decl ret w
 }.ret
 
-// `sized_of` as a bound: anything with a `length`.
-$decl size $template ($decl S $traitsof ($specialize Q.sized_of S)) $func ($decl xs S)
+// `sized` as a bound: anything with a `length`.
+$decl size $template ($decl S $traitsof Q.sized) $func ($decl xs S)
   $call xs.length ()
 
 // A type with its own equality and order (`std/core`'s prototypes), by key alone.
@@ -50,6 +52,16 @@ $decl some_key $func ($decl o $union (none, { $prop tag "some"  $decl v kv0 })) 
   $case {$prop tag "some"} o.v.key,
   $case o -1
 )
+
+$decl less $func ($decl a 0, $decl b 0) $call ilt (a, b)
+// 0, 2, 2, 4, 6, …: every even number up to `2 (n - 1)`, and 2 twice.
+$decl evens $func ($decl v ($call ivec.new (0)), $decl i 0, $decl n 0)
+  $if ($call lt (i, n))
+      ($do ($call v.push ($call mul (i, 2)))
+           ($do ($if ($call eq (i, 1)) ($call v.push (2)) ())
+                ($call evens (v, $call add (i, 1), n))))
+      ()
+$decl at_or $func ($decl o $union (none, { $prop tag "some"  $decl v 0 })) $call C.or_else (o, -1)
 
 $decl main $func () {
   $decl r   $call T.results ()
@@ -81,7 +93,7 @@ $decl main $func () {
                 $func ($decl n 0) $call mul (n, 2))), "108642"))
   $decl c13 $call T.expect (r, "...to_list", $call eq ($call show ($call Q.to_list (d5,
                 $call ints.empty ())), "54321"))
-  $decl c14 $call T.expect (r, "sized_of", $call eq ($call size (xs), 10))
+  $decl c14 $call T.expect (r, "sized", $call eq ($call size (xs), 10))
   $decl ks  $call ($call ($call ($call ($call kvs.empty ()).push ($call kv (2, "b"))).push (
                 $call kv (3, "d"))).push ($call kv (1, "a"))).push ($call kv (3, "c"))
   $decl c15 $call T.expect (r, "contains, by the element's eq",
@@ -101,5 +113,26 @@ $decl main $func () {
   $decl c22 $call T.expect (r, "...of no elements is none",
                 $call C.is_none ($call Q.max_of ($call kvs.empty ())))
   $decl c23 $call T.expect (r, "sorting nothing", $call ($call Q.sort ($call kvs.empty ())).is_empty ())
+  $decl ev  $call ivec.new (0)
+  $decl e0  $call evens (ev, 0, 100000)
+  $decl c24 $call T.expect (r, "search_by",
+                $call eq ($call at_or ($call Q.search_by (ev, 1000, less)), 501))
+  $decl c25 $call T.expect (r, "...finds the first of equal ones",
+                $call eq ($call at_or ($call Q.search_by (ev, 2, less)), 1))
+  $decl c26 $call T.expect (r, "...and nothing between",
+                $call C.is_none ($call Q.search_by (ev, 7, less)))
+  $decl c27 $call T.expect (r, "...or past either end",
+                $call C.and ($call C.is_none ($call Q.search_by (ev, -1, less)),
+                             $call C.is_none ($call Q.search_by (ev, 200000, less))))
+  $decl c28 $call T.expect (r, "...or in nothing",
+                $call C.is_none ($call Q.search_by ($call ivec.new (0), 3, less)))
+  $decl kvv $specialize V.vec kv0
+  $decl kx  $call kvv.new (0)
+  $decl k1  $call kx.push ($call kv (1, "a"))
+  $decl k2  $call kx.push ($call kv (3, "b"))
+  $decl k3  $call kx.push ($call kv (5, "c"))
+  $decl c29 $call T.expect (r, "search by the element's lt",
+                $call C.and ($call eq ($call at_or ($call Q.search (kx, $call kv (5, ""))), 2),
+                             $call C.is_none ($call Q.search (kx, $call kv (4, "")))))
   $decl ret $call T.finish (r)
 }.ret

@@ -10,6 +10,7 @@
 
 $decl C $import "std/core"
 $decl L $import "std/list"
+$decl Q $import "std/seq"
 
 $decl in_range $func ($decl i 0, $decl n 0) $if ($call lt (i, 0)) false ($call lt (i, n))
 
@@ -88,5 +89,84 @@ $decl vec $template T {
       $prop rest     $func () $call view (w.src, $call add (w.from, 1))
     }
     $decl ret w
+  }.ret
+}
+
+// ---------------------------------------------------------------- sorted_vec
+
+// A vec kept in the order `less` gives, by construction: `insert` puts an element after any
+// equal to it, so equal elements keep the order they arrived in, and nothing can write a
+// position — there is no `set` and no `push`. So `search` needs no precondition, unlike
+// `std/seq`'s, which it is: a `sorted_vec` is `indexed_of` too.
+//
+//   $decl isv $specialize V.sorted_vec 0
+//   $decl s   $call isv.new ($func ($decl a 0, $decl b 0) $call lt (a, b))
+//
+// `insert` and `remove` move the elements after the position, O(n); `search`, `get`,
+// `min` and `max` are O(log n) or better.
+$decl sorted_vec $template T {
+  $prop base $specialize vec T
+
+  // The first position whose element `x` is less than: where `x` goes after its equals.
+  $prop upper_go $func ($decl v ($call base.new (0)), $decl x T,
+                        $decl less $func ($decl a T, $decl b T) C.bool, $decl lo 0, $decl hi 0)
+    $if ($call lt (lo, hi)) {
+      $decl mid  $call div ($call add (lo, hi), 2)
+      $decl ret2 $if ($call less (x, $call v.get (mid)))
+                     ($call upper_go (v, x, less, lo, mid))
+                     ($call upper_go (v, x, less, $call add (mid, 1), hi))
+    }.ret2 lo
+
+  // Each element from `j - 1` down to `i` moved up one place.
+  $prop shift_up $func ($decl v ($call base.new (0)), $decl i 0, $decl j 0)
+    $if ($call lt (i, j))
+        ($do ($call v.set (j, $call v.get ($call sub (j, 1))))
+             ($call shift_up (v, i, $call sub (j, 1))))
+        ()
+  // Each element from `i + 1` up to `n - 1` moved down one place.
+  $prop shift_down $func ($decl v ($call base.new (0)), $decl i 0, $decl n 0)
+    $if ($call lt ($call add (i, 1), n))
+        ($do ($call v.set (i, $call v.get ($call add (i, 1))))
+             ($call shift_down (v, $call add (i, 1), n)))
+        ()
+
+  $prop new $func ($decl l $func ($decl a T, $decl b T) C.bool, $decl cap 0) {
+    $decl s   {
+      $decl data $call base.new (cap)
+      $decl less l
+      $prop length   $func () $call s.data.length ()
+      $prop is_empty $func () $call s.data.is_empty ()
+      $prop get      $func ($decl i 0) $call s.data.get (i)
+      $prop insert   $func ($decl x T) {
+        $decl i   $call upper_go (s.data, x, s.less, 0, $call s.data.length ())
+        $decl n   $call s.data.length ()
+        $decl p   $call s.data.push (x)
+        $decl u   $call shift_up (s.data, i, n)
+        $decl ret $call s.data.set (i, x)
+      }.ret
+      // The first position holding `x`, as an option.
+      $prop search   $func ($decl x T) $call Q.search_by (s.data, x, s.less)
+      // The first element equal to `x` taken out; whether there was one.
+      $prop remove   $func ($decl x T) {
+        $decl o   $call Q.search_by (s.data, x, s.less)
+        $decl ret $match o (
+            $case {$prop tag "some"} {
+              $decl d    $call shift_down (s.data, o.v, $call s.data.length ())
+              $decl q    $call s.data.pop ()
+              $decl ret2 true
+            }.ret2,
+            $case o false
+          )
+      }.ret
+      $prop min      $func ()
+        $if ($call s.data.is_empty ()) none ($call C.some ($call s.data.get (0)))
+      $prop max      $func ()
+        $if ($call s.data.is_empty ()) none
+            ($call C.some ($call s.data.get ($call sub ($call s.data.length (), 1))))
+      $prop clear    $func () $call s.data.clear ()
+      $prop items    $func () $call s.data.items ()
+      $prop to_list  $func () $call s.data.to_list ()
+    }
+    $decl ret s
   }.ret
 }

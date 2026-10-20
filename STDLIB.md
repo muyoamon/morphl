@@ -430,14 +430,19 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
   `find`, `sort_by`.
 - **`std/seq` holds the capabilities and the free algorithms.**
   - Capabilities, each the members that do not mention the element type (point 3):
-    `seq_of S { is_empty, rest }`, `sized_of S { length }`. There is no `indexed`: `get` mentions
-    the element type, so what is left of it is `length`, which is `sized_of`.
+    `seq_of S { is_empty, rest }`, `sized { length }`, `indexed_of E { length, get }`. A
+    capability's generics are exactly the types its members mention: `rest` answers the
+    sequence, so `seq_of` is over `S`; `length` mentions nothing, so `sized` is a plain trait;
+    `get` answers the element, so `indexed_of` is over `E`. An algorithm bounded by
+    `indexed_of E` needs an argument that names `E`, since inference never reads a generic
+    out of a bound — `search (xs, x)` has `x`. A vec conforms; a list does not (its `nth` is
+    O(n), and "indexed" promises better).
   - Algorithms over any conforming `S`: `count`, `fold`, `map` (to a list), `for_each`, `any`,
     `all`, `find`, `to_list`; bounded by the element's order or equality: `contains`,
     `index_of` (`eq_proto`), `sort`, `max_of`, `min_of`, `is_sorted` (`ord_proto`). These
     replace `ord_list E` and the template members `contains`/`index_of`, which point 4 rules
     out as methods anyway.
-  - **Done**, with `std/seq_test.mpl` (23), which runs them over a list and over a sequence
+  - **Done**, with `std/seq_test.mpl` (29), which runs them over a list and over a sequence
     that is not one (a countdown block). Three things the design did not say:
     - **The element type is never the algorithm's generic**, since nothing names it. Where it
       must be named, a helper takes one element as an example and reads `E` off it
@@ -447,6 +452,16 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
       the caller's line.
     - **`to_list (xs, into)` takes a list to collect after**, because the result's element
       type has to come from somewhere: `$call Q.to_list (xs, $call ints.empty ())`.
+    - **`search_by (xs, x, less)` and `search (xs, x)`** are binary search over `indexed_of`,
+      answering the first position of `x` — the leftmost element not less than it — as an
+      option. Added with `std/vec`, and the reason `indexed_of` exists. **`xs` must be
+      sorted by `less`, and nothing checks it.** No trait can say "sorted": it is a fact
+      about the values, not the shape, and a marker prop (`$prop sorted true`) would be a
+      claim anyone can write, not a proof. Checking costs the O(n) the search avoids. What
+      unsorted input gives was measured rather than assumed: a `some i` is compared with
+      element `i` both ways, so it is never wrong; what is lost is completeness — over a
+      scrambled 0 .. 999, 4 of the 1000 present values were found. The guarantee comes
+      from a container that keeps its order by construction: `std/vec`'s `sorted_vec`.
     - **`sort` needs a `sort_by` member**, which a `std/list` list has. A capability cannot
       say so (`sort_by` mentions the element type), so it is checked when the body is typed.
 - **A parameter typed "a list of T"** has an empty one as its default:
@@ -479,14 +494,20 @@ So a list stays a value — `push` answers a new list — and a container that c
 2. **`std/core`, `std/list`, `std/test`, `std/io`, `std/mem`** — done, with
    `zig build test-std`.
 3. **`std/str`** with the builder, and **`std/vec`** over P3 — both done.
-   `std/vec` (`std/vec_test.mpl`, 17): `$specialize V.vec <example>`, then `new (cap)`, `push`
+   `std/vec`: `$specialize V.vec <example>`, then `new (cap)`, `push`
    (doubling, so amortised O(1)), `get`, `set`, `pop` (an option), `clear`, `length`,
    `capacity`, `is_empty`, `to_list`, and `items`, a `seq_of` view from the front. The array
    and the count are `$mut $alloc` cells, so every copy of a vec is the same vec — the only
    container here that changes in place. Two things the language decided: `at` answers a
    reference, which a function's result keeps (§5.4), so `get` reads through `val`, an
    identity at `T`; and a member may not capture (§4.10), so `items`'s view holds the vec as
-   a field rather than closing over it. A byte-buffer builder for `std/str` would need
+   a field rather than closing over it. **`sorted_vec`** (`$specialize V.sorted_vec <example>`,
+   then `new (less, cap)`) wraps a vec and keeps `less`'s order by construction: `insert`
+   goes after equal elements, so they keep their arrival order; `remove` takes the first
+   equal one out; there is no `set` and no `push`. Its `search` therefore needs no
+   precondition — the same scrambled 0 .. 999 inserted, all 1000 are found — and it is an
+   `indexed_of` too, so `std/seq`'s `search` works on it. `insert`/`remove` are O(n), and
+   `search`, `get`, `min` and `max` O(log n) or better. `std/vec_test.mpl` is 26 now. A byte-buffer builder for `std/str` would need
    `str_from_ptr` over `array_ptr` (§4.16) to turn bytes into a `Str`; the pairwise join is
    O(L log n) already, so it waits for a measurement.
 4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`.

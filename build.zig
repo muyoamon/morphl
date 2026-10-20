@@ -810,9 +810,9 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { src: []const u8, want: []const u8 }{
         .{ .src = "std/core_test.mpl", .want = "13\n" },
         .{ .src = "std/list_test.mpl", .want = "28\n" },
-        .{ .src = "std/seq_test.mpl", .want = "23\n" },
+        .{ .src = "std/seq_test.mpl", .want = "29\n" },
         .{ .src = "std/str_test.mpl", .want = "28\n" },
-        .{ .src = "std/vec_test.mpl", .want = "17\n" },
+        .{ .src = "std/vec_test.mpl", .want = "26\n" },
         .{ .src = "std/io_test.mpl", .want = "11\n" },
         .{ .src = "std/mem_test.mpl", .want = "6\n" },
     }) |fx| {
