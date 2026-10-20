@@ -166,6 +166,11 @@ $decl lower_go $template (E, $decl S $traitsof ($specialize indexed_of E))
                      ($call lower_go (xs, x, less, $call add (mid, 1), hi))
                      ($call lower_go (xs, x, less, lo, mid))
     }.ret2 lo
+// Where `x` goes in `xs`, sorted by `less`: the first position whose element is not less
+// than `x`, or `length ()` when there is none. Under the same precondition as `search_by`.
+$decl lower_bound_by $template (E, $decl S $traitsof ($specialize indexed_of E))
+  $func ($decl xs S, $decl x E, $decl less $func ($decl a E, $decl b E) C.bool)
+    $call lower_go (xs, x, less, 0, $call xs.length ())
 $decl search_by $template (E, $decl S $traitsof ($specialize indexed_of E))
   $func ($decl xs S, $decl x E, $decl less $func ($decl a E, $decl b E) C.bool) {
     $decl i   $call lower_go (xs, x, less, 0, $call xs.length ())

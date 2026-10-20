@@ -29,6 +29,19 @@ $decl vec $template T {
              ($call copy (src, dst, $call add (i, 1), n)))
         ()
 
+  // Each element from `j - 1` down to `i` moved up one place, and from `i + 1` up to
+  // `n - 1` down one, in the array itself.
+  $prop shift_up $func ($decl a $call array (0, T), $decl i 0, $decl j 0)
+    $if ($call lt (i, j))
+        ($do ($set ($call at (a, j)) ($call at (a, $call sub (j, 1))))
+             ($call shift_up (a, i, $call sub (j, 1))))
+        ()
+  $prop shift_down $func ($decl a $call array (0, T), $decl i 0, $decl n 0)
+    $if ($call lt ($call add (i, 1), n))
+        ($do ($set ($call at (a, i)) ($call at (a, $call add (i, 1))))
+             ($call shift_down (a, $call add (i, 1), n)))
+        ()
+
   $prop new $func ($decl cap 0) {
     $decl v   {
       $decl data $mut $alloc ($call array (0, T))
@@ -63,6 +76,22 @@ $decl vec $template T {
           $decl s    $set v.n k
           $decl ret2 $call C.some ($call val ($call at (v.data, k)))
         }.ret2
+      // `x` at position `i`, `0 .. length ()`, the elements from `i` on moved up one.
+      $prop insert_at $func ($decl i 0, $decl x T)
+        $if ($call in_range (i, $call add ($call C.ival (v.n), 1))) {
+          $decl k    $call C.ival (v.n)
+          $decl p    $call v.push (x)
+          $decl u    $call shift_up (v.data, i, k)
+          $decl ret2 $set ($call at (v.data, i)) x
+        }.ret2 ($call panic ("vec: insert_at out of range"))
+      // The element at `i` taken out, the ones after it moved down one.
+      $prop remove_at $func ($decl i 0)
+        $if ($call in_range (i, $call C.ival (v.n))) {
+          $decl x    $call val ($call at (v.data, i))
+          $decl d    $call shift_down (v.data, i, $call C.ival (v.n))
+          $decl s    $set v.n ($call sub ($call C.ival (v.n), 1))
+          $decl ret2 x
+        }.ret2 ($call panic ("vec: remove_at out of range"))
       $prop clear $func () $set v.n 0
       $prop items $func () $call view (v, 0)
       // The elements as a `std/list` list, in order.
@@ -117,19 +146,6 @@ $decl sorted_vec $template T {
                      ($call upper_go (v, x, less, $call add (mid, 1), hi))
     }.ret2 lo
 
-  // Each element from `j - 1` down to `i` moved up one place.
-  $prop shift_up $func ($decl v ($call base.new (0)), $decl i 0, $decl j 0)
-    $if ($call lt (i, j))
-        ($do ($call v.set (j, $call v.get ($call sub (j, 1))))
-             ($call shift_up (v, i, $call sub (j, 1))))
-        ()
-  // Each element from `i + 1` up to `n - 1` moved down one place.
-  $prop shift_down $func ($decl v ($call base.new (0)), $decl i 0, $decl n 0)
-    $if ($call lt ($call add (i, 1), n))
-        ($do ($call v.set (i, $call v.get ($call add (i, 1))))
-             ($call shift_down (v, $call add (i, 1), n)))
-        ()
-
   $prop new $func ($decl l $func ($decl a T, $decl b T) C.bool, $decl cap 0) {
     $decl s   {
       $decl data $call base.new (cap)
@@ -139,10 +155,7 @@ $decl sorted_vec $template T {
       $prop get      $func ($decl i 0) $call s.data.get (i)
       $prop insert   $func ($decl x T) {
         $decl i   $call upper_go (s.data, x, s.less, 0, $call s.data.length ())
-        $decl n   $call s.data.length ()
-        $decl p   $call s.data.push (x)
-        $decl u   $call shift_up (s.data, i, n)
-        $decl ret $call s.data.set (i, x)
+        $decl ret $call s.data.insert_at (i, x)
       }.ret
       // The first position holding `x`, as an option.
       $prop search   $func ($decl x T) $call Q.search_by (s.data, x, s.less)
@@ -150,11 +163,7 @@ $decl sorted_vec $template T {
       $prop remove   $func ($decl x T) {
         $decl o   $call Q.search_by (s.data, x, s.less)
         $decl ret $match o (
-            $case {$prop tag "some"} {
-              $decl d    $call shift_down (s.data, o.v, $call s.data.length ())
-              $decl q    $call s.data.pop ()
-              $decl ret2 true
-            }.ret2,
+            $case {$prop tag "some"} $do ($call s.data.remove_at (o.v)) true,
             $case o false
           )
       }.ret

@@ -83,5 +83,11 @@ $decl main $func () {
   $decl c27 $call T.expect (r, "...encoded back", $call eq ($call encode ($call S.builder (),
                 $call S.codes (u, 0)), u))
   $decl c28 $call T.expect (r, "codes of nothing", $call ($call S.codes ("", 0)).is_empty ())
+  $decl c29 $call T.expect (r, "compare, bytewise then shorter first",
+                $call C.and ($call eq ($call S.compare ("ab", "abc"), -1),
+                             $call C.and ($call eq ($call S.compare ("b", "abc"), 1),
+                                         $call eq ($call S.compare ("x", "x"), 0))))
+  $decl c30 $call T.expect (r, "less", $call C.and ($call S.less ("a", "b"),
+                                                    $call C.not ($call S.less ("b", "b"))))
   $decl ret $call T.finish (r)
 }.ret

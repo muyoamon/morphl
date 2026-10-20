@@ -88,6 +88,22 @@ $decl repeat $func ($decl s "", $decl n 0)
         $decl ret2 $if ($call eq ($call mod (n, 2), 0)) h ($call concat (h, s))
       }.ret2)
 
+// --------------------------------------------------------------- ordering
+
+// Byte by byte, then the shorter first: -1, 0 or 1. Since §3.1 makes a `Str` UTF-8, byte
+// order is code-point order. The root block orders numbers only, so this is what a map with
+// `Str` keys sorts by.
+$decl compare_go $func ($decl a "", $decl b "", $decl i 0)
+  $if ($call lt (i, $call len (a)))
+      ($if ($call lt (i, $call len (b)))
+           ($if ($call lt ($call byte (a, i), $call byte (b, i))) -1
+           ($if ($call lt ($call byte (b, i), $call byte (a, i))) 1
+                ($call compare_go (a, b, $call add (i, 1)))))
+           1)
+      ($if ($call lt (i, $call len (b))) -1 0)
+$decl compare $func ($decl a "", $decl b "") $call compare_go (a, b, 0)
+$decl less    $func ($decl a "", $decl b "") $call lt ($call compare (a, b), 0)
+
 // ------------------------------------------------------------- searching
 
 $decl starts_with $func ($decl s "", $decl p "")

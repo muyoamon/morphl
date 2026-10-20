@@ -148,6 +148,16 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   the join of the receiver (`&const` of the block) with the default's type, which is the
   block's in-progress type (§4.10). Open.
 
+- **P14. A member whose body bound a local named like a field was refused — a lowering
+  bug.** **Done.** §4.10's "a member may not capture" is checked by asking which names its
+  body reads from outside itself, and that used the closure walk (`free_names`), which
+  counts a name the body rebinds — harmless for a closure's capture list, a wrong refusal
+  here: `{ $decl n … }` inside a member of a block with field `n`. Found writing `std/vec`'s
+  `insert_at`. Subtracting every name bound inside would hide a real capture made before a
+  rebinding (`{ $decl a c  $decl c 5 … }`), so `no_caps` has a scope-aware walk of its own
+  (`free_sc`): a block's props are bound throughout, a `$decl` after its initializer, a
+  `$func`'s parameters in its body. `lower_test`'s `t35`/`t35b` pin both directions.
+
 ## D1. Location and naming
 
 A top-level `std/` directory of ordinary modules, imported by name:
@@ -167,7 +177,7 @@ Proposed modules, in the order they can be written:
 | `std/fmt` | formatting `Int`, `Float`, `Str` and anything with a `show` member into a builder | P2 |
 | `std/io` | `print_line`, reading and writing whole files and lines, over the platform group | — |
 | `std/vec` | a growable vector over `array` | P3 |
-| `std/map` | an ordered map (a balanced tree, keys bounded by `ord`) | P2 |
+| `std/map` | an ordered map (sorted vecs; keys ordered by a `less` given at `new`) | done |
 | `std/mem` | an arena allocator over `raw_alloc`, as `arena.mpl` does | — |
 | `std/test` | a runner for §9's test interface | — |
 
@@ -510,7 +520,19 @@ So a list stays a value — `push` answers a new list — and a container that c
    `search`, `get`, `min` and `max` O(log n) or better. `std/vec_test.mpl` is 26 now. A byte-buffer builder for `std/str` would need
    `str_from_ptr` over `array_ptr` (§4.16) to turn bytes into a `Str`; the pairwise join is
    O(L log n) already, so it waits for a measurement.
-4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`.
+4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`. `sort` is `std/seq`'s, and
+   **`std/map` is done** (`std/map_test.mpl`, 16): `$specialize M.map (<key>, <value>)`, then
+   `new (less)`; `put` (whether the key is new), `get` (an option), `get_or`, `has`,
+   `remove`, `length`, `is_empty`, `key_at`/`value_at` by position, `min_key`/`max_key`,
+   `keys`/`values` as `std/seq` sequences in key order, and `clear`. The keys sit sorted in
+   one vec and the values beside them in another — `sorted_vec`'s idea, so a lookup is a
+   binary search with no precondition, and two keys are one when neither is less. Not the
+   balanced tree this table first named: `put`/`remove` are O(n), right for a map built
+   once and read often, and a tree is the version for one that is not. It needed three
+   general pieces, each in its own module: `vec`'s `insert_at`/`remove_at` (which
+   `sorted_vec` now uses too), `std/seq`'s `lower_bound_by`, and `std/str`'s `compare`/
+   `less`, since the root block orders numbers only. Keys ordered by their own `lt` pass
+   `$func ($decl a k, $decl b k) $call C.less (a, b)`.
 5. **P7, P8**, then the per-element-type candidates of D3a where a representation earns one.
 6. **Docs** — SPEC §8 points to `std/`, §11 drops the library, and BOOTSTRAP notes the arrays
    generalised beyond its §2; SPEC gains §4.8's template resolution and `$override`.

@@ -433,4 +433,19 @@ $decl t34b $call check ("...and one at another type has its own",
   $call eq_int ($call nfuncs ($call cell_src ("$decl a $specialize cell 1  $decl b $specialize cell \"s\"")),
                 $call add ($call nfuncs ($call cell_src ("$decl a $specialize cell 1")), 1)))
 
+// §4.10: a member may not capture, and the check asks which names its body reads from
+// outside itself. A local of the same name as a field of the block is not one of them —
+// that was refused, which made `std/vec` rename one — but a read made before the local is
+// bound is, so subtracting every name bound inside would hide a real capture.
+$decl mem_src $func ($decl m "")
+  $call concat ("$decl mk $func ($decl c 0) { $decl w { $decl n c  $prop f $func () ",
+      $call concat (m, " }  $decl r w }.r  $decl main $func () $call ($call mk (4)).f () "))
+
+$decl t35 $call check_str ("a member's local may share a field's name",
+  $call first_err ($call lower_errs ($call mem_src ("{ $decl n 3  $decl r2 n }.r2"))), "")
+
+$decl t35b $call check_str ("...but a read before a rebinding is a capture",
+  $call first_err ($call lower_errs ($call mem_src ("{ $decl a c  $decl c 5  $decl r2 a }.r2"))),
+  "a $prop's value may not capture 'c': a prop is compile-time (§4.10), so there is nowhere to evaluate the capture")
+
 $decl done $call nl ("all lowering tests passed")

@@ -4000,12 +4000,101 @@ $decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $d
 )
 
 
+// The names `n` reads from outside itself, by scope — unlike `free_names`, which is for a
+// closure's capture list, where a name the body rebinds costs only a copied word. Here it
+// costs an error: `no_caps` refused a member whose body bound a local of the same name as
+// one of its block's fields (`{ $decl n … }` inside a member of a block with field `n`).
+// Subtracting every name bound anywhere inside would hide a genuine read made *before* a
+// rebinding — `{ $decl a n  $decl n 5 … }` reads the outer `n` — so the walk follows §4.10:
+// a block's props are bound throughout it, a `$decl` from after its own initializer, and a
+// `$func`'s parameters in its body, its defaults being read outside (§3.4).
+$fwd free_sc
+
+$decl free_sc_list $func ($decl xs Pa.nodes.node, $decl bound strs.node, $decl acc strs.node)
+    $match xs (
+  $case {$prop tag "cons"}
+    $call free_sc_list ($call Pa.nodes.val (xs.tail), bound, $call free_sc (xs.head, bound, acc)),
+  $case xs acc
+)
+
+$decl prop_names $func ($decl xs Pa.nodes.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call prop_names ($call Pa.nodes.val (xs.tail),
+        $if ($call is_form (xs.head, "prop"))
+            ($call strs.cons ($call name_of ($call op (xs.head, 0)), acc)) acc),
+  $case xs acc
+)
+
+// A block's items in order: an initializer is read before its own name is bound.
+$decl free_sc_items $func ($decl xs Pa.nodes.node, $decl bound strs.node, $decl acc strs.node)
+    $match xs (
+  $case {$prop tag "cons"} {
+    $decl it  xs.head
+    $decl bnd $if ($call is_form (it, "decl")) true ($call is_form (it, "prop"))
+    $decl a2  $if bnd ($call free_sc ($call op (it, 1), bound, acc))
+                  ($if ($call is_form (it, "fwd")) acc ($call free_sc (it, bound, acc)))
+    $decl nm  $call binder_of (it)
+    $decl b2  $if ($call eq_str (nm, "")) bound ($call strs.cons (nm, bound))
+    $decl ret $call free_sc_items ($call Pa.nodes.val (xs.tail), b2, a2)
+  }.ret,
+  $case xs acc
+)
+
+// A `$func`'s defaults, read outside it, and its parameter names.
+$decl param_defaults $func ($decl ps Pa.nodes.node, $decl bound strs.node, $decl acc strs.node)
+    $match ps (
+  $case {$prop tag "cons"}
+    $call param_defaults ($call Pa.nodes.val (ps.tail), bound,
+        $if ($call is_form (ps.head, "decl")) ($call free_sc ($call op (ps.head, 1), bound, acc))
+            acc),
+  $case ps acc
+)
+$decl param_names $func ($decl ps Pa.nodes.node, $decl acc strs.node) $match ps (
+  $case {$prop tag "cons"}
+    $call param_names ($call Pa.nodes.val (ps.tail),
+        $if ($call is_form (ps.head, "decl"))
+            ($call strs.cons ($call name_of ($call op (ps.head, 0)), acc)) acc),
+  $case ps acc
+)
+
+$decl free_sc_form $func ($decl n Pa.proto_node, $decl bound strs.node, $decl acc strs.node)
+  $if ($call is_form (n, "func")) {
+    $decl ps   $call group_items ($call op (n, 0))
+    $decl a2   $call param_defaults (ps, bound, acc)
+    $decl ret2 $call free_sc ($call op (n, 1), $call param_names (ps, bound), a2)
+  }.ret2
+  ($match n (
+      $case {$prop tag "form"}
+        ($call free_sc_list ($call Pa.nodes.val (n.operands), bound,
+            // §7.6: `$alloc` reads `allocator` without spelling it (`free_names`).
+            $if ($call eq_str (n.keyword, "alloc"))
+                ($if ($call mem_str (bound, "allocator")) acc
+                     ($if ($call mem_str (acc, "allocator")) acc ($call strs.cons ("allocator", acc))))
+                acc)),
+      $case n acc
+    ))
+
+$decl free_sc $func ($decl n Pa.proto_node, $decl bound strs.node, $decl acc strs.node) $match n (
+  $case {$prop tag "name"}
+    $if ($call mem_str (bound, n.text)) acc
+        ($if ($call mem_str (acc, n.text)) acc ($call strs.cons (n.text, acc))),
+  $case {$prop tag "form"}  ($call free_sc_form (n, bound, acc)),
+  $case {$prop tag "group"} ($call free_sc_list ($call Pa.nodes.val (n.items), bound, acc)),
+  $case {$prop tag "block"} {
+    $decl xs   $call Pa.nodes.val (n.items)
+    $decl ret2 $call free_sc_items (xs, $call prop_names (xs, bound), acc)
+  }.ret2,
+  $case {$prop tag "proj_name"}  ($call free_sc (n.target, bound, acc)),
+  $case {$prop tag "proj_index"} ($call free_sc (n.target, bound, acc)),
+  $case n acc
+)
+
 // A function-valued prop lifts like any other `$func` (§7.3) — except that a
 // prop has no position at which a capture could be evaluated, because it has
 // no position at all. Worth its own message: without the check, a captured
 // local would silently become a read of the *lifted* function's own frame.
 $decl no_caps $func ($decl st proto_lst, $decl pe benv.node, $decl n Pa.proto_node) {
-  $decl cs $call caps ($call free_names (n, strs.nil), pe, benv.nil)
+  $decl cs $call caps ($call free_sc (n, strs.nil, strs.nil), pe, benv.nil)
   $decl ret $match cs (
       $case {$prop tag "cons"}
         ($call err (st, $call concat ("a $prop's value may not capture '",
