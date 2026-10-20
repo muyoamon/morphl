@@ -331,6 +331,25 @@ and is the second version.
 §3.1 makes a `Str` UTF-8 and its operations byte-indexed; code-point iteration is library
 (§8), and `std/str` provides it, decoding as `from_code` encodes.
 
+**Done** (the first version), with `std/str_test.mpl` (28):
+
+- **`builder ()`**: `write`, `line`, `bytes` and `build`. The pieces sit newest first in the
+  builder's own `$mut $alloc` cell (D9's mutation rule), and `build` joins them pairwise and
+  keeps the result as the one piece, so building again is free and writing after it carries
+  on. The members are not `add` and `len`: §4.10 makes a prop visible throughout its block,
+  so either name would shadow the intrinsic the members' own bodies call.
+- **`concat_all`, `join (xs, sep)`**, the same pairwise join over a `std/list` list.
+  `std/io`'s `unlines` is `join` now, and its own copy of the joiner is gone.
+- **`split (s, sep)`** answers a list, empty pieces kept (`"a,,b"` is three); an empty `sep`
+  panics. **`find (s, p, from)`** answers a byte offset as an option; **`contains`,
+  `starts_with`, `ends_with`**; **`trim`, `trim_start`, `trim_end`** over ASCII white space;
+  **`repeat`** by doubling.
+- **`codes (s, i)`** is the code points from byte `i` as a `seq_of` sequence — decoded as it is
+  walked, nothing stored but the string and the offset — so `std/seq` counts, maps and
+  collects them; `code_at` and `width` are the decoding.
+
+The byte-buffer builder waits for `std/vec`.
+
 ## D7. Reporting failure
 
 §4.15 makes an expected failure a value and `$try` the only non-local exit. §8 says "the root
