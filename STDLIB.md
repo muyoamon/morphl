@@ -55,13 +55,9 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   has a type and no value, so reading one as a value (a defaulted argument, or `T` in the
   body) is reported. Stage 0 still refuses it: BOOTSTRAP §1.1 keeps it out of the subset,
   so the library's tests are compiled-only anyway (P5). `stage1/fixtures/apply.mpl`.
-- **P2. Template bounds (§4.9), which the parser refuses.** `$template (K ($traitsof ord))`
-  is how `map` says its keys compare and how `eq` and `show` are reached generically. A call
-  through a generic already resolves statically to the argument type's member once the
-  template is specialised, so the bound is a check, not a new mechanism. Without it `map` and
-  `sort` still work — §4.9 types the body after substitution — but a missing member is
-  reported inside `std/`, not at the caller. *Wanted before `map` and `sort` ship; not
-  blocking.*
+- **P2. Template bounds (§4.9).** **Done** (TRAITS.md, step 4): `$template ($decl K bound)`,
+  checked at every specialisation; a bound is a trait to mean conformance, and an F-bound —
+  `$decl K $traitsof ($specialize ord_proto K)` — says "another value of my own type".
 - **P6. A member cannot take another value of its own type — a checker bug.** §4.10: "In a
   type-only position the declaring name is the block's complete type, so a member takes
   another value of its own type as `$prop same_w $func ($decl other rect) …`". Stage 1 types

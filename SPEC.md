@@ -273,7 +273,7 @@ A template is a compile-time abstraction. `T` (or each name in a group) denotes 
 
 **Compile-time generics.** A prop's value is part of the type (§4.10). So a generic whose value reaches a prop after specialization is a *compile-time generic*. A generic reaches a prop when it is read in an evaluated position of a `$prop` initializer anywhere in the body, at any depth, including a block literal inside a `$decl` or a `$func`. It also reaches one when it is passed as the argument for another template's compile-time generic. Its argument must be a constant expression (§4.10), and its value joins the argument types in the memo key. Given `$prop size T`, `$specialize t 5` and `$specialize t 6` are two types; without it they are one. Any other generic may be bound to any value, because only its type reaches the specialization's type. Application (`$call t args`) never infers a compile-time generic; write the `$specialize`.
 
-**Bounds.** A generic name may carry an example: `$template (T bound) body`. The bound is a type-only position (§5.7), so it may mention `T` itself — `$template (K ($specialize ordered K))` is the F-bounded form. At specialization, `type(arg) <: type(bound)` is checked first and reported as such. A trait as a bound, `$template (T ($traitsof shape_proto))`, is satisfied by conformance (§6). A trait has no `Self` (§6), so a relation between the bounded type and another value of it — `eq`, `lt` — is the F-bound: a generic of the prototype, `$template (K ($specialize ordered K))`. The body is still typed *after* substitution; the bound is a precondition, not a proof that all conforming arguments typecheck.
+**Bounds.** A generic is written as a `$func` parameter is: a bare name is unbounded, and `$decl name bound` carries an example — `$template ($decl T bound) body`, or `$template (A, $decl B bound) body` beside a plain one. Unlike a parameter list, a bare name is accepted. The bound is a type-only position (§5.7), so it may mention the generic itself and any declared before it — `$template ($decl K $traitsof ($specialize ordered K))` is the F-bounded form. At specialization, `type(arg) <: type(bound)` is checked first and reported as such. A trait as a bound, `$template ($decl T $traitsof shape_proto)`, is satisfied by conformance (§6). A trait has no `Self` (§6), so a relation between the bounded type and another value of it — `eq`, `lt` — is the F-bound: a generic of the prototype, `$template ($decl K $traitsof ($specialize ordered K))`. A bound means conformance only when it *is* a trait: a props-only block as a bound is §5.1's block subtyping, which compares prop values, so nothing but the block itself would satisfy it. A bound that fails is what is reported; the body is not typed against an argument that does not satisfy it. The body is still typed *after* substitution; the bound is a precondition, not a proof that all conforming arguments typecheck.
 
 **Application infers `T`.** If a template's body is a `$func`, then `$call t args` means `$call ($specialize t inferred) args`. Inference matches the **shape of each parameter default one level deep**:
 
@@ -557,7 +557,7 @@ $decl shape $traitsof shape_proto
 - **A call dispatches through the object's own table.** `$call s.area ()` always runs `s`'s implementation on `s`'s referent. The receiver is never an argument, so it can never be another object's.
 - **Another value** a member takes is typed by its parameter's default (§4.10): the declaring name for *that concrete type*, `$traitsof` for any conforming value. Every member of a trait object is callable, since every implementation has the trait's shape. A relation between a type and another value of the same type — `eq`, `lt`, `merge` — is a generic of the prototype, used through an F-bound (§4.9): `$decl ordered $template T { $prop lt $func ($decl other T) $union (false, true) }` is conformed to by any `T` whose `lt` takes a `T`.
 - **Implementations are not values.** An implementation is the compile-time table a coercion takes from the value's type; no program names it and no `$set` reaches it. Storage of trait type holds trait objects, so a `$set` on it replaces the reference and the implementation together, and never writes into an implementation.
-- **Bounds.** A trait as a bound, `$template (T ($traitsof shape_proto))`, requires `T` to conform (§4.9). The body is specialized at `T` itself, so calls inside it are static.
+- **Bounds.** A trait as a bound, `$template ($decl T $traitsof shape_proto)`, requires `T` to conform (§4.9). The body is specialized at `T` itself, so calls inside it are static.
 - **Dispatch on non-block types** uses `$impl`, or `$overload` where the set of types is closed. Extension by `$overload` is scope-based: `$decl show $overload (show_mine, show)` prepends a candidate in an inner scope.
 
 **Composing traits.** A combined trait is the trait of a prototype listing both traits' props. There is no second mechanism.
@@ -1009,7 +1009,7 @@ $decl seg { $decl len 2
 **A bound: conformance checked, calls static**
 
 ```
-$decl doubled $template (T ($traitsof shape_proto)) {
+$decl doubled $template ($decl T $traitsof shape_proto) {
   $prop run $func ($decl v $const $new T) $call mul ($call v.area (), 2)
 }
 $call ($specialize doubled rect).run (rect)              // 24; `v.area` is a direct call

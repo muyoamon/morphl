@@ -1980,15 +1980,25 @@ pub const Interp = struct {
     fn makeTemplate(self: *Interp, node: *const Node, scope: *Scope) Error!Value {
         const ops = node.data.form.operands;
         const names_node = &ops[0];
+        // A generic is a name or `$decl name bound` (§4.9). The bound is a type-only
+        // position, so stage 0 binds the name and ignores the bound, as it ignores every type.
         const generics: [][]const u8 = switch (names_node.data) {
             .name => |n| blk: {
                 const one = try self.arena.alloc([]const u8, 1);
                 one[0] = n;
                 break :blk one;
             },
+            .form => |f| blk: {
+                const one = try self.arena.alloc([]const u8, 1);
+                one[0] = f.operands[0].data.name;
+                break :blk one;
+            },
             .group => |elems| blk: {
                 const many = try self.arena.alloc([]const u8, elems.len);
-                for (elems, many) |el, *slot| slot.* = el.data.name;
+                for (elems, many) |el, *slot| slot.* = switch (el.data) {
+                    .form => |f| f.operands[0].data.name,
+                    else => el.data.name,
+                };
                 break :blk many;
             },
             else => return self.rt.fail(names_node.span, "$template expects a name or a group of names", .{}),

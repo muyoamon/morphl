@@ -579,6 +579,29 @@ $decl t67e $call check_str ("a compile-time generic is never inferred",
   $call errs_of ("$decl s $template N $func ($decl x N) { $prop k N }  $decl y $call s (1)"),
   "this template has a compile-time generic, which application never infers; write the $specialize (§4.9)")
 
+// §4.9's bounds (TRAITS.md, design point 6): checked at every specialisation, explicit or by
+// application, with the generics bound to the arguments — so an F-bound names the generic
+// itself. A failed bound is what is reported; the body is not typed.
+$decl t67f $call check_str ("a trait bound accepts a conforming argument",
+  $call errs_of ("$decl sp { $prop area $func () 0 }  $decl d $template ($decl S $traitsof sp) $func ($decl s S) 1  $decl sq { $prop area $func () 9 }  $decl y $call d (sq)"),
+  "")
+$decl t67g $call check_str ("...and refuses one that does not conform",
+  $call errs_of ("$decl sp { $prop area $func () 0 }  $decl d $template ($decl S $traitsof sp) $func ($decl s S) 1  $decl y $call d (5)"),
+  "the argument for 'S' does not satisfy its bound: Int is not trait{area:[]->Int,} (§4.9)")
+$decl t67h $call check_str ("an F-bound names the generic it bounds",
+  $call errs_of ("$decl ilt lt  $decl op $template T { $prop lt $func ($decl o T) true }  $decl m $template ($decl K $traitsof ($specialize op K)) $func ($decl a K) a  $decl q { $decl x 1  $prop lt $func ($decl o q) true }  $decl y $call m (q)"),
+  "")
+// A prefix, since the rest names a prop's content-derived identity.
+$decl begins $func ($decl s "", $decl p "")
+  $if ($call lt ($call len (s), $call len (p))) false
+      ($call eq_str ($call slice (s, 0, $call len (p)), p))
+$decl t67i $call check ("...and refuses a type whose member takes something else",
+  $call begins ($call errs_of ("$decl op $template T { $prop lt $func ($decl o T) true }  $decl m $template ($decl K $traitsof ($specialize op K)) $func ($decl a K) a  $decl q { $prop lt $func ($decl o 0) true }  $decl y $call m (q)"),
+      "the argument for 'K' does not satisfy its bound: "))
+$decl t67j $call check_str ("an explicit $specialize is checked too",
+  $call errs_of ("$decl sp { $prop area $func () 0 }  $decl d $template ($decl S $traitsof sp) $func ($decl s S) 1  $decl y $specialize d 5"),
+  "the argument for 'S' does not satisfy its bound: Int is not trait{area:[]->Int,} (§4.9)")
+
 // The prelude's list, specialized — recursive data inside a template body.
 // §5.5 requires the recursion to pass through storage, so the tail is storage;
 // without it the type has no layout and the specialization is rejected.

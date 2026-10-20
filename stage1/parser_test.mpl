@@ -104,14 +104,18 @@ $decl t24 $call check_str ("a float keeps its text", $call dump1 ("3.14"), "3.14
 $decl t25 $call check_str ("a string", $call dump1 ("\"hi\""), "\"hi\"")
 $decl t26 $call check_str ("true and false", $call dump_all ("true false"), "true\nfalse\n")
 
-// §4.9: a template's generic parameter is a name or a group of names.
+// §4.9: a template's generic parameter is a name, `$decl name bound`, or a group of them.
 $decl t27 $call check_str ("one generic parameter",
   $call dump1 ("$template T $func ($decl x T) x"), "($template T ($func ($decl x T) x))")
 $decl t28 $call check_str ("a folded generic group", $call dump1 ("$template (T) x"), "($template T x)")
 $decl t29 $call check_str ("a real generic group",
   $call dump1 ("$template (A, B) x"), "($template (group A B) x)")
-$decl t30 $call check_str ("generic parameters must be names",
-  $call first_err ("$template (A, 1) x"), "$template generic parameters must be plain names")
+$decl t30 $call check_str ("generic parameters must be names or bounded names",
+  $call first_err ("$template (A, 1) x"), "$template generic parameters must be names or $decl name bound")
+$decl t30b $call check_str ("a bounded generic is a $decl",
+  $call dump1 ("$template ($decl K 0) x"), "($template ($decl K 0) x)")
+$decl t30c $call check_str ("...beside a plain one",
+  $call dump1 ("$template (A, $decl B A) x"), "($template (group A ($decl B A)) x)")
 
 // Worked examples from SPEC.md §12.
 $decl t31 $call check_str ("the counter example",

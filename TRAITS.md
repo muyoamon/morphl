@@ -1,7 +1,7 @@
 # Traits without `Self`: design note
 
-Status: **steps 1–3 done** — `Self` is gone, every member of a trait object is callable,
-and a trait naming itself is tied by §5.5. Bounds in the `$decl` syntax (step 4) remain.
+Status: **steps 1–4 done** — `Self` is gone, every member of a trait object is callable, a
+trait naming itself is tied by §5.5, and bounds are checked, in the `$decl` syntax.
 
 §6 builds a trait "over a distinguished type `Self`", and `$traitsof` makes one by abstracting
 every occurrence of the value's own type into it. This note removes `Self`. A trait is its
@@ -48,7 +48,7 @@ possible. §4.9 already has the explicit form of that — the F-bound,
      $prop eq $func ($decl other pt)
        $call C.and ($call ieq (pt.x, other.x), $call ieq (pt.y, other.y)) }
 
-   $decl same_as $template ($decl T ($specialize eq_proto T))
+   $decl same_as $template ($decl T $traitsof ($specialize eq_proto T))
      $func ($decl a T, $decl b T) $call a.eq (b)
 
    $call same_as (p, q)    // T = pt: pt conforms to eq_proto pt; a.eq is pt's own, direct
@@ -71,8 +71,8 @@ possible. §4.9 already has the explicit form of that — the F-bound,
 
    ```
    $template T                                          // unbounded, as today
-   $template ($decl K ($specialize ord_proto K))        // bounded, F-bounded here
-   $template (T, $decl S ($specialize seq_of (S, T)))   // a plain one and a bounded one
+   $template ($decl K $traitsof ($specialize ord_proto K))       // bounded, F-bounded
+   $template (T, $decl S $traitsof ($specialize seq_of (S, T)))  // a plain one and a bounded one
    ```
 
    The bound plays the role of a parameter default: an example that fixes a type (§3.4),
@@ -116,13 +116,13 @@ $decl seq_of $template (S, T) {
   $prop first $func () $union (none, { $prop tag "some"  $decl v T })
   $prop rest  $func () S
 }
-$decl count $template (T, $decl S ($specialize seq_of (S, T)))
+$decl count $template (T, $decl S $traitsof ($specialize seq_of (S, T)))
   $func ($decl xs S, $decl n 0) …
 
 // Dynamic: `rest` answers the trait object type, a recursive trait (design point 7).
 $decl seq $template T {
   $prop first $func () $union (none, { $prop tag "some"  $decl v T })
-  $prop rest  $func () $traitsof ($specialize seq T)
+  $prop rest  $func () $traitsof $alloc ($specialize seq T)
 }
 ```
 
@@ -134,7 +134,7 @@ $decl ord_proto $template T {
   $prop eq ($specialize eq_proto T).eq
   $prop lt $func ($decl other T) C.bool
 }
-$decl max $template ($decl T ($specialize ord_proto T)) $func ($decl a T, $decl b T) …
+$decl max $template ($decl T $traitsof ($specialize ord_proto T)) $func ($decl a T, $decl b T) …
 ```
 
 ## What the current compiler does
@@ -235,7 +235,13 @@ program meaning "another implementation" writes `$traitsof` there.
      types from inference, as it takes `ualloc`'s sites, would remove it.
 4. **Bounds (P2) in this syntax**, F-bounds included — then `std/core`'s `eq_proto` and
    `ord_proto`, and `STDLIB.md`'s capability traits (`sized`, `seq`, `indexed`, `builder`)
-   built on them.
+   built on them. **Done** for the language (`stage1/fixtures/bounds.mpl`, `infer_test`'s
+   `t67f`–`t67j`): a generic is a name or `$decl name bound` in all three parsers; inference
+   checks `type(arg) <: type(bound)` at every specialisation, explicit or by application,
+   with the generics bound to the arguments; a failed bound is reported and the body is not
+   typed. **A bound must be a trait to mean conformance** — `$decl K $traitsof ($specialize
+   ord_proto K)`: a props-only block as a bound is §5.1's block subtyping, which compares prop
+   values, so the examples above write `$traitsof`. The library traits are next.
 5. **SPEC** §4.9, §4.13, §6, §10, §12 as above, landing with step 2. **Done**, except §4.9's
    generic-parameter syntax, which lands with step 4.
 

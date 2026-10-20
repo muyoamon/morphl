@@ -295,10 +295,16 @@ const Parser = struct {
                     const g = try self.parseGroup();
                     switch (g.data) {
                         .name => return g, // `(T)` folded to `T`
+                        // `($decl K bound)` folded to the `$decl` (§4.9, a bounded generic).
+                        .form => {
+                            if (isGeneric(&g)) return g;
+                            self.diags.add(g.span, "{s} expects a name or a group of names", .{keyword.text()});
+                            return error.Bad;
+                        },
                         .group => |elems| {
-                            for (elems) |el| {
-                                if (std.meta.activeTag(el.data) != .name) {
-                                    self.diags.add(el.span, "{s} generic parameters must be plain names", .{keyword.text()});
+                            for (elems) |*el| {
+                                if (!isGeneric(el)) {
+                                    self.diags.add(el.span, "{s} generic parameters must be names or $decl name bound", .{keyword.text()});
                                     return error.Bad;
                                 }
                             }
@@ -313,6 +319,17 @@ const Parser = struct {
                 return self.parseNameOperand(keyword, index);
             },
         }
+    }
+
+    /// §4.9: a generic is a bare name, unbounded, or `$decl name bound`, written as a
+    /// `$func` parameter is (TRAITS.md, design point 6).
+    fn isGeneric(n: *const Node) bool {
+        return switch (n.data) {
+            .name => true,
+            .form => |f| f.keyword == .decl and f.operands.len == 2 and
+                std.meta.activeTag(f.operands[0].data) == .name,
+            else => false,
+        };
     }
 
     fn parseNameOperand(self: *Parser, keyword: Keyword, index: usize) ParseError!Node {
@@ -591,7 +608,7 @@ test "template generic parameters: name, folded group, real group" {
     try expectDump("$template T $func ($decl x T) x", "($template T ($func ($decl x T) x))");
     try expectDump("$template (T) x", "($template T x)");
     try expectDump("$template (A, B) x", "($template (group A B) x)");
-    try expectError("$template (A, 1) x", "generic parameters must be plain names");
+    try expectError("$template (A, 1) x", "generic parameters must be names or $decl name bound");
 }
 
 test "single-arm match: arms operand is the \\$case itself, not a group" {

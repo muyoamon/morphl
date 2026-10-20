@@ -260,6 +260,9 @@ pub fn build(b: *std.Build) void {
         // TRAITS.md, design point 7: a trait naming itself, by its block's name and through
         // a specialisation of its template, tied by §5.5. 116.
         .{ .src = "stage1/fixtures/self_trait.mpl", .want = "116\n" },
+        // §4.9's bounds in TRAITS.md's syntax — an F-bound, a trait bound, and a plain generic
+        // beside a bounded one — checked at specialisation. 55.
+        .{ .src = "stage1/fixtures/bounds.mpl", .want = "55\n" },
         // §4.8's `$overload`: first fit, a nested overload, an overload argument, and
         // `x.i`. 362.
         .{ .src = "stage1/fixtures/overload.mpl", .want = "362\n" },
@@ -718,6 +721,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/recv_ref.mpl",
         "stage1/fixtures/trait_written.mpl",
         "stage1/fixtures/self_trait.mpl",
+        "stage1/fixtures/bounds.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

@@ -341,14 +341,42 @@ $decl parse_str_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $
 // first. Note that `$decl h xs.head` is safe only because `xs.head` is a value:
 // binding a reference would keep it a reference (§5.4) and the pattern would
 // then be testing the wrong shape.
+// §4.9: a generic is a bare name, unbounded, or `$decl name bound` — written as a `$func`
+// parameter is, the bound standing where a default stands (TRAITS.md, design point 6).
+$decl is_name_n $func ($decl h proto_node) $match h ($case {$prop tag "name"} true, $case h false)
+$decl is_generic $func ($decl h proto_node) $match h (
+  $case {$prop tag "name"} true,
+  $case {$prop tag "form"}
+    $if ($call eq_str (h.keyword, "decl")) ($call is_name_n ($call nodes.nth (h.operands, 0))) false,
+  $case h false
+)
+
+// A generic's name, and its bound — unit when it has none. Shared, so both passes read a
+// `$template`'s generics the same way.
+$decl gname_of $func ($decl h proto_node) $match h ($case {$prop tag "name"} h.text, $case h "")
+$decl generic_name $func ($decl h proto_node) $match h (
+  $case {$prop tag "name"} h.text,
+  $case {$prop tag "form"} ($call gname_of ($call nodes.nth (h.operands, 0))),
+  $case h ""
+)
+$decl generic_bound $func ($decl h proto_node) $match h (
+  $case {$prop tag "form"} ($call nodes.nth (h.operands, 1)),
+  $case h ($call n_unit (0, 0))
+)
+$decl generic_bounds_list $func ($decl xs nodes.node, $decl acc nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call generic_bounds_list ($call nodes.val (xs.tail),
+        $call nodes.cons ($call generic_bound (xs.head), acc)),
+  $case xs ($call nodes.reverse (acc, nodes.nil))
+)
+// One bound per generic, in order, for a `$template`'s generics operand.
+$decl generic_bounds $func ($decl n proto_node) $match n (
+  $case {$prop tag "group"} ($call generic_bounds_list ($call nodes.val (n.items), nodes.nil)),
+  $case n ($call nodes.cons ($call generic_bound (n), nodes.nil))
+)
+
 $decl all_names $func ($decl xs nodes.node) $match xs (
-  $case {$prop tag "cons"} {
-    $decl h xs.head
-    $decl ret $match h (
-        $case {$prop tag "name"} $call all_names (xs.tail),
-        $case h false
-      )
-  }.ret,
+  $case {$prop tag "cons"} $if ($call is_generic (xs.head)) ($call all_names (xs.tail)) false,
   $case xs true
 )
 
@@ -356,11 +384,16 @@ $decl parse_names_operand $func ($decl ps proto_parser, $decl kwt L.proto_token,
   $if ($call at_kind (ps, "lparen")) {
     $decl g $call parse_group (ps)
     $decl ret $match g (
-        // `(T)` folded to `T` — §2.3 again.
+        // `(T)` folded to `T` — §2.3 again — and `($decl K b)` to the `$decl`.
         $case {$prop tag "name"} g,
+        $case {$prop tag "form"} $if ($call is_generic (g)) g
+            ($call fail_at (ps,
+                $call concat ("$", $call concat (kwt.text, " expects a name or a group of names")),
+                g.line, g.col)),
         $case {$prop tag "group"} $if ($call all_names (g.items)) g
             ($call fail_at (ps,
-                $call concat ("$", $call concat (kwt.text, " generic parameters must be plain names")),
+                $call concat ("$", $call concat (kwt.text,
+                    " generic parameters must be names or $decl name bound")),
                 g.line, g.col)),
         $case g ($call fail_at (ps,
             $call concat ("$", $call concat (kwt.text, " expects a name or a group of names")),

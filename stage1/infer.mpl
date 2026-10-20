@@ -89,9 +89,11 @@ $decl join_strs $func ($decl xs strs.node, $decl acc strs.node) $match xs (
 // reason (see `Func.file` in lib/interp/value.zig).
 // `ctg` is §4.9's compile-time generics: the ones whose value reaches a prop, each
 // with the prop it reaches. Computed at the declaration (`ctg_fix`).
+// `bounds` is each generic's bound in order, unit when it has none (§4.9).
 $decl tmpl_rec_c $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en env.node,
-                        $decl fl "", $decl cg Pa.ctgs.node)
-  { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl file fl  $decl ctg cg }
+                        $decl fl "", $decl cg Pa.ctgs.node, $decl bs Pa.nodes.node)
+  { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl file fl  $decl ctg cg
+    $decl bounds bs }
 $decl tmpl_rec $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en env.node,
                       $decl fl "")
   $call tmpl_rec_c (i, gs, bd, en, fl, Pa.ctgs.nil)
@@ -2542,12 +2544,14 @@ $fwd generic_names_list
 $decl generic_names $func ($decl n Pa.proto_node, $decl acc strs.node) $match n (
   $case {$prop tag "name"}  $call strs.cons (n.text, acc),
   $case {$prop tag "group"} $call generic_names_list (n.items, acc),
+  // `($decl K bound)`, one bounded generic (§4.9).
+  $case {$prop tag "form"}  $call strs.cons ($call Pa.generic_name (n), acc),
   $case n acc
 )
 
 $decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $match xs (
   $case {$prop tag "cons"}
-    $call generic_names_list (xs.tail, $call strs.cons ($call name_of (xs.head), acc)),
+    $call generic_names_list (xs.tail, $call strs.cons ($call Pa.generic_name (xs.head), acc)),
   $case xs ($call strs.reverse (acc, strs.nil))
 )
 
@@ -2647,7 +2651,8 @@ $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
   $decl id  $call ct_id (cx, 7, n)
   $decl cg    $call ctg_fix (cx, e, id, gs, $call op (n, 1), Pa.ctgs.nil,
                   $call strs.length (gs, 0))
-  $decl rec   $call tmpl_rec_c (id, gs, $call op (n, 1), e, $call sval (cx.file), cg)
+  $decl rec   $call tmpl_rec_c (id, gs, $call op (n, 1), e, $call sval (cx.file), cg,
+                  $call Pa.generic_bounds ($call op (n, 0)))
   $decl added $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
   $decl ret   $call T.t_tmpl (id)
 }.ret
@@ -2736,11 +2741,46 @@ $decl close_self $func ($decl t T.proto_ty, $decl id 0) {
   $decl ret $call T.remap (t, $call T.rop_var (id, mu), 0)
 }.ret
 
+// §4.9: "At specialization, `type(arg) <: type(bound)` is checked first and reported as
+// such." Each bound is typed with the generics bound to the arguments, which is what makes
+// an F-bound work — `$decl K $traitsof ($specialize ord_proto K)` names `K` itself — and in
+// the template's own environment, where it was written. Not checked while a placeholder is
+// involved (§5.5): the check would be against a type not yet solved. Answers whether every
+// bound held; when one did not, the body is not typed, so the bound is what is reported.
+$decl is_unit_node $func ($decl b Pa.proto_node) $match b ($case {$prop tag "unit"} true, $case b false)
+
+$decl check_bounds $func ($decl cx proto_ctx, $decl benv env.node, $decl gs strs.node,
+                          $decl bs Pa.nodes.node, $decl ats T.tys.node, $decl n Pa.proto_node)
+    $match gs (
+  $case {$prop tag "cons"} $match bs (
+    $case {$prop tag "cons"} $match ats (
+      $case {$prop tag "cons"} {
+        $decl b    bs.head
+        $decl bt   $if ($call is_unit_node (b)) T.t_bot ($call deref_ty ($call infer (cx, benv, b)))
+        $decl live $if ($call is_unit_node (b)) false
+                       ($call not ($call or ($call has_free_var (ats.head),
+                                            $call has_free_var (bt))))
+        $decl ok   $if live ($call T.sub (ats.head, bt)) true
+        $decl say  $if ok T.t_unit
+            ($do ($call T.explain (ats.head, bt))
+                 ($call err (cx, $call concat ("the argument for '", $call concat (gs.head,
+                     $call concat ("' does not satisfy its bound: ", $call concat ($call T.show (ats.head),
+                     $call concat (" is not ", $call concat ($call T.show (bt), " (§4.9)")))))), n)))
+        $decl rest $call check_bounds (cx, benv, gs.tail, $call Pa.nodes.val (bs.tail), ats.tail, n)
+        $decl ret  $if ok rest false
+      }.ret,
+      $case ats true),
+    $case bs true),
+  $case gs true
+)
+
 $decl specialize_at $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                            $decl args Pa.nodes.node, $decl ats T.tys.node,
                            $decl n Pa.proto_node) {
   $decl r  $call find_tmpl (cx.tmpls, id)
-  $decl ret {
+  $decl bc $call check_bounds (cx, $call bind_generics (r.env, r.generics, ats), r.generics,
+               r.bounds, ats, n)
+  $decl ret $if ($call not (bc)) T.t_bot {
         $decl chk  $call ct_args_check (cx, e, r.generics, args, r.ctg)
         $decl key  $call concat ($call memo_key (id, ats, ""), $call ct_vals (cx, r.generics, args,
             r.ctg, ""))

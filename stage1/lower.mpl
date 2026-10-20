@@ -2452,7 +2452,7 @@ $decl lower_bool_match $func ($decl st proto_lst, $decl e benv.node, $decl scrut
 $decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $match xs (
   $case {$prop tag "cons"}
     $call generic_names_list ($call Pa.nodes.val (xs.tail),
-        $call strs.cons ($call name_of (xs.head), acc)),
+        $call strs.cons ($call Pa.generic_name (xs.head), acc)),
   $case xs ($call strs.reverse (acc, strs.nil))
 )
 
@@ -2461,6 +2461,8 @@ $decl generic_names_list $func ($decl xs Pa.nodes.node, $decl acc strs.node) $ma
 $decl generic_names $func ($decl n Pa.proto_node, $decl acc strs.node) $match n (
   $case {$prop tag "name"}  ($call strs.cons (n.text, acc)),
   $case {$prop tag "group"} ($call generic_names_list ($call Pa.nodes.val (n.items), acc)),
+  // `($decl K bound)`: lowering reads the name; the bound is inference's to check (§4.9).
+  $case {$prop tag "form"}  ($call strs.cons ($call Pa.generic_name (n), acc)),
   $case n acc
 )
 
