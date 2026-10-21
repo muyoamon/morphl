@@ -147,7 +147,8 @@ $decl fold_expr $func ($decl e IR.proto_expr) $match e (
   $case {$prop tag "do"}
     ($call IR.eval ($call IR.e_do (e.ty, $call fold_expr (e.first), $call fold_expr (e.then)))),
   $case {$prop tag "try"}
-    ($call IR.eval ($call IR.e_try (e.ty, $call fold_expr (e.value), e.disc))),
+    ($call IR.eval ($call IR.e_try (e.ty, $call fold_expr (e.value), e.disc,
+        $call fold_list ($call IR.exprs.val (e.pre), IR.exprs.nil)))),
   $case {$prop tag "tobj"}
     ($call IR.eval ($call IR.e_tobj (e.ty, $call fold_expr (e.ref), $call IR.ints.val (e.fns)))),
   $case {$prop tag "tmem"}

@@ -66,6 +66,7 @@ Newlines are whitespace. The language does not dictate formatting.
 | `$import "name"` | 1 | string literal |
 | `$try e pat` | 2 | expression, type-only pattern |
 | `$extern "symbol" sig` | 2 | string literal, type-only signature |
+| `$defer e` | 1 | expression; a block item only (§4.15a) |
 
 Because every form has fixed arity and groups/blocks are delimited, parsing needs no separators, no newline sensitivity, and no formatter.
 
@@ -362,6 +363,28 @@ Loads a source file as a block and evaluates to it; the type is that block's typ
 The root block declares `$prop err {$prop tag "err"}` and `$prop none {$prop tag "none"}` so the common forms read `$try x err` and `$try x none`. Any user-defined union shape works as `pat`.
 
 **`panic` is not an error value.** It aborts; there is no catch and no unwinding. Expected failures are values; bugs panic. A panic handler is a runtime/build concern.
+
+### 4.15a `$defer e`
+
+A block item that binds nothing. `e` is not evaluated where it stands: it is registered,
+and runs **when the block is done** — after every item of the block, in reverse order of
+registration, while everything the block bound is still in scope. `e` reads the scope as it
+is then, and may name only what precedes the `$defer` (§4.10). Its value is discarded.
+
+- **What "done" means.** A block is scope, record and storage at once (§4.5), so this depends
+  on what the block became. For a scope — a statement, a `.r` projection, a function body —
+  and for a plain value, it is the end of the block's own evaluation: the record outlives the
+  block, and **a copy of a record carries no deferral**. A block that is directly the operand
+  of `$new` or `$alloc` runs its deferrals when that storage's owner is destroyed or the
+  storage is freed; that half, and owners, are designed (DEFER.md) and not yet part of this
+  specification, so such a block is a compile error for now.
+- **Exits.** `$try` leaving a block is a return (§4.15), so it runs the deferrals registered
+  before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none.
+- **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), so
+  no deferral can stand between a function and a call it ends with.
+- **Where.** Only directly among a block's items; anywhere else is a compile error. At a
+  file's top level it is a compile error for now, since "the end of the file's evaluation"
+  would be before `main` runs (DEFER.md).
 
 ### 4.16 `$extern "symbol" sig`
 

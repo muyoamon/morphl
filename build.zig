@@ -246,6 +246,12 @@ pub fn build(b: *std.Build) void {
         // of its type: the constructor's result closes twice, and `unroll`'s memo must not
         // keep a mid-knot unrolling. At the top level and in a template. 6205.
         .{ .src = "stage1/fixtures/wrap_self.mpl", .want = "6205\n" },
+        // §4.15a's `$defer`: a scope, a plain value, `$try` returning and not, and nested
+        // scopes — each step a digit, so the answer is the order. 132456876798.
+        .{ .src = "stage1/fixtures/defer.mpl", .want = "132456876798\n" },
+        // A `$try` returning a member nothing else interns: emit missed it and injected
+        // type 0, returning an uninitialised result. 3.
+        .{ .src = "stage1/fixtures/try_member.mpl", .want = "3\n" },
         // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
         // argument, from a function argument's parameter and result, from a module's
         // template, and a template applying itself in tail position. Stage 0 refuses
@@ -481,6 +487,16 @@ pub fn build(b: *std.Build) void {
             },
             .count = "errors: 9\n",
             .stage0 = null,
+        },
+        .{
+            .src = "stage1/fixtures/defer_bad.mpl",
+            .stage1 = &.{
+                "defer_bad.mpl:8:1: $defer at a file's top level is not defined yet (DEFER.md)",
+                "defer_bad.mpl:3:31: $defer is a block item: it belongs directly in a block's items",
+                "defer_bad.mpl:5:31: $defer in a block that is $new storage is not implemented yet",
+            },
+            .count = "errors: 3\n",
+            .stage0 = "$defer at a file's top level is not defined yet",
         },
     }) |bad| {
         const s1 = b.addRunArtifact(exe);
@@ -737,6 +753,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/local_rec0.mpl",
         "stage1/fixtures/recv_param.mpl",
         "stage1/fixtures/wrap_self.mpl",
+        "stage1/fixtures/defer.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

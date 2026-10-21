@@ -514,6 +514,15 @@ $decl pend_ent $func ($decl i 0, $decl nm "", $decl k 0, $decl t T.proto_ty, $de
 $decl proto_pend $call pend_ent (0, "", 0, T.t_bot, Pa.proto_node)
 $decl pend_list  $specialize P.list proto_pend
 
+// §4.15a: a `$defer` registered and not yet run — its expression and the environment where
+// it stands, so it is lowered against the names it was written among however many blocks
+// nest between it and an exit. Newest first, for the current function only: `lower_func`
+// starts each body with none, since `$try` returns from the nearest `$func`.
+$decl dfr_ent   $func ($decl n Pa.proto_node, $decl e benv.node)
+  { $decl node n  $decl env $alloc e }
+$decl proto_dfr $call dfr_ent (Pa.proto_node, benv.nil)
+$decl dfr_list  $specialize P.list proto_dfr
+
 // §3.4's defaults, which a short call needs. A known function's definition context —
 // its parameters' source and the scope they are evaluated in — and the wrappers built
 // from it. See `short_callee`.
@@ -626,6 +635,7 @@ $decl lstate $func () {
   // Every function-valued prop lowering has seen, by identity. See `prop_by_id`.
   $decl opaqs  $mut $alloc opq_list.node
   $decl pends  $mut $alloc pend_list.node
+  $decl defers $mut $alloc dfr_list.node
   $decl fdefs  $mut $alloc fdef_list.node
   $decl wraps  $mut $alloc wrap_list.node
   $decl wpends $mut $alloc wrap_list.node
@@ -1487,6 +1497,8 @@ $decl bare_recv $func ($decl st proto_lst, $decl r proto_lres, $decl nm "", $dec
 
 $fwd lower
 $fwd lower_block
+// §4.15a: `$try` runs the pending deferrals, which are lowered with the block machinery.
+$fwd lower_dfrs
 // A projection onto a prop, answered from the prop's source. It needs
 // `lower_func` (a function-valued prop is lifted like any other `$func`),
 // which is far below, and `lower_name` needs it — §4.10 makes a prop visible
@@ -3710,8 +3722,17 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       // been taken away.
       $decl rest $call T.minus (v.ty, pty)
       $decl ret2 $match ds (
+          // §4.15a: it returns, so every deferral pending in this function runs first.
+          // The member it returns is interned here: emit looks it up to inject it into
+          // the function's result, and nothing else need have interned it — a program
+          // whose only `none` is the one a `$try` returns emitted an uninitialised result.
           $case {$prop tag "cons"}
-            ($call lres ($call IR.e_try ($call intern (st, rest), v.ir, ds.head), rest)),
+            $do ($call intern (st, $call T.tys.nth ($call members_of ($call canon_ty (st, v.ty)),
+                     ds.head)))
+            ($call lres ($call IR.e_try ($call intern (st, rest), v.ir, ds.head,
+                $call lower_dfrs (st, $call dfr_list.val (st.defers),
+                    $call dfr_list.length ($call dfr_list.val (st.defers), 0), IR.exprs.nil)),
+                rest)),
           $case ds
             ($call lres ($call IR.e_unit ($call err (st,
                 "$try's pattern matches nothing in the value's type", n)), T.t_unit))
@@ -3935,8 +3956,13 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl ps    $call group_items ($call op (n, 0))
   $decl ptys  $match fty ($case {$prop tag "func"} ($call T.tys.val (fty.params)), $case fty T.tys.nil)
   $decl b     $call bind_params (st, e, ps, ptys, IR.ints.nil, de)
+  // §4.15a: `$try` returns from the nearest `$func`, so the enclosing one's deferrals are
+  // not this body's to run.
+  $decl odf   $call dfr_list.val (st.defers)
+  $decl clr   $set st.defers dfr_list.nil
   // The body is in tail position: it *is* the function's result (§7.7).
   $decl body  $call lval ($call lower (st, b.env, $call op (n, 1), true))
+  $decl rdf   $set st.defers odf
   // §4.15 widens the *inferred* result to include what `$try` can return, so
   // the declared type is the one to believe — not the body's own, which does
   // not know about the non-local exits inside it.
@@ -4568,13 +4594,19 @@ $decl lower_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto
   ($if ($call is_form (it, "fwd")) {
     $decl e   $call err (st, "$fwd is not lowered yet", it)
     $decl ret a
+  }.ret
+  // §4.15a: registered where it stands, lowered where it runs (`with_defers`, `$try`).
+  ($if ($call is_form (it, "defer")) {
+    $decl p   $set st.defers ($call dfr_list.cons ($call dfr_ent ($call op (it, 0),
+                  $call benv.val (a.env)), st.defers))
+    $decl ret a
   }.ret {
     // Runs for effect, discarded (§3.3). Held until the next slot.
     $decl v $call lval ($call lower (st, a.env, it, false))
     $decl ret $call blk_acc ($call IR.bslots.val (a.slots), $call T.fields.val (a.flds),
         $call T.props.val (a.prps), $call benv.val (a.env),
         $call IR.exprs.cons (v.ir, $call IR.exprs.val (a.pend)))
-  }.ret))
+  }.ret)))
 
 $decl lower_items $func ($decl st proto_lst, $decl a proto_blk, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"} {
@@ -4583,6 +4615,46 @@ $decl lower_items $func ($decl st proto_lst, $decl a proto_blk, $decl xs Pa.node
   }.ret,
   $case xs a
 )
+
+// §4.15a: deferrals lowered for running, each against the environment it was written in,
+// in the order they run — newest first, which is the order the stack keeps them in.
+$decl lower_dfrs $func ($decl st proto_lst, $decl xs dfr_list.node, $decl n 0,
+                        $decl acc IR.exprs.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (0, n)) {
+      $decl v   $call lval ($call lower (st, $call benv.val (xs.head.env), xs.head.node, false))
+      $decl ret $call lower_dfrs (st, $call dfr_list.val (xs.tail), $call sub (n, 1),
+                    $call IR.exprs.cons (v.ir, acc))
+    }.ret ($call IR.exprs.reverse (acc, IR.exprs.nil)),
+  $case xs ($call IR.exprs.reverse (acc, IR.exprs.nil))
+)
+
+// A block's own deferrals — those registered since `saved` — run once its value is built
+// and before it is used, then taken off the stack. The block's value is the first slot of
+// an outer block whose second slot runs them: appending them as slots of the block itself
+// would change its layout, and §3.3's trailing effects are folded *around* the block, so
+// they would run before its slots.
+$decl with_defers $func ($decl st proto_lst, $decl saved dfr_list.node, $decl ir IR.proto_expr,
+                         $decl id 0, $decl ty T.proto_ty) {
+  $decl k   $call sub ($call dfr_list.length ($call dfr_list.val (st.defers), 0),
+                       $call dfr_list.length (saved, 0))
+  $decl ret $if ($call lt (0, k)) {
+    $decl run  $call lower_dfrs (st, $call dfr_list.val (st.defers), k, IR.exprs.nil)
+    $decl back $set st.defers saved
+    $decl uid  $call intern (st, T.t_unit)
+    $decl s0   $call fresh_slot (st, id)
+    $decl s1   $call fresh_slot (st, uid)
+    // `with_pending` runs its list last first, so the newest-first list goes in reversed.
+    $decl d    $call with_pending ($call IR.exprs.reverse (run, IR.exprs.nil),
+                   $call IR.e_unit (uid), uid)
+    $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("v", ty),
+                   $call T.fields.cons ($call T.field ("d", T.t_unit), T.fields.nil)), T.props.nil)
+    $decl oid  $call intern (st, oty)
+    $decl ob   $call IR.e_block (oid, $call IR.bslots.cons ($call IR.bslot (s0, ir),
+                   $call IR.bslots.cons ($call IR.bslot (s1, d), IR.bslots.nil)))
+    $decl ret2 $call IR.e_field (id, ob, 0)
+  }.ret2 ir
+}.ret
 
 // The `$prop` items, kept as source. §4.10 makes a prop's value compile-time,
 // so it is code the compiler still has rather than anything in the layout —
@@ -4635,14 +4707,16 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
   $decl rn   $call P.sval (st.rname)
   $decl rq   $call P.sval (st.rqual)
   $decl rk   $call P.sval (st.rkind)
+  $decl dfs  $call dfr_list.val (st.defers)
   $decl a  $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
                                                  e, IR.exprs.nil), xs)
   $decl ty $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil),
                             $call T.props.val (a.prps))
   $decl id $call intern (st, ty)
-  $decl ir $call with_pending ($call IR.exprs.val (a.pend),
+  $decl ir0 $call with_pending ($call IR.exprs.val (a.pend),
       $call IR.e_block (id, $call IR.bslots.reverse ($call IR.bslots.val (a.slots),
           IR.bslots.nil)), id)
+  $decl ir $call with_defers (st, dfs, ir0, id, ty)
   $decl ps $call block_props (xs, mprops.nil)
   $decl md $if ($call mprops.is_nil (ps)) -1
                ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps),
@@ -4676,6 +4750,7 @@ $decl spec_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
                        $decl args  Pa.nodes.node, $decl gm 0, $decl md0 0, $decl bty0 T.proto_ty,
                        $decl fresh P.boolean, $decl n Pa.proto_node) {
   $decl items $call body_items (r.body)
+  $decl dfs $call dfr_list.val (st.defers)
   $decl ga  $call bind_args (st, e, $call strs.val (r.generics), args,
                 $call gen_acc ($call benv.val (r.env), IR.bslots.nil, T.fields.nil))
   $decl a   $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
@@ -4693,9 +4768,10 @@ $decl spec_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
   $decl ity $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil),
       prps)
   $decl iid $call intern (st, ity)
-  $decl iir $call with_pending ($call IR.exprs.val (a.pend),
+  $decl iir0 $call with_pending ($call IR.exprs.val (a.pend),
       $call IR.e_block (iid,
           $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)), iid)
+  $decl iir $call with_defers (st, dfs, iir0, iid, ity)
   $decl ng  $call strs.length (r.generics, 0)
   $decl isl $call fresh_slot (st, iid)
   $decl oty $call T.t_block ($call T.fields.reverse (
@@ -5153,7 +5229,9 @@ $decl grefs $func ($decl x IR.proto_expr, $decl cs IR.ints.node, $decl acc IR.in
         $call grefs ($call IR.eval (x.scrut), cs, acc)))),
   $case {$prop tag "do"}
     ($call grefs ($call IR.eval (x.then), cs, $call grefs ($call IR.eval (x.first), cs, acc))),
-  $case {$prop tag "try"}     ($call grefs ($call IR.eval (x.value), cs, acc)),
+  $case {$prop tag "try"}
+    ($call grefs_list ($call IR.exprs.val (x.pre), cs,
+        $call grefs ($call IR.eval (x.value), cs, acc))),
   $case {$prop tag "tobj"}
     ($call grefs ($call IR.eval (x.ref), cs, $call gref_fns ($call IR.ints.val (x.fns), cs, acc))),
   $case {$prop tag "tmem"}    ($call grefs ($call IR.eval (x.obj), cs, acc)),

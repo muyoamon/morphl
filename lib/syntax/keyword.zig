@@ -36,6 +36,7 @@ pub const Keyword = enum {
     import,
     @"try",
     @"extern",
+    @"defer",
 
     /// The source spelling, including the `$`.
     pub fn text(self: Keyword) []const u8 {
@@ -96,6 +97,7 @@ const signatures = [_]Signature{
     &.{.str_lit}, // $import "name"
     &.{ .expr, .expr }, // $try e pat
     &.{ .str_lit, .expr }, // $extern "symbol" sig
+    &.{.expr}, // $defer e        (DEFER.md: a block item, run when the block is done)
 };
 
 /// Maps a keyword's name *without* the `$` to its tag.
@@ -123,6 +125,7 @@ const table = std.StaticStringMap(Keyword).initComptime(.{
     .{ "import", .import },
     .{ "try", .@"try" },
     .{ "extern", .@"extern" },
+    .{ "defer", .@"defer" },
 });
 
 pub fn lookup(name_without_dollar: []const u8) ?Keyword {

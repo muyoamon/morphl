@@ -193,7 +193,9 @@ $decl proto_expr $union (
 
   // §4.15, the only non-local exit: if the value matches, return it from the
   // enclosing function. `disc` is the discriminator the pattern selects.
-  { $prop tag "try"     $decl ty 0  $decl id 0  $decl value $alloc proto_expr  $decl disc 0 },
+  // `pre` is §4.15a's deferrals pending where the `$try` stands, in the order they run.
+  { $prop tag "try"     $decl ty 0  $decl id 0  $decl value $alloc proto_expr  $decl disc 0
+    $decl pre $alloc ($specialize P.list proto_expr).node },
 
   // §6: a trait object made from a reference to its referent. `fns` are the
   // implementation's members in the trait's order (§6 sorts them by name), as lifted
@@ -314,8 +316,9 @@ $decl e_do $func ($decl t 0, $decl a proto_expr, $decl b proto_expr) {
   $prop tag "do" $decl ty t  $decl id ($call fresh_id ())  $decl first $alloc a  $decl then $alloc b
 }
 
-$decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0)
-  { $prop tag "try" $decl ty t  $decl id ($call fresh_id ())  $decl value $alloc v  $decl disc d }
+$decl e_try $func ($decl t 0, $decl v proto_expr, $decl d 0, $decl ps exprs.node)
+  { $prop tag "try" $decl ty t  $decl id ($call fresh_id ())  $decl value $alloc v  $decl disc d
+    $decl pre $alloc ps }
 
 $decl e_tobj $func ($decl t 0, $decl r proto_expr, $decl fs ints.node) {
   $prop tag "tobj" $decl ty t  $decl id ($call fresh_id ())  $decl ref $alloc r
@@ -706,6 +709,14 @@ $decl show_arms $func ($decl xs arms.node, $decl acc "") $match xs (
   $case xs acc
 )
 
+// A `try`'s deferrals, after its discriminator; nothing when there are none.
+$decl show_pre $func ($decl xs exprs.node, $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call show_pre ($call exprs.val (xs.tail), $call concat (acc,
+        $call concat (" (pre ", $call concat ($call show (xs.head), ")")))),
+  $case xs acc
+)
+
 $decl show $func ($decl e proto_expr) $match e (
   $case {$prop tag "int"}     $call concat ("(int ", $call concat ($call int_to_str (e.v), ")")),
   $case {$prop tag "float"}   $call concat ("(float ", $call concat (e.text, ")")),
@@ -750,7 +761,8 @@ $decl show $func ($decl e proto_expr) $match e (
         $call concat (" ", $call concat ($call show (e.then), ")")))),
   $case {$prop tag "try"}
     $call concat ("(try ", $call concat ($call show (e.value),
-        $call concat (" ", $call concat ($call int_to_str (e.disc), ")")))),
+        $call concat (" ", $call concat ($call int_to_str (e.disc),
+        $call concat ($call show_pre ($call exprs.val (e.pre), ""), ")"))))),
   $case {$prop tag "tobj"}
     $call concat ("(tobj ", $call concat ($call show (e.ref),
         $call concat (" [", $call concat ($call show_ints ($call ints.val (e.fns), ""), "])")))),

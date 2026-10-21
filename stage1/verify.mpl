@@ -367,7 +367,10 @@ $decl vexpr $func ($decl st proto_vst, $decl cx proto_vcx, $decl e IR.proto_expr
 
     // §4.15 returns from the enclosing function when the value matches, so its
     // operand is evaluated where the `$try` stands and is not a tail call.
-    $case {$prop tag "try"} ($call vexpr (st, cx, e.value, bfalse)),
+    // Its deferrals (§4.15a) run before the return, and none is a tail call either.
+    $case {$prop tag "try"}
+      $do ($call vexpr (st, cx, e.value, bfalse))
+          ($call vlist (st, cx, $call IR.exprs.val (e.pre))),
 
     $case e 0
   ))
@@ -573,7 +576,9 @@ $decl osum_of $func ($decl cx proto_vcx, $decl e IR.proto_expr, $decl a proto_os
                                   $call osum_of (cx, $call IR.eval (e.scrut), a)))),
   $case {$prop tag "do"}      ($call osum_of (cx, $call IR.eval (e.then), $call osum_of (cx,
       $call IR.eval (e.first), a))),
-  $case {$prop tag "try"}     ($call osum_of (cx, $call IR.eval (e.value), a)),
+  $case {$prop tag "try"}
+    ($call osum_list (cx, $call IR.exprs.val (e.pre),
+        $call osum_of (cx, $call IR.eval (e.value), a))),
   $case {$prop tag "tobj"}    ($call osum_of (cx, $call IR.eval (e.ref), a)),
   $case {$prop tag "tmem"}    ($call osum_of (cx, $call IR.eval (e.obj), a)),
   $case {$prop tag "addr"}    ($call osum_of (cx, $call IR.eval (e.src), a)),

@@ -1,6 +1,7 @@
 # `$defer`, owners and `$free`: design note
 
-Status: **designed; step 1 (measuring the owner rule) done, nothing implemented.** Decided in discussion; the open points are at the
+Status: **steps 1 and 2 done** — the owner rule measured (it breaks nothing), and `$defer` for
+scopes and plain values in both stages (SPEC §4.15a). Storage, owners and `$free` are not. Decided in discussion; the open points are at the
 end. SPEC is unchanged until the plan's first step.
 
 `$defer e` runs `e` when what its block became is destroyed. Because a block is scope,
@@ -330,8 +331,30 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
 
 1. **Measure the owner rule's reach** — **done**: nothing accepted today is refused by it
    (the table above). The migration is empty.
-2. **SPEC**, then **`$defer` for scopes and plain values** in both stages — no owners
-   needed yet, since those deferrals run at their own block's end.
+2. **SPEC**, then **`$defer` for scopes and plain values** in both stages — **done.** SPEC
+   §4.15a, and the §2.2 row. A `$defer` in a block that is directly `$new`/`$alloc`
+   storage, and one at a file's top level, are refused until their meaning is settled
+   (`stage1/fixtures/defer_bad.mpl`, in `test-reject`). How each stage does it:
+   - **Stage 0** collects a block's deferrals as it reaches them (`runDeferring`) and runs
+     them in reverse when its items are done; on `error.TryReturn` it runs those
+     registered so far and carries on unwinding; a `panic` is a different error and runs
+     none. A block without a `$defer` pays one count.
+   - **Stage 1** registers a deferral with the environment it stands in (`lstate.defers`,
+     cleared at each `lower_func`, since `$try` returns from the nearest `$func`), so it
+     is lowered against the names it was written among however blocks nest. At a block's
+     end, `with_defers` makes the block's value the first slot of an outer block whose
+     second slot runs them — appending slots would change the layout, and §3.3's trailing
+     effects fold *around* a block, so they would run before its slots. A `$try` carries
+     every pending deferral in a new `pre` list on its IR node, which emit runs inside the
+     branch that returns.
+   - `stage1/fixtures/defer.mpl` (132456876798, each step a digit, so the answer is the
+     order), in both stages and the differential set.
+
+   **It found an older `$try` bug.** A `$try` returning a member nothing else in the program
+   interns — a file whose only `none` is the one `$try` returns — made emit's lookup miss,
+   and its fallback injected type 0 instead: a warning, and C returning an uninitialised
+   result, which `-Werror` refuses. Lowering now interns the member and a miss is an emit
+   error. `stage1/fixtures/try_member.mpl` (3); the committed compiler fails it.
 3. **Owners**, in the checker, with the measured migration, and **`$new` blocks'
    deferrals**.
 4. **The allocator members and `$free`**, with routing and parameter summaries; `std/mem`

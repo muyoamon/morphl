@@ -707,8 +707,18 @@ pub const Interp = struct {
         const preforced: []Scope.PropSlot = if (self.shape_cache.get(exprs.ptr)) |c| c.const_props else &.{};
 
         var slots: usize = 0;
+        var defers: usize = 0;
         for (exprs) |*e| {
             if (e.isForm(.decl) or e.isForm(.fwd)) slots += 1;
+            if (e.isForm(.@"defer")) defers += 1;
+        }
+        // DEFER.md step 2: a file is a block, but "the end of its evaluation" would be
+        // before `main` runs — not what anyone writing one means — so it is refused until
+        // that is decided.
+        if (defers != 0 and parent == self.root) {
+            for (exprs) |*e| if (e.isForm(.@"defer")) {
+                return self.rt.fail(e.span, "$defer at a file's top level is not defined yet (DEFER.md)", .{});
+            };
         }
         // A block's scope is dead once its value is built: the value holds
         // copies of the slots, not the scope. The exception is a closure made
@@ -732,7 +742,9 @@ pub const Interp = struct {
         // evaluated against that stale environment again.
         if (preforced.len != 0) scope.props = preforced else try self.collectProps(exprs, scope);
 
-        for (exprs) |*e| try self.evalBlockItem(e, scope);
+        if (defers == 0) {
+            for (exprs) |*e| try self.evalBlockItem(e, scope);
+        } else try self.runDeferring(exprs, scope, defers);
 
         // Only *literal* props are forced here: they read nothing, cost nothing,
         // and keep a shared constant shape fully forced. Every other prop waits for
@@ -757,6 +769,41 @@ pub const Interp = struct {
     }
 
     /// Evaluate a block body in a fresh scope and return the block value.
+    /// DEFER.md: a block's items, with each `$defer`'s expression registered where it
+    /// stands and run in reverse when the items are done — for a scope or a plain value
+    /// alike, the end of the block's own evaluation. `$try` leaving the block is a return
+    /// (§4.15), so it runs what was registered before it and carries on unwinding; a
+    /// `panic` aborts (§7.8) and runs nothing. A deferral reads the scope as it is at the
+    /// end, not as it was at the `$defer`.
+    fn runDeferring(self: *Interp, exprs: []const Node, scope: *Scope, n: usize) Error!void {
+        const pending = try self.arena.alloc(*const Node, n);
+        var k: usize = 0;
+        for (exprs) |*e| {
+            if (e.isForm(.@"defer")) {
+                pending[k] = &e.data.form.operands[0];
+                k += 1;
+                continue;
+            }
+            self.evalBlockItem(e, scope) catch |err| {
+                if (err == error.TryReturn) {
+                    const carried = self.try_payload;
+                    try self.runPending(pending[0..k], scope);
+                    self.try_payload = carried;
+                }
+                return err;
+            };
+        }
+        try self.runPending(pending[0..k], scope);
+    }
+
+    fn runPending(self: *Interp, pending: []const *const Node, scope: *Scope) Error!void {
+        var i = pending.len;
+        while (i > 0) {
+            i -= 1;
+            _ = try self.eval(pending[i], scope);
+        }
+    }
+
     fn evalBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope, span: Span) Error!Value {
         _ = span;
         const ran = try self.runBlockExprs(exprs, parent);
@@ -1112,6 +1159,12 @@ pub const Interp = struct {
             // is a static distinction — and stage 0 does no static checking
             // and never frees (BOOTSTRAP §3), so here they are one form.
             .new, .alloc => blk: {
+                // DEFER.md: a block evaluated *into* storage runs its deferrals when the
+                // storage's owner dies or it is `$free`d — steps 3 and 4. Until then it is
+                // refused, rather than given the plain value's meaning it will lose.
+                if (ops[0].data == .block) for (ops[0].data.block) |*e| if (e.isForm(.@"defer")) {
+                    break :blk self.rt.fail(e.span, "$defer in a block that is $new or $alloc storage is not implemented yet (DEFER.md)", .{});
+                };
                 const v = (try self.eval(&ops[0], scope)).derefRefs();
                 if (self.stats) |st| {
                     st.cell_n += 1;
@@ -1141,6 +1194,9 @@ pub const Interp = struct {
             },
 
             .set => self.evalSet(node, scope),
+            // DEFER.md: a `$defer` is a block item, which `runDeferring` intercepts; here
+            // it stands where an expression was expected.
+            .@"defer" => self.rt.fail(node.span, "$defer is a block item: it belongs directly in a block's items", .{}),
             .func => self.makeFunc(node, scope),
             .call => blk: {
                 // The common case by a wide margin: a call site whose callee is

@@ -1773,7 +1773,8 @@ $decl xt_of $func ($decl e IR.proto_expr, $decl acc xts.node) $match e (
   $case {$prop tag "new"}     ($call xt_of ($call IR.eval (e.init), acc)),
   $case {$prop tag "deref"}   ($call xt_of ($call IR.eval (e.src), acc)),
   $case {$prop tag "copy"}    ($call xt_of ($call IR.eval (e.src), acc)),
-  $case {$prop tag "try"}     ($call xt_of ($call IR.eval (e.value), acc)),
+  $case {$prop tag "try"}
+    $call xt_of_list ($call IR.exprs.val (e.pre), $call xt_of ($call IR.eval (e.value), acc)),
   $case {$prop tag "set"}
     $call xt_of ($call IR.eval (e.value), $call xt_of ($call IR.eval (e.target), acc)),
   $case {$prop tag "do"}
@@ -2855,7 +2856,9 @@ $decl news_of $func ($decl ts T.tys.node, $decl e IR.proto_expr, $decl acc IR.ex
   $case {$prop tag "field"}   ($call news_of (ts, $call IR.eval (e.target), acc)),
   $case {$prop tag "deref"}   ($call news_of (ts, $call IR.eval (e.src), acc)),
   $case {$prop tag "copy"}    ($call news_of (ts, $call IR.eval (e.src), acc)),
-  $case {$prop tag "try"}     ($call news_of (ts, $call IR.eval (e.value), acc)),
+  $case {$prop tag "try"}
+    $call news_list (ts, $call IR.exprs.val (e.pre),
+        $call news_of (ts, $call IR.eval (e.value), acc)),
   $case {$prop tag "set"}
     $call news_of (ts, $call IR.eval (e.value), $call news_of (ts, $call IR.eval (e.target), acc)),
   $case {$prop tag "do"}
@@ -2908,6 +2911,17 @@ $decl emit_news_list $func ($decl st proto_est, $decl ts T.tys.node, $decl xs IR
 $decl emit_news $func ($decl st proto_est, $decl ts T.tys.node, $decl body IR.proto_expr,
                        $decl stat P.boolean)
   $call emit_news_list (st, ts, $call news_of (ts, body, IR.exprs.nil), stat)
+
+// §4.15a: a `$try`'s pending deferrals, each run for effect where the return happens.
+$decl emit_pre $func ($decl st proto_est, $decl fi 0, $decl xs IR.exprs.node, $decl ts T.tys.node)
+    $match xs (
+  $case {$prop tag "cons"} {
+    $decl tv  $call into_tmp (st, fi, xs.head, ts)
+    $decl d1  $call say (st, $call concat ("  (void)", $call concat (tv, ";\n")))
+    $decl ret $call emit_pre (st, fi, $call IR.exprs.val (xs.tail), ts)
+  }.ret,
+  $case xs ()
+)
 
 $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
                        $decl dest "", $decl ts T.tys.node) $match e (
@@ -3200,9 +3214,13 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     $decl rf $call IR.find_ty (ts, $call type_at (ts, e.ty))
     $decl d0 $call say (st, $call concat ("  if ((int)", $call concat (tv,
                  $call concat (".tag == ", $call concat ($call int_to_str (e.disc), ") {\n")))))
-    $decl d1 $call emit_inject (st, ts, "ret",
-                 $call concat (tv, $call concat (".u.m", $call int_to_str (e.disc))),
-                 $if mf.hit mf.id 0, $call P.ival (st.fnres))
+    $decl dp $call emit_pre (st, fi, $call IR.exprs.val (e.pre), ts)
+    // A miss used to fall back to index 0 and inject whatever type that was.
+    $decl d1 $if mf.hit
+        ($call emit_inject (st, ts, "ret",
+             $call concat (tv, $call concat (".u.m", $call int_to_str (e.disc))),
+             mf.id, $call P.ival (st.fnres)))
+        ($call eerr (st, "$try returns a member whose type was never interned"))
     $decl d2 $do ($call emit_return (st)) ($call say (st, "  }\n"))
     // What survives is a single member, so reading it out is the narrowing.
     $decl ret  $call assign (st, dest, $call concat (tv,
@@ -3906,7 +3924,8 @@ $decl tobs_of $func ($decl e IR.proto_expr, $decl acc itabs.node) $match e (
   $case {$prop tag "new"}     ($call tobs_of ($call IR.eval (e.init), acc)),
   $case {$prop tag "deref"}   ($call tobs_of ($call IR.eval (e.src), acc)),
   $case {$prop tag "copy"}    ($call tobs_of ($call IR.eval (e.src), acc)),
-  $case {$prop tag "try"}     ($call tobs_of ($call IR.eval (e.value), acc)),
+  $case {$prop tag "try"}
+    $call tobs_list ($call IR.exprs.val (e.pre), $call tobs_of ($call IR.eval (e.value), acc)),
   $case {$prop tag "set"}
     $call tobs_of ($call IR.eval (e.value), $call tobs_of ($call IR.eval (e.target), acc)),
   $case {$prop tag "do"}

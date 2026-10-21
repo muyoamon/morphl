@@ -170,6 +170,7 @@ $call add_kw ("traitsof",   1, "expr",  "",     "")
 $call add_kw ("import",     1, "str",   "",     "")
 $call add_kw ("try",        2, "expr",  "expr", "")
 $call add_kw ("extern",     2, "str",   "expr", "")
+$call add_kw ("defer",      1, "expr",  "",     "")
 
 $decl find_kw $func ($decl xs kws.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
