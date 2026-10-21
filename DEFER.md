@@ -1,6 +1,6 @@
 # `$defer`, owners and `$free`: design note
 
-Status: **designed, nothing implemented.** Decided in discussion; the open points are at the
+Status: **designed; step 1 (measuring the owner rule) done, nothing implemented.** Decided in discussion; the open points are at the
 end. SPEC is unchanged until the plan's first step.
 
 `$defer e` runs `e` when what its block became is destroyed. Because a block is scope,
@@ -259,7 +259,30 @@ $decl g $alloc { $defer … }            // error: this allocator cannot run def
   silent and frees the whole arena. §7.6 calls it the author's error and nothing checks it.
   Example 16's rule turns it into a compile error.
 - **A place lives as long as its activation** (§5.3a, §7.6), so the `r` example under
-  "Owners" is legal today. How much code relies on that is not yet measured (plan step 1).
+  "Owners" is legal today. **Nothing relies on it** (plan step 1, below).
+
+### Measured: what the owner rule breaks (plan step 1)
+
+**Nothing.** A temporary probe in inference flagged every projection off a block literal —
+the record discarded, so its fields' places die there — whose projected value holds a place
+made inside that block: exactly an alias outliving its owner, whether the field itself was
+the owner (`{ $decl ret $new … }.ret`) or an alias of one. It walks with nothing bound
+outside the block, so "own" means made inside it, `$traitsof` of a local included. Checked
+on a hand-written case first (both shapes flagged, a plain value not).
+
+| over | `$new` in real code | hits | of which already errors |
+|---|---|---|---|
+| `stage1/` modules and drivers (`mplc.mpl`, the whole closure) | 0 | 0 | — |
+| `std/`, every module and test | 0 | 0 | — |
+| the 10 fixtures using `$new` | 45 | 4 | 4 — all `places.mpl`, the reject fixture |
+| the test suites' embedded programs (`infer`, `lower`, `emit`, `ir`, `parser`) | — | 4 | 4 — `infer_test`'s `a11`, `st05`, `bw02`, `bw05` |
+
+Every hit is a function body returning its own place, which R2 already refuses; `a14`, where
+a parameter only shares the name, is correctly not flagged. So **the rule removes no program
+that is accepted today** — the activation-level confinement was only ever exercised at
+function boundaries. What the probe does not see are records discarded other than by
+projection — a block literal passed straight to a call that hands back a place from it — and
+none of the code above has that shape. The probe was not committed.
 
 ## SPEC changes
 
@@ -305,9 +328,8 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
 
 ## Plan
 
-1. **Measure the owner rule's reach** before changing anything: an instrumented checker
-   reporting every alias that outlives its owner, over `stage1/`, `std/` and the fixtures.
-   The decision to make it a rule for every place stands; this says how much moves.
+1. **Measure the owner rule's reach** — **done**: nothing accepted today is refused by it
+   (the table above). The migration is empty.
 2. **SPEC**, then **`$defer` for scopes and plain values** in both stages — no owners
    needed yet, since those deferrals run at their own block's end.
 3. **Owners**, in the checker, with the measured migration, and **`$new` blocks'
