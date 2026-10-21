@@ -448,4 +448,19 @@ $decl t35b $call check_str ("...but a read before a rebinding is a capture",
   $call first_err ($call lower_errs ($call mem_src ("{ $decl a c  $decl c 5  $decl r2 a }.r2"))),
   "a $prop's value may not capture 'c': a prop is compile-time (§4.10), so there is nowhere to evaluate the capture")
 
+// DEFER.md step 4: `$free r` returns storage to the allocator that made it, so `allocator`
+// at the `$free` must be the binding `r` was drawn from — known only for a name this
+// function bound from an `$alloc`.
+$decl t36 $call check_str ("$free with the allocator that made the storage lowers clean",
+  $call first_err ($call lower_errs ("$decl f $func () { $decl r $alloc 0  $decl x $free r  $decl ret 0 }.ret  $decl main $func () $call f () ")),
+  "")
+$decl t36b $call check_str ("...but not storage of unknown provenance",
+  $call first_err ($call lower_errs ("$decl f $func ($decl r $alloc 0) { $decl x $free r  $decl ret 0 }.ret  $decl main $func () $call f ($alloc 1) ")),
+  "$free needs a name this function bound from an $alloc: where else it came from, its allocator is not known here (DEFER.md)")
+$decl t36c $call check_str ("...nor through another allocator than its own",
+  $call first_err ($call lower_errs ($call concat (
+      "$decl mk $func () { $decl a { $prop alloc $func ($decl n 0) 0  $prop free $func ($decl p 0, $decl s 0) () }  $decl ret a }.ret  ",
+      "$decl f $func () { $decl r $alloc 0  $decl x { $decl allocator $call mk ()  $decl y $free r  $decl ret2 0 }.ret2  $decl ret 0 }.ret  $decl main $func () $call f () "))),
+  "this storage came from another allocator than the one in scope here: $free it where the allocator that made it is (DEFER.md)")
+
 $decl done $call nl ("all lowering tests passed")

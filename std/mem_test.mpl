@@ -28,8 +28,45 @@ $decl in_arena $func ($decl r T.proto_results) {
   $decl ret 0
 }.ret
 
+// DEFER.md step 4: `$alloc { … $defer … }` registers its deferrals with the arena
+// (`defer_at`), and the arena runs them when the storage is `$free`d, or — any still
+// registered — on `reset` and `release`, newest first. Each appends a digit to `seen`.
+$decl seen $mut $alloc 0
+$decl note $func ($decl d 0) $set seen ($call add ($call mul ($call C.ival (seen), 10), d))
+
+$decl deferring $func ($decl r T.proto_results) {
+  $decl allocator $call M.arena (1024)
+  $decl a   $alloc { $decl k 1  $defer $call note (1) }
+  $decl b   $alloc { $decl k 2  $defer $call note (2) }
+  $decl c   $alloc { $decl k 3  $defer $call note (k) }
+  $decl f   $free b
+  $decl c7  $call T.expect (r, "$free runs that storage's deferrals", $call eq ($call C.ival (seen), 2))
+  $decl rs  $call allocator.reset ()
+  $decl c8  $call T.expect (r, "reset runs the rest, newest first, reading the fields",
+                $call eq ($call C.ival (seen), 231))
+  $decl d   $alloc { $decl k 4  $defer $call note (4) }
+  $decl rl  $call allocator.release ()
+  $decl c9  $call T.expect (r, "release runs what is left", $call eq ($call C.ival (seen), 2314))
+  $decl ret 0
+}.ret
+
+// The idiom: the arena released by a deferral registered first, so it runs last, after
+// the `$defer $free` beside each `$alloc`.
+$decl idiom $func () {
+  $decl allocator $call M.arena (1024)
+  $defer    $call allocator.release ()
+  $decl a   $alloc { $decl k 1  $defer $call note (5) }
+  $defer    $free a
+  $decl ret 0
+}.ret
+
 $decl main $func () {
   $decl r   $call T.results ()
   $decl a   $call in_arena (r)
+  $decl d   $call deferring (r)
+  $decl z   $set seen 0
+  $decl i   $call idiom ()
+  $decl c10 $call T.expect (r, "$defer $free beside the $alloc, the arena released last",
+                $call eq ($call C.ival (seen), 5))
   $decl ret $call T.finish (r)
 }.ret

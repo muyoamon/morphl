@@ -507,13 +507,25 @@ pub fn build(b: *std.Build) void {
             .stage0 = "$defer at a file's top level is not defined yet",
         },
         .{
+            .src = "stage1/fixtures/free_bad.mpl",
+            .stage1 = &.{
+                "free_bad.mpl:17:13: $free needs allocated storage it may end, found &Int",
+                "free_bad.mpl:22:13: $free needs allocated storage it may end, found &^const Int",
+                "free_bad.mpl:28:13: the allocator in scope cannot serve $free: its free is [Int]->(), which must take an address and a size",
+                "free_bad.mpl:32:33: the root allocator cannot run an $alloc block's deferrals yet: it has no defer_at",
+                "free_bad.mpl:37:33: an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals",
+            },
+            .count = "errors: 5\n",
+            .stage0 = null,
+        },
+        .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
                 "owner_bad.mpl:24:29: $defer in a $new block at a file's top level is not defined yet",
                 "owner_bad.mpl:7:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
                 "owner_bad.mpl:12:38: $defer in a $new block in an $if or $match arm is not implemented yet",
                 "owner_bad.mpl:17:41: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
-                "owner_bad.mpl:21:33: $defer in a block that is $alloc storage is not implemented yet",
+                "owner_bad.mpl:21:33: the root allocator cannot run an $alloc block's deferrals yet: it has no defer_at",
             },
             .count = "errors: 5\n",
             .stage0 = null,
@@ -855,7 +867,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "std/vec_test.mpl", .want = "26\n" },
         .{ .src = "std/map_test.mpl", .want = "16\n" },
         .{ .src = "std/io_test.mpl", .want = "11\n" },
-        .{ .src = "std/mem_test.mpl", .want = "6\n" },
+        .{ .src = "std/mem_test.mpl", .want = "10\n" },
     }) |fx| {
         for ([_]bool{ false, true }) |asan| {
             const build_exe = std.Build.Step.Run.create(b, if (asan) "mplc std test (asan)" else "mplc std test");

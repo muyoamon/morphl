@@ -642,6 +642,9 @@ $decl lstate $func () {
   // DEFER.md step 3: the span of a `$new` literal whose deferrals its declaring block
   // adopts — `lower_block` leaves them on the stack instead of running them.
   $decl keepat $mut $alloc ""
+  // DEFER.md step 4's routing: for each slot of this function bound from an `$alloc`, the
+  // `allocator` binding it was drawn from, as "slot|identity". `$free` checks it.
+  $decl aprov  $mut $alloc strs.node
   // Whether the next block lowered is a scope — projected on the spot, or written as an
   // item — rather than a value (DEFER.md): a value passes its storage's deferrals out.
   $decl nextscope $mut $alloc $union (false, true)
@@ -1508,6 +1511,9 @@ $fwd lower
 $fwd lower_block
 // §4.15a: `$try` runs the pending deferrals, which are lowered with the block machinery.
 $fwd lower_dfrs
+// DEFER.md step 4: `$free`, which needs `$decl`'s provenance record, below.
+$fwd lower_free
+$fwd alloc_fin
 // A projection onto a prop, answered from the prop's source. It needs
 // `lower_func` (a function-valued prop is lifted like any other `$func`),
 // which is far below, and `lower_name` needs it — §4.10 makes a prop visible
@@ -3667,7 +3673,11 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     // §4.2a. The same node as `$new`: the storage *kind* (§3.5) is already on
     // the node's type, so the tree needs no second field to carry it, and
     // the backend reads it off the type when it has two ways to allocate.
+    ($if ($call eq_str (k, "free")) ($call lower_free (st, e, n))
     ($if ($call eq_str (k, "alloc")) {
+      // DEFER.md step 4: a literal's deferrals are kept for `defer_at` (`alloc_fin`).
+      $decl dfa  $call dfr_list.val (st.defers)
+      $decl kpa  $set st.keepat ($call newlit_key ($call op (n, 0)))
       $decl v    $call as_value (st, $call lower (st, e, $call op (n, 0), false))
       $decl rt   $call T.t_ref_k ("", v.ty, T.k_alloc)
       // §7.6: from the root allocator, the runtime's own; from any other, its `alloc` member
@@ -3683,10 +3693,11 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                        $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "alloc",
                            sp.line, sp.col), false))
         $decl ft   $call T.t_func ($call T.tys.cons (m.ty, $call T.tys.cons (v.ty, T.tys.nil)), rt)
-        $decl ret3 $call lres ($call IR.e_call ($call intern (st, rt),
+        $decl ai   $call IR.e_call ($call intern (st, rt),
                        $call IR.e_prim ($call intern (st, ft), "alloc_in"),
                        $call IR.exprs.cons (m.ir, $call IR.exprs.cons (v.ir, IR.exprs.nil)),
-                       tail), rt)
+                       tail)
+        $decl ret3 $call lres ($call alloc_fin (st, e, n, dfa, ai, rt), rt)
       }.ret3 ($call lres ($call IR.e_new ($call intern (st, rt), v.ir), rt))
     }.ret2
     // §4.3: a view, not a value — no node, only a different type.
@@ -3888,7 +3899,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl ret2 $call lres ($call IR.e_panic (ti, "an inferred generic has no value"), t)
     }.ret2
       ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-           " is not lowered yet")), n)), T.t_unit))))))))))))))))))))
+           " is not lowered yet")), n)), T.t_unit)))))))))))))))))))))
 }.ret
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
@@ -3990,9 +4001,12 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   // not this body's to run.
   $decl odf   $call dfr_list.val (st.defers)
   $decl clr   $set st.defers dfr_list.nil
+  $decl oap   $call strs.val (st.aprov)
+  $decl cla   $set st.aprov strs.nil
   // The body is in tail position: it *is* the function's result (§7.7).
   $decl body  $call lval ($call lower (st, b.env, $call op (n, 1), true))
   $decl rdf   $set st.defers odf
+  $decl rap   $set st.aprov oap
   // §4.15 widens the *inferred* result to include what `$try` can return, so
   // the declared type is the one to believe — not the body's own, which does
   // not know about the non-local exits inside it.
@@ -4595,6 +4609,100 @@ $fwd lower_items
 
 
 
+// DEFER.md step 4: which `allocator` binding storage came from, so `$free` can insist on
+// the same one. A binding's identity is its kind, slot and name — the root's is a prim's.
+$decl alloc_ident $func ($decl e benv.node) {
+  $decl f   $call lookup (e, "allocator")
+  $decl b   f.bnd
+  $decl ret $if f.hit
+      ($call concat (b.kind, $call concat (":", $call concat ($call int_to_str (b.slot),
+          $call concat (":", b.name)))))
+      ""
+}.ret
+
+$decl is_alloc_init $func ($decl n Pa.proto_node)
+  $if ($call is_form (n, "alloc")) true
+      ($if ($call P.or ($call is_form (n, "mut"), $call is_form (n, "const")))
+           ($call is_form ($call op (n, 0), "alloc")) false)
+
+$decl prov_find $func ($decl xs strs.node, $decl k "") $match xs (
+  $case {$prop tag "cons"} {
+    $decl n   $call len (k)
+    $decl hit $if ($call lt (n, $call len (xs.head)))
+                  ($call eq_str ($call slice (xs.head, 0, n), k)) false
+    $decl ret $if hit ($call slice (xs.head, n, $call len (xs.head)))
+                  ($call prov_find ($call strs.val (xs.tail), k))
+  }.ret,
+  $case xs ""
+)
+
+// The provenance of what slot `sl` is bound to: an `$alloc` (or a view of one) records the
+// allocator in scope there; a name already carrying one passes it on.
+$decl note_prov $func ($decl st proto_lst, $decl e benv.node, $decl init Pa.proto_node,
+                       $decl sl 0) {
+  $decl pv  $if ($call is_alloc_init (init)) ($call alloc_ident (e))
+      ($match init (
+          $case {$prop tag "name"} {
+            $decl f    $call lookup (e, init.text)
+            $decl ret2 $if ($if f.hit ($call eq_str (f.bnd.kind, "local")) false)
+                ($call prov_find ($call strs.val (st.aprov),
+                    $call concat ($call int_to_str (f.bnd.slot), "|")))
+                ""
+          }.ret2,
+          $case init ""
+        ))
+  $decl ret $if ($call eq_str (pv, "")) ()
+      ($do ($set st.aprov ($call strs.cons ($call concat ($call int_to_str (sl),
+          $call concat ("|", pv)), $call strs.val (st.aprov)))) ())
+}.ret
+
+// `$free r` (DEFER.md step 4): `r` must be a name this function bound from an `$alloc`, and
+// `allocator` here the binding it was drawn from — so the storage goes back to what made it.
+// The root's is `raw_free`; any other's is its `free (addr, size)`, through the prim
+// `free_in`, whose size only the C compiler knows. Either runs what was registered for the
+// storage first: that is the allocator's half of the contract (`defer_at`).
+$decl lower_free $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
+  $decl r    $call op (n, 0)
+  $decl pv   $match r (
+      $case {$prop tag "name"} {
+        $decl f    $call lookup (e, r.text)
+        $decl ret2 $if ($if f.hit ($call eq_str (f.bnd.kind, "local")) false)
+            ($call prov_find ($call strs.val (st.aprov),
+                $call concat ($call int_to_str (f.bnd.slot), "|")))
+            ""
+      }.ret2,
+      $case r ""
+    )
+  $decl here $call alloc_ident (e)
+  $decl chk  $if ($call eq_str (pv, ""))
+      ($call err (st, "$free needs a name this function bound from an $alloc: where else it came from, its allocator is not known here (DEFER.md)", n))
+      ($if ($call eq_str (pv, here)) 0
+           ($call err (st, "this storage came from another allocator than the one in scope here: $free it where the allocator that made it is (DEFER.md)", n)))
+  $decl v    $call lval ($call lower (st, e, r, false))
+  $decl uid  $call intern (st, T.t_unit)
+  $decl fa   $call lookup (e, "allocator")
+  $decl root $if fa.hit ($call T.same ($call T.tval (fa.bnd.ty), T.ffi_alloc)) true
+  $decl sp   $call P.span_of (n)
+  $decl ir   $if root {
+    $decl bt   $call T.t_func ($call T.tys.cons (v.ty, T.tys.nil), T.t_int)
+    $decl ft   $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_unit)
+    $decl ad   $call IR.e_call ($call intern (st, T.t_int),
+                   $call IR.e_prim ($call intern (st, bt), "box_ptr"),
+                   $call IR.exprs.cons (v.ir, IR.exprs.nil), false)
+    $decl ret3 $call IR.e_call (uid, $call IR.e_prim ($call intern (st, ft), "raw_free"),
+                   $call IR.exprs.cons (ad, IR.exprs.nil), false)
+  }.ret3 {
+    $decl m    $call as_value (st, $call lower (st, e,
+                   $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "free",
+                       sp.line, sp.col), false))
+    $decl ft   $call T.t_func ($call T.tys.cons (m.ty, $call T.tys.cons (v.ty, T.tys.nil)),
+                   T.t_unit)
+    $decl ret3 $call IR.e_call (uid, $call IR.e_prim ($call intern (st, ft), "free_in"),
+                   $call IR.exprs.cons (m.ir, $call IR.exprs.cons (v.ir, IR.exprs.nil)), false)
+  }.ret3
+  $decl ret  $call lres (ir, T.t_unit)
+}.ret
+
 $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node)
   $if ($call is_form (it, "decl")) {
     $decl nm  $call name_of ($call op (it, 0))
@@ -4606,6 +4714,7 @@ $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
     $decl id  $call intern (st, v.ty)
     $decl ir  $call with_pending (a.pend, v.ir, id)
     $decl sl  $call fresh_slot (st, id)
+    $decl apv $call note_prov (st, a.env, $call op (it, 1), sl)
     $decl slf $if ($call lt (-1, v.tmpl)) ($call tmpl_self (st, v.tmpl, nm, "local", sl, v.ty)) 0
     $decl ret   $call blk_acc (
         $call IR.bslots.cons ($call IR.bslot (sl, ir), $call IR.bslots.val (a.slots)),
@@ -4764,6 +4873,58 @@ $decl with_trail $func ($decl st proto_lst, $decl pd IR.exprs.node, $decl ir IR.
   }.ret2,
   $case pd ir
 )
+
+// The deferrals' expressions, in the order they run: the stack keeps them newest first.
+$decl dfr_nodes $func ($decl xs dfr_list.node, $decl acc Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call dfr_nodes ($call dfr_list.val (xs.tail), $call Pa.nodes.cons (xs.head.node, acc)),
+  $case xs ($call Pa.nodes.reverse (acc, Pa.nodes.nil))
+)
+
+// `$alloc { … $defer … }` from a library allocator (DEFER.md step 4): the deferrals, which
+// `lower_block` left on the stack, become a `$func ()` over the block's fields — what it
+// captures is exactly those, since inference refused anything else — handed to the
+// allocator's `defer_at` with the storage's address straight after it is made.
+$decl alloc_fin $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
+                       $decl saved dfr_list.node, $decl ir IR.proto_expr, $decl rt T.proto_ty) {
+  $decl k    $call sub ($call dfr_list.length ($call dfr_list.val (st.defers), 0),
+                        $call dfr_list.length (saved, 0))
+  $decl top  $call dfr_take ($call dfr_list.val (st.defers), k, dfr_list.nil)
+  $decl back $set st.defers saved
+  $decl ret  $match top (
+      $case {$prop tag "cons"} {
+        $decl sp   $call P.span_of (n)
+        $decl body $call Pa.n_block ($call dfr_nodes (top, Pa.nodes.nil), sp.line, sp.col)
+        $decl fn   $call Pa.n_form ("func", $call Pa.nodes.cons ($call Pa.n_unit (sp.line, sp.col),
+                       $call Pa.nodes.cons (body, Pa.nodes.nil)), sp.line, sp.col)
+        $decl fv   $call as_value (st, $call lower (st, $call benv.val (top.head.env), fn, false))
+        $decl da   $call as_value (st, $call lower (st, e,
+                       $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "defer_at",
+                           sp.line, sp.col), false))
+        $decl rid  $call intern (st, rt)
+        $decl uid  $call intern (st, T.t_unit)
+        $decl s0   $call fresh_slot (st, rid)
+        $decl s1   $call fresh_slot (st, uid)
+        $decl bt   $call T.t_func ($call T.tys.cons (rt, T.tys.nil), T.t_int)
+        $decl ad   $call IR.e_call ($call intern (st, T.t_int),
+                       $call IR.e_prim ($call intern (st, bt), "box_ptr"),
+                       $call IR.exprs.cons ($call IR.e_local (rid, s0), IR.exprs.nil), false)
+        $decl dres $call result_of (da.ty)
+        $decl dc   $call IR.e_call ($call intern (st, dres), da.ir,
+                       $call IR.exprs.cons (ad, $call IR.exprs.cons (fv.ir, IR.exprs.nil)), false)
+        $decl dct  $call with_pending ($call IR.exprs.cons (dc, IR.exprs.nil),
+                       $call IR.e_unit (uid), uid)
+        $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("v", rt),
+                       $call T.fields.cons ($call T.field ("d", T.t_unit), T.fields.nil)),
+                       T.props.nil)
+        $decl ob   $call IR.e_block ($call intern (st, oty),
+                       $call IR.bslots.cons ($call IR.bslot (s0, ir),
+                       $call IR.bslots.cons ($call IR.bslot (s1, dct), IR.bslots.nil)))
+        $decl ret2 $call IR.e_field (rid, ob, 0)
+      }.ret2,
+      $case top ir
+    )
+}.ret
 
 // ------------------------------------------- DEFER.md step 3: whose storage it is
 //

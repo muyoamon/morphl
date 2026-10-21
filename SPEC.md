@@ -67,6 +67,7 @@ Newlines are whitespace. The language does not dictate formatting.
 | `$try e pat` | 2 | expression, type-only pattern |
 | `$extern "symbol" sig` | 2 | string literal, type-only signature |
 | `$defer e` | 1 | expression; a block item only (§4.15a) |
+| `$free r` | 1 | expression: allocated storage (§7.6) |
 
 Because every form has fixed arity and groups/blocks are delimited, parsing needs no separators, no newline sensitivity, and no formatter.
 
@@ -381,9 +382,11 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   record — that `$decl` owns it, and they run when it does (at its block's end if that block
   is a scope; with the record's owner if it is a value). Otherwise the storage was
   **ephemeral** and they run at the end of that item, as a full expression ends a
-  temporary. Not yet defined, and so compile errors: such a block in an `$if`/`$match` arm,
-  passed to a call whose result can hold a place (whose owner the callee decides), at a
-  file's top level, and any `$alloc` block, which runs its deferrals when freed (DEFER.md).
+  temporary. A block that is directly the operand of `$alloc` hands its deferrals to the
+  allocator, which runs them when the storage is freed (§7.6). Not yet defined, and so
+  compile errors: a `$new` such block in an `$if`/`$match` arm, passed to a call whose
+  result can hold a place (whose owner the callee decides), or at a file's top level, and
+  an `$alloc` one from the root allocator (DEFER.md).
 - **Exits.** `$try` leaving a block is a return (§4.15), so it runs the deferrals registered
   before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none.
 - **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), so
@@ -670,6 +673,24 @@ everything at once. `$alloc e` asks the allocator for the storage `e`'s value ne
 stores the value there. An allocator releases when the author says so, which makes
 `$alloc` **unsafe by declaration** — the same status as `$extern` (§4.16). A reference
 used after its allocator released it is the author's error.
+
+**Releasing: `$free r`.** `r` must be allocated storage that is not a `$const` view —
+frame storage is released with its frame. `$free r` calls the `free` of the `allocator` in
+scope where it is written, `free (addr, size)` — the root's is `raw_free (addr)` — with the
+storage's address and size, the size the compiler's (§5.3's invariance makes it exactly
+what was allocated). **It must be the allocator that made `r`**: `allocator` at the `$free`
+resolves to the same binding it resolved to at the `$alloc`, and `r` is a name bound in
+this function from an `$alloc`; anything else is a compile error, so storage is never
+handed to an allocator that did not make it. What a reference may be used for after its
+allocator released it is still the author's error. Its value is `unit`.
+
+**An `$alloc` block's deferrals** (§4.15a) are the allocator's to run: straight after
+`alloc`, `$alloc` calls `allocator.defer_at (addr, fin)` with a function running them, and
+an allocator's `free` runs what was registered for an address before releasing it — an
+arena runs every one still registered on `reset` and `release`, newest first. They run
+long after the frame that wrote them, so they may name only the block's own fields, whose
+values never change once initialised (§4.4), and what is global. An allocator without
+`defer_at` cannot take such a block, and the root has none yet.
 
 Because the name is resolved where `$alloc` is written, rebinding `allocator` does not
 reach into a library: a list's cells written in the prelude come from the prelude's

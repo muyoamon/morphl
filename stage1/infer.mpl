@@ -1685,13 +1685,56 @@ $decl defers_in $func ($decl n Pa.proto_node) $match n (
 $decl is_defer $func ($decl n Pa.proto_node) $call is_form (n, "defer")
 
 // A block evaluated *into* storage runs its deferrals when the storage's owner dies
-// (DEFER.md step 3, which lowering and stage 0 decide). `$alloc` runs them when freed,
-// which is step 4, so an `$alloc` block carrying one is refused for now.
-$decl storage_defer $func ($decl cx proto_ctx, $decl n proto_form) {
+// (DEFER.md step 3, which lowering and stage 0 decide) — or, for `$alloc`, when it is freed
+// (step 4): `$alloc` hands them to the allocator, `allocator.defer_at (addr, fin)`, and the
+// allocator's `free` runs them. So the allocator in scope must have a `defer_at`, which the
+// root's has not yet (DEFER.md, open question 1), and the deferrals — run at `$free`, long
+// after this frame — may name only the block's own fields and what is global, as a member
+// may (§4.10).
+// The names a block's `$defer`s read.
+$decl dfr_free_go $func ($decl xs Pa.nodes.node, $decl acc Pa.pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call dfr_free_go ($call Pa.nodes.val (xs.tail),
+        $if ($call is_form (xs.head, "defer")) ($call Pa.free_names ($call op (xs.head, 0), acc)) acc),
+  $case xs acc
+)
+$decl dfr_free $func ($decl b Pa.proto_node) $match b (
+  $case {$prop tag "block"} ($call dfr_free_go ($call Pa.nodes.val (b.items), Pa.pstrs.nil)),
+  $case b Pa.pstrs.nil
+)
+
+// Whether a member is a function of two parameters, as `free` and `defer_at` must be.
+$decl two_params $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "func"} ($call eq_int ($call T.tys.length ($call T.tys.val (t.params), 0), 2)),
+  $case t false
+)
+
+$decl alloc_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form,
+                         $decl d Pa.proto_node) {
+  $decl f   $call lookup (e, "allocator")
+  $decl b   $call op (n, 0)
+  $decl ret $if ($if f.ok ($call T.same (f.ty, T.ffi_alloc)) true)
+      ($do ($call err (cx, "the root allocator cannot run an $alloc block's deferrals yet: it has no defer_at (DEFER.md)", d)) ())
+      {
+        $decl sp   $call P.span_of (n)
+        $decl m    $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "defer_at",
+                       sp.line, sp.col)
+        $decl mt   $call deref_ty ($call infer (cx, e, m))
+        $decl ok   $call two_params (mt)
+        $decl e1   $if ok ()
+            ($do ($call err (cx, $call concat ("the allocator in scope cannot run an $alloc block's deferrals: its defer_at is ",
+                 $call concat ($call T.show (mt), ", which must take an address and a function (DEFER.md)")), d)) ())
+        $decl cap  $call first_cap (cx, $call dfr_free (b), $call Pa.bound_names (b, Pa.pstrs.nil))
+        $decl ret2 $if ($call eq_str (cap, "")) ()
+            ($do ($call err (cx, $call concat ("an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals (§4.10), not '",
+                 $call concat (cap, "'")), d)) ())
+      }.ret2
+}.ret
+
+$decl storage_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl d   $call defers_in ($call op (n, 0))
   $decl ret $if ($if ($call is_defer (d)) ($call eq_str (n.keyword, "alloc")) false)
-      ($do ($call err (cx, "$defer in a block that is $alloc storage is not implemented yet (DEFER.md, step 4)", d)) ())
-      ()
+      ($call alloc_defer (cx, e, n, d)) ()
 }.ret
 
 // A `$new` block with a `$defer` whose deferrals would outlive where `n` stands: one not
@@ -3994,16 +4037,47 @@ $decl infer_extern $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_fo
 
 // ------------------------------------------------------------------ dispatch
 
+// DEFER.md step 4: `$free r` releases allocated storage through the allocator in scope —
+// `free (addr, size)`, the root's `raw_free (addr)` — which runs any deferrals registered
+// for it first. Frame storage is released with its frame, and a `&const` view cannot end
+// what it only reads. Which allocator made `r` is checked by lowering, which can tell
+// bindings apart. `unit`.
+$decl infer_free $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl t   $call T.tval ($call infer (cx, e, $call op (n, 0)))
+  $decl ok  $match t (
+      $case {$prop tag "ref"}
+        $if ($call T.is_alloc (t.kind)) ($call not ($call eq_str (t.qual, "const"))) false,
+      $case t false
+    )
+  $decl e1  $if ok ()
+      ($do ($call err (cx, $call concat ("$free needs allocated storage it may end, found ",
+           $call concat ($call T.show (t), ": frame storage is released with its frame, and a $const view only reads (DEFER.md)")), n)) ())
+  $decl f   $call lookup (e, "allocator")
+  $decl e2  $if ($if f.ok ($call T.same (f.ty, T.ffi_alloc)) true) () {
+    $decl sp   $call P.span_of (n)
+    $decl m    $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "free",
+                   sp.line, sp.col)
+    $decl mt   $call deref_ty ($call infer (cx, e, m))
+    $decl two  $call two_params (mt)
+    $decl ret3 $if two ()
+        ($do ($call err (cx, $call concat ("the allocator in scope cannot serve $free: its free is ",
+             $call concat ($call T.show (mt), ", which must take an address and a size (DEFER.md)")), n)) ())
+  }.ret3
+  $decl ret T.t_unit
+}.ret
+
 $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl k n.keyword
   $decl ret
     $if ($call eq_str (k, "decl"))  ($call infer (cx, e, $call op (n, 1)))
-    ($if ($call eq_str (k, "new"))   ($do ($call storage_defer (cx, n)) ($call infer_new (cx, e, n)))
+    ($if ($call eq_str (k, "new"))
+         ($do ($call storage_defer (cx, e, n)) ($call infer_new (cx, e, n)))
+    ($if ($call eq_str (k, "free"))  ($call infer_free (cx, e, n))
     // §4.2a: the same shape as `$new`, and the other storage kind (§3.5).
     // Where it comes from is the `allocator` in lexical scope (§7.6), which
     // is a runtime matter; the type records only that it outlives scopes.
     ($if ($call eq_str (k, "alloc")) {
-      $decl sd $call storage_defer (cx, n)
+      $decl sd $call storage_defer (cx, e, n)
       $decl ac $call alloc_conforms (cx, e, n)
       $decl v $call deref_ty ($call infer (cx, e, $call op (n, 0)))
       // §5.3a again: allocated storage is exactly "storage that is not
@@ -4038,7 +4112,7 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "defer"))
          ($call err (cx, "$defer is a block item: it belongs directly in a block's items (§4.15a)", n))
          ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-    )))))))))))))))))))
+    ))))))))))))))))))))
 }.ret
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (

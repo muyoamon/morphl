@@ -2505,6 +2505,26 @@ $decl emit_alloc_in $func ($decl st proto_est, $decl ts T.tys.node, $decl as str
                 $call concat (" = ", $call concat (v, ";\n")))))
 }.ret
 
+// DEFER.md step 4: `$free` through an allocator other than the root's. Lowering made it the
+// prim `free_in (member, ref)`, the member being the allocator's `free` as a §7.3 pair; this
+// hands it the address and the storage's size, which only the C compiler knows.
+$decl emit_free_in $func ($decl st proto_est, $decl ts T.tys.node, $decl as strs.node,
+                          $decl dest "", $decl rty 0) {
+  $decl f   $call strs.nth (as, 0)
+  $decl r   $call strs.nth (as, 1)
+  $decl pid $call pointee_of (st, ts, rty)
+  $decl vt  $if ($call lt (-1, pid)) ($call c_type (st, ts, pid)) "int64_t"
+  $decl a   $call fresh_tmp (st)
+  $decl d0  $call say (st, $call concat ("  int64_t ", $call concat (a,
+                $call concat (" = ((int64_t (*)(void *, int64_t, int64_t))", $call concat (f,
+                $call concat (".code)(", $call concat (f, $call concat (".env, (int64_t)(intptr_t)",
+                $call concat (r, $call concat (", (int64_t)sizeof(", $call concat (vt, "));\n")))))))))))
+  $decl d1  $if ($call any_reports (st))
+                ($call say (st, $call concat ("  mpl_tcdrive(&", $call concat (a, ");\n")))) ()
+  $decl d2  $call say (st, $call concat ("  (void)", $call concat (a, ";\n")))
+  $decl ret $call assign (st, dest, "0")
+}.ret
+
 $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
                        $decl dest "", $decl ts T.tys.node) {
   $decl cal $call IR.eval (e.callee)
@@ -2547,6 +2567,9 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
       $decl rf $call unit_err_fn (pnm)
       $decl ret2  $if ($call eq_str (pnm, "alloc_in"))
           ($call emit_alloc_in (st, ts, as, dest, e.ty))
+        ($if ($call eq_str (pnm, "free_in"))
+          ($call emit_free_in (st, ts, as, dest,
+              ($call IR.exprs.nth ($call IR.exprs.val (e.args), 1)).ty))
         ($if ($call not ($call eq_str (op, "")))
           ($call assign (st, dest, $call binop_expr (as, op)))
         ($if ($call not ($call eq_str (uo, "")))
@@ -2567,7 +2590,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
           ($call emit_res_prim (st, ts, rf, as, dest, e.ty))
         ($if ($call arr_prim (pnm))
           ($call emit_arr_prim (st, ts, pnm, as, dest, e.ty))
-          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm))))))))))
+          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm)))))))))))
     }.ret2
     $match cal (
       $case cal {

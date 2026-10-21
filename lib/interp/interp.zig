@@ -1293,6 +1293,10 @@ pub const Interp = struct {
             // DEFER.md: a `$defer` is a block item, which `runDeferring` intercepts; here
             // it stands where an expression was expected.
             .@"defer" => self.rt.fail(node.span, "$defer is a block item: it belongs directly in a block's items", .{}),
+            // DEFER.md step 4: it calls an allocator's `free`, and stage 0 has no allocators —
+            // `$alloc` is `$new` here and never frees (BOOTSTRAP §3) — so, like the FFI, it is
+            // outside the bootstrap subset.
+            .free => self.rt.fail(node.span, "$free is outside the bootstrap subset: stage 0 has no allocators (BOOTSTRAP 1.2)", .{}),
             .func => self.makeFunc(node, scope),
             .call => blk: {
                 // The common case by a wide margin: a call site whose callee is

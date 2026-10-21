@@ -1,9 +1,10 @@
 # `$defer`, owners and `$free`: design note
 
-Status: **steps 1–3 done, as far as both stages can agree** — the owner rule enforced,
-`$defer` for scopes and plain values (SPEC §4.15a), and `$new` storage's deferrals run by
-its owner or at its item's end, records included. Arms, ownership through a call, the top
-level and `$free` are not.
+Status: **steps 1–4 done, as far as both stages can agree** — the owner rule enforced,
+`$defer` for scopes and plain values (SPEC §4.15a), `$new` storage's deferrals run by its
+owner or at its item's end, and `$free` with allocator-held deferrals (§7.6). Arms,
+ownership through a call, the top level, the root's `defer_at` and freeing a parameter are
+not.
 Decided in discussion; the open points are at the end. SPEC has what is implemented (§4.15a,
 §5.3a).
 
@@ -402,8 +403,31 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      the same way, which is either the summary in stage 0 too or a run-time flag in stage 1.
    - **Still refused**: arms (example 10, a flag per site), calls that can hand a place back
      (example 7), `$alloc` (step 4), a file's top level (example 12). `owner_bad.mpl`.
-4. **The allocator members and `$free`**, with routing and parameter summaries; `std/mem`
-   updated; the root's `defer_at` if decided.
+4. **The allocator members and `$free`** — **done, except the root's `defer_at` and
+   parameter summaries.**
+   - **`$free r`** (§2.2, §7.6), both parsers; stage 0 refuses to run it, as it refuses the
+     FFI, since it has no allocators. Inference types it: allocated storage, not a `$const`
+     view, and an allocator whose `free` takes an address and a size (the root's is
+     `raw_free`). Lowering checks the routing, since only it can tell bindings apart: each
+     slot bound from an `$alloc` records the `allocator` binding it was drawn from
+     (`aprov`, per function, carried through aliases), and `$free` insists on the same one;
+     storage of unknown provenance is refused. It emits a call of the allocator's `free`
+     (`free_in`, sized by `sizeof`), or the root's `raw_free`. `lower_test`'s `t36`–`t36c`.
+   - **`$alloc { … $defer … }`** keeps the literal's deferrals off its own end, makes them a
+     `$func ()` lowered in the block's environment — so it captures exactly the fields, and
+     inference refuses anything else (`first_cap`, the same test as §4.16 rule 2's) — and
+     calls `allocator.defer_at (addr, fin)` right after `alloc_in`.
+   - **The allocator's half**: `free` runs what was registered for the address first, and
+     bulk release runs the rest. `std/mem`'s arena does both — a sized `free`, `defer_at`
+     into a list cell of its own, and `reset`/`release` running everything outstanding,
+     newest first. `std/mem_test.mpl` (10) covers `$free`, `reset`, `release` and the
+     `$defer $free` idiom.
+   - **Refused**: `$free` of frame storage or a `$const` view, an allocator whose `free`
+     takes one argument, an `$alloc` block's deferral naming a local, and any `$alloc`
+     block with a deferral from the root — open question 1 below, still open.
+     `stage1/fixtures/free_bad.mpl` in `test-reject`.
+   - **Not done**: freeing a parameter — a summary in the function type saying which
+     allocator it frees with — so `close (f)` from another function is refused today.
 5. **`std/allocator`**: the capability traits, and whatever allocator-generic code D5's
    `_in` variants turn out to need.
 
