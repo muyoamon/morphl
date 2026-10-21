@@ -260,6 +260,13 @@ $decl ctx $func () {
   // The key (`fn_key_of`) of the body of the `$func` being typed: §5.3a's owner rule
   // (`owner_check`) leaves a function's own body to R2.
   $decl fbody   $mut $alloc ""
+  // DEFER.md: names freed in the function being typed — by `$free`, or passed where a
+  // callee frees them — as "depth|name", "|!" appended when not through the root.
+  // `func_close` turns its own depth's parameters into `128 + i` in the function's type.
+  $decl freed   $mut $alloc strs.node
+  // Calls whose callee's result may be storage from an allocator other than the root
+  // (its type has 1000), by `fn_key_of` — `root_res` asks.
+  $decl nonroot $mut $alloc strs.node
   // How many specialisations are being typed, one inside another. §4.9: "A chain
   // of *distinct* argument types is unbounded; there is a fixed instantiation
   // depth limit and exceeding it is an error." Self-specialisation made the chain
@@ -605,6 +612,9 @@ $decl strf_t  $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (T.t_i
 // address, 0 when none is to be had, and `raw_free (addr)` gives one back.
 $decl ralloc_t $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_int)
 $decl rfree_t  $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_unit)
+// DEFER.md: the root's `defer_at (addr, fin)`, the runtime's table `raw_free` runs.
+$decl rdefer_t $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (
+                   $call T.t_func (T.tys.nil, T.t_unit), T.tys.nil)), T.t_unit)
 
 // BOOTSTRAP §2's `run (argv)`: the process's exit status, or `none` when it could
 // not be started.
@@ -739,8 +749,9 @@ $decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto
   $decl ret $if ($call T.same (t, T.ffi_alloc))
       ($if ($call eq_str (n.field, "alloc")) ralloc_t
       ($if ($call eq_str (n.field, "free")) rfree_t
+      ($if ($call eq_str (n.field, "defer_at")) rdefer_t
            ($call err (cx, $call concat ("the root allocator has no member '",
-                $call concat (n.field, "'; it has alloc and free (§7.6)")), n))))
+                $call concat (n.field, "'; it has alloc, free and defer_at (§7.6)")), n)))))
       ($call proj_one (cx, t, n.field, n))
 }.ret
 
@@ -1557,6 +1568,114 @@ $decl tail_check $func ($decl cx proto_ctx, $decl ie env.node, $decl e owns.node
        ($call tail_arms (cx, ie, e, $call group_items ($call op (x, 1))))
        ())))
 
+// DEFER.md: this function's parameters it frees, as `128 + i`, from the names `note_freed`
+// recorded at its depth — which it takes, so a sibling at the same depth starts clean. Only
+// through the root: which allocator is not in the type, and a caller must be able to check
+// its argument came from the same one. A name that is not a parameter was this function's
+// own storage, whose routing lowering checks.
+$decl freed_idx $func ($decl ps Pa.pstrs.node, $decl nm "", $decl i 0) $match ps (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (ps.head, nm)) i
+        ($call freed_idx ($call Pa.pstrs.val (ps.tail), nm, $call add (i, 1))),
+  $case ps -1
+)
+$decl freed_go $func ($decl cx proto_ctx, $decl xs strs.node, $decl pre "", $decl ps Pa.pstrs.node,
+                      $decl n Pa.proto_node, $decl keep strs.node, $decl acc T.cints.node)
+    $match xs (
+  $case {$prop tag "cons"} {
+    $decl h    xs.head
+    $decl mine $if ($call lt ($call len (pre), $call len (h)))
+                   ($call eq_str ($call slice (h, 0, $call len (pre)), pre)) false
+    $decl rest $if mine ($call slice (h, $call len (pre), $call len (h))) ""
+    $decl bang $if mine ($call lt (1, $call len (rest))) false
+    $decl tl   $if bang ($call slice (rest, $call sub ($call len (rest), 2), $call len (rest))) ""
+    $decl nonr $call eq_str (tl, "|!")
+    $decl nm   $if nonr ($call slice (rest, 0, $call sub ($call len (rest), 2))) rest
+    $decl ix   $if mine ($call freed_idx (ps, nm, 0)) -1
+    $decl e    $if ($if nonr ($call lt (-1, ix)) false)
+        ($do ($call err (cx, $call concat ("this function frees its parameter '", $call concat (nm,
+            "' through an allocator other than the root's, which a caller cannot check yet (DEFER.md)")), n)) ())
+        ()
+    $decl have $call T.ci_mem (acc, $call add (128, ix))
+    $decl a2   $if ($if ($call lt (-1, ix)) ($call not (have)) false)
+                   ($call T.cints.cons ($call add (128, ix), acc)) acc
+    $decl ret  $call freed_go (cx, $call strs.val (xs.tail), pre, ps, n,
+                   $if mine keep ($call strs.cons (h, keep)), a2)
+  }.ret,
+  $case xs ($do ($set cx.freed ($call strs.reverse (keep, strs.nil))) acc)
+)
+$decl freed_take $func ($decl cx proto_ctx, $decl d 0, $decl ps Pa.nodes.node,
+                        $decl n Pa.proto_node)
+  $call T.ci_sort ($call freed_go (cx, $call strs.val (cx.freed),
+      $call concat ($call int_to_str (d), "|"),
+      $call Pa.pstrs.reverse ($call param_names (ps, Pa.pstrs.nil), Pa.pstrs.nil), n, strs.nil,
+      T.cints.nil), T.cints.nil)
+
+// DEFER.md: `1000` in a function's type says its result may be storage from an allocator
+// other than the root's — so a caller cannot route a `$free` of it to the root. Stated as
+// the lack of a guarantee, not as one, because fewer entries make a subtype: a function
+// that does guarantee root storage must be usable where one that does not is expected.
+// Only a result that is itself allocated storage asks, and the answer is "root" only when
+// the source shows it: an `$alloc` from the root, a call whose callee guarantees it, an
+// `$if` of two such, or the field of a block projected on the spot that is one.
+$fwd root_res
+$decl root_item $func ($decl xs Pa.nodes.node, $decl nm "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($if ($call is_form (xs.head, "decl"))
+             ($call eq_str ($call name_of ($call op (xs.head, 0)), nm)) false)
+        ($call op (xs.head, 1)) ($call root_item ($call Pa.nodes.val (xs.tail), nm)),
+  $case xs ($call Pa.n_err ("", 0, 0))
+)
+$decl is_err_node $func ($decl n Pa.proto_node) $match n ($case {$prop tag "error"} true, $case n false)
+$decl binds_alloc $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($if ($call is_form (xs.head, "decl"))
+             ($call eq_str ($call name_of ($call op (xs.head, 0)), "allocator")) false)
+        true ($call binds_alloc ($call Pa.nodes.val (xs.tail))),
+  $case xs false
+)
+$decl root_res $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node,
+                      $decl rb P.boolean, $decl ds Pa.nodes.node) $match n (
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "alloc")) {
+      $decl f    $call lookup (e, "allocator")
+      $decl ret2 $if rb false ($if f.ok ($call T.same (f.ty, T.ffi_alloc)) true)
+    }.ret2
+    ($if ($call P.or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const")))
+         ($call root_res (cx, e, $call op (n, 0), rb, ds))
+    ($if ($call eq_str (n.keyword, "if"))
+         ($if ($call root_res (cx, e, $call op (n, 1), rb, ds))
+              ($call root_res (cx, e, $call op (n, 2), rb, ds)) false)
+    ($if ($call eq_str (n.keyword, "call"))
+         ($call not ($call in_strs ($call strs.val (cx.nonroot), $call fn_key_of (cx, n))))
+         false))),
+  $case {$prop tag "proj_name"} {
+    $decl tg   $call node_val (n.target)
+    $decl ret2 $match tg (
+        $case {$prop tag "block"} {
+          $decl its  $call Pa.nodes.val (tg.items)
+          $decl init $call root_item (its, n.field)
+          $decl ret3 $if ($call is_err_node (init)) false
+              ($call root_res (cx, e, init, $if rb true ($call binds_alloc (its)), its))
+        }.ret3,
+        $case tg false
+      )
+  }.ret2,
+  $case {$prop tag "name"} {
+    $decl init $call root_item (ds, n.text)
+    $decl ret2 $if ($call is_err_node (init)) false ($call root_res (cx, e, init, rb, ds))
+  }.ret2,
+  $case n false
+)
+$decl nonroot_res $func ($decl cx proto_ctx, $decl e env.node, $decl res T.proto_ty,
+                         $decl body Pa.proto_node) {
+  $decl r   $call tval (res)
+  $decl al  $match r ($case {$prop tag "ref"} ($call T.is_alloc (r.kind)), $case r false)
+  $decl ret $if al ($if ($call root_res (cx, e, body, false, Pa.nodes.nil)) T.cints.nil
+                        ($call T.cints.cons (1000, T.cints.nil)))
+                T.cints.nil
+}.ret
+
 $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node,
     $decl ps Pa.nodes.node, $decl tys T.tys.node, $decl res0 T.proto_ty, $decl mr proto_mres,
     $decl id -1) {
@@ -1596,7 +1715,10 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   // A parameter whose marks reached only the result is borrowed: the caller gets it back,
   // owned by whoever owned the argument (`infer_call`), rather than losing it (§5.3a).
   $decl brws $call brw_take (cx, d)
-  $decl ret  $call T.t_func_esc (tys, res, capf, $call with_brw (mine, brws),
+  $decl frd  $call freed_take (cx, d, ps, n)
+  $decl nrr  $call nonroot_res (cx, e, res, $call op (n, 1))
+  $decl all  $call T.ci_sort ($call T.ci_union (frd, $call T.ci_union (nrr, mine)), T.cints.nil)
+  $decl ret  $call T.t_func_esc (tys, res, capf, $call with_brw (all, brws),
                  $call T.keep_below (capm, lim, T.cints.nil))
 }.ret
 
@@ -1709,12 +1831,20 @@ $decl two_params $func ($decl t T.proto_ty) $match t (
   $case t false
 )
 
+// An `$alloc` block's deferrals run at `$free`, after the frame that wrote them is gone.
+$decl alloc_caps $func ($decl cx proto_ctx, $decl b Pa.proto_node, $decl d Pa.proto_node) {
+  $decl cap $call first_cap (cx, $call dfr_free (b), $call Pa.bound_names (b, Pa.pstrs.nil))
+  $decl ret $if ($call eq_str (cap, "")) ()
+      ($do ($call err (cx, $call concat ("an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals (§4.10), not '",
+           $call concat (cap, "'")), d)) ())
+}.ret
+
 $decl alloc_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form,
                          $decl d Pa.proto_node) {
   $decl f   $call lookup (e, "allocator")
   $decl b   $call op (n, 0)
-  $decl ret $if ($if f.ok ($call T.same (f.ty, T.ffi_alloc)) true)
-      ($do ($call err (cx, "the root allocator cannot run an $alloc block's deferrals yet: it has no defer_at (DEFER.md)", d)) ())
+  $decl root $if f.ok ($call T.same (f.ty, T.ffi_alloc)) true
+  $decl ret $if root ($call alloc_caps (cx, $call op (n, 0), d))
       {
         $decl sp   $call P.span_of (n)
         $decl m    $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "defer_at",
@@ -1724,12 +1854,10 @@ $decl alloc_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_for
         $decl e1   $if ok ()
             ($do ($call err (cx, $call concat ("the allocator in scope cannot run an $alloc block's deferrals: its defer_at is ",
                  $call concat ($call T.show (mt), ", which must take an address and a function (DEFER.md)")), d)) ())
-        $decl cap  $call first_cap (cx, $call dfr_free (b), $call Pa.bound_names (b, Pa.pstrs.nil))
-        $decl ret2 $if ($call eq_str (cap, "")) ()
-            ($do ($call err (cx, $call concat ("an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals (§4.10), not '",
-                 $call concat (cap, "'")), d)) ())
+        $decl ret2 $call alloc_caps (cx, b, d)
       }.ret2
 }.ret
+
 
 $decl storage_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl d   $call defers_in ($call op (n, 0))
@@ -1796,6 +1924,17 @@ $decl case_bodies $func ($decl xs Pa.nodes.node, $decl acc Pa.nodes.node) $match
         $call Pa.nodes.cons ($call op (xs.head, 1), acc)),
   $case xs acc
 )
+
+// A name freed here, for `func_close` to find among this function's parameters.
+$decl note_freed $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl root P.boolean)
+  $match x (
+    $case {$prop tag "name"}
+      $do ($set cx.freed ($call strs.cons ($call concat ($call int_to_str ($call ival (cx.fdepth)),
+               $call concat ("|", $call concat (x.text, $if root "" "|!"))),
+               $call strs.val (cx.freed))))
+          (),
+    $case x ()
+  )
 
 // What a borrowed argument lends the call's result: its marks, and whether it is
 // frame-bound — directly, or as the trait object §6's coercion makes over frame storage.
@@ -2402,6 +2541,9 @@ $decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_
   $decl bw  $if ($if ($call T.ci_mem (es, $call add (63, i))) true
                      ($if ($call lt (-1, pd)) ($call T.markable (p)) false))
                 ($call note_barg (cx, x, raw, p)) ()
+  // DEFER.md: the callee frees this parameter (through the root), so a name passed here
+  // is freed by this function too.
+  $decl fr  $if ($call T.ci_mem (es, $call add (127, i))) ($call note_freed (cx, x, true)) ()
   // A callee still being typed: its escaping parameters come later (`func_close`).
   // Only an argument that could be refused or could carry a mark is worth keeping,
   // and nearly none is — keeping every one made each closing function rescan them.
@@ -2467,6 +2609,12 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
                        $call callee_name ($call op (n, 0)), rv.id)) rv.id -1,
             $case rv -1)
         $decl ok $call check_args (cx, e, ft.params, args, n, 1, $call T.cints.val (ft.esc), pd)
+        // DEFER.md: a callee still being typed has no answer yet, which counts as "may".
+        $decl nr0 $call T.ci_mem ($call T.cints.val (ft.esc), 1000)
+        $decl nr $if ($if nr0 true ($call lt (-1, pd)))
+                     ($do ($set cx.nonroot ($call strs.cons ($call fn_key_of (cx, n),
+                              $call strs.val (cx.nonroot))))
+                          ()) ()
         $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
             ($call chk_cbs (cx, $call T.tys.val (ft.params), args)) T.t_unit
         // A `$decl` initializer keeps a reference (§5.4), and `result` is
@@ -4053,7 +4201,9 @@ $decl infer_free $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
       ($do ($call err (cx, $call concat ("$free needs allocated storage it may end, found ",
            $call concat ($call T.show (t), ": frame storage is released with its frame, and a $const view only reads (DEFER.md)")), n)) ())
   $decl f   $call lookup (e, "allocator")
-  $decl e2  $if ($if f.ok ($call T.same (f.ty, T.ffi_alloc)) true) () {
+  $decl root $if f.ok ($call T.same (f.ty, T.ffi_alloc)) true
+  $decl rec $call note_freed (cx, $call op (n, 0), root)
+  $decl e2  $if root () {
     $decl sp   $call P.span_of (n)
     $decl m    $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "free",
                    sp.line, sp.col)

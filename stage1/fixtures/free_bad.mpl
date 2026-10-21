@@ -1,8 +1,9 @@
 // DEFER.md step 4's checks in inference. `$free` takes allocated storage it may end: not
 // frame storage, released with its frame, nor a `$const` view, which only reads. An
 // allocator serving `$free` needs `free (addr, size)`; one serving an `$alloc` block's
-// deferrals needs `defer_at`, which the root has not yet; and those deferrals run at
-// `$free`, after their frame is gone, so they may name only the block's fields and globals.
+// deferrals needs `defer_at`; a parameter is freed only through the root, since which
+// allocator is not in a function's type; and an `$alloc` block's deferrals run at `$free`,
+// after their frame is gone, so they may name only the block's fields and globals.
 $decl old $func () {
   $decl a   { $prop alloc $func ($decl n 0) 0  $prop free $func ($decl p 0) () }
   $decl ret a
@@ -28,8 +29,9 @@ $decl oldf $func () {
   $decl x   $free r
   $decl ret 0
 }.ret
-$decl rootd $func () {
-  $decl r   $alloc { $decl k 1  $defer $call print ("r") }
+$decl param $func ($decl r $alloc 1) {
+  $decl allocator $call new ()
+  $decl x   $free r
   $decl ret 0
 }.ret
 $decl capt $func ($decl s "") {

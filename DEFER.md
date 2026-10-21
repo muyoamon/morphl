@@ -2,9 +2,9 @@
 
 Status: **steps 1–4 done, as far as both stages can agree** — the owner rule enforced,
 `$defer` for scopes and plain values (SPEC §4.15a), `$new` storage's deferrals run by its
-owner or at its item's end, and `$free` with allocator-held deferrals (§7.6). Arms,
-ownership through a call, the top level, the root's `defer_at` and freeing a parameter are
-not.
+owner or at its item's end, and `$free` with allocator-held deferrals — the root's
+included — and freeing a parameter (§7.6). Arms, ownership through a call and the top
+level are not.
 Decided in discussion; the open points are at the end. SPEC has what is implemented (§4.15a,
 §5.3a).
 
@@ -403,8 +403,7 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      the same way, which is either the summary in stage 0 too or a run-time flag in stage 1.
    - **Still refused**: arms (example 10, a flag per site), calls that can hand a place back
      (example 7), `$alloc` (step 4), a file's top level (example 12). `owner_bad.mpl`.
-4. **The allocator members and `$free`** — **done, except the root's `defer_at` and
-   parameter summaries.**
+4. **The allocator members and `$free`** — **done.**
    - **`$free r`** (§2.2, §7.6), both parsers; stage 0 refuses to run it, as it refuses the
      FFI, since it has no allocators. Inference types it: allocated storage, not a `$const`
      view, and an allocator whose `free` takes an address and a size (the root's is
@@ -422,24 +421,37 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      into a list cell of its own, and `reset`/`release` running everything outstanding,
      newest first. `std/mem_test.mpl` (10) covers `$free`, `reset`, `release` and the
      `$defer $free` idiom.
+   - **The root's `defer_at`**: a table in the runtime, shared state defined once beside
+     `main` (as `mpl_argc` is), since storage registered in one output may be freed in
+     another. `raw_defer_at` registers; `raw_free` runs and drops the newest entry for its
+     address before releasing. `allocator.defer_at` on the root lowers to it.
+   - **Freeing a parameter, and a constructor's result** — two facts in the function type,
+     beside §5.3a's escapes (0..63) and borrows (64 + i):
+     - `128 + i` (`free(i)`): the function frees parameter `i`, by `$free` of it or by
+       passing it where another function frees it, so wrappers are found transitively
+       (`freed`, taken per depth at `func_close`). Through the root only: which allocator
+       is not in the type, and a caller must check its argument came from the same one.
+     - `1000` (`nonroot`): the result may be storage from another allocator. Stated as the
+       lack of a guarantee because fewer entries make the subtype — a guarantee would
+       let a non-guaranteeing function stand in for one that guarantees. Inferred unless
+       the source shows root storage (`root_res`); recorded only for a result that is
+       itself allocated storage, so nothing in the compiler, which uses the root alone,
+       changed type.
+     Lowering gives a freed parameter the root's provenance, checks every call that passes
+     storage where the callee frees it (`check_freed`, both call sites), and takes a call's
+     result as root storage only when the callee is an entry-file function — whose type is
+     inference's; a module member's is rebuilt by lowering and proves nothing, so freeing
+     one's result is refused. `open_close.mpl` (2431) is `open`/`close`/`close2` at the
+     root; `lower_test`'s `t37`–`t37c` the refusals.
    - **Refused**: `$free` of frame storage or a `$const` view, an allocator whose `free`
-     takes one argument, an `$alloc` block's deferral naming a local, and any `$alloc`
-     block with a deferral from the root — open question 1 below, still open.
+     takes one argument, an `$alloc` block's deferral naming a local, a parameter freed
+     through another allocator than the root's, and storage whose provenance is unknown —
+     a capture, a module member's result, a non-root result.
      `stage1/fixtures/free_bad.mpl` in `test-reject`.
-   - **Not done**: freeing a parameter — a summary in the function type saying which
-     allocator it frees with — so `close (f)` from another function is refused today.
-5. **`std/allocator`**: the capability traits, and whatever allocator-generic code D5's
-   `_in` variants turn out to need.
-
-Fixtures at each step, in both stages where stage 0 can run them, and under ASan; the
-examples above are the first set.
 
 ## Open questions
 
-1. **The root's `defer_at`.** A side table keyed by address lets `$alloc { … $defer … }` work
-   in libraries and at the top level, where a resource constructor allocates from the root.
-   The alternative is that only library allocators take deferral blocks. Leaning: the side
-   table.
+1. **The root's `defer_at`** — decided and done: a side table in the runtime (step 4).
 2. **`grow` and alignment** in the allocator interface: `std/vec` would use `grow`
    instead of allocating and copying, and alignment above 16 waits for a program that needs
    it.

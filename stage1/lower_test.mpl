@@ -454,13 +454,34 @@ $decl t35b $call check_str ("...but a read before a rebinding is a capture",
 $decl t36 $call check_str ("$free with the allocator that made the storage lowers clean",
   $call first_err ($call lower_errs ("$decl f $func () { $decl r $alloc 0  $decl x $free r  $decl ret 0 }.ret  $decl main $func () $call f () ")),
   "")
-$decl t36b $call check_str ("...but not storage of unknown provenance",
-  $call first_err ($call lower_errs ("$decl f $func ($decl r $alloc 0) { $decl x $free r  $decl ret 0 }.ret  $decl main $func () $call f ($alloc 1) ")),
+$decl t36b $call check_str ("...but not storage of unknown provenance, as a closure's capture",
+  $call first_err ($call lower_errs ("$decl f $func () { $decl r $alloc 0  $decl g $func () $free r  $decl ret $call g () }.ret  $decl main $func () $call f () ")),
   "$free needs a name this function bound from an $alloc: where else it came from, its allocator is not known here (DEFER.md)")
 $decl t36c $call check_str ("...nor through another allocator than its own",
   $call first_err ($call lower_errs ($call concat (
       "$decl mk $func () { $decl a { $prop alloc $func ($decl n 0) 0  $prop free $func ($decl p 0, $decl s 0) () }  $decl ret a }.ret  ",
       "$decl f $func () { $decl r $alloc 0  $decl x { $decl allocator $call mk ()  $decl y $free r  $decl ret2 0 }.ret2  $decl ret 0 }.ret  $decl main $func () $call f () "))),
   "this storage came from another allocator than the one in scope here: $free it where the allocator that made it is (DEFER.md)")
+
+// DEFER.md: a function's type says it frees a parameter (`128 + i`), only ever through the
+// root, so every call must pass storage drawn from the root: a name bound from a root
+// `$alloc`, a root `$alloc`, or the result of a function guaranteeing root storage — one
+// without `1000`, which is how a resource constructor like `open` is freed by `close`.
+$decl arena_src "$decl mk $func () { $decl a { $prop alloc $func ($decl n 0) 0  $prop free $func ($decl p 0, $decl s 0) () }  $decl ret a }.ret  "
+$decl close_src "$decl open $func ($decl id 0) $alloc { $decl k id }  $decl close $func ($decl f ($call open (0))) $free f  "
+$decl t37 $call check_str ("a constructor's root storage freed by a function freeing its parameter",
+  $call first_err ($call lower_errs ($call concat (close_src,
+      "$decl main $func () { $decl a $call open (1)  $decl x $call close (a)  $decl ret 0 }.ret "))),
+  "")
+$decl t37b $call check_str ("...but not another allocator's",
+  $call first_err ($call lower_errs ($call concat (arena_src, $call concat (close_src,
+      "$decl main $func () { $decl allocator $call mk ()  $decl a $alloc { $decl k 1 }  $decl x $call close (a)  $decl ret 0 }.ret ")))),
+  "the callee frees this argument through the root allocator, but it came from another (DEFER.md)")
+$decl t37c $call check_str ("...nor one a function hands back without guaranteeing the root",
+  $call first_err ($call lower_errs ($call concat (arena_src,
+      $call concat (close_src, $call concat (
+      "$decl other $func () { $decl allocator $call mk ()  $decl ret $alloc { $decl k 2 } }.ret  ",
+      "$decl main $func () { $decl a $call other ()  $decl x $call close (a)  $decl ret 0 }.ret "))))),
+  "the callee frees this argument, so where it came from must be known here: pass a name bound from an $alloc, or an $alloc (DEFER.md)")
 
 $decl done $call nl ("all lowering tests passed")

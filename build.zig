@@ -260,6 +260,10 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/defer_own.mpl", .want = "345687132456\n" },
         // §3.3: a block's trailing effects run after its slots. 123.
         .{ .src = "stage1/fixtures/trail.mpl", .want = "123\n" },
+        // DEFER.md: a root resource made by `open`, with a deferral the root's `defer_at`
+        // holds, freed by `close` — a function freeing its parameter — and through a
+        // wrapper. 2431. Compiled only: stage 0 has no allocators.
+        .{ .src = "stage1/fixtures/open_close.mpl", .want = "2431\n", .stage0 = false },
         // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
         // argument, from a function argument's parameter and result, from a module's
         // template, and a template applying itself in tail position. Stage 0 refuses
@@ -509,11 +513,11 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/free_bad.mpl",
             .stage1 = &.{
-                "free_bad.mpl:17:13: $free needs allocated storage it may end, found &Int",
-                "free_bad.mpl:22:13: $free needs allocated storage it may end, found &^const Int",
-                "free_bad.mpl:28:13: the allocator in scope cannot serve $free: its free is [Int]->(), which must take an address and a size",
-                "free_bad.mpl:32:33: the root allocator cannot run an $alloc block's deferrals yet: it has no defer_at",
-                "free_bad.mpl:37:33: an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals",
+                "free_bad.mpl:18:13: $free needs allocated storage it may end, found &Int",
+                "free_bad.mpl:23:13: $free needs allocated storage it may end, found &^const Int",
+                "free_bad.mpl:29:13: the allocator in scope cannot serve $free: its free is [Int]->(), which must take an address and a size",
+                "free_bad.mpl:32:13: this function frees its parameter 'r' through an allocator other than the root's",
+                "free_bad.mpl:39:33: an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals",
             },
             .count = "errors: 5\n",
             .stage0 = null,
@@ -521,13 +525,12 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
-                "owner_bad.mpl:24:29: $defer in a $new block at a file's top level is not defined yet",
-                "owner_bad.mpl:7:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
-                "owner_bad.mpl:12:38: $defer in a $new block in an $if or $match arm is not implemented yet",
-                "owner_bad.mpl:17:41: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
-                "owner_bad.mpl:21:33: the root allocator cannot run an $alloc block's deferrals yet: it has no defer_at",
+                "owner_bad.mpl:19:29: $defer in a $new block at a file's top level is not defined yet",
+                "owner_bad.mpl:6:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
+                "owner_bad.mpl:11:38: $defer in a $new block in an $if or $match arm is not implemented yet",
+                "owner_bad.mpl:16:41: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
             },
-            .count = "errors: 5\n",
+            .count = "errors: 4\n",
             .stage0 = null,
         },
     }) |bad| {
@@ -1026,7 +1029,8 @@ pub fn build(b: *std.Build) void {
     // A suite has no `main`: its checks are top-level effects (§3.3), which run from
     // `mpl_init`. So the driver includes the emitted C and supplies a `main` that runs
     // the initialiser — `mpl_init` is `static`, which is why it is an `#include`
-    // rather than a second translation unit — and defines `mpl_argc`/`mpl_argv`, which
+    // rather than a second translation unit — and defines `mpl_argc`/`mpl_argv` (and the
+    // root's `defer_at` table, DEFER.md), which
     // the runtime declares `extern` and the backend defines only beside a real `main`.
     //
     // A failing check panics, so the exit status is the verdict. The last line is
@@ -1057,6 +1061,9 @@ pub fn build(b: *std.Build) void {
             \\#include "suite.c"
             \\int mpl_argc = 0;
             \\char **mpl_argv = 0;
+            \\mpl_fin *mpl_fins = 0;
+            \\int64_t mpl_nfins = 0;
+            \\int64_t mpl_capfins = 0;
             \\int main(int argc, char **argv) {
             \\  mpl_argc = argc;
             \\  mpl_argv = argv;

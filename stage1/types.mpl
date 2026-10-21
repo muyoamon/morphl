@@ -770,13 +770,16 @@ $decl ci_str $func ($decl xs cints.node, $decl acc "") $match xs (
 
 // `esc` holds escapes as a parameter's index and borrows as 64 plus it (`infer.mpl`'s
 // `with_brw`); this renders one half, the borrows with the 64 taken off.
-$decl ci_str_half $func ($decl xs cints.node, $decl brw P.boolean, $decl acc "") $match xs (
+// `band` 0 is the escapes, 1 the borrows (64 + i), 2 the parameters freed (128 + i, DEFER.md).
+$decl ci_str_half $func ($decl xs cints.node, $decl band 0, $decl acc "") $match xs (
   $case {$prop tag "cons"} {
-    $decl b    $call lt (63, xs.head)
-    $decl keep $if brw b ($call not (b))
-    $decl ret  $call ci_str_half ($call cints.val (xs.tail), brw,
+    $decl b    $if ($call lt (999, xs.head)) 3 ($if ($call lt (127, xs.head)) 2
+                   ($if ($call lt (63, xs.head)) 1 0))
+    $decl keep $call eq_int (b, band)
+    $decl ret  $call ci_str_half ($call cints.val (xs.tail), band,
         $if keep ($call concat (acc, $call concat ($if ($call eq_str (acc, "")) "" ",",
-                      $call int_to_str ($if b ($call isub (xs.head, 64)) xs.head))))
+                      $call int_to_str ($if ($call eq_int (b, 3)) 0
+                          ($call isub (xs.head, $call mul (b, 64)))))))
                  acc)
   }.ret,
   $case xs acc
@@ -1032,13 +1035,17 @@ $decl show $func ($decl t proto_ty) $match t (
                                  $call concat ($call show_props (t.props, ""), "}"))),
   $case {$prop tag "group"}  $call concat ("(", $call concat ($call show_tys (t.items, "", true), ")")),
   $case {$prop tag "func"} {
-    $decl es  $call ci_str_half ($call cints.val (t.esc), false, "")
-    $decl bs  $call ci_str_half ($call cints.val (t.esc), true, "")
+    $decl es  $call ci_str_half ($call cints.val (t.esc), 0, "")
+    $decl bs  $call ci_str_half ($call cints.val (t.esc), 1, "")
+    $decl fs  $call ci_str_half ($call cints.val (t.esc), 2, "")
+    $decl ns  $call ci_str_half ($call cints.val (t.esc), 3, "")
     $decl ret $call concat ($if t.rmut "mut" "",
         $call concat ($if ($call eq_str (es, "")) "" ($call concat ("esc(", $call concat (es, ")"))),
         $call concat ($if ($call eq_str (bs, "")) "" ($call concat ("brw(", $call concat (bs, ")"))),
+        $call concat ($if ($call eq_str (fs, "")) "" ($call concat ("free(", $call concat (fs, ")"))),
+        $call concat ($if ($call eq_str (ns, "")) "" "nonroot",
         $call concat ("[", $call concat ($call show_tys (t.params, "", true),
-        $call concat ("]->", $call show (t.result)))))))
+        $call concat ("]->", $call show (t.result)))))))))
   }.ret,
   $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual, t.kind), $call show (t.inner)),
   $case {$prop tag "array"}  $call concat ("[]", $call show (t.elem)),

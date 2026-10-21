@@ -679,10 +679,22 @@ frame storage is released with its frame. `$free r` calls the `free` of the `all
 scope where it is written, `free (addr, size)` — the root's is `raw_free (addr)` — with the
 storage's address and size, the size the compiler's (§5.3's invariance makes it exactly
 what was allocated). **It must be the allocator that made `r`**: `allocator` at the `$free`
-resolves to the same binding it resolved to at the `$alloc`, and `r` is a name bound in
-this function from an `$alloc`; anything else is a compile error, so storage is never
-handed to an allocator that did not make it. What a reference may be used for after its
-allocator released it is still the author's error. Its value is `unit`.
+resolves to the same binding it resolved to at the `$alloc`, so storage is never handed to
+an allocator that did not make it. That is known for a name bound in this function from an
+`$alloc`, and across functions through two facts §5.3a's inference records in a function's
+type, beside which parameters escape and which are borrowed:
+
+- **which parameters it frees**, rendered `free(i)` — by `$free` of one, or by passing one
+  where another function frees it. Only through the root allocator, since which allocator
+  is not in the type: a caller must pass storage drawn from the root there.
+- **whether its result may be storage from another allocator**, rendered `nonroot` —
+  stated as the absence of a guarantee, so that a function guaranteeing root storage is the
+  subtype, and inferred unless the source shows the result is root storage (an `$alloc` from
+  the root, a call guaranteeing it, an `$if` of two such, or a projected block's field that
+  is one). A result of a function without it is root storage a caller may free.
+
+Anything else is a compile error. What a reference may be used for after its allocator
+released it is still the author's error. Its value is `unit`.
 
 **An `$alloc` block's deferrals** (§4.15a) are the allocator's to run: straight after
 `alloc`, `$alloc` calls `allocator.defer_at (addr, fin)` with a function running them, and
@@ -690,7 +702,9 @@ an allocator's `free` runs what was registered for an address before releasing i
 arena runs every one still registered on `reset` and `release`, newest first. They run
 long after the frame that wrote them, so they may name only the block's own fields, whose
 values never change once initialised (§4.4), and what is global. An allocator without
-`defer_at` cannot take such a block, and the root has none yet.
+`defer_at` cannot take such a block. The root's keeps a table its `free` consults, so a
+resource constructor written against the root — `open` making an `$alloc` block that closes
+a handle in a `$defer` — is freed correctly by whichever function frees it.
 
 Because the name is resolved where `$alloc` is written, rebinding `allocator` does not
 reach into a library: a list's cells written in the prelude come from the prelude's
