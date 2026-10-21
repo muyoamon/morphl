@@ -375,12 +375,15 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   on what the block became. For a scope — a statement, a `.r` projection, a function body —
   and for a plain value, it is the end of the block's own evaluation: the record outlives the
   block, and **a copy of a record carries no deferral**. A block that is directly the operand
-  of `$new` runs its deferrals when the storage's **owner** dies (§5.3a): for
-  `$decl x $new { … }` in a block that is a scope, at that block's end, in reverse order
-  among its own deferrals and by a `$try` leaving through it. Every other such block —
-  ephemeral, owned through a call or an `$if` arm, a field of a record kept as a value, and
-  any `$alloc` block, which runs its deferrals when freed — is designed (DEFER.md) and is a
-  compile error for now.
+  of `$new` runs its deferrals when the storage's **owner** dies (§5.3a), decided at the end
+  of the block item the `$new` is in: if what that item's `$decl` binds reaches the storage —
+  directly, through `$mut`/`$const`/`$traitsof`, `$do`'s second operand, or as a field of a
+  record — that `$decl` owns it, and they run when it does (at its block's end if that block
+  is a scope; with the record's owner if it is a value). Otherwise the storage was
+  **ephemeral** and they run at the end of that item, as a full expression ends a
+  temporary. Not yet defined, and so compile errors: such a block in an `$if`/`$match` arm,
+  passed to a call whose result can hold a place (whose owner the callee decides), at a
+  file's top level, and any `$alloc` block, which runs its deferrals when freed (DEFER.md).
 - **Exits.** `$try` leaving a block is a return (§4.15), so it runs the deferrals registered
   before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none.
 - **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), so

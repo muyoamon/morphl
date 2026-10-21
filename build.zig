@@ -255,6 +255,11 @@ pub fn build(b: *std.Build) void {
         // DEFER.md step 3: `$decl x $new { … $defer … }` in a scope runs the storage's
         // deferrals at its owner's block's end, in order, and on a `$try`. 2136549.
         .{ .src = "stage1/fixtures/defer_new.mpl", .want = "2136549\n" },
+        // DEFER.md step 3: ephemeral storage dies with its item, a record owns its fields'
+        // storage, a value block passes it out, a `$try` runs what is alive. 345687132456.
+        .{ .src = "stage1/fixtures/defer_own.mpl", .want = "345687132456\n" },
+        // §3.3: a block's trailing effects run after its slots. 123.
+        .{ .src = "stage1/fixtures/trail.mpl", .want = "123\n" },
         // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
         // argument, from a function argument's parameter and result, from a module's
         // template, and a template applying itself in tail position. Stage 0 refuses
@@ -494,9 +499,9 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/defer_bad.mpl",
             .stage1 = &.{
-                "defer_bad.mpl:10:1: $defer at a file's top level is not defined yet (DEFER.md)",
-                "defer_bad.mpl:4:31: $defer is a block item: it belongs directly in a block's items",
-                "defer_bad.mpl:7:42: $defer in a block that is $new storage is implemented only as the whole initializer of a $decl in a scope",
+                "defer_bad.mpl:9:1: $defer at a file's top level is not defined yet (DEFER.md)",
+                "defer_bad.mpl:3:31: $defer is a block item: it belongs directly in a block's items",
+                "defer_bad.mpl:6:42: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
             },
             .count = "errors: 3\n",
             .stage0 = "$defer at a file's top level is not defined yet",
@@ -504,12 +509,13 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
-                "owner_bad.mpl:6:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
-                "owner_bad.mpl:11:41: $defer in a block that is $new storage is implemented only as the whole initializer of a $decl in a scope",
-                "owner_bad.mpl:16:42: $defer in a block that is $new storage is implemented only as the whole initializer of a $decl in a scope",
-                "owner_bad.mpl:20:33: $defer in a block that is $alloc storage is not implemented yet",
+                "owner_bad.mpl:24:29: $defer in a $new block at a file's top level is not defined yet",
+                "owner_bad.mpl:7:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
+                "owner_bad.mpl:12:38: $defer in a $new block in an $if or $match arm is not implemented yet",
+                "owner_bad.mpl:17:41: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
+                "owner_bad.mpl:21:33: $defer in a block that is $alloc storage is not implemented yet",
             },
-            .count = "errors: 4\n",
+            .count = "errors: 5\n",
             .stage0 = null,
         },
     }) |bad| {
@@ -769,6 +775,8 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/wrap_self.mpl",
         "stage1/fixtures/defer.mpl",
         "stage1/fixtures/defer_new.mpl",
+        "stage1/fixtures/defer_own.mpl",
+        "stage1/fixtures/trail.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room

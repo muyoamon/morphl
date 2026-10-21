@@ -130,6 +130,8 @@ pub const Interp = struct {
     specialize_depth: u32 = 0,
     /// DEFER.md step 3: where the next storage literal's deferrals go (`runDeferring`).
     adopt: ?*std.ArrayListUnmanaged(Pending) = null,
+    /// Storage made by a `$new` literal with deferrals, not yet owned (`settleFresh`).
+    fresh: std.ArrayListUnmanaged(Fresh) = .empty,
     /// The value carried by an in-flight `error.TryReturn`.
     try_payload: Value = .unit,
     /// Scopes whose call has returned without anything capturing them.
@@ -705,14 +707,14 @@ pub const Interp = struct {
     /// it takes out of the scope outlives it.
     const RanBlock = struct { scope: *Scope, recyclable: bool };
 
-    fn runBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope) Error!RanBlock {
+    fn runBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope, is_scope: bool) Error!RanBlock {
         const preforced: []Scope.PropSlot = if (self.shape_cache.get(exprs.ptr)) |c| c.const_props else &.{};
 
         var slots: usize = 0;
         var defers: usize = 0;
         for (exprs) |*e| {
             if (e.isForm(.decl) or e.isForm(.fwd)) slots += 1;
-            if (e.isForm(.@"defer") or isStorageDefer(e)) defers += 1;
+            if (e.isForm(.@"defer")) defers += 1;
         }
         // DEFER.md step 2: a file is a block, but "the end of its evaluation" would be
         // before `main` runs — not what anyone writing one means — so it is refused until
@@ -747,9 +749,7 @@ pub const Interp = struct {
         // evaluated against that stale environment again.
         if (preforced.len != 0) scope.props = preforced else try self.collectProps(exprs, scope);
 
-        if (defers == 0) {
-            for (exprs) |*e| try self.evalBlockItem(e, scope);
-        } else try self.runDeferring(exprs, scope);
+        try self.runItems(exprs, scope, is_scope);
 
         // Only *literal* props are forced here: they read nothing, cost nothing,
         // and keep a shared constant shape fully forced. Every other prop waits for
@@ -773,7 +773,6 @@ pub const Interp = struct {
         return .{ .scope = scope, .recyclable = recyclable };
     }
 
-    /// Evaluate a block body in a fresh scope and return the block value.
     /// DEFER.md: a block's items, with each `$defer`'s expression registered where it
     /// stands and run in reverse when the items are done — for a scope or a plain value
     /// alike, the end of the block's own evaluation. `$try` leaving the block is a return
@@ -781,25 +780,32 @@ pub const Interp = struct {
     /// `panic` aborts (§7.8) and runs nothing. A deferral reads the scope as it is at the
     /// end, not as it was at the `$defer`.
     ///
-    /// `$decl x $new { … $defer … }` (DEFER.md step 3): `x` owns the storage, and this
-    /// block's end is when `x` dies, so the literal's deferrals are *adopted* — appended
-    /// here instead of run at the literal's end. Each keeps the scope it was written in,
-    /// which is why an entry carries one. The checker allows this only in a scope.
+    /// DEFER.md step 3: a `$new` literal's deferrals are its storage's, kept with the
+    /// cell it made (`fresh`) until the end of the block item it was made in. There the
+    /// item decides, as stage 1's lowering does from the source: if the item's `$decl`
+    /// binds a value that reaches the cell, that `$decl` is its owner — a scope adopts the
+    /// deferrals, to run at its end; a value block leaves them for whatever owns its
+    /// record. Otherwise nothing owns the storage and they run at once: it was ephemeral,
+    /// and its expression has ended. Each entry keeps the scope it was written in.
     const Pending = struct { node: *const Node, scope: *Scope };
+    const Fresh = struct { cell: *value.Cell, pend: []const Pending };
 
-    fn isStorageDefer(e: *const Node) bool {
-        if (!e.isForm(.decl)) return false;
-        const v = &e.data.form.operands[1];
-        if (!v.isForm(.new)) return false;
-        const b = &v.data.form.operands[0];
-        if (b.data != .block) return false;
-        for (b.data.block) |*i| if (i.isForm(.@"defer")) return true;
-        return false;
+    fn reaches(v: Value, c: *value.Cell) bool {
+        return switch (v) {
+            .ref => |r| r == c,
+            .block => |b| for (b.fields()) |f| {
+                if (reaches(f, c)) break true;
+            } else false,
+            .group => |g| for (g.elems) |f| {
+                if (reaches(f, c)) break true;
+            } else false,
+            else => false,
+        };
     }
 
-    fn runDeferring(self: *Interp, exprs: []const Node, scope: *Scope) Error!void {
+    fn runItems(self: *Interp, exprs: []const Node, scope: *Scope, is_scope: bool) Error!void {
         var pending: std.ArrayListUnmanaged(Pending) = .empty;
-        // A storage literal's block hands its deferrals to the block declaring it.
+        // A storage literal's block hands its deferrals to the `$new` making it.
         const adopter = self.adopt;
         self.adopt = null;
         for (exprs) |*e| {
@@ -807,21 +813,63 @@ pub const Interp = struct {
                 try pending.append(self.arena, .{ .node = &e.data.form.operands[0], .scope = scope });
                 continue;
             }
-            if (isStorageDefer(e)) self.adopt = &pending;
+            const mark = self.fresh.items.len;
             self.evalBlockItem(e, scope) catch |err| {
-                self.adopt = null;
                 if (err == error.TryReturn) {
                     const carried = self.try_payload;
+                    try self.dropFresh(mark);
                     try self.runPending(pending.items);
                     self.try_payload = carried;
                 }
                 return err;
             };
-            self.adopt = null;
+            if (self.fresh.items.len != mark) try self.settleFresh(e, scope, mark, is_scope, &pending);
         }
         if (adopter) |list| {
             try list.appendSlice(self.arena, pending.items);
         } else try self.runPending(pending.items);
+    }
+
+    /// The storage made during an item, decided at its end (see `Fresh`).
+    fn settleFresh(self: *Interp, e: *const Node, scope: *Scope, mark: usize, is_scope: bool,
+                   pending: *std.ArrayListUnmanaged(Pending)) Error!void {
+        var bound: ?Value = null;
+        if (e.isForm(.decl)) {
+            const nm = e.data.form.operands[0].data.name;
+            var i = scope.decls.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (Scope.nameEql(scope.decls.items[i].name, nm)) {
+                    bound = scope.decls.items[i].value;
+                    break;
+                }
+            }
+        }
+        const items = try self.arena.dupe(Fresh, self.fresh.items[mark..]);
+        self.fresh.shrinkRetainingCapacity(mark);
+        // Ephemeral storage dies newest first, as the stack in stage 1 does.
+        var j = items.len;
+        while (j > 0) {
+            j -= 1;
+            const f = items[j];
+            const owned = if (bound) |v| reaches(v, f.cell) else false;
+            if (!owned) try self.runPending(f.pend);
+        }
+        for (items) |f| {
+            const owned = if (bound) |v| reaches(v, f.cell) else false;
+            if (!owned) continue;
+            if (is_scope) {
+                try pending.appendSlice(self.arena, f.pend);
+            } else try self.fresh.append(self.arena, f);
+        }
+    }
+
+    /// Storage made during an item a `$try` is leaving: it dies, newest first.
+    fn dropFresh(self: *Interp, mark: usize) Error!void {
+        while (self.fresh.items.len > mark) {
+            const f = self.fresh.pop().?;
+            try self.runPending(f.pend);
+        }
     }
 
     fn runPending(self: *Interp, pending: []const Pending) Error!void {
@@ -832,9 +880,10 @@ pub const Interp = struct {
         }
     }
 
+    /// Evaluate a block body in a fresh scope and return the block value.
     fn evalBlockExprs(self: *Interp, exprs: []const Node, parent: *Scope, span: Span) Error!Value {
         _ = span;
-        const ran = try self.runBlockExprs(exprs, parent);
+        const ran = try self.runBlockExprs(exprs, parent, false);
         const scope = ran.scope;
 
         const shape = try self.sharedShape(exprs, scope, self.shape_cache.get(exprs.ptr));
@@ -878,7 +927,8 @@ pub const Interp = struct {
         field: []const u8,
         span: Span,
     ) Error!Value {
-        const ran = try self.runBlockExprs(exprs, parent);
+        // Discarded once the field is read: a scope (§4.15a).
+        const ran = try self.runBlockExprs(exprs, parent, true);
         const scope = ran.scope;
 
         // §4.10 makes access uniform over `$decl` fields and props, so this
@@ -1046,7 +1096,13 @@ pub const Interp = struct {
             }
         }
         // §3.3: "Non-`$decl` expressions in a block run for effect and are
-        // discarded." A block never yields its last expression.
+        // discarded." A block never yields its last expression. A block written as an
+        // item is therefore a scope (§4.15a), and its value is never built.
+        if (e.data == .block) {
+            const ran = try self.runBlockExprs(e.data.block, scope, true);
+            if (ran.recyclable) self.releaseScope(ran.scope);
+            return;
+        }
         _ = try self.eval(e, scope);
     }
 
@@ -1190,10 +1246,20 @@ pub const Interp = struct {
                 // DEFER.md: a block evaluated *into* storage runs its deferrals when the
                 // storage's owner dies or it is `$free`d — steps 3 and 4. Until then it is
                 // refused, rather than given the plain value's meaning it will lose.
-                if (self.adopt == null and ops[0].data == .block) for (ops[0].data.block) |*e| if (e.isForm(.@"defer")) {
-                    break :blk self.rt.fail(e.span, "$defer in a block that is $new or $alloc storage is implemented only as the whole initializer of a $decl (DEFER.md)", .{});
+                // A `$new` literal's deferrals are its storage's (DEFER.md step 3): the
+                // literal hands them here instead of running them, and they go with the
+                // cell until the item it was made in decides who owns it (`settleFresh`).
+                // `$alloc` runs them when freed, which is step 4.
+                var stored = false;
+                if (ops[0].data == .block) for (ops[0].data.block) |*e| if (e.isForm(.@"defer")) {
+                    if (f.keyword == .alloc) break :blk self.rt.fail(e.span, "$defer in a block that is $alloc storage is not implemented yet (DEFER.md, step 4)", .{});
+                    stored = true;
+                    break;
                 };
+                var held: std.ArrayListUnmanaged(Pending) = .empty;
+                if (stored) self.adopt = &held;
                 const v = (try self.eval(&ops[0], scope)).derefRefs();
+                self.adopt = null;
                 if (self.stats) |st| {
                     st.cell_n += 1;
                     // What this storage would cost *compiled*: the value lives
@@ -1209,7 +1275,9 @@ pub const Interp = struct {
                 }
                 const cb = self.bkt(.cell);
                 defer self.unbkt(cb);
-                break :blk value.newCell(self.arena, v);
+                const made = try value.newCell(self.arena, v);
+                if (stored) try self.fresh.append(self.arena, .{ .cell = made.ref, .pend = held.items });
+                break :blk made;
             },
 
             // §4.3: `$mut` requires a reference. Stage 0 draws no runtime

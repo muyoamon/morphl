@@ -257,14 +257,9 @@ $decl ctx $func () {
   // third is not, which is how a first attempt at this patched two and silently
   // missed one — the exact shape of no-op this file warns about twice.
   $decl fdepth  $mut $alloc 0
-  // The key (`fn_key_of`) of the body of the `$func` being typed, and whether the block
-  // being typed is a scope rather than a value — both for §5.3a's owners (DEFER.md):
-  // `owner_check` leaves a function's body to R2, and `$decl x $new { … $defer … }` is
-  // allowed only where the enclosing block's end is when `x` dies.
+  // The key (`fn_key_of`) of the body of the `$func` being typed: §5.3a's owner rule
+  // (`owner_check`) leaves a function's own body to R2.
   $decl fbody   $mut $alloc ""
-  $decl okdefer $mut $alloc strs.node
-  $decl nextscope $mut $alloc $union (false, true)
-  $decl inscope   $mut $alloc $union (false, true)
   // How many specialisations are being typed, one inside another. §4.9: "A chain
   // of *distinct* argument types is unbounded; there is a fixed instantiation
   // depth limit and exceeding it is an error." Self-specialisation made the chain
@@ -739,8 +734,6 @@ $fwd owner_check
 
 // §7.6: the root `allocator`'s members are §8's raw-memory intrinsics.
 $decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_projn) {
-  // A block literal projected on the spot is discarded at once: a scope (§4.15a).
-  $decl sc  $set cx.nextscope $call is_block_node (n.target)
   $decl t   $call deref_ty ($call infer (cx, e, n.target))
   $decl oc  $call owner_check (cx, n)
   $decl ret $if ($call T.same (t, T.ffi_alloc))
@@ -1679,6 +1672,88 @@ $decl alloc_conforms $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
        }.ret2)
 }.ret
 
+// §4.15a: the first `$defer` among a block's items, or the empty node.
+$decl first_defer $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call is_form (xs.head, "defer")) xs.head ($call first_defer ($call Pa.nodes.val (xs.tail))),
+  $case xs Pa.proto_node
+)
+$decl defers_in $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "block"} ($call first_defer ($call Pa.nodes.val (n.items))),
+  $case n Pa.proto_node
+)
+$decl is_defer $func ($decl n Pa.proto_node) $call is_form (n, "defer")
+
+// A block evaluated *into* storage runs its deferrals when the storage's owner dies
+// (DEFER.md step 3, which lowering and stage 0 decide). `$alloc` runs them when freed,
+// which is step 4, so an `$alloc` block carrying one is refused for now.
+$decl storage_defer $func ($decl cx proto_ctx, $decl n proto_form) {
+  $decl d   $call defers_in ($call op (n, 0))
+  $decl ret $if ($if ($call is_defer (d)) ($call eq_str (n.keyword, "alloc")) false)
+      ($do ($call err (cx, "$defer in a block that is $alloc storage is not implemented yet (DEFER.md, step 4)", d)) ())
+      ()
+}.ret
+
+// A `$new` block with a `$defer` whose deferrals would outlive where `n` stands: one not
+// inside a block projected on the spot, which runs them at its own end, nor inside a
+// `$func`, which is another activation. The empty node when there is none.
+$fwd bare_storage
+$decl bare_any $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl h   $call bare_storage (xs.head)
+    $decl ret $if ($call is_defer (h)) h ($call bare_any ($call Pa.nodes.val (xs.tail)))
+  }.ret,
+  $case xs Pa.proto_node
+)
+$decl bare_storage $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "func")) Pa.proto_node
+    ($if ($call eq_str (n.keyword, "new")) {
+       $decl d    $call defers_in ($call op (n, 0))
+       $decl ret2 $if ($call is_defer (d)) d ($call bare_any ($call Pa.nodes.val (n.operands)))
+     }.ret2
+     ($call bare_any ($call Pa.nodes.val (n.operands)))),
+  $case {$prop tag "block"}      ($call bare_any ($call Pa.nodes.val (n.items))),
+  $case {$prop tag "group"}      ($call bare_any ($call Pa.nodes.val (n.items))),
+  $case {$prop tag "proj_name"}
+    $if ($call is_block_node (n.target)) Pa.proto_node ($call bare_storage (n.target)),
+  $case {$prop tag "proj_index"} ($call bare_storage (n.target)),
+  $case n Pa.proto_node
+)
+
+// DEFER.md step 3: a `$new` literal with deferrals passed to a call whose result can hold
+// a place. Which place comes back is decided inside the callee, so "is the result's
+// `$decl` the storage's owner" has no answer the source gives — and stage 0, deciding at
+// run time, would give one the compiler could not match. Refused until a function's type
+// records which parameters' places its result is. A call whose result holds no place
+// cannot hand the storage back, so there it is plainly ephemeral.
+$decl call_storage $func ($decl cx proto_ctx, $decl n proto_form, $decl r T.proto_ty)
+  $if ($call T.frame_bound (r, 0)) {
+    $decl d    $call bare_any ($call group_items ($call op (n, 1)))
+    $decl ret2 $if ($call is_defer (d))
+        ($do ($call err (cx, "$defer in a $new block passed to a call that can hand a place back is not implemented yet: its owner depends on the callee (DEFER.md)", d)) ())
+        ()
+  }.ret2 ()
+
+// An `$if` or `$match` arm runs only when taken, and its storage's deferrals would run
+// regardless — that needs a flag per site (DEFER.md, example 10), so it is refused.
+$decl arm_storage $func ($decl cx proto_ctx, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl d   $call bare_storage (xs.head)
+    $decl e   $if ($call is_defer (d))
+        ($do ($call err (cx, "$defer in a $new block in an $if or $match arm is not implemented yet (DEFER.md)", d)) ())
+        ()
+    $decl ret $call arm_storage (cx, $call Pa.nodes.val (xs.tail))
+  }.ret,
+  $case xs ()
+)
+$decl case_bodies $func ($decl xs Pa.nodes.node, $decl acc Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call case_bodies ($call Pa.nodes.val (xs.tail),
+        $call Pa.nodes.cons ($call op (xs.head, 1), acc)),
+  $case xs acc
+)
+
 // What a borrowed argument lends the call's result: its marks, and whether it is
 // frame-bound — directly, or as the trait object §6's coercion makes over frame storage.
 $decl note_barg $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
@@ -2490,6 +2565,7 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl b1  $set cx.bmarks sm
   $decl b2  $set cx.bframe sf
   $decl pl  $call note_placed (cx, n, r)
+  $decl ow  $call call_storage (cx, n, r)
   $decl ret r
 }.ret
 $decl infer_if $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
@@ -3302,46 +3378,9 @@ $decl recv_of $func ($decl nm "", $decl init Pa.proto_node) {
                 ($call recv_save (nm, $call Pa.recv_qual (init), sp.line, sp.col)) proto_recv
 }.ret
 
-// §4.15a: the first `$defer` among a block's items, or the empty node.
-$decl first_defer $func ($decl xs Pa.nodes.node) $match xs (
-  $case {$prop tag "cons"}
-    $if ($call is_form (xs.head, "defer")) xs.head ($call first_defer ($call Pa.nodes.val (xs.tail))),
-  $case xs Pa.proto_node
-)
-$decl defers_in $func ($decl n Pa.proto_node) $match n (
-  $case {$prop tag "block"} ($call first_defer ($call Pa.nodes.val (n.items))),
-  $case n Pa.proto_node
-)
-$decl is_defer $func ($decl n Pa.proto_node) $call is_form (n, "defer")
-
-// A block evaluated *into* storage runs its deferrals when the storage's owner dies
-// (DEFER.md). Step 3 does the case where that is a scope's end: `$decl x $new { … }` in a
-// block that is a scope (`okdefer`, set by `infer_decl_item`), whose deferrals then
-// belong to that block. An `$alloc` (step 4), an ephemeral `$new`, one handed through a
-// call, and a field of a record kept as a value are refused until their owners are.
-$decl storage_defer $func ($decl cx proto_ctx, $decl n proto_form) {
-  $decl d   $call defers_in ($call op (n, 0))
-  $decl ok  $if ($call eq_str (n.keyword, "new"))
-                ($call in_strs ($call strs.val (cx.okdefer), $call fn_key_of (cx, n))) false
-  $decl ret $if ($if ($call is_defer (d)) ($call not (ok)) false)
-      ($do ($call err (cx, $if ($call eq_str (n.keyword, "new"))
-            "$defer in a block that is $new storage is implemented only as the whole initializer of a $decl in a scope (DEFER.md)"
-            "$defer in a block that is $alloc storage is not implemented yet (DEFER.md, step 4)", d)) ())
-      ()
-}.ret
-
 $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node) {
   $decl nm   $call name_of ($call op (it, 0))
   $decl init $call op (it, 1)
-  // DEFER.md step 3: `$decl x $new { … $defer … }` in a scope — `x` is the storage's
-  // owner, and its block's end is when `x` dies — so the storage's deferrals are that
-  // block's. `storage_defer` refuses every other `$new` block carrying one.
-  $decl sdf  $if ($call is_form (init, "new")) ($call is_defer ($call defers_in ($call op (init, 0))))
-                 false
-  $decl okd  $if ($if ($call bval (cx.inscope)) sdf false)
-                 ($set cx.okdefer ($call strs.cons ($call fn_key_of (cx, init),
-                     $call strs.val (cx.okdefer))))
-                 ($call strs.val (cx.okdefer))
   // §4.1: the name is in scope inside its own initializer, standing for
   // §5.5's placeholder `R`. A `$func` initializer gets the sharper treatment
   // in `infer_rec_func`, because a bare `R` is not callable.
@@ -3734,9 +3773,8 @@ $decl infer_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node
   // §4.15a: typed where it stands — it may name only what precedes it — and run when
   // the block is done; its value is discarded, as an effect's is.
   ($if ($call is_form (it, "defer")) ($do ($call infer (cx, s.env, $call op (it, 0))) ())
-       // §3.3: other expressions run for effect and are discarded — a block among them
-       // is a scope (§4.15a).
-       ($do ($set cx.nextscope $call is_block_node (it)) ($do ($call infer (cx, s.env, it)) ())))))
+       // §3.3: other expressions run for effect and are discarded.
+       ($do ($call infer (cx, s.env, it)) ()))))
 
 $decl infer_items $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node,
                          $decl all Pa.nodes.node, $decl items Pa.nodes.node) $match items (
@@ -3835,16 +3873,15 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl pc0    $call pesc_list.val (cx.pesc)
   $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
   $decl fwdr   $call check_fwd_reads (cx, items)
-  // Whether this block is a scope — its caller says so, once — for its own items only.
-  $decl isc    $call bval (cx.nextscope)
-  $decl cns    $set cx.nextscope false
-  $decl osc    $call bval (cx.inscope)
-  $decl cis    $set cx.inscope isc
   // §4.15a: at a file's top level "the end of its evaluation" would be before `main`.
   $decl topd   $if ($call P.and ($call eq_int (x.line, 0), $call eq_int (x.col, 0))) {
     $decl d    $call first_defer (items)
-    $decl ret3 $if ($call is_defer (d))
+    $decl d2   $call bare_any (items)
+    $decl r3   $if ($call is_defer (d))
         ($do ($call err (cx, "$defer at a file's top level is not defined yet (DEFER.md)", d)) ())
+        ()
+    $decl ret3 $if ($call is_defer (d2))
+        ($do ($call err (cx, "$defer in a $new block at a file's top level is not defined yet (DEFER.md)", d2)) ())
         ()
   }.ret3 ()
   $decl pe0    $call prebind_props (cx, items, e0)
@@ -3912,7 +3949,6 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl si2  $set cx.stid so_i
   $decl su2  $set cx.stuse ($if ($call eq_str (rn, "")) ($call bval (cx.stuse)) so_u)
   $decl sb3  $set cx.stblk so_b
-  $decl ris  $set cx.inscope osc
   // §5.3a, for mutual recursion: a parameter found to escape only after its function had
   // closed — a `$fwd` member passing its own to a later one, or a body nested in a
   // recursive one — leaves a hint, and everything typed after that function saw its
@@ -3980,11 +4016,17 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "set"))   ($call infer_set (cx, e, n))
     ($if ($call eq_str (k, "func"))  ($call infer_func (cx, e, n))
     ($if ($call eq_str (k, "call"))  ($call infer_call (cx, e, n))
-    ($if ($call eq_str (k, "if"))    ($call infer_if (cx, e, n))
+    ($if ($call eq_str (k, "if"))
+         ($do ($call arm_storage (cx, $call Pa.nodes.cons ($call op (n, 1),
+                   $call Pa.nodes.cons ($call op (n, 2), Pa.nodes.nil))))
+              ($call infer_if (cx, e, n)))
     ($if ($call eq_str (k, "do"))    ($do ($call infer (cx, e, $call op (n, 0)))
                                           ($call infer (cx, e, $call op (n, 1))))
     ($if ($call eq_str (k, "union")) ($call infer_union (cx, e, n))
-    ($if ($call eq_str (k, "match")) ($call infer_match (cx, e, n))
+    ($if ($call eq_str (k, "match"))
+         ($do ($call arm_storage (cx, $call case_bodies ($call group_items ($call op (n, 1)),
+                   Pa.nodes.nil)))
+              ($call infer_match (cx, e, n)))
     ($if ($call eq_str (k, "try"))   ($call infer_try (cx, e, n))
     ($if ($call eq_str (k, "template"))   ($call infer_template (cx, e, n))
     ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))

@@ -1,8 +1,9 @@
 # `$defer`, owners and `$free`: design note
 
-Status: **steps 1 and 2 done, step 3 half done** — the owner rule measured and now enforced,
-`$defer` for scopes and plain values (SPEC §4.15a), and `$decl x $new { … $defer … }` in a
-scope, in both stages. Flow through calls, ephemeral storage, arms, records and `$free` are not.
+Status: **steps 1–3 done, as far as both stages can agree** — the owner rule enforced,
+`$defer` for scopes and plain values (SPEC §4.15a), and `$new` storage's deferrals run by
+its owner or at its item's end, records included. Arms, ownership through a call, the top
+level and `$free` are not.
 Decided in discussion; the open points are at the end. SPEC has what is implemented (§4.15a,
 §5.3a).
 
@@ -377,12 +378,30 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      (example 9), and `$alloc` (step 4). `stage1/fixtures/owner_bad.mpl` in `test-reject`,
      beside the owner rule.
 
-   **What is left of step 3**: ownership through a call, so example 7's
-   `$decl a $call id ($new { … })` owns through `id` — most of the summary it needs already
-   exists, since §5.3a records which parameters a function **borrows** (`brw(…)`), i.e.
-   which arguments' places its result may carry; ephemeral places
-   dying where their flow ends (example 5); the arms' flag (example 10); and records
-   owning their fields' places (example 9).
+   **The second half, done:**
+   - **Ephemeral storage and records.** A `$new` literal's deferrals go with it until the end
+     of the block item it was made in, and are decided there: if what the item's `$decl`
+     binds reaches the storage, that `$decl` owns it; otherwise it was ephemeral and they run
+     at the end of the item — a full expression's end, chosen over "the innermost
+     expression consuming it" because both stages can implement it exactly. A record owns
+     its fields' storage: a value block runs its own deferrals at its end and passes its
+     storage's out, so they run with the record's owner (example 9, and the question example
+     11 was after). Stage 1 decides from the source (`flows_to`, `finish_item`), stage 0 at
+     run time from whether the bound value reaches the cell (`settleFresh`); they agree
+     because flowing involves no choice — arms are refused. `defer_own.mpl` (345687132456).
+   - **It found an older ordering bug.** A block's effects after its last `$decl` were
+     folded *around* the block and ran before its slots: `{ $decl a (say 1)  (say 2) }` said
+     2 first. They now run after (`with_trail`). `trail.mpl` (123).
+   - **Ownership through a call is refused, and the reason is worth keeping.** §5.3a's
+     `brw` marks only function- and trait-typed parameters; for a place-typed one the
+     provenance walk assumes the result may hold *any* argument's place. A per-parameter
+     summary would say what may flow, but "may" from the source cannot agree with stage 0's
+     "does" at run time whenever the callee chooses which place to return — so a call whose
+     result can hold a place is refused a storage argument with a deferral, and a call whose
+     result cannot is simply ephemeral. Making example 7 work needs both stages to decide
+     the same way, which is either the summary in stage 0 too or a run-time flag in stage 1.
+   - **Still refused**: arms (example 10, a flag per site), calls that can hand a place back
+     (example 7), `$alloc` (step 4), a file's top level (example 12). `owner_bad.mpl`.
 4. **The allocator members and `$free`**, with routing and parameter summaries; `std/mem`
    updated; the root's `defer_at` if decided.
 5. **`std/allocator`**: the capability traits, and whatever allocator-generic code D5's
