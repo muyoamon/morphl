@@ -636,6 +636,9 @@ $decl lstate $func () {
   $decl opaqs  $mut $alloc opq_list.node
   $decl pends  $mut $alloc pend_list.node
   $decl defers $mut $alloc dfr_list.node
+  // DEFER.md step 3: the span of a `$new` literal whose deferrals its declaring block
+  // adopts — `lower_block` leaves them on the stack instead of running them.
+  $decl keepat $mut $alloc ""
   $decl fdefs  $mut $alloc fdef_list.node
   $decl wraps  $mut $alloc wrap_list.node
   $decl wpends $mut $alloc wrap_list.node
@@ -4563,12 +4566,34 @@ $decl with_pending $func ($decl pd IR.exprs.node, $decl e IR.proto_expr, $decl t
 
 $fwd lower_items
 
+$decl has_defer $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call is_form (xs.head, "defer")) true ($call has_defer ($call Pa.nodes.val (xs.tail))),
+  $case xs false
+)
+
+// `$decl x $new { … $defer … }`: `x` owns the storage and dies at this block's end, so the
+// literal's deferrals are this block's (DEFER.md step 3; inference allows it only in a
+// scope). Its fields never change after initialisation (§4.4), so a deferral reads the
+// literal's own slots, which live as long as the frame.
+$decl keep_key $func ($decl line 0, $decl col 0)
+  $call concat ($call int_to_str (line), $call concat (":", $call int_to_str (col)))
+$decl adopt_at $func ($decl init Pa.proto_node) {
+  $decl b   $if ($call is_form (init, "new")) ($call op (init, 0)) Pa.proto_node
+  $decl ok  $match b ($case {$prop tag "block"} ($call has_defer ($call Pa.nodes.val (b.items))),
+                      $case b false)
+  $decl sp  $call P.span_of (b)
+  $decl ret $if ok ($call keep_key (sp.line, sp.col)) ""
+}.ret
+
 $decl lower_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node)
   $if ($call is_form (it, "decl")) {
     $decl nm  $call name_of ($call op (it, 0))
+    $decl kp  $set st.keepat ($call adopt_at ($call op (it, 1)))
     $decl rs  $call recv_enter (st, nm, $call op (it, 1))
     $decl rn0 $set st.recname ($if ($call is_form ($call op (it, 1), "func")) nm "")
     $decl v   $call lval ($call lower (st, a.env, $call op (it, 1), false))
+    $decl kp2 $set st.keepat ""
     $decl rn1 $set st.recname ""
     $decl rb  $call recv_put (st, rs)
     $decl id  $call intern (st, v.ty)
@@ -4708,6 +4733,10 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
   $decl rq   $call P.sval (st.rqual)
   $decl rk   $call P.sval (st.rkind)
   $decl dfs  $call dfr_list.val (st.defers)
+  // Adopted by the declaring block: left on the stack, so its end and any `$try` run them.
+  // Read on entry, since the literal's own `$decl`s set the mark afresh.
+  $decl kept $call eq_str ($call P.sval (st.keepat), $call keep_key (x.line, x.col))
+  $decl kc   $if kept ($set st.keepat "") ($call P.sval (st.keepat))
   $decl a  $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
                                                  e, IR.exprs.nil), xs)
   $decl ty $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil),
@@ -4716,7 +4745,7 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
   $decl ir0 $call with_pending ($call IR.exprs.val (a.pend),
       $call IR.e_block (id, $call IR.bslots.reverse ($call IR.bslots.val (a.slots),
           IR.bslots.nil)), id)
-  $decl ir $call with_defers (st, dfs, ir0, id, ty)
+  $decl ir $if kept ir0 ($call with_defers (st, dfs, ir0, id, ty))
   $decl ps $call block_props (xs, mprops.nil)
   $decl md $if ($call mprops.is_nil (ps)) -1
                ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps),

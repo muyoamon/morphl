@@ -128,6 +128,8 @@ pub const Interp = struct {
     /// How much of it that check may spend.
     stack_bytes: usize = default_stack_bytes,
     specialize_depth: u32 = 0,
+    /// DEFER.md step 3: where the next storage literal's deferrals go (`runDeferring`).
+    adopt: ?*std.ArrayListUnmanaged(Pending) = null,
     /// The value carried by an in-flight `error.TryReturn`.
     try_payload: Value = .unit,
     /// Scopes whose call has returned without anything capturing them.
@@ -710,7 +712,7 @@ pub const Interp = struct {
         var defers: usize = 0;
         for (exprs) |*e| {
             if (e.isForm(.decl) or e.isForm(.fwd)) slots += 1;
-            if (e.isForm(.@"defer")) defers += 1;
+            if (e.isForm(.@"defer") or isStorageDefer(e)) defers += 1;
         }
         // DEFER.md step 2: a file is a block, but "the end of its evaluation" would be
         // before `main` runs — not what anyone writing one means — so it is refused until
@@ -725,11 +727,14 @@ pub const Interp = struct {
         // inside it, which captures the chain — the same test `callFunc` uses
         // for a call's scope. `$prop` counts as capturing, so a block with
         // props keeps its scope, which `collectProps` needs anyway.
-        var recyclable = true;
-        for (exprs) |*e| {
-            if (mayCapture(e)) {
-                recyclable = false;
-                break;
+        // An adopted block's deferrals run later, against this scope.
+        var recyclable = !(defers != 0 and self.adopt != null);
+        if (recyclable) {
+            for (exprs) |*e| {
+                if (mayCapture(e)) {
+                    recyclable = false;
+                    break;
+                }
             }
         }
         const scope = if (recyclable)
@@ -744,7 +749,7 @@ pub const Interp = struct {
 
         if (defers == 0) {
             for (exprs) |*e| try self.evalBlockItem(e, scope);
-        } else try self.runDeferring(exprs, scope, defers);
+        } else try self.runDeferring(exprs, scope);
 
         // Only *literal* props are forced here: they read nothing, cost nothing,
         // and keep a shared constant shape fully forced. Every other prop waits for
@@ -775,32 +780,55 @@ pub const Interp = struct {
     /// (§4.15), so it runs what was registered before it and carries on unwinding; a
     /// `panic` aborts (§7.8) and runs nothing. A deferral reads the scope as it is at the
     /// end, not as it was at the `$defer`.
-    fn runDeferring(self: *Interp, exprs: []const Node, scope: *Scope, n: usize) Error!void {
-        const pending = try self.arena.alloc(*const Node, n);
-        var k: usize = 0;
+    ///
+    /// `$decl x $new { … $defer … }` (DEFER.md step 3): `x` owns the storage, and this
+    /// block's end is when `x` dies, so the literal's deferrals are *adopted* — appended
+    /// here instead of run at the literal's end. Each keeps the scope it was written in,
+    /// which is why an entry carries one. The checker allows this only in a scope.
+    const Pending = struct { node: *const Node, scope: *Scope };
+
+    fn isStorageDefer(e: *const Node) bool {
+        if (!e.isForm(.decl)) return false;
+        const v = &e.data.form.operands[1];
+        if (!v.isForm(.new)) return false;
+        const b = &v.data.form.operands[0];
+        if (b.data != .block) return false;
+        for (b.data.block) |*i| if (i.isForm(.@"defer")) return true;
+        return false;
+    }
+
+    fn runDeferring(self: *Interp, exprs: []const Node, scope: *Scope) Error!void {
+        var pending: std.ArrayListUnmanaged(Pending) = .empty;
+        // A storage literal's block hands its deferrals to the block declaring it.
+        const adopter = self.adopt;
+        self.adopt = null;
         for (exprs) |*e| {
             if (e.isForm(.@"defer")) {
-                pending[k] = &e.data.form.operands[0];
-                k += 1;
+                try pending.append(self.arena, .{ .node = &e.data.form.operands[0], .scope = scope });
                 continue;
             }
+            if (isStorageDefer(e)) self.adopt = &pending;
             self.evalBlockItem(e, scope) catch |err| {
+                self.adopt = null;
                 if (err == error.TryReturn) {
                     const carried = self.try_payload;
-                    try self.runPending(pending[0..k], scope);
+                    try self.runPending(pending.items);
                     self.try_payload = carried;
                 }
                 return err;
             };
+            self.adopt = null;
         }
-        try self.runPending(pending[0..k], scope);
+        if (adopter) |list| {
+            try list.appendSlice(self.arena, pending.items);
+        } else try self.runPending(pending.items);
     }
 
-    fn runPending(self: *Interp, pending: []const *const Node, scope: *Scope) Error!void {
+    fn runPending(self: *Interp, pending: []const Pending) Error!void {
         var i = pending.len;
         while (i > 0) {
             i -= 1;
-            _ = try self.eval(pending[i], scope);
+            _ = try self.eval(pending[i].node, pending[i].scope);
         }
     }
 
@@ -1162,8 +1190,8 @@ pub const Interp = struct {
                 // DEFER.md: a block evaluated *into* storage runs its deferrals when the
                 // storage's owner dies or it is `$free`d — steps 3 and 4. Until then it is
                 // refused, rather than given the plain value's meaning it will lose.
-                if (ops[0].data == .block) for (ops[0].data.block) |*e| if (e.isForm(.@"defer")) {
-                    break :blk self.rt.fail(e.span, "$defer in a block that is $new or $alloc storage is not implemented yet (DEFER.md)", .{});
+                if (self.adopt == null and ops[0].data == .block) for (ops[0].data.block) |*e| if (e.isForm(.@"defer")) {
+                    break :blk self.rt.fail(e.span, "$defer in a block that is $new or $alloc storage is implemented only as the whole initializer of a $decl (DEFER.md)", .{});
                 };
                 const v = (try self.eval(&ops[0], scope)).derefRefs();
                 if (self.stats) |st| {

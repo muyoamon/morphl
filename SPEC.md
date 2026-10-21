@@ -375,9 +375,12 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   on what the block became. For a scope — a statement, a `.r` projection, a function body —
   and for a plain value, it is the end of the block's own evaluation: the record outlives the
   block, and **a copy of a record carries no deferral**. A block that is directly the operand
-  of `$new` or `$alloc` runs its deferrals when that storage's owner is destroyed or the
-  storage is freed; that half, and owners, are designed (DEFER.md) and not yet part of this
-  specification, so such a block is a compile error for now.
+  of `$new` runs its deferrals when the storage's **owner** dies (§5.3a): for
+  `$decl x $new { … }` in a block that is a scope, at that block's end, in reverse order
+  among its own deferrals and by a `$try` leaving through it. Every other such block —
+  ephemeral, owned through a call or an `$if` arm, a field of a record kept as a value, and
+  any `$alloc` block, which runs its deferrals when freed — is designed (DEFER.md) and is a
+  compile error for now.
 - **Exits.** `$try` leaving a block is a return (§4.15), so it runs the deferrals registered
   before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none.
 - **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), so
@@ -459,7 +462,7 @@ closure's captures.
 
 A place this activation made is **own**. One that came in — through a parameter, a
 capture, or a name in an enclosing frame, the file's top level included — is
-**borrowed**: the activation it belongs to outlives this one. Three rules follow, and
+**borrowed**: the activation it belongs to outlives this one. Four rules follow, and
 together they are the whole of it:
 
 > **Storage never holds a place.** `$new`, `$alloc` and `$set` refuse a value that
@@ -473,6 +476,12 @@ together they are the whole of it:
 > **A tail call may not pass an own place.** A tail call ends the activation (§7.7), so
 > its own storage ends with it. Every tail call counts, whatever the backend makes of it:
 > validity may not depend on whether some other function closes a cycle.
+>
+> **An alias may not outlive its owner.** Within an activation, a place's **owner** is the
+> first `$decl` that binds it, and every other binding of it is an alias; a block's record
+> owns its fields' places. So a value projected out of a block that is discarded there —
+> `{ $decl x $new 5  $decl r x }.r` — may not hold a place one of that block's fields
+> owns. (A function's own body is the second rule's case, and is reported as that.)
 
 Which places are own is a question about the source, answered by following each place to
 the `$new` that made it, so nothing is annotated and nothing is solved. Because storage

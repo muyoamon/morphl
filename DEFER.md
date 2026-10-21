@@ -1,8 +1,10 @@
 # `$defer`, owners and `$free`: design note
 
-Status: **steps 1 and 2 done** — the owner rule measured (it breaks nothing), and `$defer` for
-scopes and plain values in both stages (SPEC §4.15a). Storage, owners and `$free` are not. Decided in discussion; the open points are at the
-end. SPEC is unchanged until the plan's first step.
+Status: **steps 1 and 2 done, step 3 half done** — the owner rule measured and now enforced,
+`$defer` for scopes and plain values (SPEC §4.15a), and `$decl x $new { … $defer … }` in a
+scope, in both stages. Flow through calls, ephemeral storage, arms, records and `$free` are not.
+Decided in discussion; the open points are at the end. SPEC has what is implemented (§4.15a,
+§5.3a).
 
 `$defer e` runs `e` when what its block became is destroyed. Because a block is scope,
 record and storage at once (§4.5), "what it became" has to be defined for each, and doing so
@@ -206,11 +208,10 @@ $decl main $func () {
 // 10. A `$new` that never ran has no deferrals: one of A or B at p's scope end.
 $decl p $if c ($new { $defer $call print ("A ") }) ($new { $defer $call print ("B ") })
 
-// 11. ★ Nested storage: the outer block's deferrals, then its fields'.  "outer inner"
-$decl o $new {
-  $decl a   $new { $defer $call print ("inner ") }
-  $defer    $call print ("outer ")
-}
+// 11. Nested *frame* storage cannot happen: storage never holds a place (A0), so
+//     `$new { $decl a $new { … } }` is refused before deferrals arise. (This example used
+//     to promise "outer inner"; step 3's implementation is what found it was illegal.)
+//     Nesting is `$alloc` inside `$new` or `$alloc`, which is step 4's.
 
 // 12. Top level: the owner's scope is the program.                   prints "hi bye"
 $decl log  $new { $defer $call print ("bye\n") }
@@ -356,7 +357,32 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
    result, which `-Werror` refuses. Lowering now interns the member and a miss is an emit
    error. `stage1/fixtures/try_member.mpl` (3); the committed compiler fails it.
 3. **Owners**, in the checker, with the measured migration, and **`$new` blocks'
-   deferrals**.
+   deferrals** — **the first half done**:
+   - **The owner rule, for every place.** A value projected out of a discarded block (`{ …
+     }.r`) may not hold a place one of that block's fields owns (`owner_check` in
+     inference, the step-1 probe made a rule). A function's own body is left to R2, which
+     reports it in its terms, so nothing is reported twice — `places.mpl` keeps its 9.
+   - **`$decl x $new { … $defer … }` in a scope.** `x` owns the storage and dies at its
+     block's end, so the storage's deferrals are that block's: run at its end, in
+     reverse order among its own, and by a `$try` leaving through it. The literal's
+     fields never change after initialisation (§4.4), so a deferral reads its slots,
+     which live as long as the frame. Stage 0 *adopts* the literal's deferrals into the
+     declaring block's list (`runDeferring`); stage 1's `lower_block` leaves them on the
+     stack (`keepat`). "A scope" is a block projected on the spot, a function body read
+     through `.r`, or a block written as an item (`cx.inscope`).
+     `stage1/fixtures/defer_new.mpl` (2136549), both stages and the differential set.
+   - **Refused until their owners are**: an ephemeral `$new` block with a deferral, one
+     whose ownership passes through a call (that needs the parameter-to-result summary),
+     `$if`/`$match` arms (example 10's per-site flag), a field of a record kept as a value
+     (example 9), and `$alloc` (step 4). `stage1/fixtures/owner_bad.mpl` in `test-reject`,
+     beside the owner rule.
+
+   **What is left of step 3**: ownership through a call, so example 7's
+   `$decl a $call id ($new { … })` owns through `id` — most of the summary it needs already
+   exists, since §5.3a records which parameters a function **borrows** (`brw(…)`), i.e.
+   which arguments' places its result may carry; ephemeral places
+   dying where their flow ends (example 5); the arms' flag (example 10); and records
+   owning their fields' places (example 9).
 4. **The allocator members and `$free`**, with routing and parameter summaries; `std/mem`
    updated; the root's `defer_at` if decided.
 5. **`std/allocator`**: the capability traits, and whatever allocator-generic code D5's

@@ -252,6 +252,9 @@ pub fn build(b: *std.Build) void {
         // A `$try` returning a member nothing else interns: emit missed it and injected
         // type 0, returning an uninitialised result. 3.
         .{ .src = "stage1/fixtures/try_member.mpl", .want = "3\n" },
+        // DEFER.md step 3: `$decl x $new { … $defer … }` in a scope runs the storage's
+        // deferrals at its owner's block's end, in order, and on a `$try`. 2136549.
+        .{ .src = "stage1/fixtures/defer_new.mpl", .want = "2136549\n" },
         // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
         // argument, from a function argument's parameter and result, from a module's
         // template, and a template applying itself in tail position. Stage 0 refuses
@@ -491,12 +494,23 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/defer_bad.mpl",
             .stage1 = &.{
-                "defer_bad.mpl:8:1: $defer at a file's top level is not defined yet (DEFER.md)",
-                "defer_bad.mpl:3:31: $defer is a block item: it belongs directly in a block's items",
-                "defer_bad.mpl:5:31: $defer in a block that is $new storage is not implemented yet",
+                "defer_bad.mpl:10:1: $defer at a file's top level is not defined yet (DEFER.md)",
+                "defer_bad.mpl:4:31: $defer is a block item: it belongs directly in a block's items",
+                "defer_bad.mpl:7:42: $defer in a block that is $new storage is implemented only as the whole initializer of a $decl in a scope",
             },
             .count = "errors: 3\n",
             .stage0 = "$defer at a file's top level is not defined yet",
+        },
+        .{
+            .src = "stage1/fixtures/owner_bad.mpl",
+            .stage1 = &.{
+                "owner_bad.mpl:6:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
+                "owner_bad.mpl:11:41: $defer in a block that is $new storage is implemented only as the whole initializer of a $decl in a scope",
+                "owner_bad.mpl:16:42: $defer in a block that is $new storage is implemented only as the whole initializer of a $decl in a scope",
+                "owner_bad.mpl:20:33: $defer in a block that is $alloc storage is not implemented yet",
+            },
+            .count = "errors: 4\n",
+            .stage0 = null,
         },
     }) |bad| {
         const s1 = b.addRunArtifact(exe);
@@ -754,6 +768,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/recv_param.mpl",
         "stage1/fixtures/wrap_self.mpl",
         "stage1/fixtures/defer.mpl",
+        "stage1/fixtures/defer_new.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
         // §6a's general case, where the two implementations have the most room
