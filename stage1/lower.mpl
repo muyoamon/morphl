@@ -647,6 +647,9 @@ $decl lstate $func () {
   // How many `$if`/`$match` arms of the current function enclose what is being lowered: a
   // `$new` literal kept with deferrals there takes a flag (`dfr_ent`, example 10).
   $decl armdepth $mut $alloc 0
+  // DEFER.md example 7: where each `$new` literal kept with deferrals saved its address,
+  // "key|slot|type": a call may hand that place back, and the item decides at run time.
+  $decl newptrs $mut $alloc strs.node
   // DEFER.md step 4's routing: for each slot of this function bound from an `$alloc`, the
   // `allocator` binding it was drawn from, as "slot|identity". `$free` checks it.
   $decl aprov  $mut $alloc strs.node
@@ -3778,10 +3781,24 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
   $decl ret
     // §4.2: the only way storage exists. The operand is a value (§5.4).
     $if ($call eq_str (k, "new")) {
-      $decl kp   $set st.keepat ($call newlit_key ($call op (n, 0)))
+      $decl nk   $call newlit_key ($call op (n, 0))
+      $decl kp   $set st.keepat nk
       $decl v    $call as_value (st, $call lower (st, e, $call op (n, 0), false))
       $decl rt   $call T.t_ref ("", v.ty)
-      $decl ret2 $call lres ($call IR.e_new ($call intern (st, rt), v.ir), rt)
+      $decl nw   $call IR.e_new ($call intern (st, rt), v.ir)
+      // Its address, for the item to compare what it binds against (`own_inits`).
+      $decl ret2 $if ($call eq_str (nk, "")) ($call lres (nw, rt)) {
+        $decl rid  $call intern (st, rt)
+        $decl pp   $call fresh_slot (st, rid)
+        $decl np   $set st.newptrs ($call strs.cons ($call concat (nk, $call concat ("|",
+                       $call concat ($call int_to_str (pp), $call concat ("|",
+                       $call int_to_str (rid))))), $call strs.val (st.newptrs)))
+        $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("p", rt), T.fields.nil),
+                       T.props.nil)
+        $decl ob   $call IR.e_block ($call intern (st, oty),
+                       $call IR.bslots.cons ($call IR.bslot (pp, nw), IR.bslots.nil))
+        $decl ret3 $call lres ($call IR.e_field (rid, ob, 0), rt)
+      }.ret3
     }.ret2
     // §4.2a. The same node as `$new`: the storage *kind* (§3.5) is already on
     // the node's type, so the tree needs no second field to carry it, and
@@ -5269,66 +5286,310 @@ $decl alloc_fin $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_n
 //
 // Flowing is a question about the source: through parentheses, `$if`/`$match` arms (a site
 // in one has a flag, so an arm not taken runs nothing of it), `$do`'s second operand,
-// `$mut`/`$const`/`$traitsof`, and a record's field initializers. Never through a call:
-// one whose result can hold a place is refused a storage argument (`call_storage` in
-// inference), so a call that gets one cannot hand it back.
+// `$mut`/`$const`/`$traitsof`, and a record's field initializers. Through a call it only
+// *may*: the callee chooses what it hands back, so the item decides at run time, as stage 0
+// does (`own_inits`, DEFER.md example 7).
 $fwd flows_to
 
-$decl flows_any $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl key "") $match xs (
-  $case {$prop tag "cons"}
-    $if ($call flows_to (st, xs.head, key)) true
-        ($call flows_any (st, $call Pa.nodes.val (xs.tail), key)),
-  $case xs false
-)
+// 0, 1 or 2: does not flow, may (through a call), does.
+$decl fmax $func ($decl a 0, $decl b 0) $if ($call lt (a, b)) b a
 
-$decl flows_fields $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl key "") $match xs (
-  $case {$prop tag "cons"}
-    $if ($if ($call is_form (xs.head, "decl")) ($call flows_to (st, $call op (xs.head, 1), key)) false)
-        true ($call flows_fields (st, $call Pa.nodes.val (xs.tail), key)),
-  $case xs false
-)
+$decl flows_any $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl key "", $decl acc 0)
+  $match xs (
+    $case {$prop tag "cons"}
+      $call flows_any (st, $call Pa.nodes.val (xs.tail), key,
+          $call fmax (acc, $call flows_to (st, xs.head, key))),
+    $case xs acc
+  )
 
-$decl flows_arms $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl key "") $match xs (
-  $case {$prop tag "cons"}
-    $if ($call flows_to (st, $call op (xs.head, 1), key)) true
-        ($call flows_arms (st, $call Pa.nodes.val (xs.tail), key)),
-  $case xs false
-)
+$decl flows_fields $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl key "", $decl acc 0)
+  $match xs (
+    $case {$prop tag "cons"}
+      $call flows_fields (st, $call Pa.nodes.val (xs.tail), key,
+          $if ($call is_form (xs.head, "decl"))
+              ($call fmax (acc, $call flows_to (st, $call op (xs.head, 1), key))) acc),
+    $case xs acc
+  )
 
+$decl flows_arms $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl key "", $decl acc 0)
+  $match xs (
+    $case {$prop tag "cons"}
+      $call flows_arms (st, $call Pa.nodes.val (xs.tail), key,
+          $call fmax (acc, $call flows_to (st, $call op (xs.head, 1), key))),
+    $case xs acc
+  )
+
+// A call may hand back what an argument carries, and which it does is the callee's choice:
+// "may", decided at run time (`own_inits`, example 7).
 $decl flows_form $func ($decl st proto_lst, $decl n Pa.proto_node, $decl k "", $decl key "")
-  $if ($call eq_str (k, "new")) ($call eq_str ($call newlit_key ($call op (n, 0)), key))
+  $if ($call eq_str (k, "new")) ($if ($call eq_str ($call newlit_key ($call op (n, 0)), key)) 2 0)
   ($if ($call eq_str (k, "if"))
-       ($if ($call flows_to (st, $call op (n, 1), key)) true
-            ($call flows_to (st, $call op (n, 2), key)))
-  ($if ($call eq_str (k, "match")) ($call flows_arms (st, $call group_items ($call op (n, 1)), key))
+       ($call fmax ($call flows_to (st, $call op (n, 1), key),
+           $call flows_to (st, $call op (n, 2), key)))
+  ($if ($call eq_str (k, "match"))
+       ($call flows_arms (st, $call group_items ($call op (n, 1)), key, 0))
   ($if ($call eq_str (k, "do")) ($call flows_to (st, $call op (n, 1), key))
+  ($if ($call eq_str (k, "call"))
+       ($if ($call lt (0, $call flows_any (st, $call group_items ($call op (n, 1)), key, 0))) 1 0)
   ($if ($call P.or ($call eq_str (k, "mut"), $call P.or ($call eq_str (k, "const"),
                   $call eq_str (k, "traitsof"))))
        ($call flows_to (st, $call op (n, 0), key))
-       false))))
+       0)))))
 
 $decl flows_to $func ($decl st proto_lst, $decl n Pa.proto_node, $decl key "") $match n (
-  $case {$prop tag "block"} ($call flows_fields (st, $call Pa.nodes.val (n.items), key)),
-  $case {$prop tag "group"} ($call flows_any (st, $call Pa.nodes.val (n.items), key)),
+  $case {$prop tag "block"} ($call flows_fields (st, $call Pa.nodes.val (n.items), key, 0)),
+  $case {$prop tag "group"} ($call flows_any (st, $call Pa.nodes.val (n.items), key, 0)),
   $case {$prop tag "form"}  ($call flows_form (st, n, n.keyword, key)),
-  $case n false
+  $case n 0
+)
+
+// DEFER.md example 7: storage that may have come back from a call is owned by the item's
+// `$decl` only if what it binds reaches it, which is a run-time fact — and stage 0's rule
+// (`reaches`). So the item computes it, as stage 0 does: every reference the bound value
+// holds by value — itself, a field, a group's item, a union's member — is compared with
+// the address the `$new` saved (`newptrs`). Storage holds no place (A0), so the walk
+// stops at every reference.
+$decl ir_or $func ($decl st proto_lst, $decl a IR.proto_expr, $decl b IR.proto_expr) {
+  $decl bid $call intern (st, T.t_bool)
+  $decl ret $call IR.e_if (bid, a, $call IR.e_bool (bid, true), b)
+}.ret
+
+$decl addr_of $func ($decl st proto_lst, $decl sl 0, $decl t T.proto_ty)
+  $call IR.e_call ($call intern (st, T.t_int),
+      $call IR.e_prim ($call intern (st, $call T.t_func ($call T.tys.cons (t, T.tys.nil), T.t_int)),
+          "box_ptr"),
+      $call IR.exprs.cons ($call IR.e_local ($call intern (st, t), sl), IR.exprs.nil), false)
+
+// The walk is a list of paths, one per reference the value can hold — a path is a `Str`
+// of steps, `f<i>,` for a field or group index and `m<i>,` for a union's member — and a
+// test built per path. Every function here recurses only on itself and uses list types
+// lowering already has: a mutually recursive group, and then a new `$specialize P.list`
+// first used from inside `finish_item`'s group, each made lowering the whole compiler run
+// out of memory (§5.5's retries; CLAUDE.md).
+$decl fld_tys $func ($decl xs T.fields.node, $decl acc T.tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call fld_tys ($call T.fields.val (xs.tail), $call T.tys.cons ($call T.tval (xs.head.ty), acc)),
+  $case xs ($call T.tys.reverse (acc, T.tys.nil))
+)
+$decl push_tys $func ($decl ts T.tys.node, $decl acc T.tys.node) $match ts (
+  $case {$prop tag "cons"} $call push_tys ($call T.tys.val (ts.tail), $call T.tys.cons (ts.head, acc)),
+  $case ts acc
+)
+$decl push_paths $func ($decl ts T.tys.node, $decl i 0, $decl kind "", $decl p "",
+                        $decl acc strs.node) $match ts (
+  $case {$prop tag "cons"}
+    $call push_paths ($call T.tys.val (ts.tail), $call add (i, 1), kind, p,
+        $call strs.cons ($call concat (p, $call concat (kind, $call concat ($call int_to_str (i),
+            ","))), acc)),
+  $case ts acc
+)
+
+// Worklists `ts` and `ps` run in step: a type and the path that reached it.
+$decl ref_paths $func ($decl st proto_lst, $decl ts T.tys.node, $decl ps strs.node,
+                       $decl acc strs.node) $match ts (
+  $case {$prop tag "cons"} $match ps (
+    $case {$prop tag "cons"} {
+      $decl t    $call T.unroll (ts.head)
+      $decl p    ps.head
+      $decl rt   $call T.tys.val (ts.tail)
+      $decl rp   $call strs.val (ps.tail)
+      $decl kids $if ($call lt (40, $call len (p))) T.tys.nil ($match t (
+          $case {$prop tag "block"} ($call fld_tys ($call T.fields.val (t.fields), T.tys.nil)),
+          $case {$prop tag "group"} ($call T.tys.val (t.items)),
+          $case {$prop tag "union"} ($call members_of ($call canon_ty (st, ts.head))),
+          $case t T.tys.nil
+        ))
+      $decl kind $match t ($case {$prop tag "union"} "m", $case t "f")
+      $decl isr  $match t ($case {$prop tag "ref"} true, $case t false)
+      $decl ret  $call ref_paths (st, $call push_tys (kids, rt),
+                     $call push_paths (kids, 0, kind, p, rp),
+                     $if isr ($call strs.cons (p, acc)) acc)
+    }.ret,
+    $case ps acc),
+  $case ts acc
+)
+
+// The number a step starts with at `i`, and where the next step starts.
+$decl step_num $func ($decl s "", $decl i 0, $decl acc 0)
+  $if ($if ($call lt (i, $call len (s))) ($call not ($call eq_int ($call byte (s, i), 44))) false)
+      ($call step_num (s, $call add (i, 1), $call add ($call mul (acc, 10),
+          $call sub ($call byte (s, i), 48))))
+      acc
+$decl step_end $func ($decl s "", $decl i 0)
+  $if ($if ($call lt (i, $call len (s))) ($call not ($call eq_int ($call byte (s, i), 44))) false)
+      ($call step_end (s, $call add (i, 1))) ($call add (i, 1))
+
+// A union's arms for one path through member `m`: `inner` there, false elsewhere.
+$decl path_arms $func ($decl st proto_lst, $decl ms T.tys.node, $decl j 0, $decl m 0,
+                       $decl sl 0, $decl inner IR.proto_expr, $decl acc IR.arms.node) $match ms (
+  $case {$prop tag "cons"} {
+    $decl bid  $call intern (st, T.t_bool)
+    $decl hit  $call eq_int (j, m)
+    $decl arm  $call IR.arm ($call IR.ints.cons (j, IR.ints.nil), $if hit sl -1,
+                   $if hit inner ($call IR.e_bool (bid, false)))
+    $decl ret  $call path_arms (st, $call T.tys.val (ms.tail), $call add (j, 1), m, sl, inner,
+                   $call IR.arms.cons (arm, acc))
+  }.ret,
+  $case ms ($call IR.arms.reverse (acc, IR.arms.nil))
+)
+
+// The type one step reaches: member `n` of a union (`um`), or part `n` of a block or group.
+$decl step_ty $func ($decl st proto_lst, $decl t0 T.proto_ty, $decl um P.boolean, $decl n 0) {
+  $decl t   $call T.unroll (t0)
+  $decl pts $if um ($call members_of ($call canon_ty (st, t0))) ($match t (
+      $case {$prop tag "block"} ($call fld_tys ($call T.fields.val (t.fields), T.tys.nil)),
+      $case {$prop tag "group"} ($call T.tys.val (t.items)),
+      $case t T.tys.nil
+    ))
+  $decl ret $call T.tys.nth (pts, n)
+}.ret
+
+// One step's test around the next one's, `inner`, which reads slot `s2`: a switch binding
+// member `n`, or a block reading part `n` into `s2` and then testing.
+$decl step_wrap $func ($decl st proto_lst, $decl sl 0, $decl t0 T.proto_ty, $decl um P.boolean,
+                       $decl n 0, $decl ct T.proto_ty, $decl s2 0, $decl inner IR.proto_expr) {
+  $decl bid $call intern (st, T.t_bool)
+  $decl src $call IR.e_local ($call intern (st, t0), sl)
+  $decl ret $if um
+      ($call IR.e_switch (bid, src,
+          $call path_arms (st, $call members_of ($call canon_ty (st, t0)), 0, n, s2, inner,
+              IR.arms.nil),
+          $call IR.e_unit ($call intern (st, T.t_unit)))) {
+    $decl pid  $call intern (st, ct)
+    $decl s3   $call fresh_slot (st, bid)
+    $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("v", ct),
+                   $call T.fields.cons ($call T.field ("r", T.t_bool), T.fields.nil)), T.props.nil)
+    $decl ob   $call IR.e_block ($call intern (st, oty),
+                   $call IR.bslots.cons ($call IR.bslot (s2, $call IR.e_field (pid, src, n)),
+                   $call IR.bslots.cons ($call IR.bslot (s3, inner), IR.bslots.nil)))
+    $decl ret2 $call IR.e_field (bid, ob, 1)
+  }.ret2
+}.ret
+
+$decl ref_eq $func ($decl st proto_lst, $decl sl 0, $decl t0 T.proto_ty, $decl pp 0,
+                    $decl prt T.proto_ty)
+  $call IR.e_call ($call intern (st, T.t_bool), $call IR.e_prim ($call intern (st, $call T.t_func (
+      $call T.tys.cons (T.t_int, $call T.tys.cons (T.t_int, T.tys.nil)), T.t_bool)), "eq_int"),
+      $call IR.exprs.cons ($call addr_of (st, sl, t0),
+          $call IR.exprs.cons ($call addr_of (st, pp, prt), IR.exprs.nil)), false)
+
+// Whether the value in slot `sl` (type `t0`), followed down path `p` from byte `i`, is the
+// reference in slot `pp`: an `Int` compare of addresses (§8's `box_ptr`). One self-call,
+// in straight-line code: two of them in two arms ran lowering out of memory as well.
+$decl path_ir $func ($decl st proto_lst, $decl sl 0, $decl t0 T.proto_ty, $decl p "", $decl i 0,
+                     $decl pp 0, $decl prt T.proto_ty)
+  $if ($call lt (i, $call len (p))) {
+    $decl um   $call eq_int ($call byte (p, i), 109)
+    $decl n    $call step_num (p, $call add (i, 1), 0)
+    $decl ct   $call step_ty (st, t0, um, n)
+    $decl s2   $call fresh_slot (st, $call intern (st, ct))
+    $decl in   $call path_ir (st, s2, ct, p, $call step_end (p, i), pp, prt)
+    $decl ret  $call step_wrap (st, sl, t0, um, n, ct, s2, in)
+  }.ret ($call ref_eq (st, sl, t0, pp, prt))
+
+$decl paths_ir $func ($decl st proto_lst, $decl ps strs.node, $decl sl 0, $decl t T.proto_ty,
+                      $decl pp 0, $decl prt T.proto_ty, $decl acc IR.proto_expr) $match ps (
+  $case {$prop tag "cons"}
+    $call paths_ir (st, $call strs.val (ps.tail), sl, t, pp, prt,
+        $call ir_or (st, acc, $call path_ir (st, sl, t, ps.head, 0, pp, prt))),
+  $case ps acc
+)
+
+// A maybe-owned site: its key, the flags the item sets, and the guard its entries had.
+$decl mown $func ($decl k "", $decl o 0, $decl p 0, $decl g -1)
+  { $decl key k  $decl ow o  $decl ep p  $decl guard g }
+$decl mowns $specialize P.list ($call mown ("", 0, 0, -1))
+
+$decl find_mown $func ($decl xs mowns.node, $decl k "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head.key, k)) xs
+      ($call find_mown ($call mowns.val (xs.tail), k)),
+  $case xs xs
+)
+
+// The maybe-owned sites among the top `k` entries, each with two fresh flags.
+$decl mown_sites $func ($decl st proto_lst, $decl xs dfr_list.node, $decl k 0,
+                        $decl init Pa.proto_node, $decl acc mowns.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (0, k)) {
+      $decl maybe $if ($call eq_str (xs.head.key, "")) false
+                      ($call eq_int ($call flows_to (st, init, xs.head.key), 1))
+      $decl fm    $call find_mown (acc, xs.head.key)
+      $decl seen  $match fm ($case {$prop tag "cons"} true, $case fm false)
+      $decl acc2  $if ($if maybe ($call not (seen)) false) {
+        $decl bid  $call intern (st, T.t_bool)
+        $decl ret3 $call mowns.cons ($call mown (xs.head.key, $call fresh_slot (st, bid),
+                       $call fresh_slot (st, bid), xs.head.flag), acc)
+      }.ret3 acc
+      $decl ret2 $call mown_sites (st, $call dfr_list.val (xs.tail), $call sub (k, 1), init, acc2)
+    }.ret2 acc,
+  $case xs acc
+)
+
+$decl bar_at $func ($decl s "", $decl i 0)
+  $if ($call lt (i, $call len (s)))
+      ($if ($call eq_int ($call byte (s, i), 124)) i ($call bar_at (s, $call add (i, 1)))) i
+
+// The flags' assignments: `ow` — the site ran (its guard) and the bound value in slot `bsl`
+// reaches its storage — and `ep`, the site ran and it does not.
+$decl own_inits $func ($decl st proto_lst, $decl ms mowns.node, $decl bsl 0, $decl bty T.proto_ty,
+                       $decl acc IR.exprs.node) $match ms (
+  $case {$prop tag "cons"} {
+    $decl bid  $call intern (st, T.t_bool)
+    $decl pv   $call prov_find ($call strs.val (st.newptrs), $call concat (ms.head.key, "|"))
+    $decl bar  $call bar_at (pv, 0)
+    $decl ps   $call ref_paths (st, $call T.tys.cons (bty, T.tys.nil),
+                   $call strs.cons ("", strs.nil), strs.nil)
+    $decl r    $if ($call lt (0, $call len (pv)))
+                   ($call paths_ir (st, ps, bsl, bty,
+                       $call digits_int ($call slice (pv, 0, bar), 0, 0),
+                       $call ty_at (st, $call digits_int ($call slice (pv, $call add (bar, 1),
+                           $call len (pv)), 0, 0)), $call IR.e_bool (bid, false)))
+                   ($call IR.e_bool (bid, false))
+    $decl g    ms.head.guard
+    $decl owv  $if ($call lt (g, 0)) r
+                   ($call IR.e_if (bid, $call IR.e_local (bid, g), r, $call IR.e_bool (bid, false)))
+    $decl epv  $call IR.e_if (bid, $call IR.e_local (bid, ms.head.ow), $call IR.e_bool (bid, false),
+                   $if ($call lt (g, 0)) ($call IR.e_bool (bid, true)) ($call IR.e_local (bid, g)))
+    $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("o", T.t_bool),
+                   $call T.fields.cons ($call T.field ("e", T.t_bool), T.fields.nil)), T.props.nil)
+    $decl ob   $call IR.e_block ($call intern (st, oty),
+                   $call IR.bslots.cons ($call IR.bslot (ms.head.ow, owv),
+                   $call IR.bslots.cons ($call IR.bslot (ms.head.ep, epv), IR.bslots.nil)))
+    $decl ret  $call own_inits (st, $call mowns.val (ms.tail), bsl, bty,
+                   $call IR.exprs.cons (ob, acc))
+  }.ret,
+  $case ms acc
 )
 
 // The top `k` entries split into what stays — a block's own, and storage flowing into
-// `init` when the item binds one — and what is ephemeral, each side in order.
+// `init` when the item binds one — and what is ephemeral, each side in order. Storage that
+// may flow (`ms`) goes to both sides, each copy guarded by the flag that says it belongs.
 $decl eph_split $func ($decl st proto_lst, $decl xs dfr_list.node, $decl k 0,
-                       $decl init Pa.proto_node, $decl isd P.boolean) $match xs (
-  $case {$prop tag "cons"}
-    $if ($call lt (0, k)) {
-      $decl r    $call dpair_val ($call eph_split (st, $call dfr_list.val (xs.tail),
-                     $call sub (k, 1), init, isd))
-      $decl stay $if ($call eq_str (xs.head.key, "")) true
-                     ($if isd ($call flows_to (st, init, xs.head.key)) false)
-      $decl ret2 $if stay ($call dfr_pair ($call dfr_list.cons (xs.head, r.sel), r.others))
-                          ($call dfr_pair (r.sel, $call dfr_list.cons (xs.head, r.others)))
-    }.ret2 ($call dfr_pair (dfr_list.nil, dfr_list.nil)),
-  $case xs ($call dfr_pair (dfr_list.nil, dfr_list.nil))
-)
+                       $decl init Pa.proto_node, $decl isd P.boolean, $decl ms mowns.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $if ($call lt (0, k)) {
+        $decl r    $call dpair_val ($call eph_split (st, $call dfr_list.val (xs.tail),
+                       $call sub (k, 1), init, isd, ms))
+        $decl m    $if ($call eq_str (xs.head.key, "")) mowns.nil
+                       ($call find_mown (ms, xs.head.key))
+        $decl stay $if ($call eq_str (xs.head.key, "")) true
+                       ($if isd ($call eq_int ($call flows_to (st, init, xs.head.key), 2)) false)
+        $decl e    $call benv.val (xs.head.env)
+        $decl ret2 $match m (
+            $case {$prop tag "cons"}
+              ($call dfr_pair (
+                  $call dfr_list.cons ($call dfr_ent (xs.head.node, e, xs.head.key, m.head.ow),
+                      r.sel),
+                  $call dfr_list.cons ($call dfr_ent (xs.head.node, e, xs.head.key, m.head.ep),
+                      r.others))),
+            $case m
+              $if stay ($call dfr_pair ($call dfr_list.cons (xs.head, r.sel), r.others))
+                       ($call dfr_pair (r.sel, $call dfr_list.cons (xs.head, r.others)))
+          )
+      }.ret2 ($call dfr_pair (dfr_list.nil, dfr_list.nil)),
+    $case xs ($call dfr_pair (dfr_list.nil, dfr_list.nil))
+  )
 
 // `irs`, in the order they run, folded onto an effect's place in `pend` (newest first).
 $decl push_after $func ($decl pd IR.exprs.node, $decl irs IR.exprs.node) $match irs (
@@ -5340,11 +5601,22 @@ $decl push_after $func ($decl pd IR.exprs.node, $decl irs IR.exprs.node) $match 
 $decl finish_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node,
                          $decl d0 dfr_list.node, $decl k 0) {
   $decl isd $call is_form (it, "decl")
-  $decl sp  $call eph_split (st, $call dfr_list.val (st.defers), k,
-                $if isd ($call op (it, 1)) Pa.proto_node, isd)
+  $decl ini $if isd ($call op (it, 1)) Pa.proto_node
+  $decl ms  $if isd ($call mown_sites (st, $call dfr_list.val (st.defers), k, ini, mowns.nil))
+                mowns.nil
+  $decl sp  $call eph_split (st, $call dfr_list.val (st.defers), k, ini, isd, ms)
   $decl ret $if ($call dfr_list.is_nil (sp.others)) a {
     $decl put  $set st.defers ($call dfr_join (sp.sel, d0))
-    $decl irs  $call lower_dfr_all (st, sp.others, IR.exprs.nil)
+    $decl irs0 $call lower_dfr_all (st, sp.others, IR.exprs.nil)
+    // The ownership flags are set before anything that reads them (`own_inits`), from the
+    // value as it is built — the `$decl`'s own slot is assigned only after this runs, so
+    // the value is saved in one of its own (`bv`) first.
+    $decl f00  $call T.fields.val (a.flds)
+    $decl bty  $match f00 ($case {$prop tag "cons"} ($call T.tval (f00.head.ty)),
+                           $case f00 T.t_unit)
+    $decl bv   $if ($call mowns.is_nil (ms)) -1 ($call fresh_slot (st, $call intern (st, bty)))
+    $decl irs  $if ($call lt (bv, 0)) irs0
+                   ($call IR.exprs.reverse ($call own_inits (st, ms, bv, bty, IR.exprs.nil), irs0))
     $decl ret2 $if isd {
       // The newest slot is this `$decl`'s: its value is built, then its storage's
       // deferrals run (`with_trail` runs its list last first).
@@ -5355,8 +5627,13 @@ $decl finish_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
             $case {$prop tag "cons"} {
               $decl ty   $call T.tval (f0.head.ty)
               $decl id   $call intern (st, ty)
+              $decl i0   $call IR.eval (s0.head.init)
+              $decl bi   $if ($call lt (bv, 0)) i0
+                  ($call IR.e_field (id, $call IR.e_block ($call intern (st, $call T.t_block (
+                      $call T.fields.cons ($call T.field ("v", ty), T.fields.nil), T.props.nil)),
+                      $call IR.bslots.cons ($call IR.bslot (bv, i0), IR.bslots.nil)), 0))
               $decl ir   $call with_trail (st, $call IR.exprs.reverse (irs, IR.exprs.nil),
-                             $call IR.eval (s0.head.init), id, ty)
+                             bi, id, ty)
               $decl ret4 $call blk_acc ($call IR.bslots.cons ($call IR.bslot (s0.head.slot, ir),
                              $call IR.bslots.val (s0.tail)), f0, $call T.props.val (a.prps),
                              $call benv.val (a.env), $call IR.exprs.val (a.pend))

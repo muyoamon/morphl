@@ -262,6 +262,9 @@ pub fn build(b: *std.Build) void {
         // deferrals only if the arm ran — a flag per site, and a `$try` in the other arm
         // runs nothing of it. 9192384875761.
         .{ .src = "stage1/fixtures/defer_arm.mpl", .want = "9192384875761\n" },
+        // DEFER.md example 7: storage passed to a call that may hand it back is owned only
+        // if the result reaches it, decided at run time in both stages. 21345768321945.
+        .{ .src = "stage1/fixtures/defer_call.mpl", .want = "21345768321945\n" },
         // §5.4 through a union of references, and a union of values whose shared prefix is
         // not the C union's: a switch on the discriminator, each member read where it has
         // the field. 134567892312.
@@ -515,11 +518,10 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/defer_bad.mpl",
             .stage1 = &.{
-                "defer_bad.mpl:9:1: $defer at a file's top level is not defined yet (DEFER.md)",
+                "defer_bad.mpl:4:1: $defer at a file's top level is not defined yet (DEFER.md)",
                 "defer_bad.mpl:3:31: $defer is a block item: it belongs directly in a block's items",
-                "defer_bad.mpl:6:42: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
             },
-            .count = "errors: 3\n",
+            .count = "errors: 2\n",
             .stage0 = "$defer at a file's top level is not defined yet",
         },
         .{
@@ -545,11 +547,10 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
-                "owner_bad.mpl:15:29: $defer in a $new block at a file's top level is not defined yet",
+                "owner_bad.mpl:10:29: $defer in a $new block at a file's top level is not defined yet",
                 "owner_bad.mpl:6:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
-                "owner_bad.mpl:12:41: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
             },
-            .count = "errors: 3\n",
+            .count = "errors: 2\n",
             .stage0 = null,
         },
     }) |bad| {
@@ -814,6 +815,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/defer_new.mpl",
         "stage1/fixtures/defer_own.mpl",
         "stage1/fixtures/defer_arm.mpl",
+        "stage1/fixtures/defer_call.mpl",
         "stage1/fixtures/proj_ref.mpl",
         "stage1/fixtures/trail.mpl",
         "stage1/fixtures/list.mpl",

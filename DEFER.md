@@ -394,7 +394,8 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
    - **It found an older ordering bug.** A block's effects after its last `$decl` were
      folded *around* the block and ran before its slots: `{ $decl a (say 1)  (say 2) }` said
      2 first. They now run after (`with_trail`). `trail.mpl` (123).
-   - **Ownership through a call is refused, and the reason is worth keeping.** §5.3a's
+   - **Ownership through a call was refused at first (since done, below), and the reason is
+     worth keeping.** §5.3a's
      `brw` marks only function- and trait-typed parameters; for a place-typed one the
      provenance walk assumes the result may hold *any* argument's place. A per-parameter
      summary would say what may flow, but "may" from the source cannot agree with stage 0's
@@ -410,8 +411,23 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      that ran made a cell. `flows_to` already followed arms, and agrees with stage 0 because
      a site that ran is the arm's value, so it is the `$if`'s. `defer_arm.mpl`
      (9192384875761), both stages and the differential set.
-   - **Still refused**: calls that can hand a place back (example 7), a file's top level
-     (example 12). `owner_bad.mpl`.
+   - **Calls (example 7), done — by a run-time flag in stage 1.** A literal flowing into a
+     call's argument *may* reach what the item binds (`flows_to` answers 0, 1 or 2), and
+     only the value can say: the `$new` saves its address in a slot (`newptrs`), and at the
+     end of the item the bound value — saved first, since the `$decl`'s own slot is
+     assigned after — is compared with it at every reference it holds by value: itself, a
+     field, a group's item, a union's member (`ref_paths`, `path_ir`, an `Int` compare
+     through `box_ptr`). That is stage 0's `reaches`, so the two agree. Two flags come of it:
+     `ow`, owned, guarding a copy of each deferral that stays with the owner, and `ep`,
+     ephemeral, guarding one that runs at the item's end (`own_inits`, `eph_split`); a site
+     in an arm ANDs in its arm flag, and a record passing the storage out does it again one
+     level up. Inference's refusal (`call_storage`) is gone. `defer_call.mpl`
+     (21345768321945): example 7, a call not handing it back, a callee choosing between two,
+     two nested calls, a record, a union and an arm. Both stages and the differential set.
+     **Lowering it ran the closure out of memory under a 4 GB cap**, which bisecting
+     mistook for a lowering blow-up and two rewrites of the walk did not change: the whole
+     compiler already needs about 4–4.5 GB to compile itself, and this tipped it.
+   - **Still refused**: a file's top level (example 12). `owner_bad.mpl`.
 4. **The allocator members and `$free`** — **done.**
    - **`$free r`** (§2.2, §7.6), both parsers; stage 0 refuses to run it, as it refuses the
      FFI, since it has no allocators. Inference types it: allocated storage, not a `$const`

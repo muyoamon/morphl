@@ -379,14 +379,14 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   of `$new` runs its deferrals when the storage's **owner** dies (§5.3a), decided at the end
   of the block item the `$new` is in: if what that item's `$decl` binds reaches the storage —
   directly, through `$mut`/`$const`/`$traitsof`, `$do`'s second operand, an `$if` or
-  `$match` arm, or as a field of a record — that `$decl` owns it, and they run when it does (at its block's end if that block
+  `$match` arm, a call that hands it back, or as a field of a record — that `$decl` owns it, and they run when it does (at its block's end if that block
   is a scope; with the record's owner if it is a value). Otherwise the storage was
   **ephemeral** and they run at the end of that item, as a full expression ends a
   temporary. A block that is directly the operand of `$alloc` hands its deferrals to the
   allocator, which runs them when the storage is freed (§7.6). Storage an arm would have
-  made has no deferrals when that arm did not run. Not yet defined, and so compile
-  errors: a `$new` such block passed to a call whose result can hold a place (whose owner
-  the callee decides), or at a file's top level (DEFER.md).
+  made has no deferrals when that arm did not run, and whether a call handed storage back
+  is a question about the value it answered, so it may be decided as the program runs. Not
+  yet defined, and so a compile error: such a block at a file's top level (DEFER.md).
 - **Exits.** `$try` leaving a block is a return (§4.15), so it runs the deferrals registered
   before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none.
 - **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), so

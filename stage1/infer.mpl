@@ -1897,19 +1897,6 @@ $decl bare_storage $func ($decl n Pa.proto_node) $match n (
   $case n Pa.proto_node
 )
 
-// DEFER.md step 3: a `$new` literal with deferrals passed to a call whose result can hold
-// a place. Which place comes back is decided inside the callee, so "is the result's
-// `$decl` the storage's owner" has no answer the source gives — and stage 0, deciding at
-// run time, would give one the compiler could not match. Refused until a function's type
-// records which parameters' places its result is. A call whose result holds no place
-// cannot hand the storage back, so there it is plainly ephemeral.
-$decl call_storage $func ($decl cx proto_ctx, $decl n proto_form, $decl r T.proto_ty)
-  $if ($call T.frame_bound (r, 0)) {
-    $decl d    $call bare_any ($call group_items ($call op (n, 1)))
-    $decl ret2 $if ($call is_defer (d))
-        ($do ($call err (cx, "$defer in a $new block passed to a call that can hand a place back is not implemented yet: its owner depends on the callee (DEFER.md)", d)) ())
-        ()
-  }.ret2 ()
 
 // A name freed here, for `func_close` to find among this function's parameters.
 $decl note_freed $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl root P.boolean)
@@ -2742,7 +2729,6 @@ $decl infer_call $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl b1  $set cx.bmarks sm
   $decl b2  $set cx.bframe sf
   $decl pl  $call note_placed (cx, n, r)
-  $decl ow  $call call_storage (cx, n, r)
   $decl ret r
 }.ret
 $decl infer_if $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
