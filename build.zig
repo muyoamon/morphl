@@ -511,6 +511,14 @@ pub fn build(b: *std.Build) void {
             .stage0 = "$defer at a file's top level is not defined yet",
         },
         .{
+            .src = "stage1/fixtures/dead_arm.mpl",
+            .stage1 = &.{
+                "dead_arm.mpl:10:3: this arm's pattern, {tag=s\"conz\",}, is no member of the scrutinee's type, so the arm can never run",
+            },
+            .count = "errors: 1\n",
+            .stage0 = null,
+        },
+        .{
             .src = "stage1/fixtures/free_bad.mpl",
             .stage1 = &.{
                 "free_bad.mpl:18:13: $free needs allocated storage it may end, found &Int",

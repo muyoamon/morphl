@@ -2682,7 +2682,9 @@ $decl restrict_at $func ($decl t proto_ty, $decl pat proto_ty) $match t (
   // Unrolling first would rebuild the whole type on every `$match` arm, which
   // is quadratic in a checker that matches on a recursive type constantly.
   $case {$prop tag "rec"} {
-    $decl bd t.body
+    // Read as a value: `t.body` is storage, and a `$decl` keeps a reference (§5.4), so
+    // the catch-all below would test `&T` against `T` and never match.
+    $decl bd $call tval (t.body)
     $decl ret $match bd (
         $case {$prop tag "union"} {
           $decl kept $call keep_covered (bd.members, pat, tys.nil)

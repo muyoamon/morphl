@@ -201,7 +201,7 @@ $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
   $case {$prop tag "true"}  ($call put (st, "T")),
   $case {$prop tag "false"} ($call put (st, "F")),
   $case {$prop tag "unit"}  ($call put (st, "u")),
-  $case {$prop tag "bot"}   ($call put (st, "!")),
+  $case {$prop tag "bottom"} ($call put (st, "!")),
   $case {$prop tag "var"}   ($do ($call put (st, "v")) ($call put_n (st, t.id))),
   $case {$prop tag "bnd"}   ($do ($call put (st, "b")) ($call put_n (st, t.idx))),
   $case {$prop tag "tmpl"}  ($do ($call put (st, "M")) ($call put_n (st, t.id))),

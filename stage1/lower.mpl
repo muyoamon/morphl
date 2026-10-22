@@ -1435,7 +1435,7 @@ $decl kind_of $func ($decl n Pa.proto_node) $match n (
   $case {$prop tag "bool"}       "a boolean literal",
   $case {$prop tag "name"}       "a name",
   $case {$prop tag "unit"}       "()",
-  $case {$prop tag "err"}        "a parse error",
+  $case {$prop tag "error"}      "a parse error",
   $case {$prop tag "group"}      "a group (§2.3)",
   $case {$prop tag "block"}      "a block",
   $case {$prop tag "proj_name"}  "a projection",

@@ -2801,6 +2801,28 @@ $decl narrow $func ($decl e env.node, $decl scrut Pa.proto_node, $decl t T.proto
 // It therefore does not catch a merely duplicated arm (`$case A …, $case A …`).
 // Reporting that needs "what the earlier arms left", which is exactly the test that
 // fires on every catch-all — so it is left out rather than made noisy.
+// An arm whose pattern no member of the scrutinee's union is of can never run (§4.7 picks
+// an arm by the member the discriminator names). It is the other half of the check above,
+// and as surely a mistake: usually a misspelt tag — `{$prop tag "err"}` against AST nodes
+// tagged `"error"` compiled to a C `switch` arm with no `case`, which is how it was found.
+// Only a union asks: a `$match` on anything else has no discriminator, and its first arm
+// always wins. A type still holding §5.5's placeholder is not judged, since subtyping
+// against one is provisional. A pattern naming storage — the `$case x` catch-all with `x`
+// bound to a `$mut` cell — is read through, as the scrutinee is: a `$decl` keeps the
+// reference (§5.4), and it was the reference type that made such an arm look dead.
+$decl none_sub $func ($decl xs T.tys.node, $decl pt T.proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call T.sub ($call T.tval (xs.head), pt)) false
+        ($call none_sub ($call T.tys.val (xs.tail), pt)),
+  $case xs true
+)
+$decl dead_arm $func ($decl st T.proto_ty, $decl pt T.proto_ty) {
+  $decl u   $call T.unroll (st)
+  $decl ret $if ($if ($call has_free_var (st)) true ($call has_free_var (pt))) false
+      ($match u ($case {$prop tag "union"} ($call none_sub ($call T.tys.val (u.members), pt)),
+                 $case u false))
+}.ret
+
 $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.proto_node,
                         $decl st T.proto_ty, $decl arms Pa.nodes.node, $decl acc T.proto_ty)
                             $match arms (
@@ -2818,6 +2840,11 @@ $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.pro
     // decided here: a supertype of the trait always matches and leaves nothing for the arms
     // after it, and anything else never matches. Either way the arm sees the trait object.
     $decl tro $call T.is_trait (st)
+    $decl nom $if tro 0
+        ($if ($call dead_arm (st, $call deref_ty (pt)))
+             ($do ($call err (cx, $call concat ("this arm's pattern, ", $call concat ($call T.show (pt),
+                  ", is no member of the scrutinee's type, so the arm can never run (§4.7) — is a tag misspelt?")), a)) 0)
+             0)
     $decl tok $if tro ($call T.sub (st, pt)) false
     $decl tck $if tro
         ($if tok
