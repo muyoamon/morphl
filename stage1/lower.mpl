@@ -706,6 +706,15 @@ $decl lstate $func () {
   // Counting is what tells a member that needs it from one that does not:
   // naming itself is only the commonest case, not the only one.
   $decl nplace $mut $alloc 0
+  // The `$func` members being lowered right now, innermost first (by global index), and the
+  // shallowest depth among them read unsettled since the innermost began (`lp_find`). A
+  // body that read an *ancestor* still in progress is not lowered again on its own: the
+  // ancestor's retry rolls it back and lowers it afresh, so its own would be wasted — and
+  // with nesting every wasted retry doubles what is under it (PERF.md, "Retries nested").
+  $decl lpstack $mut $alloc strs.node
+  $decl minread $mut $alloc 1000000000
+  // Reads of unsettled members that are not in progress: the reader answers for those.
+  $decl nunk    $mut $alloc 0
   // §3.3's top-level expressions, in the order they were lowered. A file and
   // a module both produce them and both reach this one list, which is why it
   // lives here rather than being threaded through either walk.
@@ -4350,6 +4359,25 @@ $decl bump_place $func ($decl st proto_lst) {
 
 $decl places $func ($decl st proto_lst) $call P.ival (st.nplace)
 
+// The depth of member `k` among those in progress (0 the outermost), or a depth no member
+// has when it is not one — a read the reader must answer for itself.
+$decl lp_find $func ($decl xs strs.node, $decl k "", $decl n 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head, k)) ($call isub ($call strs.length (xs, 0), 1))
+        ($call lp_find ($call strs.val (xs.tail), k, n)),
+  $case xs n
+)
+$decl lp_pop $func ($decl xs strs.node) $match xs (
+  $case {$prop tag "cons"} ($call strs.val (xs.tail)),
+  $case xs xs
+)
+$decl note_read $func ($decl st proto_lst, $decl d proto_mdone) {
+  $decl dp  $call lp_find ($call strs.val (st.lpstack), $call int_to_str (d.idx), 1000000000)
+  $decl unk $if ($call lt (dp, 1000000000)) ()
+                ($do ($set st.nunk ($call add ($call P.ival (st.nunk), 1))) ())
+  $decl ret $if ($call lt (dp, $call P.ival (st.minread))) ($do ($set st.minread dp) 0) 0
+}.ret
+
 // Is this the type a member has before its body has given one up? Both stand
 // for "not known yet": a `$func` member starts at ⊥ and a value member at a
 // §5.5 placeholder.
@@ -4362,7 +4390,8 @@ $decl prop_global $func ($decl st proto_lst, $decl d proto_mdone) {
   // type needs neither walk below, and walking it is `T.has_var` over the whole
   // record at every member access.
   $decl mr $call mod_rec_of (st, d.mod)
-  $decl bp $if mr.has 0 ($if ($call unsettled (t)) ($call bump_place (st)) 0)
+  $decl bp $if mr.has 0 ($if ($call unsettled (t))
+                             ($do ($call note_read (st, d)) ($call bump_place (st))) 0)
   // While the member's own body is being lowered its type is §5.5's
   // placeholder. That is the right *type* — it is what the knot is tied on —
   // but not a layout, so the node's type index is a harmless stand-in.
@@ -4565,9 +4594,21 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   $decl sn    $call take_snap (st)
   $decl q0    $call places (st)
   $decl mf0   $set st.mfree mfr
+  // In progress at depth `dx`; a read of an ancestor (a depth below it) defers the retry.
+  $decl dx    $call strs.length ($call strs.val (st.lpstack), 0)
+  $decl lpu   $set st.lpstack ($call strs.cons ($call int_to_str (idx),
+                  $call strs.val (st.lpstack)))
+  $decl om    $call P.ival (st.minread)
+  $decl mr0   $set st.minread 1000000000
+  $decl u0    $call P.ival (st.nunk)
   $decl lf0   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0), ets,
                   dpe)
-  $decl again $call lt (q0, $call places (st))
+  $decl mr1   $call P.ival (st.minread)
+  // Lowered again when this member itself was read unsettled — a descendant read has been
+  // answered by that descendant's own retry, and an ancestor's will redo this one — or
+  // when something not in progress was.
+  $decl again $if ($call lt (mr1, dx)) false
+                  ($call P.or ($call eq_int (mr1, dx), $call lt (u0, $call P.ival (st.nunk))))
   // Everything the first pass built is discarded, exactly as a self-naming
   // `$prop` discards it: the siblings it lowered were lowered against this
   // member's placeholder, so their lifted bodies are wrong in the same way
@@ -4588,6 +4629,9 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
       ($call lower_prop_body (st, pe, nm, pn, fty, $call prop_rank (m.props, nm, 0), ets, dpe))
       lf0
   $decl mf2 $set st.mfree strs.nil
+  $decl mr2 $call P.ival (st.minread)
+  $decl mrs $set st.minread ($if ($call lt (mr2, om)) mr2 om)
+  $decl lpo $set st.lpstack ($call lp_pop ($call strs.val (st.lpstack)))
   $decl put $call put_lifted (st, idx, lf)
   $decl ret $call lres ($call IR.e_global ($call intern (st, fty), idx), fty)
   // Restored after the result is computed, not before: a nested `$import` inside

@@ -2755,3 +2755,56 @@ Byte-identical output throughout. From the start of this measurement work a self
 gone from **3,421 MB to 1,516 MB (−56%)**. What is left of the environment lists is
 `pt_add`, `ix_segment`, `with_scope` and `bind_params` building environments — growth, not
 repeated work.
+
+### Retries nested: a member re-lowered 2^depth times — −68%
+
+By 1684f97 a self-emit allocated **3,264 MB, against the 1,516 MB above**, and needed more
+than 4 GB of address space, so a 4 GB-capped `mplc stage1/compiler.mpl` died in emit's
+output join. Measured at eleven commits with each commit's own compiler, it was no single
+change: lowering grew with every feature, far faster than the source.
+
+| commit | closure lines | infer | lower | total |
+|---|---|---|---|---|
+| 9541132 (above) | 17,146 | 396 MB | 977 MB | 1,516 MB |
+| 70181aa (places) | 18,102 | 420 | 1,268 | 1,844 |
+| b232b65 (template application) | 18,957 | 468 | 1,465 | 2,098 |
+| 828c804 (std/list) | 19,530 | 489 | 1,761 | 2,419 |
+| 0795113 (defer step 4) | 20,637 | 541 | 2,193 | 2,916 |
+| 1684f97 | 21,251 | 553 | 2,522 | 3,264 |
+
+Source +24%, lowering +158%. Every site in the allocation profile grew about 2.5x, which
+says *more work per line*, not a worse site — and counting calls said what: `lower_prop_func`
+ran **55,562 times for ~2,300 functions**, and per member the counts were powers of two
+(`prop_by_id` 4,096, `unseen_props` 2,048, the leaf `digits_int` 512).
+
+**A member's §5.5 retry rolls back and redoes everything lowered beneath it**, so a member
+first reached under *d* retrying ancestors is lowered 2^d times. And nearly every member of
+lowering's big recursive group retried: a member retried whenever *anything* under it read
+an unsettled member. Logged, 17,007 of 17,335 retries came from a read of the member itself
+or of a *descendant*, and a descendant's read has already been answered by that descendant's
+own retry; a read of an *ancestor* still in progress cannot be answered by a retry at all,
+since that ancestor will roll this one back and redo it once it settles.
+
+So a member now keeps a stack of the `$func` members in progress (`lpstack`) and the
+shallowest depth read unsettled under it (`minread`), and retries only when **it itself**
+was read — or when a read was of something not on the stack (`nunk`), the old rule kept for
+the cases it does not understand. A read of an ancestor defers to the ancestor, and the
+ancestor sees it because the depth is propagated upward.
+
+| self-emit | before | after |
+|---|---|---|
+| `lower_prop_func` calls | 55,562 | **4,411** |
+| lowering allocates | 2,522 MB | **300 MB** (−88%) |
+| total allocated | 3,264 MB | **1,042 MB** (−68%) |
+| time (mean of 3, interleaved) | 21.3 s | **6.5 s** (3.3x) |
+| `mplc stage1/compiler.mpl` | dies under 4 GB | runs under 2 GB |
+
+The output is the same program: the same 2,296 functions, 2,292 of them identical modulo
+counter-numbered names (`next_rank` counted every rolled-back lambda, so the numbers shrink)
+and four that lost an identity union-to-union re-tag their node no longer needed.
+
+Two things on the way are worth keeping. **The first fix was half of it**: skipping the retry
+on an ancestor read alone took lowering only to 1,382 MB, with the counts still powers of two
+(2,052, 1,026, 513), because a read of a *descendant* still triggered one. And **a 4 GB cap
+reads as a lowering blow-up**: an hour went into bisecting what turned out to be HEAD already
+needing 4–4.5 GB — `regen.sh` runs under 8 GB, and the cap, not the change, was the wall.
