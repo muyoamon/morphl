@@ -521,8 +521,10 @@ $decl pend_list  $specialize P.list proto_pend
 //
 // `key` is empty for a block's own `$defer`, and the position of a `$new` literal for one
 // of its storage's (DEFER.md step 3): those belong to the storage's owner, not the block.
-$decl dfr_ent   $func ($decl n Pa.proto_node, $decl e benv.node, $decl k "")
-  { $decl node n  $decl env $alloc e  $decl key k }
+// `flag` is the frame slot saying whether that literal ran, or -1 when it always does: one
+// in an `$if` or `$match` arm may not have (example 10), and its deferrals run only if so.
+$decl dfr_ent   $func ($decl n Pa.proto_node, $decl e benv.node, $decl k "", $decl f -1)
+  { $decl node n  $decl env $alloc e  $decl key k  $decl flag f }
 $decl proto_dfr $call dfr_ent (Pa.proto_node, benv.nil, "")
 $decl dfr_list  $specialize P.list proto_dfr
 
@@ -642,6 +644,9 @@ $decl lstate $func () {
   // DEFER.md step 3: the span of a `$new` literal whose deferrals its declaring block
   // adopts — `lower_block` leaves them on the stack instead of running them.
   $decl keepat $mut $alloc ""
+  // How many `$if`/`$match` arms of the current function enclose what is being lowered: a
+  // `$new` literal kept with deferrals there takes a flag (`dfr_ent`, example 10).
+  $decl armdepth $mut $alloc 0
   // DEFER.md step 4's routing: for each slot of this function bound from an `$alloc`, the
   // `allocator` binding it was drawn from, as "slot|identity". `$free` checks it.
   $decl aprov  $mut $alloc strs.node
@@ -3745,12 +3750,19 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     }.ret2
     ($if ($call eq_str (k, "if")) {
       $decl c    $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+      $decl ad   $set st.armdepth ($call add ($call P.ival (st.armdepth), 1))
       $decl a    $call lval ($call lower (st, e, $call op (n, 1), tail))
       $decl b    $call lval ($call lower (st, e, $call op (n, 2), tail))
+      $decl ad2  $set st.armdepth ($call sub ($call P.ival (st.armdepth), 1))
       $decl ty   $call T.join (a.ty, b.ty)
       $decl ret2 $call lres ($call IR.e_if ($call intern (st, ty), c.ir, a.ir, b.ir), ty)
     }.ret2
-    ($if ($call eq_str (k, "match")) ($call lower_match (st, e, n, tail))
+    ($if ($call eq_str (k, "match")) {
+      $decl ad   $set st.armdepth ($call add ($call P.ival (st.armdepth), 1))
+      $decl r    $call lower_match (st, e, n, tail)
+      $decl ad2  $set st.armdepth ($call sub ($call P.ival (st.armdepth), 1))
+      $decl ret2 r
+    }.ret2
     // §4.8a: the expression *evaluates to its first member* and has the
     // type of all of them joined. The rest are type-only positions (§5.7) —
     // lowered here only to read their types off, and their trees discarded.
@@ -4019,6 +4031,8 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   // not this body's to run.
   $decl odf   $call dfr_list.val (st.defers)
   $decl clr   $set st.defers dfr_list.nil
+  $decl oad   $call P.ival (st.armdepth)
+  $decl cad   $set st.armdepth 0
   $decl oap   $call strs.val (st.aprov)
   // DEFER.md: a parameter the function's type says it frees (`128 + i`) came from the root,
   // which every caller checks — so `$free` of it here routes there.
@@ -4029,6 +4043,7 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   // The body is in tail position: it *is* the function's result (§7.7).
   $decl body  $call lval ($call lower (st, b.env, $call op (n, 1), true))
   $decl rdf   $set st.defers odf
+  $decl rad   $set st.armdepth oad
   $decl rap   $set st.aprov oap
   // §4.15 widens the *inferred* result to include what `$try` can return, so
   // the declared type is the one to believe — not the body's own, which does
@@ -4966,8 +4981,14 @@ $decl lower_dfrs $func ($decl st proto_lst, $decl xs dfr_list.node, $decl n 0,
   $case {$prop tag "cons"}
     $if ($call lt (0, n)) {
       $decl v   $call lval ($call lower (st, $call benv.val (xs.head.env), xs.head.node, false))
+      $decl ir  $if ($call lt (xs.head.flag, 0)) v.ir {
+        $decl bid  $call intern (st, T.t_bool)
+        $decl uid  $call intern (st, T.t_unit)
+        $decl ret2 $call IR.e_if (uid, $call IR.e_local (bid, xs.head.flag),
+                       $call IR.e_do (uid, v.ir, $call IR.e_unit (uid)), $call IR.e_unit (uid))
+      }.ret2
       $decl ret $call lower_dfrs (st, $call dfr_list.val (xs.tail), $call sub (n, 1),
-                    $call IR.exprs.cons (v.ir, acc))
+                    $call IR.exprs.cons (ir, acc))
     }.ret ($call IR.exprs.reverse (acc, IR.exprs.nil)),
   $case xs ($call IR.exprs.reverse (acc, IR.exprs.nil))
 )
@@ -4978,12 +4999,14 @@ $decl lower_dfrs $func ($decl st proto_lst, $decl xs dfr_list.node, $decl n 0,
 // would change its layout, and §3.3's trailing effects are folded *around* the block, so
 // they would run before its slots.
 // The top `k` entries tagged as `key`'s storage, the rest left as they are.
-$decl tag_store $func ($decl xs dfr_list.node, $decl k 0, $decl key "", $decl rest dfr_list.node)
+$decl tag_store $func ($decl xs dfr_list.node, $decl k 0, $decl key "", $decl fl -1,
+                       $decl rest dfr_list.node)
   $match xs (
     $case {$prop tag "cons"}
       $if ($call lt (0, k))
-          ($call dfr_list.cons ($call dfr_ent (xs.head.node, $call benv.val (xs.head.env), key),
-              $call tag_store ($call dfr_list.val (xs.tail), $call sub (k, 1), key, rest)))
+          ($call dfr_list.cons ($call dfr_ent (xs.head.node, $call benv.val (xs.head.env), key,
+               fl),
+              $call tag_store ($call dfr_list.val (xs.tail), $call sub (k, 1), key, fl, rest)))
           rest,
     $case xs rest
   )
@@ -5051,6 +5074,23 @@ $decl with_defers $func ($decl st proto_lst, $decl saved dfr_list.node, $decl ir
     $decl ret2 $call IR.e_field (id, ob, 0)
   }.ret2 ir
 }.ret
+
+// `ir` with flag slot `fl` set to `v` once it is built, or `ir` itself when there is no
+// flag (-1). A `$new` literal in an arm sets its flag true (`lower_block`); the item it is
+// in sets it false first (`flag_inits`), since a frame slot starts as nothing.
+$decl with_flag $func ($decl st proto_lst, $decl fl 0, $decl v P.boolean, $decl ir IR.proto_expr,
+                       $decl id 0, $decl ty T.proto_ty)
+  $if ($call lt (fl, 0)) ir {
+    $decl bid  $call intern (st, T.t_bool)
+    $decl s0   $call fresh_slot (st, id)
+    $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("v", ty),
+                   $call T.fields.cons ($call T.field ("f", T.t_bool), T.fields.nil)), T.props.nil)
+    $decl oid  $call intern (st, oty)
+    $decl ob   $call IR.e_block (oid, $call IR.bslots.cons ($call IR.bslot (s0, ir),
+                   $call IR.bslots.cons ($call IR.bslot (fl, $call IR.e_bool (bid, v)),
+                       IR.bslots.nil)))
+    $decl ret  $call IR.e_field (id, ob, 0)
+  }.ret
 
 // A block's effects after its last `$decl` (§3.3) run after its slots. There is no next
 // slot to fold them into, and folding them *around* the block — which this used to do —
@@ -5135,8 +5175,8 @@ $decl alloc_fin $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_n
 // it was made in, as a full expression ends a C++ temporary. Stage 0 decides the same at
 // run time, by whether the bound value reaches the storage.
 //
-// Flowing is a question about the source: through parentheses, `$if`/`$match` arms (which
-// inference refuses for now — they need a flag per site), `$do`'s second operand,
+// Flowing is a question about the source: through parentheses, `$if`/`$match` arms (a site
+// in one has a flag, so an arm not taken runs nothing of it), `$do`'s second operand,
 // `$mut`/`$const`/`$traitsof`, and a record's field initializers. Never through a call:
 // one whose result can hold a place is refused a storage argument (`call_storage` in
 // inference), so a call that gets one cannot hand it back.
@@ -5239,11 +5279,75 @@ $decl finish_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
   }.ret2
 }.ret
 
+// The flags of the top `k` entries, each once (`dfr_ent`).
+$decl dfr_flags $func ($decl xs dfr_list.node, $decl k 0, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (0, k))
+        ($call dfr_flags ($call dfr_list.val (xs.tail), $call sub (k, 1),
+            $if ($call lt (xs.head.flag, 0)) acc
+                ($if ($call mem_int (acc, xs.head.flag)) acc
+                     ($call IR.ints.cons (xs.head.flag, acc)))))
+        acc,
+  $case xs acc
+)
+
+// `ir` with each flag in `fs` set false before it runs.
+$decl flag_inits $func ($decl st proto_lst, $decl fs IR.ints.node, $decl ir IR.proto_expr,
+                        $decl ty T.proto_ty) $match fs (
+  $case {$prop tag "cons"} {
+    $decl bid  $call intern (st, T.t_bool)
+    $decl id   $call intern (st, ty)
+    $decl s0   $call fresh_slot (st, id)
+    $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("f", T.t_bool),
+                   $call T.fields.cons ($call T.field ("v", ty), T.fields.nil)), T.props.nil)
+    $decl oid  $call intern (st, oty)
+    $decl ob   $call IR.e_block (oid, $call IR.bslots.cons ($call IR.bslot (fs.head,
+                   $call IR.e_bool (bid, false)), $call IR.bslots.cons ($call IR.bslot (s0, ir),
+                       IR.bslots.nil)))
+    $decl ret  $call flag_inits (st, $call IR.ints.val (fs.tail), $call IR.e_field (id, ob, 1),
+                   ty)
+  }.ret,
+  $case fs ir
+)
+
+// DEFER.md example 10: an item whose arms made storage with deferrals sets those sites'
+// flags false first — its `$decl`'s value, or its effect, the newest in `pend`.
+$decl item_flags $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node,
+                        $decl fs IR.ints.node)
+  $if ($call IR.ints.is_nil (fs)) a
+  ($if ($call is_form (it, "decl")) {
+    $decl s0   $call IR.bslots.val (a.slots)
+    $decl f0   $call T.fields.val (a.flds)
+    $decl ret2 $match s0 (
+        $case {$prop tag "cons"} $match f0 (
+          $case {$prop tag "cons"}
+            ($call blk_acc ($call IR.bslots.cons ($call IR.bslot (s0.head.slot,
+                 $call flag_inits (st, fs, $call IR.eval (s0.head.init),
+                     $call T.tval (f0.head.ty))),
+                 $call IR.bslots.val (s0.tail)), f0, $call T.props.val (a.prps),
+                 $call benv.val (a.env), $call IR.exprs.val (a.pend))),
+          $case f0 a),
+        $case s0 a
+      )
+  }.ret2 {
+    $decl pd   $call IR.exprs.val (a.pend)
+    $decl ret2 $match pd (
+        $case {$prop tag "cons"}
+          ($call blk_acc ($call IR.bslots.val (a.slots), $call T.fields.val (a.flds),
+               $call T.props.val (a.prps), $call benv.val (a.env),
+               $call IR.exprs.cons ($call flag_inits (st, fs, pd.head, T.t_unit),
+                   $call IR.exprs.val (pd.tail)))),
+        $case pd a
+      )
+  }.ret2)
+
 $decl lower_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node) {
   $decl d0  $call dfr_list.val (st.defers)
-  $decl a2  $call lower_item0 (st, a, it)
+  $decl a1  $call lower_item0 (st, a, it)
   $decl k   $call sub ($call dfr_list.length ($call dfr_list.val (st.defers), 0),
                        $call dfr_list.length (d0, 0))
+  $decl a2  $call item_flags (st, a1, it,
+                $call dfr_flags ($call dfr_list.val (st.defers), k, IR.ints.nil))
   $decl ret $if ($call lt (0, k)) ($call finish_item (st, a2, it, d0, k)) a2
 }.ret
 
@@ -5313,11 +5417,15 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
   $decl ir0 $call with_trail (st, $call IR.exprs.val (a.pend),
       $call IR.e_block (id, $call IR.bslots.reverse ($call IR.bslots.val (a.slots),
           IR.bslots.nil)), id, ty)
+  // In an arm, the literal may not run: a flag set once it has is what its deferrals ask.
+  $decl fl $if ($if kept ($call lt (0, $call P.ival (st.armdepth))) false)
+               ($call fresh_slot (st, $call intern (st, T.t_bool))) -1
   $decl ir $if kept
       ($do ($set st.defers ($call tag_store ($call dfr_list.val (st.defers),
                 $call sub ($call dfr_list.length ($call dfr_list.val (st.defers), 0),
                            $call dfr_list.length (dfs, 0)),
-                $call keep_key (x.line, x.col), dfs))) ir0)
+                $call keep_key (x.line, x.col), fl, dfs)))
+           ($call with_flag (st, fl, true, ir0, id, ty)))
       ($call with_defers (st, dfs, ir0, id, ty, isc))
   $decl ps $call block_props (xs, mprops.nil)
   $decl md $if ($call mprops.is_nil (ps)) -1

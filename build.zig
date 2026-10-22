@@ -258,6 +258,10 @@ pub fn build(b: *std.Build) void {
         // DEFER.md step 3: ephemeral storage dies with its item, a record owns its fields'
         // storage, a value block passes it out, a `$try` runs what is alive. 345687132456.
         .{ .src = "stage1/fixtures/defer_own.mpl", .want = "345687132456\n" },
+        // DEFER.md example 10: a `$new` block in an `$if` or `$match` arm runs its
+        // deferrals only if the arm ran — a flag per site, and a `$try` in the other arm
+        // runs nothing of it. 9192384875761.
+        .{ .src = "stage1/fixtures/defer_arm.mpl", .want = "9192384875761\n" },
         // §3.3: a block's trailing effects run after its slots. 123.
         .{ .src = "stage1/fixtures/trail.mpl", .want = "123\n" },
         // DEFER.md: a root resource made by `open`, with a deferral the root's `defer_at`
@@ -537,12 +541,11 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
-                "owner_bad.mpl:19:29: $defer in a $new block at a file's top level is not defined yet",
+                "owner_bad.mpl:15:29: $defer in a $new block at a file's top level is not defined yet",
                 "owner_bad.mpl:6:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
-                "owner_bad.mpl:11:38: $defer in a $new block in an $if or $match arm is not implemented yet",
-                "owner_bad.mpl:16:41: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
+                "owner_bad.mpl:12:41: $defer in a $new block passed to a call that can hand a place back is not implemented yet",
             },
-            .count = "errors: 4\n",
+            .count = "errors: 3\n",
             .stage0 = null,
         },
     }) |bad| {
@@ -806,6 +809,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/defer.mpl",
         "stage1/fixtures/defer_new.mpl",
         "stage1/fixtures/defer_own.mpl",
+        "stage1/fixtures/defer_arm.mpl",
         "stage1/fixtures/trail.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",

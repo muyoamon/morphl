@@ -389,7 +389,8 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      storage's out, so they run with the record's owner (example 9, and the question example
      11 was after). Stage 1 decides from the source (`flows_to`, `finish_item`), stage 0 at
      run time from whether the bound value reaches the cell (`settleFresh`); they agree
-     because flowing involves no choice — arms are refused. `defer_own.mpl` (345687132456).
+     because flowing involves no choice — and an arm's only choice is whether it ran, which
+     the flag below answers. `defer_own.mpl` (345687132456).
    - **It found an older ordering bug.** A block's effects after its last `$decl` were
      folded *around* the block and ran before its slots: `{ $decl a (say 1)  (say 2) }` said
      2 first. They now run after (`with_trail`). `trail.mpl` (123).
@@ -401,8 +402,16 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      result can hold a place is refused a storage argument with a deferral, and a call whose
      result cannot is simply ephemeral. Making example 7 work needs both stages to decide
      the same way, which is either the summary in stage 0 too or a run-time flag in stage 1.
-   - **Still refused**: arms (example 10, a flag per site), calls that can hand a place back
-     (example 7), `$alloc` (step 4), a file's top level (example 12). `owner_bad.mpl`.
+   - **Arms (example 10), done.** A `$new` literal with deferrals lowered inside an `$if` or
+     `$match` arm (`st.armdepth`) takes a `Bool` frame slot: the item it is in sets it false
+     first (`item_flags`), the literal sets it true once built (`with_flag`), and each of its
+     deferrals runs only if it is set (`dfr_ent.flag`, `lower_dfrs`) — at the owner's end, at
+     the item's, or at a `$try` in the arm not taken. Stage 0 needed nothing: only a `$new`
+     that ran made a cell. `flows_to` already followed arms, and agrees with stage 0 because
+     a site that ran is the arm's value, so it is the `$if`'s. `defer_arm.mpl`
+     (9192384875761), both stages and the differential set.
+   - **Still refused**: calls that can hand a place back (example 7), a file's top level
+     (example 12). `owner_bad.mpl`.
 4. **The allocator members and `$free`** — **done.**
    - **`$free r`** (§2.2, §7.6), both parsers; stage 0 refuses to run it, as it refuses the
      FFI, since it has no allocators. Inference types it: allocated storage, not a `$const`

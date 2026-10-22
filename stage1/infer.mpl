@@ -1908,25 +1908,6 @@ $decl call_storage $func ($decl cx proto_ctx, $decl n proto_form, $decl r T.prot
         ()
   }.ret2 ()
 
-// An `$if` or `$match` arm runs only when taken, and its storage's deferrals would run
-// regardless — that needs a flag per site (DEFER.md, example 10), so it is refused.
-$decl arm_storage $func ($decl cx proto_ctx, $decl xs Pa.nodes.node) $match xs (
-  $case {$prop tag "cons"} {
-    $decl d   $call bare_storage (xs.head)
-    $decl e   $if ($call is_defer (d))
-        ($do ($call err (cx, "$defer in a $new block in an $if or $match arm is not implemented yet (DEFER.md)", d)) ())
-        ()
-    $decl ret $call arm_storage (cx, $call Pa.nodes.val (xs.tail))
-  }.ret,
-  $case xs ()
-)
-$decl case_bodies $func ($decl xs Pa.nodes.node, $decl acc Pa.nodes.node) $match xs (
-  $case {$prop tag "cons"}
-    $call case_bodies ($call Pa.nodes.val (xs.tail),
-        $call Pa.nodes.cons ($call op (xs.head, 1), acc)),
-  $case xs acc
-)
-
 // A name freed here, for `func_close` to find among this function's parameters.
 $decl note_freed $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl root P.boolean)
   $match x (
@@ -4306,16 +4287,12 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "func"))  ($call infer_func (cx, e, n))
     ($if ($call eq_str (k, "call"))  ($call infer_call (cx, e, n))
     ($if ($call eq_str (k, "if"))
-         ($do ($call arm_storage (cx, $call Pa.nodes.cons ($call op (n, 1),
-                   $call Pa.nodes.cons ($call op (n, 2), Pa.nodes.nil))))
-              ($call infer_if (cx, e, n)))
+         ($call infer_if (cx, e, n))
     ($if ($call eq_str (k, "do"))    ($do ($call infer (cx, e, $call op (n, 0)))
                                           ($call infer (cx, e, $call op (n, 1))))
     ($if ($call eq_str (k, "union")) ($call infer_union (cx, e, n))
     ($if ($call eq_str (k, "match"))
-         ($do ($call arm_storage (cx, $call case_bodies ($call group_items ($call op (n, 1)),
-                   Pa.nodes.nil)))
-              ($call infer_match (cx, e, n)))
+         ($call infer_match (cx, e, n))
     ($if ($call eq_str (k, "try"))   ($call infer_try (cx, e, n))
     ($if ($call eq_str (k, "template"))   ($call infer_template (cx, e, n))
     ($if ($call eq_str (k, "specialize")) ($call infer_specialize (cx, e, n))
