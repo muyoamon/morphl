@@ -2109,6 +2109,104 @@ $decl mod_has $func ($decl st proto_lst, $decl mid 0, $decl nm "") {
 // node. Every member agrees on the name, the position and the type, which is
 // exactly what C guarantees is readable through any member of a union of
 // structs with a common initial sequence.
+$decl ty_at $func ($decl st proto_lst, $decl i 0) $call IR.ix_get ($call IR.tval_trie (st.tyix), i)
+
+$decl canon_ty $func ($decl st proto_lst, $decl t T.proto_ty)
+  $call ty_at (st, $call intern (st, t))
+
+$decl members_of $func ($decl t0 T.proto_ty) {
+  $decl t $call T.unroll (t0)
+  $decl ret $match t (
+      $case {$prop tag "union"} ($call T.tys.val (t.members)),
+      $case t ($call T.tys.cons (t, T.tys.nil))
+    )
+}.ret
+
+// §5.4 reads a reference as its pointee, so a union some of whose members are references
+// is projected through each: a `switch` on the discriminator, every arm reading its own
+// member's field at that member's position. Its pointees share no layout the way a union
+// of blocks shares its members' — each is its own object — so the prefix read below does
+// not apply, and the arms need not agree on where the field is. Inference joins the field
+// types (`proj_one`), as this does.
+$decl uproj_arms $func ($decl st proto_lst, $decl ms T.tys.node, $decl i 0, $decl nm "",
+                        $decl n Pa.proto_node, $decl acc IR.arms.node, $decl ty T.proto_ty)
+  $match ms (
+    $case {$prop tag "cons"} {
+      $decl m    $call T.unroll (ms.head)
+      $decl mid  $call intern (st, ms.head)
+      $decl sl   $call fresh_slot (st, mid)
+      $decl ld   $call IR.e_local (mid, sl)
+      $decl rd   $match m (
+          $case {$prop tag "ref"}
+            ($call lres ($call IR.e_deref ($call intern (st, $call T.tval (m.inner)), ld),
+                $call T.tval (m.inner))),
+          $case m ($call lres (ld, ms.head))
+        )
+      $decl pt   $call T.unroll (rd.ty)
+      $decl f    $match pt (
+          $case {$prop tag "block"} ($call find_fld ($call T.fields.val (pt.fields), nm, 0)),
+          $case pt ($call fld_found (false, 0, T.t_bot))
+        )
+      $decl body $if f.hit ($call IR.e_field ($call intern (st, f.ty), rd.ir, f.idx))
+          ($call IR.e_unit ($call err (st, $call concat ("no field '",
+              $call concat (nm, "' in every member of this union (§5.1)")), n)))
+      $decl ret  $call uproj_arms (st, $call T.tys.val (ms.tail), $call add (i, 1), nm, n,
+          $call IR.arms.cons ($call IR.arm ($call IR.ints.cons (i, IR.ints.nil), sl, body), acc),
+          $if f.hit ($call T.join (ty, f.ty)) ty)
+    }.ret,
+    $case ms ($call arms_res ($call IR.arms.reverse (acc, IR.arms.nil),
+                  $call IR.e_unit ($call intern (st, T.t_unit)), ty))
+  )
+
+$decl any_ref $func ($decl ms T.tys.node) $match ms (
+  $case {$prop tag "cons"} {
+    $decl m   $call T.unroll (ms.head)
+    $decl ret $match m (
+        $case {$prop tag "ref"} true,
+        $case m ($call any_ref ($call T.tys.val (ms.tail)))
+      )
+  }.ret,
+  $case ms false
+)
+
+// Whether the members of a union of blocks agree on every field up to and including the
+// first `n + 1` — same names, same types — which is what makes the C union's common
+// initial sequence the prefix §5.1 means. A field at the same position after fields that
+// differ sits at a different offset (`{a Int, k Int}` against `{a Str, k Int}`), and one
+// whose own type differs is read at the wrong type: both go through the switch.
+$decl same_flds $func ($decl xs T.fields.node, $decl ys T.fields.node, $decl n 0)
+  $if ($call lt (n, 0)) true
+  ($match xs (
+      $case {$prop tag "cons"} $match ys (
+          $case {$prop tag "cons"}
+            $if ($if ($call eq_str (xs.head.name, ys.head.name))
+                     ($call T.same ($call T.tval (xs.head.ty), $call T.tval (ys.head.ty))) false)
+                ($call same_flds ($call T.fields.val (xs.tail), $call T.fields.val (ys.tail),
+                    $call sub (n, 1)))
+                false,
+          $case ys false),
+      $case xs false
+    ))
+$decl blk_flds $func ($decl t T.proto_ty) {
+  $decl m   $call T.unroll (t)
+  $decl ret $match m ($case {$prop tag "block"} ($call T.fields.val (m.fields)),
+                      $case m T.fields.nil)
+}.ret
+$decl prefix_ok $func ($decl ms T.tys.node, $decl first T.fields.node, $decl n 0) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call same_flds ($call blk_flds (ms.head), first, n))
+        ($call prefix_ok ($call T.tys.val (ms.tail), first, n)) false,
+  $case ms true
+)
+
+$decl lower_uproj $func ($decl st proto_lst, $decl tgt proto_lres, $decl nm "",
+                         $decl n Pa.proto_node) {
+  $decl ms  $call members_of ($call canon_ty (st, tgt.ty))
+  $decl a   $call uproj_arms (st, ms, 0, nm, n, IR.arms.nil, T.t_bot)
+  $decl ret $call lres ($call IR.e_switch ($call intern (st, a.ty), tgt.ir, a.arms, a.default),
+                a.ty)
+}.ret
+
 $decl common_fld $func ($decl ms T.tys.node, $decl nm "", $decl best fld_found_proto)
   $match ms (
     $case {$prop tag "cons"} {
@@ -2201,12 +2299,19 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
             ($call recv_wrap (st, raw, tgt, n.target,
                 $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n))),
       $case {$prop tag "union"} {
-        $decl f $call common_fld ($call T.tys.val (tt.members), n.field, fld_found_proto)
-        $decl ret2 $if f.hit
+        $decl ums  $call T.tys.val (tt.members)
+        $decl f    $call common_fld (ums, n.field, fld_found_proto)
+        $decl pre  $if f.hit ($match ums (
+                       $case {$prop tag "cons"}
+                         ($call prefix_ok (ums, $call blk_flds (ums.head), f.idx)),
+                       $case ums false)) false
+        $decl ret2 $if ($if ($call any_ref (ums)) true ($call not (pre)))
+            ($call lower_uproj (st, tgt, n.field, n))
+            ($if f.hit
             ($call lres ($call IR.e_field ($call intern (st, f.ty), tgt.ir, f.idx), f.ty))
             ($call lres ($call IR.e_unit ($call err (st, $call concat ("no field '",
                 $call concat (n.field, "' common to every member of this union (§5.1)")), n)),
-                T.t_bot))
+                T.t_bot)))
       }.ret2,
       $case tt ($call lres ($call IR.e_unit ($call err (st,
           $call concat ("projection needs a block, found ", $call T.show (tt)), n)), T.t_bot))
@@ -2342,19 +2447,6 @@ $decl disc_of $func ($decl ms T.tys.node, $decl pat T.proto_ty, $decl i 0,
 // from the other end of the pending one.
 // By index, through `tyix`: the queue below gave a position in one of its two halves,
 // and `nth` walked to it from the head.
-$decl ty_at $func ($decl st proto_lst, $decl i 0) $call IR.ix_get ($call IR.tval_trie (st.tyix), i)
-
-$decl canon_ty $func ($decl st proto_lst, $decl t T.proto_ty)
-  $call ty_at (st, $call intern (st, t))
-
-$decl members_of $func ($decl t0 T.proto_ty) {
-  $decl t $call T.unroll (t0)
-  $decl ret $match t (
-      $case {$prop tag "union"} ($call T.tys.val (t.members)),
-      $case t ($call T.tys.cons (t, T.tys.nil))
-    )
-}.ret
-
 // §4.8a's type: every member joined. Lowering a member is how its type is
 // read; the tree is thrown away, which costs the slots a discarded `$decl`
 // would have taken and nothing else.

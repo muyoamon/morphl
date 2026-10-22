@@ -710,6 +710,9 @@ $decl proj_one $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl fld "",
   $case {$prop tag "union"} $call proj_members (cx, tt.members, fld, n, T.t_bot),
   // Projection is the one place a recursive type has to be looked inside.
   $case {$prop tag "rec"}   $call proj_one (cx, $call T.unroll (tt), fld, n),
+  // §5.4: a reference reads as its pointee — reached only as a union's member, since
+  // `infer_proj_name` reads through a reference target itself.
+  $case {$prop tag "ref"}   $call proj_one (cx, $call deref_ty (tt), fld, n),
   // §6: a trait object is read through its members, every one of them: a trait is its
   // members' signatures as written, so every implementation has its shape (TRAITS.md).
   $case {$prop tag "trait"} {

@@ -262,6 +262,10 @@ pub fn build(b: *std.Build) void {
         // deferrals only if the arm ran — a flag per site, and a `$try` in the other arm
         // runs nothing of it. 9192384875761.
         .{ .src = "stage1/fixtures/defer_arm.mpl", .want = "9192384875761\n" },
+        // §5.4 through a union of references, and a union of values whose shared prefix is
+        // not the C union's: a switch on the discriminator, each member read where it has
+        // the field. 134567892312.
+        .{ .src = "stage1/fixtures/proj_ref.mpl", .want = "134567892312\n" },
         // §3.3: a block's trailing effects run after its slots. 123.
         .{ .src = "stage1/fixtures/trail.mpl", .want = "123\n" },
         // DEFER.md: a root resource made by `open`, with a deferral the root's `defer_at`
@@ -810,6 +814,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/defer_new.mpl",
         "stage1/fixtures/defer_own.mpl",
         "stage1/fixtures/defer_arm.mpl",
+        "stage1/fixtures/proj_ref.mpl",
         "stage1/fixtures/trail.mpl",
         "stage1/fixtures/list.mpl",
         "stage1/fixtures/match.mpl",
