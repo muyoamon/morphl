@@ -484,4 +484,29 @@ $decl t37c $call check_str ("...nor one a function hands back without guaranteei
       "$decl main $func () { $decl a $call other ()  $decl x $call close (a)  $decl ret 0 }.ret "))))),
   "the callee frees this argument, so where it came from must be known here: pass a name bound from an $alloc, or an $alloc (DEFER.md)")
 
+// ...and the same through a module, whose members' types lowering derives: inference's
+// facts (`member_facts`) are what say `M.close` frees its parameter and `M.open`'s result
+// is root storage. These hand inference's `ualloc` across, as `compiler.lower_ok` does.
+$decl lower_errs_ua $func ($decl src "") {
+  $decl a   $call Pa.parse (src)
+  $decl r   $call I.infer_file ($call Pa.nodes.val (a.exprs), I.root_env, fx, "", I.strs.nil)
+  $decl st  $call L.lstate ()
+  $decl ua  $set st.ualloc ($call I.strs.val (r.ualloc))
+  $decl p   $call L.lower_file (st, $call Pa.nodes.val (a.exprs), r.ty,
+                $call L.prims_from ($call I.eval_env (I.root_env), L.benv.nil), fx)
+  $decl ret $call Pa.diags.val ($call L.eval_diags (st.errs))
+}.ret
+$decl t37d $call check_str ("a module's constructor freed by the module's closer",
+  $call first_err ($call lower_errs_ua (
+      "$decl M $import \"open_util\"  $decl main $func () { $decl a $call M.open (1)  $decl x $call M.close (a)  $decl w $call M.cycle (2)  $decl ret 0 }.ret ")),
+  "")
+$decl t37e $call check_str ("...but not another allocator's storage",
+  $call first_err ($call lower_errs_ua ($call concat (arena_src,
+      "$decl M $import \"open_util\"  $decl main $func () { $decl allocator $call mk ()  $decl a $alloc { $decl k 1 }  $decl x $call M.close (a)  $decl ret 0 }.ret "))),
+  "the callee frees this argument through the root allocator, but it came from another (DEFER.md)")
+$decl t37f $call check_str ("...nor a member's result without the root's guarantee",
+  $call first_err ($call lower_errs_ua (
+      "$decl M $import \"open_util\"  $decl main $func () { $decl a $call M.other ()  $decl w $free a  $decl ret 0 }.ret ")),
+  "$free needs a name this function bound from an $alloc: where else it came from, its allocator is not known here (DEFER.md)")
+
 $decl done $call nl ("all lowering tests passed")

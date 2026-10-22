@@ -267,6 +267,8 @@ $decl ctx $func () {
   // Calls whose callee's result may be storage from an allocator other than the root
   // (its type has 1000), by `fn_key_of` — `root_res` asks.
   $decl nonroot $mut $alloc strs.node
+  // Whether the block being typed is a file's top level — a module's members are its items.
+  $decl atfile  $mut $alloc $union (false, true)
   // How many specialisations are being typed, one inside another. §4.9: "A chain
   // of *distinct* argument types is unbounded; there is a fixed instantiation
   // depth limit and exceeding it is an error." Self-specialisation made the chain
@@ -3596,6 +3598,36 @@ $decl recv_of $func ($decl nm "", $decl init Pa.proto_node) {
                 ($call recv_save (nm, $call Pa.recv_qual (init), sp.line, sp.col)) proto_recv
 }.ret
 
+// DEFER.md: a function a file declares at its top level carries `free(i)` and `nonroot` in
+// its type (`func_close`). Lowering rebuilds a module member's type from its body, without
+// them, so they are handed across beside `ualloc`'s keys: "p:<file>:<name>:<i>" for each
+// parameter it frees, and "r:<file>:<name>:root" or ":nonroot" when its result is
+// allocated storage. Every file records them; lowering needs them for members.
+$decl member_frees $func ($decl key "", $decl xs T.cints.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call member_frees (key, $call T.cints.val (xs.tail),
+        $if ($if ($call lt (127, xs.head)) ($call lt (xs.head, 1000)) false)
+            ($call strs.cons ($call concat ("p:", $call concat (key, $call concat (":",
+                $call int_to_str ($call sub (xs.head, 128))))), acc))
+            acc),
+  $case xs acc
+)
+$decl member_facts $func ($decl cx proto_ctx, $decl nm "", $decl t T.proto_ty,
+                          $decl acc strs.node) $match t (
+  $case {$prop tag "func"} {
+    $decl key  $call concat ($call short_of ($call sval (cx.file)), $call concat (":", nm))
+    $decl es   $call T.cints.val (t.esc)
+    $decl a2   $call member_frees (key, es, acc)
+    $decl r    $call T.tval (t.result)
+    $decl al   $match r ($case {$prop tag "ref"} ($call T.is_alloc (r.kind)), $case r false)
+    $decl ret2 $if al
+        ($call strs.cons ($call concat ("r:", $call concat (key,
+            $if ($call T.ci_mem (es, 1000)) ":nonroot" ":root")), a2))
+        a2
+  }.ret2,
+  $case t acc
+)
+
 $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node) {
   $decl nm   $call name_of ($call op (it, 0))
   $decl init $call op (it, 1)
@@ -3629,6 +3661,9 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
       ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
                                         $call eval_res (s.res))))
       ()
+  $decl mbr $set cx.ualloc ($if ($call bval (cx.atfile))
+                ($call member_facts (cx, nm, $call T.tval (ty), $call strs.val (cx.ualloc)))
+                ($call strs.val (cx.ualloc)))
   // §4.16 rule 2's three sets — see `ctx`. `topnames` is guarded on `fdepth`
   // because a `$decl` inside a `$func` body takes a frame slot (§7.2) and
   // reading it *is* a capture, while a file top-level one is lifted to a global.
@@ -4091,6 +4126,8 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl pc0    $call pesc_list.val (cx.pesc)
   $decl uniq   $call check_unique (cx, items, Pa.nodes.nil, "bound in this block")
   $decl fwdr   $call check_fwd_reads (cx, items)
+  $decl oaf    $call bval (cx.atfile)
+  $decl saf    $set cx.atfile ($call P.and ($call eq_int (x.line, 0), $call eq_int (x.col, 0)))
   // §4.15a: at a file's top level "the end of its evaluation" would be before `main`.
   $decl topd   $if ($call P.and ($call eq_int (x.line, 0), $call eq_int (x.col, 0))) {
     $decl d    $call first_defer (items)
@@ -4167,6 +4204,7 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl si2  $set cx.stid so_i
   $decl su2  $set cx.stuse ($if ($call eq_str (rn, "")) ($call bval (cx.stuse)) so_u)
   $decl sb3  $set cx.stblk so_b
+  $decl raf  $set cx.atfile oaf
   // §5.3a, for mutual recursion: a parameter found to escape only after its function had
   // closed — a `$fwd` member passing its own to a later one, or a body nested in a
   // recursive one — leaves a hint, and everything typed after that function saw its

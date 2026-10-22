@@ -264,6 +264,10 @@ pub fn build(b: *std.Build) void {
         // holds, freed by `close` — a function freeing its parameter — and through a
         // wrapper. 2431. Compiled only: stage 0 has no allocators.
         .{ .src = "stage1/fixtures/open_close.mpl", .want = "2431\n", .stage0 = false },
+        // The same with the resource in a library: `M.close` frees its parameter and
+        // `M.open`'s result is root storage, facts inference hands lowering for a module
+        // member (`member_facts`). 52431.
+        .{ .src = "stage1/fixtures/open_mod.mpl", .want = "52431\n", .stage0 = false },
         // §4.9's application, and the `$specialize` of a `$func` body: inferred from an
         // argument, from a function argument's parameter and result, from a module's
         // template, and a template applying itself in tail position. Stage 0 refuses
@@ -628,6 +632,9 @@ pub fn build(b: *std.Build) void {
             // A cycle between two module members (§5.5), so each is named from the
             // other's output.
             .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n", .mods = &.{"mutual_util"} },
+            // A module's resource registered with the root's `defer_at` in its output and
+            // freed from the entry's, through the side table only `main.c` defines.
+            .{ .src = "stage1/fixtures/open_mod.mpl", .want = "52431\n", .mods = &.{"open_util"} },
             // A module's record is a static in the importer's output initialised from
             // globals in the module's, so this is the fixture where that has to link.
             .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n", .mods = &.{ "modval_inner", "modval_util" } },

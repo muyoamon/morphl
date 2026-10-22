@@ -647,6 +647,9 @@ $decl lstate $func () {
   $decl aprov  $mut $alloc strs.node
   // The root allocator's binding identity, from §2's root block (`lower_file`).
   $decl rootid $mut $alloc ""
+  // DEFER.md: the parameters the module member about to be lowered frees, from inference's
+  // facts (`member_facts`); `lower_func` takes them, as it takes `free(i)` from a type.
+  $decl mfree  $mut $alloc strs.node
   // Whether the next block lowered is a scope — projected on the spot, or written as an
   // item — rather than a value (DEFER.md): a value passes its storage's deferrals out.
   $decl nextscope $mut $alloc $union (false, true)
@@ -1517,6 +1520,7 @@ $fwd lower_dfrs
 $fwd lower_free
 $fwd check_freed
 $fwd freed_provs
+$fwd mfree_provs
 $fwd alloc_ident
 $fwd alloc_fin
 // A projection onto a prop, answered from the prop's source. It needs
@@ -4018,8 +4022,10 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl oap   $call strs.val (st.aprov)
   // DEFER.md: a parameter the function's type says it frees (`128 + i`) came from the root,
   // which every caller checks — so `$free` of it here routes there.
-  $decl cla   $set st.aprov ($call freed_provs (fty, 0, $call IR.ints.length (b.tys, 0),
-                  $call alloc_ident (e), strs.nil))
+  $decl cla   $set st.aprov ($call mfree_provs ($call strs.val (st.mfree), $call alloc_ident (e),
+                  $call freed_provs (fty, 0, $call IR.ints.length (b.tys, 0),
+                      $call alloc_ident (e), strs.nil)))
+  $decl clm   $set st.mfree strs.nil
   // The body is in tail position: it *is* the function's result (§7.7).
   $decl body  $call lval ($call lower (st, b.env, $call op (n, 1), true))
   $decl rdf   $set st.defers odf
@@ -4304,6 +4310,86 @@ $decl lower_prop_body $func ($decl st proto_lst, $decl pe benv.node, $decl nm ""
   $decl ret f
 }.ret
 
+$decl nd_val $func ($decl n Pa.proto_node) n
+$decl digits_int $func ($decl s "", $decl i 0, $decl acc 0)
+  $if ($call lt (i, $call len (s)))
+      ($call digits_int (s, $call add (i, 1), $call add ($call mul (acc, 10),
+          $call sub ($call byte (s, i), 48))))
+      acc
+// DEFER.md: what inference recorded for a function a file declares at its top level
+// (`member_facts`): the parameters it frees, and whether its result is root storage.
+// Lowering rebuilds a module member's type from its body, without either, so they come
+// from here — keyed as `ualloc`'s are, by the file's short name.
+$decl fact_tail $func ($decl xs strs.node, $decl pre "", $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl n   $call len (pre)
+    $decl hit $if ($call lt (n, $call len (xs.head)))
+                  ($call eq_str ($call slice (xs.head, 0, n), pre)) false
+    $decl ret $call fact_tail ($call strs.val (xs.tail), pre,
+                  $if hit ($call strs.cons ($call slice (xs.head, n, $call len (xs.head)), acc))
+                      acc)
+  }.ret,
+  $case xs acc
+)
+$decl member_freed $func ($decl st proto_lst, $decl key "")
+  $call fact_tail ($call strs.val (st.ualloc), $call concat ("p:", $call concat (key, ":")), strs.nil)
+$decl member_root $func ($decl st proto_lst, $decl key "")
+  $call mem_strs ($call strs.val (st.ualloc), $call concat ("r:", $call concat (key, ":root")))
+$decl member_nonroot $func ($decl st proto_lst, $decl key "")
+  $call mem_strs ($call strs.val (st.ualloc), $call concat ("r:", $call concat (key, ":nonroot")))
+
+// A member's type with the facts put back, so a call — through the member, or through a
+// value of its type — is checked as one to an entry-file function is.
+$decl esc_of_idx $func ($decl xs strs.node, $decl acc T.cints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call esc_of_idx ($call strs.val (xs.tail), $call T.cints.cons ($call add (128,
+        $call digits_int (xs.head, 0, 0)), acc)),
+  $case xs acc
+)
+$decl with_facts $func ($decl st proto_lst, $decl t T.proto_ty, $decl key "") {
+  $decl fr  $call member_freed (st, key)
+  $decl nr  $call member_nonroot (st, key)
+  $decl es0 $call esc_of_idx (fr, T.cints.nil)
+  $decl es  $if nr ($call T.cints.cons (1000, es0)) es0
+  $decl ret $if ($call T.cints.is_nil (es)) t
+      ($match t (
+          $case {$prop tag "func"}
+            ($call T.t_func_esc ($call T.tys.val (t.params), $call T.tval (t.result), t.frame,
+                $call T.ci_sort ($call T.ci_union (es, $call T.cints.val (t.esc)), T.cints.nil),
+                $call T.cints.val (t.marks))),
+          $case t t
+        ))
+}.ret
+
+$decl mod_key_x $func ($decl st proto_lst, $decl mid 0, $decl nm "")
+  $if ($call lt (mid, 0)) "" {
+    $decl ms   $call find_mod_st (st, mid)
+    $decl ret  $match ms (
+        $case {$prop tag "cons"}
+          ($call concat ($call mod_short (ms.head.path), $call concat (":", nm))),
+        $case ms ""
+      )
+  }.ret
+
+// The member key of a callee naming a module member: `M.f`, or `f` inside the module.
+$decl member_key $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_node) $match c (
+  $case {$prop tag "name"} {
+    $decl f    $call lookup (e, c.text)
+    $decl ret2 $if ($if f.hit ($call eq_str (f.bnd.kind, "prop")) false)
+                   ($call mod_key_x (st, f.bnd.mod, c.text)) ""
+  }.ret2,
+  $case {$prop tag "proj_name"} {
+    $decl tg   $call nd_val (c.target)
+    $decl ret2 $match tg (
+        $case {$prop tag "name"} {
+          $decl f    $call lookup (e, tg.text)
+          $decl ret3 $if f.hit ($call mod_key_x (st, f.bnd.mod, c.field)) ""
+        }.ret3,
+        $case tg ""
+      )
+  }.ret2,
+  $case c ""
+)
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
@@ -4348,8 +4434,13 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // alike. `types.mpl`'s `show` and `show_fields` are such a group, and the
   // node the first pass left behind carried a placeholder into the backend,
   // where `cc` refused the C it produced.
+  // DEFER.md: what inference knows of this member and lowering's derived type does not —
+  // the parameters it frees and whether its result is root storage (`with_facts`).
+  $decl mkey  $call concat ($call mod_short (m.path), $call concat (":", nm))
+  $decl mfr   $call member_freed (st, mkey)
   $decl sn    $call take_snap (st)
   $decl q0    $call places (st)
+  $decl mf0   $set st.mfree mfr
   $decl lf0   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0), ets,
                   dpe)
   $decl again $call lt (q0, $call places (st))
@@ -4363,14 +4454,16 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // structural, so once it is out it survives, and the second pass re-interns
   // whatever it needs. The other two rollback sites need no such care: they
   // read `v0.ty` / `b0.val.ty`, which are already structural.
-  $decl fty $call fn_ty (st, lf0)
+  $decl fty $call with_facts (st, $call fn_ty (st, lf0), mkey)
   $decl und $if again ($call put_snap (st, sn)) 0
   // Completed now that the body has given up its result type. The new entry
   // goes in front of the placeholder, which `find_mdone` therefore stops at.
   $decl p1  $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
+  $decl mf1 $set st.mfree mfr
   $decl lf  $if again
       ($call lower_prop_body (st, pe, nm, pn, fty, $call prop_rank (m.props, nm, 0), ets, dpe))
       lf0
+  $decl mf2 $set st.mfree strs.nil
   $decl put $call put_lifted (st, idx, lf)
   $decl ret $call lres ($call IR.e_global ($call intern (st, fty), idx), fty)
   // Restored after the result is computed, not before: a nested `$import` inside
@@ -4656,10 +4749,14 @@ $decl prov_find $func ($decl xs strs.node, $decl k "") $match xs (
 // A call's result came from the root when its callee is a function of the entry file —
 // whose type is inference's, so `1000` would be there if its result might not (DEFER.md) —
 // answering allocated storage without that entry. A module member's type here is rebuilt by
-// lowering and says nothing, so it proves nothing.
+// lowering and says nothing, so a member — `M.f`, or `f` from inside its module — is asked
+// of inference's facts instead (`member_facts`).
 $decl call_root $func ($decl st proto_lst, $decl e benv.node, $decl x Pa.proto_node) {
   $decl c   $call op (x, 0)
-  $decl ret $match c (
+  $decl mk  $call member_key (st, e, c)
+  $decl ret $if ($call not ($call eq_str (mk, "")))
+      ($if ($call member_root (st, mk)) ($call P.sval (st.rootid)) "")
+      ($match c (
       $case {$prop tag "name"} {
         $decl f    $call lookup (e, c.text)
         $decl ft   $call T.unroll ($call T.tval (f.bnd.ty))
@@ -4678,7 +4775,7 @@ $decl call_root $func ($decl st proto_lst, $decl e benv.node, $decl x Pa.proto_n
             ""
       }.ret2,
       $case c ""
-    )
+    ))
 }.ret
 
 // The provenance of what slot `sl` is bound to: an `$alloc` (or a view of one) records the
@@ -4720,6 +4817,13 @@ $decl freed_provs $func ($decl t T.proto_ty, $decl i 0, $decl n 0, $decl id "", 
               ($call strs.cons ($call concat ($call int_to_str (i), $call concat ("|", id)), acc))
               acc))
       acc
+
+$decl mfree_provs $func ($decl xs strs.node, $decl id "", $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call mfree_provs ($call strs.val (xs.tail), id,
+        $call strs.cons ($call concat (xs.head, $call concat ("|", id)), acc)),
+  $case xs acc
+)
 
 // Where an argument's storage came from: a name with a recorded provenance, or an `$alloc`.
 $decl arg_prov $func ($decl st proto_lst, $decl e benv.node, $decl x Pa.proto_node)

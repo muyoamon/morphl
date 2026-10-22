@@ -439,14 +439,21 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
        changed type.
      Lowering gives a freed parameter the root's provenance, checks every call that passes
      storage where the callee frees it (`check_freed`, both call sites), and takes a call's
-     result as root storage only when the callee is an entry-file function — whose type is
-     inference's; a module member's is rebuilt by lowering and proves nothing, so freeing
-     one's result is refused. `open_close.mpl` (2431) is `open`/`close`/`close2` at the
-     root; `lower_test`'s `t37`–`t37c` the refusals.
+     result as root storage only when the callee's facts say so. An entry-file function's
+     type is inference's, so they are in it. A **module member**'s type is rebuilt by
+     lowering, which knows neither, so inference hands them across beside `ualloc`'s keys
+     (`member_facts`, for every top-level `$decl` of a file): `p:<file>:<name>:<i>` per
+     freed parameter and `r:<file>:<name>:root|nonroot` for an allocated result.
+     `lower_prop_func` gives a freed parameter the root's provenance (`st.mfree`) and puts
+     both back into the member's type (`with_facts`), so a call through it is checked as
+     one to an entry-file function is; `call_root` asks the facts for `M.f`, or `f` from
+     inside its module (`member_key`). `open_close.mpl` (2431) is `open`/`close`/`close2`
+     at the root, `open_mod.mpl` (52431) the same as a library; `lower_test`'s
+     `t37`–`t37f` the refusals, through a module included.
    - **Refused**: `$free` of frame storage or a `$const` view, an allocator whose `free`
      takes one argument, an `$alloc` block's deferral naming a local, a parameter freed
      through another allocator than the root's, and storage whose provenance is unknown —
-     a capture, a module member's result, a non-root result.
+     a capture, a non-root result.
      `stage1/fixtures/free_bad.mpl` in `test-reject`.
 
 ## Open questions
