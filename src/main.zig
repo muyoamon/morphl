@@ -130,22 +130,49 @@ const RunCtx = struct {
         };
         if (self.call_main) {
             self.answer = it.runMain(self.file) catch |e| switch (e) {
-                error.Halt, error.Panicked => null,
+                error.Halt, error.Panicked => return,
                 error.TryReturn => unreachable, // runMain turns this into a diagnostic
-                error.OutOfMemory => blk: {
+                error.OutOfMemory => {
                     self.failed = e;
-                    break :blk null;
+                    return;
                 },
             };
-            return;
+            // As the emitted `main` prints it, and before the program's exit (DEFER.md
+            // example 12), which is after its answer is printed.
+            if (self.answer) |a| printAnswer(a, opts.out.?, opts.err_out.?) catch |e| {
+                self.failed = e;
+                return;
+            };
+        } else {
+            _ = it.runFile(self.file) catch |e| switch (e) {
+                // Both are already recorded as diagnostics; §7.8 makes a panic
+                // abort the whole program, with no catch.
+                error.Halt, error.Panicked => return,
+                error.TryReturn => unreachable, // runFile turns this into a diagnostic
+                error.OutOfMemory => {
+                    self.failed = e;
+                    return;
+                },
+            };
         }
-        _ = it.runFile(self.file) catch |e| switch (e) {
-            // Both are already recorded as diagnostics; §7.8 makes a panic
-            // abort the whole program, with no catch.
+        it.runExits() catch |e| switch (e) {
             error.Halt, error.Panicked => {},
-            error.TryReturn => unreachable, // runFile turns this into a diagnostic
+            // A deferral is an expression, and `$try` in one is checked to be in a `$func`.
+            error.TryReturn => unreachable,
             error.OutOfMemory => self.failed = e,
         };
+    }
+
+    /// A `Str` as its bytes, anything else as a 64-bit integer and a newline (§3.2: a
+    /// boolean is 1 or 0).
+    fn printAnswer(a: interp.Value, out: *Io.Writer, err: *Io.Writer) !void {
+        switch (a.deref()) {
+            .str => |sv| try out.writeAll(sv.bytes),
+            .int => |n| try out.print("{d}\n", .{n}),
+            .bool => |b| try out.print("{d}\n", .{@intFromBool(b)}),
+            .unit => try out.writeAll("0\n"),
+            else => |v| try err.print("morphlc: main answered a {s}, which a compiled program cannot print\n", .{v.typeName()}),
+        }
     }
 };
 
@@ -430,15 +457,6 @@ pub fn main(init: process.Init.Minimal) !void {
                 th.join();
                 if (ctx.stats) |st| try st.report(err);
                 if (ctx.failed) |e| return e;
-                // As the emitted `main` prints it: a `Str` as its bytes, anything
-                // else as a 64-bit integer and a newline (§3.2: a boolean is 1 or 0).
-                if (ctx.answer) |a| switch (a.deref()) {
-                    .str => |sv| try out.writeAll(sv.bytes),
-                    .int => |n| try out.print("{d}\n", .{n}),
-                    .bool => |b| try out.print("{d}\n", .{@intFromBool(b)}),
-                    .unit => try out.writeAll("0\n"),
-                    else => |v| try err.print("morphlc: main answered a {s}, which a compiled program cannot print\n", .{v.typeName()}),
-                };
             }
         } else if (!diags.any()) {
             try parsed.dump(out);

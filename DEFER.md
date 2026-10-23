@@ -215,7 +215,9 @@ $decl p $if c ($new { $defer $call print ("A ") }) ($new { $defer $call print ("
 //     to promise "outer inner"; step 3's implementation is what found it was illegal.)
 //     Nesting is `$alloc` inside `$new` or `$alloc`, which is step 4's.
 
-// 12. Top level: the owner's scope is the program.                   prints "hi bye"
+// 12. Top level: the owner's scope is the program. Exit is after `main`'s answer is
+//     printed, and across files the reverse of initialisation: a module's run last.
+//                                                       prints "hi ", then "0", then "bye"
 $decl log  $new { $defer $call print ("bye\n") }
 $decl main $func () $call print ("hi ")
 
@@ -336,8 +338,8 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
    (the table above). The migration is empty.
 2. **SPEC**, then **`$defer` for scopes and plain values** in both stages — **done.** SPEC
    §4.15a, and the §2.2 row. A `$defer` in a block that is directly `$new`/`$alloc`
-   storage, and one at a file's top level, are refused until their meaning is settled
-   (`stage1/fixtures/defer_bad.mpl`, in `test-reject`). How each stage does it:
+   storage, and one at a file's top level, were refused until their meaning was settled
+   (since done: steps 3 and 4, and example 12 below). How each stage does it:
    - **Stage 0** collects a block's deferrals as it reaches them (`runDeferring`) and runs
      them in reverse when its items are done; on `error.TryReturn` it runs those
      registered so far and carries on unwinding; a `panic` is a different error and runs
@@ -427,7 +429,25 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      **Lowering it ran the closure out of memory under a 4 GB cap**, which bisecting
      mistook for a lowering blow-up and two rewrites of the walk did not change: the whole
      compiler already needs about 4–4.5 GB to compile itself, and this tipped it.
-   - **Still refused**: a file's top level (example 12). `owner_bad.mpl`.
+   - **A file's top level (example 12), done.** Decided: a file's top level — the entry's and
+     every module's alike — is the program's scope, and exit is after `main` has returned
+     and its answer is printed. Each deferral is **registered when initialisation reaches
+     it** and they run newest first, so the order across files is the reverse of
+     initialisation: a module, initialised first, cleans up last, and a deferral can still
+     use whatever it imports. In stage 1 the runtime keeps a stack (`mpl_at_exit`, shared
+     state beside `main`, like the root's `defer_at` table) that `main` runs after printing
+     (`mpl_run_exits`). Lowering registers a bare top-level `$defer` from its §3.3 effect,
+     and takes a top-level item holding storage with deferrals (`Pa.storage_defers`, the walk
+     inference used to refuse with) through `lower_item` as the one item of a block, so the
+     owner walk decides exactly as in a function: the ephemeral at the item's end, a call's
+     run-time flags, an arm's flag — and what is left is the owner's, registered
+     (`top_item`, `exit_reg`). A registration is a `$func ()` over the deferral's
+     environment, so it captures by value what is not a global; that is safe because a
+     top-level `$new` is static (STORAGE.md step 3). Stage 0 keeps the same list
+     (`Interp.exits`) and runs it after `--main`'s answer. `top_defer.mpl` and its module:
+     a bare `$defer` in each file, owned storage in each, ephemeral, through a call, in an
+     arm, and an effect; "tmp init main 18" then "c b a e1 u2 u1" in both stages, split
+     into per-module files too. Nothing is refused any more.
 4. **The allocator members and `$free`** — **done.**
    - **`$free r`** (§2.2, §7.6), both parsers; stage 0 refuses to run it, as it refuses the
      FFI, since it has no allocators. Inference types it: allocated storage, not a `$const`

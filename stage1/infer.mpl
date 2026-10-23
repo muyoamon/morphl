@@ -1870,34 +1870,6 @@ $decl storage_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_f
       ($call alloc_defer (cx, e, n, d)) ()
 }.ret
 
-// A `$new` block with a `$defer` whose deferrals would outlive where `n` stands: one not
-// inside a block projected on the spot, which runs them at its own end, nor inside a
-// `$func`, which is another activation. The empty node when there is none.
-$fwd bare_storage
-$decl bare_any $func ($decl xs Pa.nodes.node) $match xs (
-  $case {$prop tag "cons"} {
-    $decl h   $call bare_storage (xs.head)
-    $decl ret $if ($call is_defer (h)) h ($call bare_any ($call Pa.nodes.val (xs.tail)))
-  }.ret,
-  $case xs Pa.proto_node
-)
-$decl bare_storage $func ($decl n Pa.proto_node) $match n (
-  $case {$prop tag "form"}
-    $if ($call eq_str (n.keyword, "func")) Pa.proto_node
-    ($if ($call eq_str (n.keyword, "new")) {
-       $decl d    $call defers_in ($call op (n, 0))
-       $decl ret2 $if ($call is_defer (d)) d ($call bare_any ($call Pa.nodes.val (n.operands)))
-     }.ret2
-     ($call bare_any ($call Pa.nodes.val (n.operands)))),
-  $case {$prop tag "block"}      ($call bare_any ($call Pa.nodes.val (n.items))),
-  $case {$prop tag "group"}      ($call bare_any ($call Pa.nodes.val (n.items))),
-  $case {$prop tag "proj_name"}
-    $if ($call is_block_node (n.target)) Pa.proto_node ($call bare_storage (n.target)),
-  $case {$prop tag "proj_index"} ($call bare_storage (n.target)),
-  $case n Pa.proto_node
-)
-
-
 // A name freed here, for `func_close` to find among this function's parameters.
 $decl note_freed $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl root P.boolean)
   $match x (
@@ -4108,17 +4080,6 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl fwdr   $call check_fwd_reads (cx, items)
   $decl oaf    $call bval (cx.atfile)
   $decl saf    $set cx.atfile ($call P.and ($call eq_int (x.line, 0), $call eq_int (x.col, 0)))
-  // §4.15a: at a file's top level "the end of its evaluation" would be before `main`.
-  $decl topd   $if ($call P.and ($call eq_int (x.line, 0), $call eq_int (x.col, 0))) {
-    $decl d    $call first_defer (items)
-    $decl d2   $call bare_any (items)
-    $decl r3   $if ($call is_defer (d))
-        ($do ($call err (cx, "$defer at a file's top level is not defined yet (DEFER.md)", d)) ())
-        ()
-    $decl ret3 $if ($call is_defer (d2))
-        ($do ($call err (cx, "$defer in a $new block at a file's top level is not defined yet (DEFER.md)", d2)) ())
-        ()
-  }.ret3 ()
   $decl pe0    $call prebind_props (cx, items, e0)
   // §4.10: the block a `$decl` is declaring claims its receiver, and only that block —
   // a block nested inside it has a span of its own.

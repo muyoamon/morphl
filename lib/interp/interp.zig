@@ -132,6 +132,9 @@ pub const Interp = struct {
     adopt: ?*std.ArrayListUnmanaged(Pending) = null,
     /// Storage made by a `$new` literal with deferrals, not yet owned (`settleFresh`).
     fresh: std.ArrayListUnmanaged(Fresh) = .empty,
+    /// DEFER.md example 12: deferrals whose owner's scope is the program — a file's own,
+    /// and its top-level storage's — in the order initialisation reached them (`runExits`).
+    exits: std.ArrayListUnmanaged(Pending) = .empty,
     /// The value carried by an in-flight `error.TryReturn`.
     try_payload: Value = .unit,
     /// Scopes whose call has returned without anything capturing them.
@@ -716,21 +719,14 @@ pub const Interp = struct {
             if (e.isForm(.decl) or e.isForm(.fwd)) slots += 1;
             if (e.isForm(.@"defer")) defers += 1;
         }
-        // DEFER.md step 2: a file is a block, but "the end of its evaluation" would be
-        // before `main` runs — not what anyone writing one means — so it is refused until
-        // that is decided.
-        if (defers != 0 and parent == self.root) {
-            for (exprs) |*e| if (e.isForm(.@"defer")) {
-                return self.rt.fail(e.span, "$defer at a file's top level is not defined yet (DEFER.md)", .{});
-            };
-        }
         // A block's scope is dead once its value is built: the value holds
         // copies of the slots, not the scope. The exception is a closure made
         // inside it, which captures the chain — the same test `callFunc` uses
         // for a call's scope. `$prop` counts as capturing, so a block with
         // props keeps its scope, which `collectProps` needs anyway.
         // An adopted block's deferrals run later, against this scope.
-        var recyclable = !(defers != 0 and self.adopt != null);
+        // A file's run at the program's exit, against this scope (`runExits`).
+        var recyclable = !(defers != 0 and (self.adopt != null or parent == self.root));
         if (recyclable) {
             for (exprs) |*e| {
                 if (mayCapture(e)) {
@@ -808,9 +804,13 @@ pub const Interp = struct {
         // A storage literal's block hands its deferrals to the `$new` making it.
         const adopter = self.adopt;
         self.adopt = null;
+        // A file's top level — the entry's or a module's — is the program's scope, so what
+        // it owns runs at exit, registered where it is reached (DEFER.md example 12).
+        const top = scope.parent == self.root;
         for (exprs) |*e| {
             if (e.isForm(.@"defer")) {
-                try pending.append(self.arena, .{ .node = &e.data.form.operands[0], .scope = scope });
+                const p: Pending = .{ .node = &e.data.form.operands[0], .scope = scope };
+                if (top) try self.exits.append(self.arena, p) else try pending.append(self.arena, p);
                 continue;
             }
             const mark = self.fresh.items.len;
@@ -823,7 +823,7 @@ pub const Interp = struct {
                 }
                 return err;
             };
-            if (self.fresh.items.len != mark) try self.settleFresh(e, scope, mark, is_scope, &pending);
+            if (self.fresh.items.len != mark) try self.settleFresh(e, scope, mark, is_scope, top, &pending);
         }
         if (adopter) |list| {
             try list.appendSlice(self.arena, pending.items);
@@ -832,7 +832,7 @@ pub const Interp = struct {
 
     /// The storage made during an item, decided at its end (see `Fresh`).
     fn settleFresh(self: *Interp, e: *const Node, scope: *Scope, mark: usize, is_scope: bool,
-                   pending: *std.ArrayListUnmanaged(Pending)) Error!void {
+                   top: bool, pending: *std.ArrayListUnmanaged(Pending)) Error!void {
         var bound: ?Value = null;
         if (e.isForm(.decl)) {
             const nm = e.data.form.operands[0].data.name;
@@ -858,10 +858,19 @@ pub const Interp = struct {
         for (items) |f| {
             const owned = if (bound) |v| reaches(v, f.cell) else false;
             if (!owned) continue;
-            if (is_scope) {
+            if (top) {
+                try self.exits.appendSlice(self.arena, f.pend);
+            } else if (is_scope) {
                 try pending.appendSlice(self.arena, f.pend);
             } else try self.fresh.append(self.arena, f);
         }
+    }
+
+    /// DEFER.md example 12: the program's end. Newest first, so the file initialised last —
+    /// the entry, after everything it imports — cleans up first. Called once the program's
+    /// work is done: after the file's evaluation, and after `main` and its printed answer.
+    pub fn runExits(self: *Interp) Error!void {
+        while (self.exits.pop()) |p| _ = try self.eval(p.node, p.scope);
     }
 
     /// Storage made during an item a `$try` is leaving: it dies, newest first.

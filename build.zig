@@ -216,6 +216,9 @@ pub fn build(b: *std.Build) void {
         // DEFER.md example 7: storage passed to a call that may hand it back is owned only
         // if the result reaches it, decided at run time in both stages. 21345768321945.
         .{ .src = "stage1/fixtures/defer_call.mpl", .want = "21345768321945\n" },
+        // DEFER.md example 12: a file's top level is the program's scope, so its deferrals
+        // run after `main`'s answer is printed, newest first — the entry's, then its module's.
+        .{ .src = "stage1/fixtures/top_defer.mpl", .want = "tmp init main 18\nc b a e1 u2 u1\n" },
         // §5.4 through a union of references, and a union of values whose shared prefix is
         // not the C union's: a switch on the discriminator, each member read where it has
         // the field. 134567892312.
@@ -469,11 +472,10 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/defer_bad.mpl",
             .stage1 = &.{
-                "defer_bad.mpl:4:1: $defer at a file's top level is not defined yet (DEFER.md)",
                 "defer_bad.mpl:3:31: $defer is a block item: it belongs directly in a block's items",
             },
-            .count = "errors: 2\n",
-            .stage0 = "$defer at a file's top level is not defined yet",
+            .count = "errors: 1\n",
+            .stage0 = "$defer is a block item: it belongs directly in a block's items",
         },
         .{
             .src = "stage1/fixtures/dead_arm.mpl",
@@ -498,10 +500,9 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
-                "owner_bad.mpl:10:29: $defer in a $new block at a file's top level is not defined yet",
-                "owner_bad.mpl:6:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
+                "owner_bad.mpl:4:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",
             },
-            .count = "errors: 2\n",
+            .count = "errors: 1\n",
             .stage0 = null,
         },
     }) |bad| {
@@ -607,6 +608,10 @@ pub fn build(b: *std.Build) void {
             // §6's tables are static in the shared header, and their shims call members
             // defined in the module's own output — so they must be external there.
             .{ .src = "stage1/fixtures/traits_split.mpl", .want = "49\n", .mods = &.{"traits_util"} },
+            // DEFER.md example 12: the exit stack is shared state, defined beside `main`, and
+            // a module registers on it from its own output.
+            .{ .src = "stage1/fixtures/top_defer.mpl", .want = "tmp init main 18\nc b a e1 u2 u1\n",
+               .mods = &.{"top_defer_util"} },
             .{ .src = "stage1/fixtures/tscalar.mpl", .want = "47\n", .mods = &.{"tscalar_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
@@ -767,6 +772,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/defer_own.mpl",
         "stage1/fixtures/defer_arm.mpl",
         "stage1/fixtures/defer_call.mpl",
+        "stage1/fixtures/top_defer.mpl",
         "stage1/fixtures/proj_ref.mpl",
         "stage1/fixtures/trail.mpl",
         "stage1/fixtures/list.mpl",
@@ -1041,6 +1047,9 @@ pub fn build(b: *std.Build) void {
             \\mpl_fin *mpl_fins = 0;
             \\int64_t mpl_nfins = 0;
             \\int64_t mpl_capfins = 0;
+            \\mpl_fun *mpl_exits = 0;
+            \\int64_t mpl_nexits = 0;
+            \\int64_t mpl_capexits = 0;
             \\int main(int argc, char **argv) {
             \\  mpl_argc = argc;
             \\  mpl_argv = argv;

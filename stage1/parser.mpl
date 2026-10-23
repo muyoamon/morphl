@@ -660,6 +660,40 @@ $decl free_names $func ($decl n proto_node, $decl acc pstrs.node) $match n (
   $case n acc
 )
 
+// DEFER.md: whether `n` holds a `$new` block literal with a `$defer` whose deferrals outlive
+// where `n` stands — one not inside a `$func`, which is another activation, nor inside a
+// block projected on the spot, which runs them at its own end. At a file's top level those
+// are the program's, so lowering takes such an item through a block item's owner walk.
+$fwd storage_defers
+$decl storage_defers_list $func ($decl xs nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call storage_defers (xs.head)) true ($call storage_defers_list (xs.tail)),
+  $case xs false
+)
+$decl defer_item $func ($decl xs nodes.node) $match xs (
+  $case {$prop tag "cons"} $if ($call is_kw (xs.head, "defer")) true ($call defer_item (xs.tail)),
+  $case xs false
+)
+$decl lit_defers $func ($decl n proto_node) $match n (
+  $case {$prop tag "block"} ($call defer_item (n.items)),
+  $case n false
+)
+$decl is_block_lit $func ($decl n proto_node) $match n ($case {$prop tag "block"} true, $case n false)
+$decl storage_defers $func ($decl n proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "func")) false
+    ($if ($call eq_str (n.keyword, "new"))
+         ($if ($call lit_defers ($call operand (n, 0))) true
+              ($call storage_defers_list (n.operands)))
+         ($call storage_defers_list (n.operands))),
+  $case {$prop tag "block"}      ($call storage_defers_list (n.items)),
+  $case {$prop tag "group"}      ($call storage_defers_list (n.items)),
+  $case {$prop tag "proj_name"}
+    $if ($call is_block_lit (n.target)) false ($call storage_defers (n.target)),
+  $case {$prop tag "proj_index"} ($call storage_defers (n.target)),
+  $case n false
+)
+
 $decl bound_group_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
   $case {$prop tag "cons"} {
     $decl nm $call name_text (xs.head)

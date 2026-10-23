@@ -385,15 +385,23 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   temporary. A block that is directly the operand of `$alloc` hands its deferrals to the
   allocator, which runs them when the storage is freed (§7.6). Storage an arm would have
   made has no deferrals when that arm did not run, and whether a call handed storage back
-  is a question about the value it answered, so it may be decided as the program runs. Not
-  yet defined, and so a compile error: such a block at a file's top level (DEFER.md).
+  is a question about the value it answered, so it may be decided as the program runs.
+- **A file's top level** — the entry file's or a module's (§4.14) — is the program's scope,
+  since a file's bindings live as long as the program. So a `$defer` among a file's items,
+  and the deferrals of storage a top-level `$decl` owns, run at the **program's exit**: after
+  `main` has returned and its answer has been delivered. Each is registered when
+  initialisation reaches it (§4.10), and they run in reverse order of registration across
+  every file — so a module, initialised before its importer, runs its deferrals after the
+  importer's, and every deferral can still use what it imports. Storage a top-level item
+  does not own is ephemeral and its deferrals run at the item's end, as anywhere else. A
+  module loaded once (§4.14) registers once.
 - **Exits.** `$try` leaving a block is a return (§4.15), so it runs the deferrals registered
-  before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none.
+  before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none —
+  the program's exit deferrals included.
 - **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), so
   no deferral can stand between a function and a call it ends with.
-- **Where.** Only directly among a block's items; anywhere else is a compile error. At a
-  file's top level it is a compile error for now, since "the end of the file's evaluation"
-  would be before `main` runs (DEFER.md).
+- **Where.** Only directly among a block's items, a file's included; anywhere else is a
+  compile error.
 
 ### 4.16 `$extern "symbol" sig`
 

@@ -741,6 +741,11 @@ $decl lstate $func () {
 
 $decl proto_lst $call lstate ()
 
+// DEFER.md: a file's top level, whose scope is the program (`top_item`, `exit_reg`, after
+// `lower_item`, whose walk they reuse).
+$fwd top_item
+$fwd exit_reg
+
 // The module with id `i`: the leaf's list from that entry on, or nil (see `find_tmpl`).
 $decl find_mod_st $func ($decl st proto_lst, $decl i 0) $call mx_find ($call mx_val (st.modix), i,
     0)
@@ -3084,8 +3089,14 @@ $decl lower_effect $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.prot
   $decl idx $call reserve_lifted (st)
   // In tail position: this is a whole function body, so §7.7 applies to it
   // exactly as it does to a thunk's. `verify` reports every unmarked tail
-  // call otherwise, which is how the `false` here was found.
-  $decl v   $call lval ($call lower (st, e, n, true))
+  // call otherwise, which is how the `false` here was found. A `$defer` is registered
+  // to run at the program's exit, and storage with deferrals goes through the owner
+  // walk (DEFER.md example 12).
+  $decl v   $if ($call is_form (n, "defer"))
+      ($call lres ($call IR.eval ($call exit_reg (st, $call dfr_ent ($call op (n, 0), e, "", -1),
+           true)), T.t_unit))
+      ($if ($call Pa.storage_defers (n)) ($call lval ($call top_item (st, e, n)))
+           ($call lval ($call lower (st, e, n, true))))
   // Not a thunk: a thunk *is* a global and is named by its static. This has
   // no name and nothing reads it, so it is an ordinary zero-argument
   // function that is called and whose result is dropped.
@@ -4709,9 +4720,16 @@ $decl tbody $func ($decl v proto_lres, $decl ss IR.ints.node) { $decl val v  $de
 
 // A member's body lowered as a thunk body, with the enclosing frame put aside
 // and restored — so it can be done twice and the second result used.
-$decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.proto_node) {
+$decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.proto_node,
+                        $decl nm "") {
   $decl o   $call take_slots (st)
-  $decl v   $call lval ($call lower (st, pe, pn, true))
+  // DEFER.md example 12, as a member: the item is `$decl nm pn`, and the owner walk wants it.
+  $decl sp  $call P.span_of (pn)
+  $decl v   $if ($call Pa.storage_defers (pn))
+                ($call lval ($call top_item (st, pe, $call Pa.n_form ("decl", $call Pa.nodes.cons (
+                     $call Pa.n_name (nm, sp.line, sp.col), $call Pa.nodes.cons (pn, Pa.nodes.nil)),
+                     sp.line, sp.col))))
+                ($call lval ($call lower (st, pe, pn, true)))
   $decl r   $call tbody (v, $call take_slots (st))
   $decl b   $call restore_slots (st, o)
   $decl ret r
@@ -4741,7 +4759,7 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
   $decl p0   $call note_prop (st, m.id, $call mdone (nm, "global", idx, $call T.t_var (pv), -1, -1))
   $decl rs   $call recv_enter (st, nm, pn)
   $decl sn   $call take_snap (st)
-  $decl b0   $call thunk_body (st, pe, pn)
+  $decl b0   $call thunk_body (st, pe, pn, nm)
   $decl und  $if self ($call put_snap (st, sn)) 0
   $decl t    $if ($call T.occurs (b0.val.ty, pv)) ($call T.close_var (b0.val.ty, pv))
                  ($call T.tval (b0.val.ty))
@@ -4752,7 +4770,7 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
       0
   $decl p1   $call note_prop (st, m.id, $call mdone (nm, "global", idx, t,
                  b0.val.mod, b0.val.tmpl))
-  $decl bd  $if self ($call thunk_body (st, pe, pn)) b0
+  $decl bd  $if self ($call thunk_body (st, pe, pn, nm)) b0
   $decl rb  $call recv_put (st, rs)
   $decl vty $call intern (st, t)
   // A member, so exported (§4.14): an importer projects it and reads its static.
@@ -5768,6 +5786,82 @@ $decl lower_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto
   $decl ret $if ($call lt (0, k)) ($call finish_item (st, a2, it, d0, k)) a2
 }.ret
 
+// DEFER.md example 12: a deferral whose owner's scope is the program, registered to run at
+// its exit — the runtime's stack (`at_exit`), which runs after `main` has returned and its
+// answer is printed, newest first. Registering where initialisation reaches it is what
+// makes the order the reverse of initialisation across files: an imported module is
+// initialised first, so its deferrals run last, and every deferral can still use what it
+// imports. It is a `$func ()` lowered in the deferral's own environment, so it captures by
+// value what it reads that is not a global; its body is a block, so the deferral is never a
+// tail call and nothing on the stack reports a pending one (§6a). One in an arm, or on a
+// call that may hand its storage back, is registered only if its flag says so. `tl` when the
+// registration is a whole function body — a bare `$defer`'s effect — so in tail position.
+$decl exit_reg $func ($decl st proto_lst, $decl d proto_dfr, $decl tl P.boolean) {
+  $decl sp   $call P.span_of (d.node)
+  $decl body $call Pa.n_block ($call Pa.nodes.cons (d.node, Pa.nodes.nil), sp.line, sp.col)
+  $decl fn   $call Pa.n_form ("func", $call Pa.nodes.cons ($call Pa.n_unit (sp.line, sp.col),
+                 $call Pa.nodes.cons (body, Pa.nodes.nil)), sp.line, sp.col)
+  $decl fv   $call as_value (st, $call lower (st, $call benv.val (d.env), fn, false))
+  $decl uid  $call intern (st, T.t_unit)
+  $decl ft   $call T.t_func ($call T.tys.cons (fv.ty, T.tys.nil), T.t_unit)
+  $decl c    $call IR.e_call (uid, $call IR.e_prim ($call intern (st, ft), "at_exit"),
+                 $call IR.exprs.cons (fv.ir, IR.exprs.nil), tl)
+  $decl ret  $if ($call lt (d.flag, 0)) c
+      ($call IR.e_if (uid, $call IR.e_local ($call intern (st, T.t_bool), d.flag),
+           $call IR.e_do (uid, c, $call IR.e_unit (uid)), $call IR.e_unit (uid)))
+}.ret
+
+// The top `k` entries of the stack (newest first), registered in the order they were made.
+$decl exit_regs $func ($decl st proto_lst, $decl xs dfr_list.node, $decl k 0,
+                       $decl acc IR.exprs.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (0, k))
+        ($call exit_regs (st, $call dfr_list.val (xs.tail), $call sub (k, 1),
+             $call IR.exprs.cons ($call exit_reg (st, xs.head, false), acc)))
+        acc,
+  $case xs acc
+)
+
+// An effect's item: what it ran for (§3.3), then the registrations.
+$decl top_eff $func ($decl st proto_lst, $decl a proto_blk, $decl regs IR.exprs.node) {
+  $decl uid $call intern (st, T.t_unit)
+  $decl ret $call lres ($call with_pending ($call push_after ($call IR.exprs.val (a.pend), regs),
+                $call IR.e_unit (uid), uid), T.t_unit)
+}.ret
+
+// A file's top-level item whose storage has deferrals (`Pa.storage_defers`), lowered as the
+// one item of a block whose scope is the program: `lower_item`'s owner walk decides as it
+// does in a function — the ephemeral run at the item's end, a call that may hand the
+// storage back gets its run-time flags — and what that leaves is the owner's, so it is
+// registered (`exit_regs`). A `$decl`'s value, or unit for an effect. A value whose
+// storage has deferrals is never a module or a template, so the result carries neither.
+$decl top_item $func ($decl st proto_lst, $decl e benv.node, $decl it Pa.proto_node) {
+  $decl d0   $call dfr_list.val (st.defers)
+  $decl a    $call lower_item (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil, e,
+                 IR.exprs.nil), it)
+  $decl k    $call sub ($call dfr_list.length ($call dfr_list.val (st.defers), 0),
+                        $call dfr_list.length (d0, 0))
+  $decl regs $call exit_regs (st, $call dfr_list.val (st.defers), k, IR.exprs.nil)
+  $decl back $set st.defers d0
+  $decl s0   $call IR.bslots.val (a.slots)
+  $decl f0   $call T.fields.val (a.flds)
+  $decl ret  $match s0 (
+      $case {$prop tag "cons"} $match f0 (
+        $case {$prop tag "cons"} {
+          $decl ty   $call T.tval (f0.head.ty)
+          $decl id   $call intern (st, ty)
+          $decl bt   $call T.t_block ($call T.fields.cons ($call T.field (f0.head.name, ty),
+                         T.fields.nil), T.props.nil)
+          $decl v    $call IR.e_field (id, $call IR.e_block ($call intern (st, bt),
+                         $call IR.bslots.cons (s0.head, IR.bslots.nil)), 0)
+          $decl ret2 $call lres ($call with_trail (st, $call IR.exprs.reverse (regs, IR.exprs.nil),
+                         v, id, ty), ty)
+        }.ret2,
+        $case f0 ($call top_eff (st, a, regs))),
+      $case s0 ($call top_eff (st, a, regs))
+    )
+}.ret
+
 // The `$prop` items, kept as source. §4.10 makes a prop's value compile-time,
 // so it is code the compiler still has rather than anything in the layout —
 // and it is the only way to answer a projection onto a prop that is not a
@@ -6121,7 +6215,9 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
           // whatever slots the initializer needed).
           $decl reset $call take_slots (st)
           $decl rs    $call recv_enter (st, nm, init)
-          $decl v     $call lval ($call lower (st, e, init, true))
+          // DEFER.md example 12: storage with deferrals, owned at the program's scope.
+          $decl v     $if ($call Pa.storage_defers (init)) ($call lval ($call top_item (st, e, it)))
+                          ($call lval ($call lower (st, e, init, true)))
           $decl rb    $call recv_put (st, rs)
           $decl vty   $call intern (st, v.ty)
           $decl ret2     $call topfn ($call IR.fn_p (nm, IR.ints.nil, vty, $call take_slots (st),
