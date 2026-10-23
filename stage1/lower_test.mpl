@@ -396,13 +396,14 @@ $decl body0 $func ($decl src "") {
   $decl ret $call IR.show (f0.body)
 }.ret
 
+// What is left is the `$import`'s initialiser call (§4.14: the module initialises there).
 $decl t30 $call check_str ("a module only projected builds no record",
   $call body0 ("$decl M $import \"modval_util\"  $decl main $func () M.k "),
-  "(block)")
+  "(do (call (prim init:modval_util) ) (block))")
 
 $decl t31 $call check ("a module used as a value keeps its record",
   $call not ($call eq_str ($call body0 ("$decl M $import \"modval_util\"  $decl get $func () M  $decl main $func () 0 "),
-                           "(block)")))
+                           "(do (call (prim init:modval_util) ) (block))")))
 
 // §3.4's defaults come from the callee's definition, so a short call through a
 // function *value* has nowhere to take them from. Lowered as written it was a call with

@@ -219,6 +219,9 @@ pub fn build(b: *std.Build) void {
         // DEFER.md example 12: a file's top level is the program's scope, so its deferrals
         // run after `main`'s answer is printed, newest first — the entry's, then its module's.
         .{ .src = "stage1/fixtures/top_defer.mpl", .want = "tmp init main 18\nc b a e1 u2 u1\n" },
+        // §4.14: a module initialises at its first `$import`, in source order, not before
+        // its importer's first item; a nested `$import` likewise, and a second one not at all.
+        .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 " },
         // §5.4 through a union of references, and a union of values whose shared prefix is
         // not the C union's: a switch on the discriminator, each member read where it has
         // the field. 134567892312.
@@ -612,6 +615,9 @@ pub fn build(b: *std.Build) void {
             // a module registers on it from its own output.
             .{ .src = "stage1/fixtures/top_defer.mpl", .want = "tmp init main 18\nc b a e1 u2 u1\n",
                .mods = &.{"top_defer_util"} },
+            // An `$import` calls its module's initialiser, which another output defines.
+            .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",
+               .mods = &.{ "import_order_inner", "import_order_util" } },
             .{ .src = "stage1/fixtures/tscalar.mpl", .want = "47\n", .mods = &.{"tscalar_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
@@ -773,6 +779,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/defer_arm.mpl",
         "stage1/fixtures/defer_call.mpl",
         "stage1/fixtures/top_defer.mpl",
+        "stage1/fixtures/import_order.mpl",
         "stage1/fixtures/proj_ref.mpl",
         "stage1/fixtures/trail.mpl",
         "stage1/fixtures/list.mpl",

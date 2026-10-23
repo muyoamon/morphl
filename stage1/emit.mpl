@@ -120,6 +120,8 @@ $decl estate $func () {
   // `est` everywhere and the function table nowhere.
   $decl fnames $mut $alloc strs.node
   $decl errs   $mut $alloc Pa.diags.node
+  // The modules with an output, hence an `mpl_init_<mod>` an `$import` may call.
+  $decl imods  $mut $alloc strs.node
 }
 
 $decl proto_est $call estate ()
@@ -2481,6 +2483,25 @@ $decl emit_arr_prim $func ($decl st proto_est, $decl ts T.tys.node, $decl nm "",
 // The call shape, since narrowing does not cross a call (§5.7).
 $decl proto_call $call IR.e_call (0, $call IR.e_unit (0), IR.exprs.nil, false)
 
+$decl has_str $func ($decl xs strs.node, $decl n "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head, n)) true ($call has_str (xs.tail, n)),
+  $case xs false
+)
+
+// §4.14's "effects run once, at first import": an `$import` is lowered to `init:<module>`
+// before its record (lowering's `init_first`), and this is the call — to the module's
+// initialiser, which returns at once after its first run. A module with no output has no
+// initialiser, and nothing in it to run.
+$decl is_init_prim $func ($decl n "")
+  $if ($call lt (5, $call len (n))) ($call eq_str ($call slice (n, 0, 5), "init:")) false
+$decl emit_init_call $func ($decl st proto_est, $decl n "", $decl dest "") {
+  $decl m   $call slice (n, 5, $call len (n))
+  $decl c   $if ($call has_str ($call strs.val (st.imods), m))
+                ($call say (st, $call concat ("  mpl_init_", $call concat (m, "();\n")))) ()
+  $decl ret $call assign (st, dest, "0")
+}.ret
+
 // §7.6: `$alloc` from an allocator other than the root's. Lowering made it the prim
 // `alloc_in (member, value)`, the member being the allocator's `alloc` as a §7.3 pair; this
 // asks it for the storage's size, which only the C compiler knows, and stores the value at
@@ -2567,7 +2588,8 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
       $decl cf $call prim_fn (pnm)
       $decl of $call opt_fn (pnm)
       $decl rf $call unit_err_fn (pnm)
-      $decl ret2  $if ($call eq_str (pnm, "alloc_in"))
+      $decl ret2  $if ($call is_init_prim (pnm)) ($call emit_init_call (st, pnm, dest))
+        ($if ($call eq_str (pnm, "alloc_in"))
           ($call emit_alloc_in (st, ts, as, dest, e.ty))
         ($if ($call eq_str (pnm, "free_in"))
           ($call emit_free_in (st, ts, as, dest,
@@ -2592,7 +2614,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
           ($call emit_res_prim (st, ts, rf, as, dest, e.ty))
         ($if ($call arr_prim (pnm))
           ($call emit_arr_prim (st, ts, pnm, as, dest, e.ty))
-          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm)))))))))))
+          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm))))))))))))
     }.ret2
     $match cal (
       $case cal {
@@ -3799,12 +3821,6 @@ $decl append_ofiles $func ($decl xs IR.ofiles.node, $decl ys IR.ofiles.node) $ma
   $case xs ys
 )
 
-$decl has_str $func ($decl xs strs.node, $decl n "") $match xs (
-  $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head, n)) true ($call has_str (xs.tail, n)),
-  $case xs false
-)
-
 // The modules this program is made of, in the order they first appear, with the entry
 // file's own ("") left out — it is emitted last, because it is the one that holds
 // `mpl_init` and `main`.
@@ -3818,28 +3834,8 @@ $decl mods_of $func ($decl fs IR.fns.node, $decl acc strs.node) $match fs (
   $case fs ($call strs.reverse (acc, strs.nil))
 )
 
-// **In the order the modules' loading completed, which `IR.program.mods` carries.** Not
-// the order their functions appear in the table: a module's `$import` member takes its
-// index before the imported module's members are lifted, so index order puts the
-// importer *first* and its initialiser then reads a static its dependency has not
-// assigned yet. That was a SIGFPE at startup — `mpl_init_infer` before
-// `mpl_init_types`, dividing by a zero `hmod`.
-//
-// Filtered to the modules that actually have an output, so a call can never name an
-// `mpl_init_<mod>` that was never defined.
-$decl emit_mod_calls $func ($decl st proto_est, $decl ms strs.node, $decl have strs.node)
-  $match ms (
-  $case {$prop tag "cons"} {
-    $decl ok $call has_str (have, ms.head)
-    $decl a  $if ok ($call say (st, $call concat ("  mpl_init_",
-                 $call concat (ms.head, "();\n")))) ()
-    $decl ret  $call emit_mod_calls (st, $call strs.val (ms.tail), have)
-  }.ret,
-  $case ms ()
-)
-
-// Declared in the shared header, because the entry file's `mpl_init` calls them and they
-// are defined in another translation unit.
+// Declared in the shared header, because an `$import` anywhere calls them (`emit_init_call`)
+// and they are defined in another translation unit.
 $decl emit_mod_init_decls $func ($decl st proto_est, $decl ms strs.node) $match ms (
   $case {$prop tag "cons"}
     $do ($call say (st, $call concat ("void mpl_init_", $call concat (ms.head, "(void);\n"))))
@@ -3862,8 +3858,9 @@ $decl emit_mod_files $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T
     // effects. It exists so a module's thunks and effect functions can stay private —
     // the one initialiser in the entry file had to be able to call every one of them,
     // which is what forced 269 extra exports.
+    // Once: every `$import` of the module calls it, and §4.14 loads a module once.
     $decl j0 $call say (st, $call concat ("\nvoid mpl_init_", $call concat (ms.head,
-                  "(void) {\n")))
+                  "(void) {\n  static int done = 0;\n  if (done) return;\n  done = 1;\n")))
     $decl j1 $call emit_mod_init (st, fs, $call IR.effects.val (efs), ms.head)
     $decl j2 $call say (st, "}\n")
     $decl f  $call IR.ofile ($call concat (ms.head, ".c"), $call cut_out (st))
@@ -4068,6 +4065,7 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   $decl fs $call IR.fns.val (p.funcs)
   // Before anything is emitted: every name comes from here.
   $decl nms $set st.fnames ($call fn_keys (fs, strs.nil))
+  $decl ims $set st.imods ($call mods_of (fs, strs.nil))
   // And every lookup by index — `fn_at`, `key_at`, `type_at` — from these.
   $decl fx $set em_fnix ($call ft_fill ($call ft_leaf (fents.nil), fs, $call strs.val (st.fnames),
       0))
@@ -4127,23 +4125,13 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   $decl eg $call emit_globals (st, fs, ts, 0, false)
   $decl e0 $call emit_fns (st, fs, ts, 0, gs, "")
   $decl e1 $call emit_groups (st, fs, gs, 0, ts, "")
-  // §4.10 in two passes, and the order between them is the whole point.
-  // `$import` evaluates the module's block where it stands, so everything that
-  // was *lifted* — a module's members above all — is initialised before the
-  // entry file's own globals, not after them as index order would have it. §4.10
-  // makes the coarseness exact: an item can only name what precedes it, so a
-  // file global can only depend on an import declared above it, and §4.14
-  // lowers a module against the root block alone so no module member can
-  // depend on the importer at all.
+  // §4.10: the entry file's own globals and effects, in source order. No module's
+  // initialiser is called from here: each `$import` calls its module's where it is
+  // evaluated (§4.14, `emit_init_call`), so a module initialises at its importer's
+  // `$import` and not before the importer's first item, as it did when this called every
+  // module up front.
   $decl nfn $call IR.fns.length (fs, 0)
   $decl i0  $call say (st, "\nstatic void mpl_init(void) {\n")
-  // Each module's initialiser first, in the order their loading **completed**, then
-  // the entry file's own globals. The order comes from `IR.program.mods`, recorded by
-  // lowering, and is *not* derived from the table: this comment used to claim that a
-  // module's first index is lower than its importer's, and it is the other way round —
-  // the importer's `$import` member takes its index before the imported module's
-  // members are lifted. See `emit_mod_calls`.
-  $decl i1 $call emit_mod_calls (st, $call IR.strs.val (p.mods), mods)
   $decl i1b $call emit_inits (st, fs, fs, $call IR.effects.val (p.effs), 0, 0, p.fnbase,
                  false, "")
   $decl i2  $call say (st, "}\n")

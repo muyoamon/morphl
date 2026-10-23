@@ -3424,17 +3424,32 @@ $decl load_module $func ($decl st proto_lst, $decl key "", $decl nm "", $decl n 
     )
 }.ret
 
+// §4.14: the module's "top-level effects run once, at first import, depth-first from the
+// entry file in source order of `$import`s" — so evaluating an `$import` initialises the
+// module, there, before it answers the record: `init:<module>`, an internal prim emit makes
+// `mpl_init_<module>()`, which runs once however often it is reached. Initialising every
+// module before the entry file's first item, as `mpl_init` used to, hoisted a module's
+// effects and deferrals above whatever the importer wrote before its `$import`.
+$decl init_first $func ($decl st proto_lst, $decl key "", $decl r proto_lres) {
+  $decl uid $call intern (st, T.t_unit)
+  $decl ic  $call IR.e_call (uid, $call IR.e_prim ($call intern (st,
+                $call T.t_func (T.tys.nil, T.t_unit)), $call concat ("init:", $call mod_short (key))),
+                IR.exprs.nil, false)
+  $decl ret $call lres4 ($call IR.e_do ($call intern (st, r.ty), ic, r.ir), r.ty, r.mod, r.tmpl)
+}.ret
+
 $decl lower_import $func ($decl st proto_lst, $decl n proto_form) {
   $decl nm  $call str_of ($call op (n, 0))
   $decl key $call Pa.resolve_import ($call P.sval (st.base), $call strs.val (st.roots), nm)
   $decl hit $call find_mod_path (st.mods, key)
-  $decl ret $match hit (
+  $decl r   $match hit (
       // §4.14: "Loaded once. All imports of the same resolved file yield the
       // same module." A cycle finds the entry too, because it is registered
       // before its members are lowered.
       $case {$prop tag "cons"} ($call mod_value (st, hit.head.id)),
       $case hit ($call load_module (st, key, nm, n))
     )
+  $decl ret $call init_first (st, key, r)
 }.ret
 
 $decl lower_specialize $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form) {
@@ -6377,11 +6392,31 @@ $decl pure_slots $func ($decl xs IR.bslots.node) $match xs (
   $case xs true
 )
 
+// An `$import`'s thunk is the module's initialiser and then its record (`init_first`): the
+// record is what may go, and the initialiser stays, since it is an effect.
+$decl is_init $func ($decl x IR.proto_expr) $match x (
+  $case {$prop tag "call"} {
+    $decl c   $call IR.eval (x.callee)
+    $decl ret $match c (
+        $case {$prop tag "prim"}
+          $if ($call lt (5, $call len (c.name)))
+              ($call eq_str ($call slice (c.name, 0, 5), "init:")) false,
+        $case c false
+      )
+  }.ret,
+  $case x false
+)
+$decl rec_body $func ($decl b IR.proto_expr) $match b (
+  $case {$prop tag "do"}
+    $if ($call is_init ($call IR.eval (b.first))) ($call IR.eval (b.then)) b,
+  $case b b
+)
+
 // Thunks whose whole body is a non-empty pure record.
 $decl rec_cands $func ($decl fs IR.fns.node, $decl i 0, $decl acc IR.ints.node) $match fs (
   $case {$prop tag "cons"} {
     $decl f fs.head
-    $decl b $call IR.eval (f.body)
+    $decl b $call rec_body ($call IR.eval (f.body))
     $decl ok $if f.thunk
         ($match b (
             $case {$prop tag "block"}
@@ -6495,9 +6530,18 @@ $decl rec_close $func ($decl all IR.fns.node, $decl cs IR.ints.node, $decl todo 
 
 // Every field carried across — `mod`, `rank`, `pub` and `nmod` included, which a pass
 // that rebuilds a function has been caught dropping twice (`mark_self`, `fold`).
-$decl empty_thunk $func ($decl f IR.proto_fn, $decl eid 0)
-  $call IR.fn_p (f.name, f.params, eid, IR.ints.nil, $call IR.e_block (eid, IR.bslots.nil),
-      f.self_tail, f.thunk, f.env, f.mod, f.rank, f.pub, f.nmod)
+$decl empty_thunk $func ($decl f IR.proto_fn, $decl eid 0) {
+  $decl b0  $call IR.eval (f.body)
+  $decl eb  $call IR.e_block (eid, IR.bslots.nil)
+  $decl b   $match b0 (
+      $case {$prop tag "do"}
+        $if ($call is_init ($call IR.eval (b0.first)))
+            ($call IR.e_do (eid, $call IR.eval (b0.first), eb)) eb,
+      $case b0 eb
+    )
+  $decl ret $call IR.fn_p (f.name, f.params, eid, IR.ints.nil, b, f.self_tail, f.thunk, f.env,
+                f.mod, f.rank, f.pub, f.nmod)
+}.ret
 
 $decl rec_drop $func ($decl fs IR.fns.node, $decl i 0, $decl dead IR.ints.node, $decl eid 0,
                       $decl acc IR.fns.node) $match fs (
