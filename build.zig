@@ -222,6 +222,9 @@ pub fn build(b: *std.Build) void {
         // §4.14: a module initialises at its first `$import`, in source order, not before
         // its importer's first item; a nested `$import` likewise, and a second one not at all.
         .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 " },
+        // A deferred prop read is a thunk lifted into the entry file's output, assigned
+        // first; read as a value it used to be a zero pair and a crash. 2.
+        .{ .src = "stage1/fixtures/init_lifted.mpl", .want = "2\n" },
         // §5.4 through a union of references, and a union of values whose shared prefix is
         // not the C union's: a switch on the discriminator, each member read where it has
         // the field. 134567892312.
@@ -780,6 +783,7 @@ pub fn build(b: *std.Build) void {
         "stage1/fixtures/defer_call.mpl",
         "stage1/fixtures/top_defer.mpl",
         "stage1/fixtures/import_order.mpl",
+        "stage1/fixtures/init_lifted.mpl",
         "stage1/fixtures/proj_ref.mpl",
         "stage1/fixtures/trail.mpl",
         "stage1/fixtures/list.mpl",

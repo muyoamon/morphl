@@ -4125,13 +4125,19 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   $decl eg $call emit_globals (st, fs, ts, 0, false)
   $decl e0 $call emit_fns (st, fs, ts, 0, gs, "")
   $decl e1 $call emit_groups (st, fs, gs, 0, ts, "")
-  // §4.10: the entry file's own globals and effects, in source order. No module's
-  // initialiser is called from here: each `$import` calls its module's where it is
-  // evaluated (§4.14, `emit_init_call`), so a module initialises at its importer's
-  // `$import` and not before the importer's first item, as it did when this called every
-  // module up front.
+  // §4.10 in two passes. First the thunks lifted into the entry file's output (index
+  // `fnbase` on, `mod ""`): a prop read deferred to the end of the file (`resolve_pends`),
+  // whose body is the prop's value — an alias of a function, or a constant — and which
+  // an entry global may read while it initialises. `verify` holds them to that: a lifted
+  // thunk may not name an entry-file global (`vorder`). This pass had been lost, and a
+  // deferred read of a function-valued prop used as a value read a zero pair: a crash
+  // where stage 0 answers (`init_lifted.mpl`). Then the entry file's own globals and
+  // effects in source order. No module's initialiser is called from here: each `$import`
+  // calls its module's where it is evaluated (§4.14, `emit_init_call`), so a module
+  // initialises at its importer's `$import` and not before the importer's first item.
   $decl nfn $call IR.fns.length (fs, 0)
   $decl i0  $call say (st, "\nstatic void mpl_init(void) {\n")
+  $decl i1a $call emit_inits (st, fs, fs, IR.effects.nil, 0, p.fnbase, nfn, false, "")
   $decl i1b $call emit_inits (st, fs, fs, $call IR.effects.val (p.effs), 0, 0, p.fnbase,
                  false, "")
   $decl i2  $call say (st, "}\n")
