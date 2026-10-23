@@ -3953,10 +3953,20 @@ $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.pro
 // Solving the system. Each equation is substituted into the others — never into
 // itself, which `close_rec` handles instead — and one round per equation is
 // enough to resolve a cycle of that length.
-$decl subst_all $func ($decl t T.proto_ty, $decl rs res_list.node) $match rs (
-  $case {$prop tag "cons"} $call subst_all ($call T.subst (t, rs.head.id, rs.head.ty), rs.tail),
-  $case rs t
+// The solution applied: every equation substituted, in order. `vs` is `compose_res`'s,
+// which turns the sequence into one simultaneous substitution — `v_k` replaced by its type
+// with the equations after it already applied — so a type is rebuilt once rather than once
+// per equation whose placeholder occurs in it (PERF.md).
+$decl subst_all $func ($decl t T.proto_ty, $decl vs T.vsubs.node) $call T.subst_many (t, vs)
+
+$decl compose_go $func ($decl rs res_list.node, $decl acc T.vsubs.node) $match rs (
+  $case {$prop tag "cons"}
+    $call compose_go (rs.tail, $call T.vsubs.cons ($call T.vsub (rs.head.id,
+        $call T.subst_many (rs.head.ty, acc)), acc)),
+  $case rs acc
 )
+$decl compose_res $func ($decl rs res_list.node)
+  $call compose_go ($call res_list.reverse (rs, res_list.nil), T.vsubs.nil)
 
 $decl subst_others $func ($decl t T.proto_ty, $decl rs res_list.node, $decl self 0) $match rs (
   $case {$prop tag "cons"}
@@ -3980,7 +3990,7 @@ $decl solve $func ($decl cx proto_ctx, $decl rs res_list.node, $decl n 0, $decl 
   $if ($call eq_int (n, 0)) rs
       ($call solve (cx, $call solve_once (cx, rs, rs, res_list.nil, x), $call sub (n, 1), x))
 
-$decl apply_res_fields $func ($decl fs T.fields.node, $decl rs res_list.node,
+$decl apply_res_fields $func ($decl fs T.fields.node, $decl rs T.vsubs.node,
     $decl acc T.fields.node) $match fs (
   $case {$prop tag "cons"}
     $call apply_res_fields (fs.tail, rs,
@@ -4007,7 +4017,7 @@ $decl infer_items $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.nod
   $case items ()
 )
 
-$decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs res_list.node) {
+$decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs T.vsubs.node) {
   $decl a $call subst_all (d.sub, rs)
   $decl b $call subst_all (d.sup, rs)
   $decl ret $if ($call or ($call has_free_var (a), $call has_free_var (b)))
@@ -4021,7 +4031,7 @@ $decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs res_lis
 }.ret
 
 $decl recheck_list $func ($decl cx proto_ctx, $decl ds def_list.node,
-    $decl rs res_list.node) $match ds (
+    $decl rs T.vsubs.node) $match ds (
   $case {$prop tag "cons"} $do ($call recheck_one (cx, ds.head, rs)) ($call recheck_list (cx,
       ds.tail, rs)),
   $case ds ()
@@ -4030,7 +4040,7 @@ $decl recheck_list $func ($decl cx proto_ctx, $decl ds def_list.node,
 $decl recheck_defers $func ($decl cx proto_ctx, $decl rs res_list.node) {
   $decl ds      $call eval_defer (cx.defer)
   $decl cleared $set cx.defer def_list.nil
-  $decl ret     $call recheck_list (cx, ds, rs)
+  $decl ret     $call recheck_list (cx, ds, $call compose_res (rs))
 }.ret
 
 // §3.3: a block's type is the ordered list of its `$decl` slots plus its props.
@@ -4154,7 +4164,7 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl eqns   $call eval_res (s.res)
   $decl solved $call solve (cx, eqns, $call res_list.length (eqns, 0), x)
   $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil),
-                                       solved, T.fields.nil)
+                                       $call compose_res (solved), T.fields.nil)
   $decl late $call recheck_defers (cx, solved)
   // The members that name the receiver, typed for real: the block's type exists now,
   // and the receiver is a reference to it at the declaration's qualifier (§4.10). A

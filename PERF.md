@@ -2808,3 +2808,45 @@ on an ancestor read alone took lowering only to 1,382 MB, with the counts still 
 (2,052, 1,026, 513), because a read of a *descendant* still triggered one. And **a 4 GB cap
 reads as a lowering blow-up**: an hour went into bisecting what turned out to be HEAD already
 needing 4–4.5 GB — `regen.sh` runs under 8 GB, and the cap, not the change, was the wall.
+
+### After the retries: three substitution and joining costs — −23%
+
+With the retries gone a self-emit allocated 1,042 MB, and the profile changed shape: what
+the retries had multiplied was gone, and what was left was proportional work plus a few
+costs that were not. The instrument charged each allocation to its nearest caller outside
+the type-rebuilding helpers (`remap` and its contified group, `cons`, `reverse`, the type
+constructors), which is what put names on them — a per-function profile charges nearly all
+of it to `remap`, which is called from everywhere.
+
+| change | site | self-emit allocates |
+|---|---|---|
+| (start) | | 1,042 MB |
+| `restrict` on a `μ` memoised by class pair (`xtable`) | `subst_members`, 152 MB | 867 MB |
+| a solved system applied as one simultaneous substitution | `subst_all`, 113 MB | 825 MB |
+| `sole_text` joins the outputs by `emit`'s balanced join; `put_mrank` moves to front | 25 MB, 15 MB | **801 MB** (−23%) |
+
+Each kept the emitted program the same (sorted lines, modulo counter-numbered names) and
+reached a fixed point.
+
+- **`restrict` on a recursive type** keeps the members a pattern covers and unrolls each —
+  a rebuild of every kept member, at every `$match` arm on a recursive type. It is a pure
+  function of the two types, so it is cached on their `cid`s like `sort_key`'s renderings;
+  `cid`s are never rolled back, so a hit is never stale.
+- **Inference's `subst_all`** applied a solved system's equations one after another, and
+  each whose placeholder occurred rebuilt the whole type. `compose_res` turns the sequence
+  into one simultaneous substitution — `v_k` replaced by its type with the later equations
+  already applied, built back to front — and `subst_many` walks once. Composition is exact:
+  a sequence never revisits what it inserted, and neither does one walk.
+- **A fourth was built, measured at −134 MB, and reverted, because it was unsound.** A
+  placeholder substitution rebuilds every node it walks, including subtrees with no
+  placeholder in them, and `pv` would say so in O(1) — but a block's `pv` leaves out its
+  props' types, which `remap` rewrites and §6's conformance reads. Skipping on `pv` left a
+  receiver's placeholder in a prop's type, and `recv_param.mpl`, `recv_ref.mpl`,
+  `wrap_self.mpl` and the std suites failed with `cannot project '.push' from v65`. The
+  self-emit could not show it: it was the same program, byte for byte, because the compiler
+  has no receiver members. Doing it soundly needs a second construction-time flag that
+  counts props' types — a field on every compound node and a rule beside each `pv` rule.
+
+What is left is flat — the largest site is `emit`'s O(L log n) output join at 65 MB, then
+renderings, environment tries, argument lists, verify's merge sort and the lexer's token
+list, each 15–43 MB of work proportional to the program.

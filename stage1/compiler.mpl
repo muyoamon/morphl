@@ -76,14 +76,17 @@ $decl proto_emitted $call emitted (IR.ofiles.nil, Pa.diags.nil)
 // than reaching into the list, so a driver written before §9.1 answered a list keeps
 // working after it: the outputs are emitted in an order that is valid to concatenate,
 // declarations before the code that uses them.
-$decl join_files $func ($decl fs IR.ofiles.node, $decl acc "") $match fs (
+// The outputs' texts, newest first, joined by `emit`'s balanced join: appending each to
+// an accumulator copied everything before it once per file (CLAUDE.md, "Writing morphl").
+$decl file_texts $func ($decl fs IR.ofiles.node, $decl acc E.strs.node) $match fs (
   $case {$prop tag "cons"}
-    $call join_files ($call IR.ofiles.val (fs.tail), $call concat (acc, fs.head.text)),
+    $call file_texts ($call IR.ofiles.val (fs.tail), $call E.strs.cons (fs.head.text, acc)),
   $case fs acc
 )
 
 $decl sole_text $func ($decl e proto_emitted)
-  $call join_files ($call IR.ofiles.val (e.files), "")
+  $call E.join_all ($call E.strs.reverse ($call file_texts ($call IR.ofiles.val (e.files),
+      E.strs.nil), E.strs.nil))
 
 $decl artifact $func ($decl p "", $decl d Pa.diags.node)
   { $decl path p  $decl diagnostics d }
@@ -179,7 +182,7 @@ $decl emit $func ($decl pr IR.proto_program) {
 // -------------------------------------------------------------------- link
 //
 // §9.1's last step. The outputs are written as one translation unit, `<path>.c` —
-// the concatenated form `join_files` keeps valid — and the platform's C compiler is
+// the concatenated form `sole_text` keeps valid — and the platform's C compiler is
 // run on it through BOOTSTRAP §2's `run`, which takes an argv and no shell, so no
 // path needs quoting. `extra` is passed to it after the source: C files the program's
 // `$extern`s are defined in, `-l` libraries, flags. The C file is left beside the

@@ -819,15 +819,19 @@ $decl find_mrank $func ($decl xs mranks_list.node, $decl m "") $match xs (
   $case xs 0
 )
 
+// The entry is moved to the front: lowering works through one module at a time, so the
+// module asked for is nearly always the head and an update is one cell, where rebuilding the
+// list up to the entry in place was a copy of it per lowered function (PERF.md). Order means
+// nothing here — `find_mrank` looks a module up by name.
 $decl put_mrank $func ($decl xs mranks_list.node, $decl m "", $decl n 0, $decl acc mranks_list.node)
   $match xs (
     $case {$prop tag "cons"}
       $if ($call eq_str (xs.head.mod, m))
-          ($call mranks_list.reverse (acc, $call mranks_list.cons ($call mrank (m, n),
-               $call mranks_list.val (xs.tail))))
+          ($call mranks_list.cons ($call mrank (m, n),
+               $call mranks_list.reverse (acc, $call mranks_list.val (xs.tail))))
           ($call put_mrank ($call mranks_list.val (xs.tail), m, n,
                $call mranks_list.cons (xs.head, acc))),
-    $case xs ($call mranks_list.reverse (acc, $call mranks_list.cons ($call mrank (m, n),
+    $case xs ($call mranks_list.cons ($call mrank (m, n), $call mranks_list.reverse (acc,
                   mranks_list.nil)))
   )
 

@@ -1534,8 +1534,17 @@ $decl occurs $func ($decl t proto_ty, $decl i 0)
 // `d` is the number of binders enclosing the node being rewritten, which is at
 // once the cutoff for renumbering, the index the bound variable being replaced
 // now has, and the index a placeholder becomes when the knot is tied.
-$decl rop $func ($decl k "", $decl n 0, $decl r proto_ty)
-  { $decl kind k  $decl i n  $decl ty r }
+// Several placeholders replaced at once (`subst_many`), each by its own type.
+$decl vsub  $func ($decl i 0, $decl t proto_ty) { $decl id i  $decl ty t }
+$decl vsubs $specialize P.list ($call vsub (0, t_bot))
+$decl vsub_find $func ($decl xs vsubs.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.id, i)) xs
+      ($call vsub_find ($call vsubs.val (xs.tail), i)),
+  $case xs xs
+)
+
+$decl rop $func ($decl k "", $decl n 0, $decl r proto_ty, $decl v vsubs.node)
+  { $decl kind k  $decl i n  $decl ty r  $decl vs $alloc v }
 
 // Replace the placeholder `i` by `r`. `r` is a solved type and therefore
 // closed, so passing under a binder leaves it alone.
@@ -1578,14 +1587,21 @@ $decl remap_props $func ($decl xs props.node, $decl o proto_rop, $decl d 0,
 
 $fwd remap_go
 
+// A placeholder substitution walks a subtree with no placeholder in it too, and cannot
+// skip it on `pv`: `pv` leaves out a prop's `ty`, which this rewrites and §6's conformance
+// reads, so a receiver's placeholder there would survive (`recv_param.mpl`; PERF.md).
 $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $call remap_go (t, o, d)
 
 $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "var"}
-    $if ($call eq_int (t.id, o.i))
+    $if ($call eq_str (o.kind, "many")) {
+      $decl f    $call vsub_find ($call vsubs.val (o.vs), t.id)
+      $decl ret2 $match f ($case {$prop tag "cons"} ($call tval (f.head.ty)), $case f t)
+    }.ret2
+    ($if ($call eq_int (t.id, o.i))
         ($if ($call eq_str (o.kind, "var")) o.ty
         ($if ($call eq_str (o.kind, "abs")) ($call t_bnd (d)) t))
-        t,
+        t),
   $case {$prop tag "bnd"}
     $if ($call eq_str (o.kind, "shift"))
         ($if ($call lt (t.idx, d)) t ($call t_bnd ($call add (t.idx, o.i))))
@@ -1630,6 +1646,18 @@ $decl subst $func ($decl t proto_ty, $decl i 0, $decl r proto_ty)
 
 $decl subst_bnd $func ($decl t proto_ty, $decl k 0, $decl r proto_ty)
   $call remap (t, $call rop_bnd (r), k)
+
+// Every placeholder in `vs` replaced by its type in one walk. Substituting them one after
+// another rebuilds the whole type once per placeholder that occurs; one walk rebuilds it
+// once. Each replacement is closed and is not walked again, so `vs` must already carry
+// what a sequence would have done to it (infer.mpl's `compose_res`).
+$decl occurs_some $func ($decl t proto_ty, $decl vs vsubs.node) $match vs (
+  $case {$prop tag "cons"}
+    $if ($call occurs (t, vs.head.id)) true ($call occurs_some (t, $call vsubs.val (vs.tail))),
+  $case vs false
+)
+$decl subst_many $func ($decl t proto_ty, $decl vs vsubs.node)
+  $if ($call occurs_some (t, vs)) ($call remap (t, $call rop ("many", 0, t_bot, vs), 0)) t
 
 
 
@@ -2670,11 +2698,78 @@ $decl keep_covered $func ($decl xs tys.node, $decl pat proto_ty, $decl acc tys.n
 
 $fwd restrict_at
 
+// `restrict` on a `μ` keeps the members a pattern covers and unrolls each — a rebuild of
+// every kept member, at every `$match` arm on a recursive type, which was 152 MB of a
+// 1,042 MB self-emit (PERF.md). It is a function of the two types' classes, as a rendering
+// is (`sort_key`), so each pair is narrowed once and kept, in a trie like `rtable`'s.
+$decl xent       $func ($decl a 0, $decl b 0, $decl t proto_ty)
+  { $decl ca a  $decl cb b  $decl ty t }
+$decl proto_xent $call xent (0, 0, t_bot)
+$decl xents      $specialize P.list proto_xent
+$decl xtrie $union (
+  { $prop tag "leaf"   $decl items $alloc xents.node },
+  { $prop tag "branch" $decl lo $alloc xtrie  $decl hi $alloc xtrie }
+)
+$decl xt_leaf   $func ($decl xs xents.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl xt_branch $func ($decl l xtrie, $decl h xtrie) {
+  $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h
+}
+$decl xt_val   $func ($decl x xtrie) x
+$decl xt_items $func ($decl tr xtrie)
+    $match tr ($case {$prop tag "leaf"} ($call xents.val (tr.items)), $case tr xents.nil)
+$decl xt_scan $func ($decl xs xents.node, $decl a 0, $decl b 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($if ($call eq_int (xs.head.ca, a)) ($call eq_int (xs.head.cb, b)) false) xs
+        ($call xt_scan ($call xents.val (xs.tail), a, b)),
+  $case xs xs
+)
+$decl xt_find $func ($decl tr xtrie, $decl k 0, $decl a 0, $decl b 0) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (k, 2), 0))
+        ($call xt_find ($call xt_val (tr.lo), $call div (k, 2), a, b))
+        ($call xt_find ($call xt_val (tr.hi), $call div (k, 2), a, b)),
+  $case tr ($call xt_scan ($call xt_items (tr), a, b))
+)
+$decl xt_nil $call xt_leaf (xents.nil)
+$decl xt_kid $func ($decl tr xtrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call xt_val ($if hi tr.hi tr.lo)),
+  $case tr xt_nil
+)
+$decl xt_add $func ($decl tr xtrie, $decl k 0, $decl d 0, $decl e proto_xent)
+  $if ($call not ($call lt (d, 14))) ($call xt_leaf ($call xents.cons (e, $call xt_items (tr)))) {
+    $decl lo  $call xt_kid (tr, false)
+    $decl hi  $call xt_kid (tr, true)
+    $decl ret $if ($call eq_int ($call mod (k, 2), 0))
+        ($call xt_branch ($call xt_add (lo, $call div (k, 2), $call add (d, 1), e), hi))
+        ($call xt_branch (lo, $call xt_add (hi, $call div (k, 2), $call add (d, 1), e)))
+  }.ret
+$decl xtable $mut $alloc xtrie
+
+$decl restrict_rec $func ($decl t proto_ty, $decl pat proto_ty) {
+  $decl a   $call cid_of (t)
+  $decl b   $call cid_of (pat)
+  $decl ret $if ($if ($call lt (a, 0)) true ($call lt (b, 0))) ($call restrict_at (t, pat)) {
+    $decl k    $call mod ($call add ($call mul ($call mod (a, 1000003), 31), b), 16381)
+    $decl f    $call xt_find ($call xt_val (xtable), k, a, b)
+    $decl ret2 $match f (
+        $case {$prop tag "cons"} ($call tval (f.head.ty)),
+        $case f {
+          $decl r    $call restrict_at (t, pat)
+          $decl put  $set xtable ($call xt_add ($call xt_val (xtable), k, 0, $call xent (a, b, r)))
+          $decl ret3 r
+        }.ret3
+      )
+  }.ret2
+}.ret
+
 $decl restrict $func ($decl t proto_ty, $decl pat proto_ty)
   // §4.7's catch-all arm narrows the scrutinee by its own type, and `T & T` is
   // `T`. Without this the common arm re-checks every member against every
   // member, which is quadratic for no information.
-  $if ($call same (t, pat)) t ($call restrict_at (t, pat))
+  $if ($call same (t, pat)) t ($match t (
+      $case {$prop tag "rec"} ($call restrict_rec (t, pat)),
+      $case t ($call restrict_at (t, pat))
+    ))
 
 $decl restrict_at $func ($decl t proto_ty, $decl pat proto_ty) $match t (
   // Selecting does not need the type unrolled. A pattern is a tag block, and
