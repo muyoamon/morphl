@@ -45,7 +45,6 @@ $decl T $import "types"
 $decl not P.not
 
 $decl ints $specialize P.list 0
-$decl strs $specialize P.list ""
 
 // ------------------------------------------------------------------- types
 //
@@ -482,31 +481,21 @@ $decl effects      $specialize P.list proto_effect
 // begin. A global's index is its position among the top-level `$decl`s, so the
 // first `fnbase` entries are the entry file's and everything after them was
 // lifted — a module's members (§4.14), a `$specialize`'s (§4.9), a `$func`
-// literal's (§7.3), a §3.3 effect's. The backend needs the boundary because
-// §4.10's initialisation order does not follow index order across it: an
-// `$import` evaluates the module's block where it stands, so the module's
-// statics have to be assigned before the importing file's.
-// `mods` is the imported modules in the order their loading **completed**, which is
-// the order their `mpl_init_<mod>` must run in: §4.14 finishes a module before the
-// importer's next member, so a dependency always completes first.
+// literal's (§7.3), a §3.3 effect's. The backend needs the boundary because a
+// file's effect numbers its place by field and a module's by lifted index, and
+// the two spaces meet there; and because what was lifted into the entry file's
+// output is assigned before the entry file's own globals (`mpl_init`).
 //
-// It is carried rather than derived because deriving it was **wrong**. `mods_of` took
-// the order a module's functions first appear in the table, and `CLAUDE.md` claimed
-// that was §4.14's order — but a module's own `$import` member reserves its index
-// *before* the imported module's members are lifted, so an importer always sorts ahead
-// of its dependency. The emitted `mpl_init` called `mpl_init_infer()` before
-// `mpl_init_types()`, and an `infer` top-level `$decl` that reaches `types`' `hmix`
-// divided by a `hmod` static that was still zero: SIGFPE at startup. `mplc` escaped it
-// only because `compiler.mpl`'s own statics happen not to touch another module's.
-$decl program_m $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
-                       $decl e 0, $decl efs effects.node, $decl fb 0, $decl ms strs.node) {
-  $decl types  ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
-  $decl fnbase fb  $decl mods ms
-}
-
+// There is no module order here. It used to be carried, as the order `mpl_init` called
+// every module's initialiser in before the entry file's first item — which hoisted a
+// module's effects above whatever its importer wrote before the `$import`. Each
+// `$import` now initialises its module where it is evaluated (§4.14), so the order is
+// the program's own.
 $decl program $func ($decl ts T.tys.node, $decl fs fns.node, $decl gs groups.node,
-                     $decl e 0, $decl efs effects.node, $decl fb 0)
-  $call program_m (ts, fs, gs, e, efs, fb, strs.nil)
+                     $decl e 0, $decl efs effects.node, $decl fb 0) {
+  $decl types  ts  $decl funcs fs  $decl groups gs  $decl entry e  $decl effs efs
+  $decl fnbase fb
+}
 
 // §9.1: one output of `emit`, carrying the path it should be written to. It lives here
 // rather than in `compiler` because `emit` is what builds them and cannot import its own
