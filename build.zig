@@ -111,6 +111,27 @@ pub fn build(b: *std.Build) void {
     // Compiled at -O0 on purpose, so that a tail call surviving as a call would
     // overflow rather than be optimised into a loop behind our backs — the loop
     // has to be ours (§6a).
+    // ---------------------------------------------------------------- stage 2
+    //
+    // `bootstrap/mplc.c` is stage 1 emitted by stage 1 — BOOTSTRAP's stage 2 —
+    // and it is committed on purpose. Regenerating it from stage 0 costs ~90
+    // minutes; `cc` costs seconds. That is the usual bootstrap trade, and the
+    // alternative is worse: the fast compiler would exist only on whichever
+    // machine last built it, which is exactly where it was before this step.
+    const stage2_step = b.step("stage2", "Build mplc from the committed bootstrap C");
+    // `-Wno-unused-but-set-variable` for §7.8's `⊥`: a `panic`'s result gets a
+    // temporary that is assigned and never read, because nothing after a `panic`
+    // runs. Correct C for the construct, so it is silenced rather than worked
+    // around — same judgement as `-Wno-unused-function` for the fixtures.
+    const mplc_cc = b.addSystemCommand(&.{
+        "cc", "-O2", "-Wall", "-Wno-unused-function", "-Wno-unused-but-set-variable", "-o",
+    });
+    const mplc_bin = mplc_cc.addOutputFileArg("mplc");
+    mplc_cc.addFileArg(b.path("bootstrap/mplc.c"));
+    stage2_step.dependOn(&b.addInstallBinFile(mplc_bin, "mplc").step);
+
+    const s2_step = b.step("test-stage2", "mplc against stage 0, and the committed C against itself");
+
     const emit_step = b.step("test-emit", "Compile each fixture to C, build it, run it");
     const run0_step = b.step("test-run0", "Run each fixture under stage 0 and check it answers as compiled");
     // §7.6 makes a `$new` a C local, released by C's return, and §5.3a is the whole of
@@ -328,6 +349,25 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&run_bin.step);
 
             if (std.mem.eql(u8, driver, "stage1/emit_c.mpl")) {
+                // The strongest check in the project, and cheap enough to make routine
+                // over every fixture: two executions of the same stage-1 source — this
+                // one interpreted by stage 0, and `mplc`, compiled from the committed C —
+                // must agree on every byte. A difference is the committed backend lagging
+                // `stage1/` (regenerate it) or an interpreter and its compiled form
+                // disagreeing on one program, which is a bug in one of them. A fixture
+                // emits no diagnostics (`emit_c.mpl` would print them ahead of the C),
+                // which is also what lets `cc` compile `c_file` above. (`test-stage2`)
+                const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
+                by_mplc.addFileArg(mplc_bin);
+                by_mplc.addArg(fixture.src);
+                by_mplc.setCwd(b.path("."));
+                by_mplc.has_side_effects = true;
+                const agree = b.addSystemCommand(&.{"cmp"});
+                agree.addFileArg(by_mplc.captureStdOut(.{ .basename = "by_mplc.c" }));
+                agree.addFileArg(c_file);
+                s2_step.dependOn(&agree.step);
+                test_step.dependOn(&agree.step);
+
                 const acc = b.addSystemCommand(&.{
                     "cc", "-O0", "-g", "-Wall", "-Wno-unused-function", "-Werror",
                     "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-o",
@@ -533,24 +573,6 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // ---------------------------------------------------------------- stage 2
-    //
-    // `bootstrap/mplc.c` is stage 1 emitted by stage 1 — BOOTSTRAP's stage 2 —
-    // and it is committed on purpose. Regenerating it from stage 0 costs ~90
-    // minutes; `cc` costs seconds. That is the usual bootstrap trade, and the
-    // alternative is worse: the fast compiler would exist only on whichever
-    // machine last built it, which is exactly where it was before this step.
-    const stage2_step = b.step("stage2", "Build mplc from the committed bootstrap C");
-    // `-Wno-unused-but-set-variable` for §7.8's `⊥`: a `panic`'s result gets a
-    // temporary that is assigned and never read, because nothing after a `panic`
-    // runs. Correct C for the construct, so it is silenced rather than worked
-    // around — same judgement as `-Wno-unused-function` for the fixtures.
-    const mplc_cc = b.addSystemCommand(&.{
-        "cc", "-O2", "-Wall", "-Wno-unused-function", "-Wno-unused-but-set-variable", "-o",
-    });
-    const mplc_bin = mplc_cc.addOutputFileArg("mplc");
-    mplc_cc.addFileArg(b.path("bootstrap/mplc.c"));
-    stage2_step.dependOn(&b.addInstallBinFile(mplc_bin, "mplc").step);
 
     // ------------------------------------------------- §9.1's list of outputs
     //
@@ -737,7 +759,6 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&same.step);
     }
 
-    const s2_step = b.step("test-stage2", "mplc against stage 0, and the committed C against itself");
 
     // **The guard against `bootstrap/mplc.c` rotting.** The committed C has to be
     // what the compiler it builds emits for its own source. Change `stage1/` and
@@ -757,90 +778,6 @@ pub fn build(b: *std.Build) void {
         same.addFileArg(b.path("bootstrap/mplc.c"));
         s2_step.dependOn(&same.step);
         test_step.dependOn(&same.step);
-    }
-
-    // The strongest check in the project, and now cheap enough to be routine:
-    // two independent executions of the same stage-1 source — one interpreted by
-    // stage 0, one compiled to native code — must agree on every byte of a real
-    // output. These fixtures are chosen because they emit *no* diagnostics, so
-    // both sides write pure C and are directly comparable; `emit_c.mpl` prints
-    // diagnostics to stdout ahead of the C, and `mplc` prints only the C.
-    for ([_][]const u8{
-        "stage1/fixtures/arrays.mpl",
-        "stage1/fixtures/arrays_any.mpl",
-        "stage1/fixtures/tscalar.mpl",
-        "stage1/fixtures/recv_ref.mpl",
-        "stage1/fixtures/trait_written.mpl",
-        "stage1/fixtures/self_trait.mpl",
-        "stage1/fixtures/bounds.mpl",
-        "stage1/fixtures/local_rec0.mpl",
-        "stage1/fixtures/recv_param.mpl",
-        "stage1/fixtures/wrap_self.mpl",
-        "stage1/fixtures/defer.mpl",
-        "stage1/fixtures/defer_new.mpl",
-        "stage1/fixtures/defer_own.mpl",
-        "stage1/fixtures/defer_arm.mpl",
-        "stage1/fixtures/defer_call.mpl",
-        "stage1/fixtures/top_defer.mpl",
-        "stage1/fixtures/import_order.mpl",
-        "stage1/fixtures/init_lifted.mpl",
-        "stage1/fixtures/proj_ref.mpl",
-        "stage1/fixtures/trail.mpl",
-        "stage1/fixtures/list.mpl",
-        "stage1/fixtures/match.mpl",
-        // §6a's general case, where the two implementations have the most room
-        // to disagree: the group function's parameter list is every member's
-        // concatenated, so an ordering difference would show here and nowhere else.
-        "stage1/fixtures/mutual_sig.mpl",
-        // §6a's indirect case resolved through an alias, where the two
-        // implementations could disagree about which target a thunk names.
-        "stage1/fixtures/alias.mpl",
-        // §6a's indirect case: the pending block's tag is an interned type
-        // index, so the two implementations must agree on the whole type table
-        // for the emitted trampoline to match.
-        "stage1/fixtures/tramp.mpl",
-        // §4.16: the declarations and wrappers are derived from the signature's
-        // interned type, so this compares the ABI mapping on both sides.
-        "stage1/fixtures/extern.mpl",
-        // §8's `write_file` answers `<unit, err>` with both members nullary, so which
-        // position each takes comes from the call site's interned union (§7.5) — the
-        // two implementations have to agree about that, not just about the bytes.
-        "stage1/fixtures/write.mpl",
-        // §4.9: an instance's arguments sit in slots of an outer block and its body in
-        // the current frame, so both sides must agree on the slot numbering.
-        "stage1/fixtures/instance.mpl",
-        // §4.10: a member that names its receiver is a closure over it, so the two
-        // implementations must agree on the captures and on the entry point driving §6a.
-        "stage1/fixtures/receiver.mpl",
-        // §6: the shims and tables are emitted from a walk over every body, so the two
-        // must find the same implementations in the same order.
-        "stage1/fixtures/traits.mpl",
-        // §4.8: lowering resolves an overload with its own types, as inference did.
-        "stage1/fixtures/overload.mpl",
-        // §8: the candidate an intrinsic call becomes is read off the callee's type.
-        "stage1/fixtures/float.mpl",
-        "stage1/fixtures/bits.mpl",
-        "stage1/fixtures/ffi.mpl",
-        "stage1/fixtures/run.mpl",
-    }) |src| {
-        const by_mplc = std.Build.Step.Run.create(b, "mplc emits the fixture");
-        by_mplc.addFileArg(mplc_bin);
-        by_mplc.addArg(src);
-        by_mplc.setCwd(b.path("."));
-        by_mplc.has_side_effects = true;
-        const a = by_mplc.captureStdOut(.{ .basename = "by_mplc.c" });
-
-        const by_s0 = b.addRunArtifact(runner);
-        by_s0.addArgs(&.{ "--run", "stage1/emit_c.mpl", src });
-        by_s0.setCwd(b.path("."));
-        by_s0.has_side_effects = true;
-        const bfile = by_s0.captureStdOut(.{ .basename = "by_stage0.c" });
-
-        const agree = b.addSystemCommand(&.{"cmp"});
-        agree.addFileArg(a);
-        agree.addFileArg(bfile);
-        s2_step.dependOn(&agree.step);
-        test_step.dependOn(&agree.step);
     }
 
     // §9.1's `link`: `mplc <file> -o <exe>` writes the C beside the executable and
