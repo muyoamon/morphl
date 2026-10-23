@@ -4,72 +4,24 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Stage 0 front end. Dependencies run one way:
-    //   diag ← keyword ← lexer ← ast ← parser ← main
-    const diag = b.addModule("diag", .{
-        .root_source_file = b.path("lib/diag/diag.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const st0 = stage0(b, target, optimize);
+    const exe = st0.exe;
+    const diag = st0.mods[0];
+    const keyword = st0.mods[1];
+    const lexer = st0.mods[2];
+    const ast = st0.mods[3];
+    const parser = st0.mods[4];
+    const interp = st0.mods[5];
+    const main_mod = st0.mods[6];
 
-    const keyword = b.addModule("keyword", .{
-        .root_source_file = b.path("lib/syntax/keyword.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // The interpreter every morphl test step runs on. A Debug build interprets about 9x
+    // slower, and the slowest test (`tyio_test` over `emit.mpl`) took 724s Debug against
+    // 88s ReleaseSafe — which set `zig build test`'s wall time on its own. ReleaseSafe
+    // keeps Zig's safety checks, so a bug in stage 0 still traps rather than misbehaving.
+    // `-Doptimize=` above Debug is used as given; the installed `morphlc` and the Zig
+    // unit tests are unaffected.
+    const runner = if (optimize == .Debug) stage0(b, target, .ReleaseSafe).exe else exe;
 
-    const lexer = b.addModule("lexer", .{
-        .root_source_file = b.path("lib/lexer/lexer.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    lexer.addImport("diag", diag);
-    lexer.addImport("keyword", keyword);
-
-    const ast = b.addModule("ast", .{
-        .root_source_file = b.path("lib/ast/ast.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    ast.addImport("diag", diag);
-    ast.addImport("keyword", keyword);
-
-    const parser = b.addModule("parser", .{
-        .root_source_file = b.path("lib/parser/parser.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    parser.addImport("diag", diag);
-    parser.addImport("keyword", keyword);
-    parser.addImport("lexer", lexer);
-    parser.addImport("ast", ast);
-
-    const interp = b.addModule("interp", .{
-        .root_source_file = b.path("lib/interp/interp.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    interp.addImport("diag", diag);
-    interp.addImport("ast", ast);
-    interp.addImport("lexer", lexer);
-    interp.addImport("parser", parser);
-
-    const main_mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    main_mod.addImport("diag", diag);
-    main_mod.addImport("keyword", keyword);
-    main_mod.addImport("lexer", lexer);
-    main_mod.addImport("ast", ast);
-    main_mod.addImport("parser", parser);
-    main_mod.addImport("interp", interp);
-
-    const exe = b.addExecutable(.{
-        .name = "morphlc",
-        .root_module = main_mod,
-    });
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
@@ -110,10 +62,9 @@ pub fn build(b: *std.Build) void {
     style_step.dependOn(&style_run.step);
     test_step.dependOn(&style_run.step);
 
-    // Stage 1's own tests, written in morphl and run by stage 0. They read
-    // their own source by path, so the run has to happen from the build root.
-    // Debug is ~9x slower than ReleaseFast here; for real stage-1 work build
-    // with `-Doptimize=ReleaseFast`.
+    // Stage 1's own tests, written in morphl and run by stage 0 (`runner`, ReleaseSafe
+    // unless asked otherwise). They read their own source by path, so the run has to
+    // happen from the build root.
     const stage1_step = b.step("test-stage1", "Run stage 1's morphl tests under stage 0");
     for ([_][]const u8{
         "stage1/lexer_test.mpl",
@@ -125,7 +76,7 @@ pub fn build(b: *std.Build) void {
         "stage1/emit_test.mpl",
         "stage1/compiler_test.mpl",
     }) |suite| {
-        const suite_run = b.addRunArtifact(exe);
+        const suite_run = b.addRunArtifact(runner);
         suite_run.addArgs(&.{ "--run", suite });
         suite_run.setCwd(b.path("."));
         suite_run.expectExitCode(0);
@@ -147,7 +98,7 @@ pub fn build(b: *std.Build) void {
     // recursive type language and `emit.mpl` the widest tables (230 types) of
     // anything that lowers quickly under stage 0.
     for ([_][]const u8{ "stage1/types.mpl", "stage1/emit.mpl" }) |tyio_target| {
-        const rt = b.addRunArtifact(exe);
+        const rt = b.addRunArtifact(runner);
         rt.addArgs(&.{ "--run", "stage1/tyio_test.mpl", tyio_target });
         rt.setCwd(b.path("."));
         rt.expectExitCode(0);
@@ -346,7 +297,7 @@ pub fn build(b: *std.Build) void {
         // `emit_c` must be right on unoptimised input; a pass may not change
         // what the program means, so `opt_c` must agree with it.
         for ([_][]const u8{ "stage1/emit_c.mpl", "stage1/opt_c.mpl" }) |driver| {
-            const emit_run = b.addRunArtifact(exe);
+            const emit_run = b.addRunArtifact(runner);
             emit_run.addArgs(&.{ "--run", driver, fixture.src });
             emit_run.setCwd(b.path("."));
             // Same reason as above: the compiler is stage-1 source read at run
@@ -406,7 +357,7 @@ pub fn build(b: *std.Build) void {
         // file's `main` and print it as the emitted `main` does. A fixture with a C host
         // needs `$extern`, which stage 0 leaves out of the subset (BOOTSTRAP.md §1.2).
         if (fixture.host == null and fixture.stage0) {
-            const run0 = b.addRunArtifact(exe);
+            const run0 = b.addRunArtifact(runner);
             run0.addArgs(&.{ "--run", "--main", fixture.src });
             run0.setCwd(b.path("."));
             run0.has_side_effects = true;
@@ -425,7 +376,7 @@ pub fn build(b: *std.Build) void {
     const panic_step = b.step("test-panic", "Check Int overflow and division by zero panic in both stages");
     {
         const src = "stage1/fixtures/overflow.mpl";
-        const emit_run = b.addRunArtifact(exe);
+        const emit_run = b.addRunArtifact(runner);
         emit_run.addArgs(&.{ "--run", "stage1/emit_c.mpl", src });
         emit_run.setCwd(b.path("."));
         emit_run.has_side_effects = true;
@@ -455,7 +406,7 @@ pub fn build(b: *std.Build) void {
             panic_step.dependOn(&run_bin.step);
             test_step.dependOn(&run_bin.step);
 
-            const run0 = b.addRunArtifact(exe);
+            const run0 = b.addRunArtifact(runner);
             run0.addArgs(&.{ "--run", "--main", src, c.case });
             run0.setCwd(b.path("."));
             run0.has_side_effects = true;
@@ -554,7 +505,7 @@ pub fn build(b: *std.Build) void {
             .stage0 = null,
         },
     }) |bad| {
-        const s1 = b.addRunArtifact(exe);
+        const s1 = b.addRunArtifact(runner);
         s1.addArgs(&.{ "--run", "stage1/typecheck.mpl", bad.src });
         s1.setCwd(b.path("."));
         s1.has_side_effects = true;
@@ -564,7 +515,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&s1.step);
 
         if (bad.stage0) |msg| {
-            const s0 = b.addRunArtifact(exe);
+            const s0 = b.addRunArtifact(runner);
             s0.addArgs(&.{ "--run", bad.src });
             s0.setCwd(b.path("."));
             s0.has_side_effects = true;
@@ -713,7 +664,7 @@ pub fn build(b: *std.Build) void {
         var outs: [3]std.Build.LazyPath = undefined;
         for ([_][]const u8{ "stable_a", "stable_b", "stable_c" }, 0..) |name, i| {
             const one = std.Build.Step.Run.create(b, b.fmt("emit prelude.c for {s}", .{name}));
-            one.addFileArg(exe.getEmittedBin());
+            one.addFileArg(runner.getEmittedBin());
             one.addArgs(&.{ "--run", "stage1/emit_one.mpl", b.fmt("stage1/fixtures/{s}.mpl", .{name}), "prelude.c" });
             one.setCwd(b.path("."));
             one.has_side_effects = true;
@@ -759,7 +710,7 @@ pub fn build(b: *std.Build) void {
     {
         var ids: [2]std.Build.LazyPath = undefined;
         for ([_][]const u8{ "iface_c", "iface_d" }, 0..) |name, i| {
-            const dump = b.addRunArtifact(exe);
+            const dump = b.addRunArtifact(runner);
             dump.addArgs(&.{ "--run", "stage1/iface_dump.mpl", b.fmt("stage1/fixtures/{s}.mpl", .{name}), "M" });
             dump.setCwd(b.path("."));
             dump.has_side_effects = true;
@@ -862,7 +813,7 @@ pub fn build(b: *std.Build) void {
         by_mplc.has_side_effects = true;
         const a = by_mplc.captureStdOut(.{ .basename = "by_mplc.c" });
 
-        const by_s0 = b.addRunArtifact(exe);
+        const by_s0 = b.addRunArtifact(runner);
         by_s0.addArgs(&.{ "--run", "stage1/emit_c.mpl", src });
         by_s0.setCwd(b.path("."));
         by_s0.has_side_effects = true;
@@ -1115,4 +1066,80 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_suite.step);
     }
 
+}
+
+const Stage0 = struct { exe: *std.Build.Step.Compile, mods: [7]*std.Build.Module };
+
+// Stage 0's module graph and executable at one optimisation level. Built twice when the
+// build is Debug: once as asked, for the installed binary and the Zig unit tests, and once
+// ReleaseSafe, for the steps that run morphl (`runner`).
+fn stage0(b: *std.Build, target: std.Build.ResolvedTarget,
+          optimize: std.builtin.OptimizeMode) Stage0 {
+    // Stage 0 front end. Dependencies run one way:
+    //   diag ← keyword ← lexer ← ast ← parser ← main
+    const diag = b.createModule(.{
+        .root_source_file = b.path("lib/diag/diag.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const keyword = b.createModule(.{
+        .root_source_file = b.path("lib/syntax/keyword.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const lexer = b.createModule(.{
+        .root_source_file = b.path("lib/lexer/lexer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lexer.addImport("diag", diag);
+    lexer.addImport("keyword", keyword);
+
+    const ast = b.createModule(.{
+        .root_source_file = b.path("lib/ast/ast.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ast.addImport("diag", diag);
+    ast.addImport("keyword", keyword);
+
+    const parser = b.createModule(.{
+        .root_source_file = b.path("lib/parser/parser.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    parser.addImport("diag", diag);
+    parser.addImport("keyword", keyword);
+    parser.addImport("lexer", lexer);
+    parser.addImport("ast", ast);
+
+    const interp = b.createModule(.{
+        .root_source_file = b.path("lib/interp/interp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    interp.addImport("diag", diag);
+    interp.addImport("ast", ast);
+    interp.addImport("lexer", lexer);
+    interp.addImport("parser", parser);
+
+    const main_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    main_mod.addImport("diag", diag);
+    main_mod.addImport("keyword", keyword);
+    main_mod.addImport("lexer", lexer);
+    main_mod.addImport("ast", ast);
+    main_mod.addImport("parser", parser);
+    main_mod.addImport("interp", interp);
+
+    const exe = b.addExecutable(.{
+        .name = "morphlc",
+        .root_module = main_mod,
+    });
+    return .{ .exe = exe, .mods = .{ diag, keyword, lexer, ast, parser, interp, main_mod } };
 }
