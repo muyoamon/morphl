@@ -2850,3 +2850,36 @@ reached a fixed point.
 What is left is flat — the largest site is `emit`'s O(L log n) output join at 65 MB, then
 renderings, environment tries, argument lists, verify's merge sort and the lexer's token
 list, each 15–43 MB of work proportional to the program.
+
+## Regeneration: 102s → 65s, by not compiling the same C at -O2 twice
+
+`tools/regen.sh` is the fixed-point regeneration `CLAUDE.md` describes, as a script. A round
+is one `cc` and one emit by the binary it made, and the binary is thrown away after that one
+emit — so what matters is `cc` plus one run, not the binary's speed. Measured on the
+compiler's own 4.0 MB of C, every level emitting byte-identical output:
+
+| `cc` level | compile | emit by the result | round |
+|---|---|---|---|
+| `-O2` | 26.5s | 5.4s | 31.9s |
+| `-O1` | 14.7s | 6.4s | **21.1s** |
+| `-O0` | 7.7s | 13.8s | 21.5s, and a segfault on the default 8 MB stack |
+
+`-O0` overflows the stack because only an optimising gcc turns a C sibling call into a
+jump: the emitted compiler leans on that for recursions §6a leaves as calls, and needs
+`ulimit -s 65536` without it. `-O1` is as fast and needs nothing.
+
+The larger saving was the second round. The old sequence compiled `r2.c` at `-O2` to emit
+`r3.c`, and then `zig build stage2` compiled the same file at `-O2` again to install it. The
+script installs the candidate first, lets `zig build stage2` build it, emits the check from
+the installed `mplc`, and puts the original back if the two emits differ — so the one `-O2`
+build that has to happen anyway is also the one that is checked. It iterates rather than
+failing when a change needs a third round (anything that renames structs).
+
+| on a change to the emitted runtime | time |
+|---|---|
+| emit, `-O2`, emit, `-O2`, emit, `zig build stage2` | 102s |
+| emit, `-O1`, emit, `zig build stage2`, emit | **65s** |
+
+Both installed the same bytes. The failure path was exercised too: forced never to agree,
+the script stops after its round limit, exits 1, and restores both `bootstrap/mplc.c` and
+the installed `mplc`.
