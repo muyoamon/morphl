@@ -224,8 +224,11 @@ $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
     $decl a   $do ($call put (st, "I")) ($call put_n (st, $call T.tys.length (xs, 0)))
     $decl ret $call put_tys (st, xs)
   }.ret,
+  // Not sorted, unlike an intersection: an `$overload` is first fit in source order, so
+  // its candidates' order is part of the type and `T.same` compares them positionally.
+  // Sorting them here read a different type back whenever they were not already sorted.
   $case {$prop tag "over"} {
-    $decl xs  $call T.sort_tys ($call T.tys.val (t.cands))
+    $decl xs  $call T.tys.val (t.cands)
     $decl a   $do ($call put (st, "O")) ($call put_n (st, $call T.tys.length (xs, 0)))
     $decl ret $call put_tys (st, xs)
   }.ret,

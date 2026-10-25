@@ -15,11 +15,11 @@ pub fn build(b: *std.Build) void {
     const main_mod = st0.mods[6];
 
     // The interpreter every morphl test step runs on. A Debug build interprets about 9x
-    // slower, and the slowest test (`tyio_test` over `emit.mpl`) took 724s Debug against
-    // 88s ReleaseSafe — which set `zig build test`'s wall time on its own. ReleaseSafe
-    // keeps Zig's safety checks, so a bug in stage 0 still traps rather than misbehaving.
-    // `-Doptimize=` above Debug is used as given; the installed `morphlc` and the Zig
-    // unit tests are unaffected.
+    // slower, and the slowest test (`tyio_test` over `emit.mpl`, since compiled) took 724s
+    // Debug against 88s ReleaseSafe — which set `zig build test`'s wall time on its own.
+    // ReleaseSafe keeps Zig's safety checks, so a bug in stage 0 still traps rather than
+    // misbehaving. `-Doptimize=` above Debug is used as given; the installed `morphlc` and
+    // the Zig unit tests are unaffected.
     const runner = if (optimize == .Debug) stage0(b, target, .ReleaseSafe).exe else exe;
 
     b.installArtifact(exe);
@@ -86,25 +86,6 @@ pub fn build(b: *std.Build) void {
         suite_run.has_side_effects = true;
         stage1_step.dependOn(&suite_run.step);
         test_step.dependOn(&suite_run.step);
-    }
-
-    // `tyio` writes a type down and reads it back, which is what a per-module
-    // interface cache rests on. The property is checked against *real* type tables
-    // rather than hand-written cases: a lowered module interns the μ types, the big
-    // unions, the de Bruijn binders and the prop-bearing blocks that only arise from
-    // real source, and `T.same` is the right equality because `intern` keys on it.
-    //
-    // Two modules, chosen for coverage rather than size: `types.mpl` has the
-    // recursive type language and `emit.mpl` the widest tables (230 types) of
-    // anything that lowers quickly under stage 0.
-    for ([_][]const u8{ "stage1/types.mpl", "stage1/emit.mpl" }) |tyio_target| {
-        const rt = b.addRunArtifact(runner);
-        rt.addArgs(&.{ "--run", "stage1/tyio_test.mpl", tyio_target });
-        rt.setCwd(b.path("."));
-        rt.expectExitCode(0);
-        rt.has_side_effects = true;
-        stage1_step.dependOn(&rt.step);
-        test_step.dependOn(&rt.step);
     }
 
     // The round trip stage 2 will need: morphl → C → binary → the right answer.
@@ -1021,6 +1002,63 @@ pub fn build(b: *std.Build) void {
         run_suite.expectStdOutMatch(suite.last);
         compiled_step.dependOn(&run_suite.step);
         test_step.dependOn(&run_suite.step);
+    }
+
+    // `tyio` writes a type down and reads it back, which is what a per-module
+    // interface cache rests on. The property is checked against *real* type tables
+    // rather than hand-written cases: a lowered module interns the μ types, the big
+    // unions, the de Bruijn binders and the prop-bearing blocks that only arise from
+    // real source, and `T.same` is the right equality because `intern` keys on it.
+    //
+    // Compiled, like the suites above, and built once: under stage 0 `emit.mpl` alone
+    // took 88s and was the slowest step in `zig build test`, where compiled the three
+    // modules below take ~16s together, `lower.mpl`'s 1,233 types included. Chosen for
+    // coverage: `types.mpl` has the recursive type language, `emit.mpl` and `lower.mpl`
+    // the widest tables. A failed round trip panics, so the exit status is the verdict;
+    // it used to print FAIL and exit 0, which hid the `$overload` sorting bug in `tyio`.
+    {
+        const emit = std.Build.Step.Run.create(b, "mplc emits tyio_test");
+        emit.addFileArg(mplc_bin);
+        emit.addArg("stage1/tyio_test.mpl");
+        emit.setCwd(b.path("."));
+        emit.has_side_effects = true;
+        const c_file = emit.captureStdOut(.{ .basename = "tyio_test.c" });
+
+        const wf = b.addWriteFiles();
+        _ = wf.addCopyFile(c_file, "tyio_test.c");
+        const driver = wf.add("main.c",
+            \\#include "tyio_test.c"
+            \\int mpl_argc = 0;
+            \\char **mpl_argv = 0;
+            \\mpl_fin *mpl_fins = 0;
+            \\int64_t mpl_nfins = 0;
+            \\int64_t mpl_capfins = 0;
+            \\mpl_fun *mpl_exits = 0;
+            \\int64_t mpl_nexits = 0;
+            \\int64_t mpl_capexits = 0;
+            \\int main(int argc, char **argv) {
+            \\  mpl_argc = argc;
+            \\  mpl_argv = argv;
+            \\  mpl_init();
+            \\  return 0;
+            \\}
+            \\
+        );
+        const cc = b.addSystemCommand(&.{ "cc", "-O0", "-w", "-o" });
+        const bin = cc.addOutputFileArg("tyio_test");
+        cc.addFileArg(driver);
+
+        for ([_][]const u8{ "stage1/types.mpl", "stage1/emit.mpl", "stage1/lower.mpl" }) |tyio_target| {
+            const rt = std.Build.Step.Run.create(b, "run the compiled tyio_test");
+            rt.addFileArg(bin);
+            rt.addArg(tyio_target);
+            rt.setCwd(b.path("."));
+            rt.has_side_effects = true;
+            rt.expectExitCode(0);
+            rt.expectStdOutMatch("ok   every interned type survives a round trip\n");
+            compiled_step.dependOn(&rt.step);
+            test_step.dependOn(&rt.step);
+        }
     }
 
 }

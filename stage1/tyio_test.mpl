@@ -98,5 +98,6 @@ $decl r3 $if ($call eq_int (res.nbad, 0)) ($call nl ("ok   every interned type s
              ($do ($call nl ($call concat ("FAIL first at index ", $call int_to_str (res.at))))
              ($do ($call nl ($call concat ("  show   ", $call T.show (bad_t))))
              ($do ($call nl ($call concat ("  wrote  ", $call Y.show_ty (bad_t))))
-                  ($call nl ($call concat ("  reread ",
-                      $call Y.show_ty (($call Y.read_ty ($call Y.show_ty (bad_t), 0)).val)))))))
+             ($do ($call nl ($call concat ("  reread ",
+                      $call Y.show_ty (($call Y.read_ty ($call Y.show_ty (bad_t), 0)).val))))
+                  ($call panic ("an interned type does not survive a round trip"))))))
