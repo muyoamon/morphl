@@ -174,7 +174,7 @@ Proposed modules, in the order they can be written:
 | `std/core` | `max`, `min`, `option` and `result` helpers (`some`, `ok`, `fail`, `or_else`, `map_opt`) | P1 |
 | `std/list` | `list T` with `map`, `filter`, `fold`, `find`, `any`, `all`, `zip`, `append`, `take`, `drop`, `sort` | P1; P2 for `sort` |
 | `std/str` | a builder, `join`, `split`, `find`, `starts_with`, `trim`, code-point iteration | P3 for the byte buffer |
-| `std/fmt` | formatting `Int`, `Float`, `Str` and anything with a `show` member into a builder | P2 |
+| `std/fmt` | formatting `Int`, `Float`, `Str` and anything with a `show` member into a builder | done |
 | `std/io` | `print_line`, reading and writing whole files and lines, over the platform group | — |
 | `std/vec` | a growable vector over `array` | P3 |
 | `std/map` | an ordered map (sorted vecs; keys ordered by a `less` given at `new`) | done |
@@ -284,7 +284,9 @@ block — it cannot see the fields. So:
 - **A type opts in with a member**: `$prop eq $func ($decl other pt) …` and `$prop show
   $func () …` — the receiver is implicit (§4.10) and the declaring name in a default is the
   type itself. `std/core` gives the prototypes the bounds are made from, as F-bounded
-  templates (`eq_proto T`, `ord_proto T`) and `show_proto` (TRAITS.md). Needs P6 and P2.
+  templates (`eq_proto T`, `ord_proto T`), and `std/fmt` gives `show_proto` (TRAITS.md) —
+  `std/fmt`, not `std/core`, because `show` names `std/str`'s builder and `std/str` imports
+  `std/core`. Needs P6 and P2.
 - **A member named after an intrinsic shadows it inside the type**, because a prop is
   visible throughout its block: `eq`'s body calling `eq` on a field calls itself. The idiom
   is the one stage 1 already uses for `isub` — `$decl ieq eq` above the type.
@@ -343,7 +345,8 @@ and is the second version.
 
 **Done** (the first version), with `std/str_test.mpl` (28):
 
-- **`builder ()`**: `write`, `line`, `bytes` and `build`. The pieces sit newest first in the
+- **`builder ()`**: `write`, `line`, `bytes` and `build`. `write` and `line` answer unit, so
+  a `show` member ending in one conforms to `std/fmt`'s `show_proto`. The pieces sit newest first in the
   builder's own `$mut $alloc` cell (D9's mutation rule), and `build` joins them pairwise and
   keeps the result as the one piece, so building again is free and writing after it carries
   on. The members are not `add` and `len`: §4.10 makes a prop visible throughout its block,
@@ -520,7 +523,19 @@ So a list stays a value — `push` answers a new list — and a container that c
    `search`, `get`, `min` and `max` O(log n) or better. `std/vec_test.mpl` is 26 now. A byte-buffer builder for `std/str` would need
    `str_from_ptr` over `array_ptr` (§4.16) to turn bytes into a `Str`; the pairwise join is
    O(L log n) already, so it waits for a measurement.
-4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`. `sort` is `std/seq`'s, and
+4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`. **`std/fmt` is done**
+   (`std/fmt_test.mpl`, 19): every writer takes a builder first and answers unit — `int`,
+   `float` (§8's shortest round-trip `to_str`), `str`, `bool`, `code` (U+FFFD for what
+   `from_code` refuses), and `put`, an `$overload` of the four; `radix (b, n, base)` and `hex`,
+   correct at both ends of `Int`; `pad_left`/`pad_right` in code points and `zeros` with the
+   sign before them; `quoted`, a morphl string literal that reads back as its text; and
+   `sep_by (b, xs, sep, f)` over any `std/seq` sequence. A block opts in with `$prop show $func
+   ($decl b F.builder) …`; `show (b, x)` and `render (x)` are templates bounded by
+   `show_proto`, so the call is static and `x` a value — taking a `showable` object instead
+   refuses a field (a trait object refers to its value) and refuses a tail call, which a
+   nested `show` ends in. `showable` is there for heterogeneous values. Not yet: a fixed
+   number of decimals for a `Float`, which wants correct decimal rounding rather than
+   scaling by a power of ten. `sort` is `std/seq`'s, and
    **`std/map` is done** (`std/map_test.mpl`, 16): `$specialize M.map (<key>, <value>)`, then
    `new (less)`; `put` (whether the key is new), `get` (an option), `get_or`, `has`,
    `remove`, `length`, `is_empty`, `key_at`/`value_at` by position, `min_key`/`max_key`,
