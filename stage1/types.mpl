@@ -253,11 +253,11 @@ $decl proto_ty $union (
    $decl props $alloc ($specialize P.list {
      $decl name ""  $decl value proto_cv  $decl ty proto_ty
    }).node
-   $decl h 0  $decl cid -1  $decl pv P.boolean
+   $decl h 0  $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
  },
   {
     $prop tag "group" $decl items $alloc ($specialize P.list proto_ty).node  $decl h 0
-    $decl cid -1  $decl pv P.boolean
+    $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
   },
   {
     $prop tag "func"  $decl params $alloc ($specialize P.list proto_ty).node
@@ -269,30 +269,38 @@ $decl proto_ty $union (
     // carrying while a body is typed; like `frame`, never identity.
     $decl frame  P.boolean  $decl rmut P.boolean
     $decl esc   $alloc ($specialize P.list 0).node  $decl marks $alloc ($specialize P.list 0).node
-    $decl h 0  $decl cid -1  $decl pv P.boolean
+    $decl h 0  $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
   },
  {  // §3.5: storage has a **kind** as well as a qualifier, and the two are
    // orthogonal — `$mut`/`$const` produce views and preserve the kind. Frame is
    // `""` and allocated is `"alloc"`, so a reference built without saying is
    // frame, which is what `$new` makes.
    $prop tag "ref"   $decl qual ""  $decl inner $alloc proto_ty  $decl kind ""  $decl h 0
-   $decl cid -1  $decl pv P.boolean
+   $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
  },
-  { $prop tag "array" $decl elem $alloc proto_ty  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  {
+    $prop tag "array" $decl elem $alloc proto_ty  $decl h 0  $decl cid -1
+    $decl pv P.boolean  $decl pa P.boolean
+  },
   {
     $prop tag "union" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0
-    $decl cid -1  $decl pv P.boolean
+    $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
   },
   {
     $prop tag "inter" $decl members $alloc ($specialize P.list proto_ty).node  $decl h 0
-    $decl cid -1  $decl pv P.boolean
+    $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
   },
-  { $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  {
+    $prop tag "rec"   $decl body $alloc proto_ty  $decl h 0  $decl cid -1
+    $decl pv P.boolean  $decl pa P.boolean
+  },
   {
     $prop tag "over"  $decl cands $alloc ($specialize P.list proto_ty).node  $decl h 0
-    $decl cid -1  $decl pv P.boolean
+    $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
   },
-  { $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1  $decl pv P.boolean },
+  {
+    $prop tag "tmpl"  $decl id 0  $decl h 0  $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
+  },
   {
     // §6: a trait, the type of a trait object. It binds `Self` the way `rec` binds its
     // variable, so `bnd 0` in a member's type is `Self`; members are sorted by name,
@@ -305,6 +313,7 @@ $decl proto_ty $union (
     $prop tag "trait"
     $decl members $alloc ($specialize P.list { $decl name ""  $decl ty proto_ty }).node
     $decl frame P.boolean  $decl qual ""  $decl h 0  $decl cid -1  $decl pv P.boolean
+    $decl pa P.boolean
   },
   {
     // §4.12: `$impl` over a base that is not a block — its type with props added. Props
@@ -314,7 +323,7 @@ $decl proto_ty $union (
     $decl props $alloc ($specialize P.list {
       $decl name ""  $decl value proto_cv  $decl ty proto_ty
     }).node
-    $decl h 0  $decl cid -1  $decl pv P.boolean
+    $decl h 0  $decl cid -1  $decl pv P.boolean  $decl pa P.boolean
   }
 )
 
@@ -471,6 +480,45 @@ $decl has_var_tys $func ($decl xs tys.node, $decl i 0) $match xs (
 $decl has_var_fields $func ($decl xs fields.node, $decl i 0) $match xs (
   $case {$prop tag "cons"} $if ($call has_var ($call tval (xs.head.ty),
       0)) true ($call has_var_fields (xs.tail, 0)),
+  $case xs false
+)
+
+// `pa` is `pv` with the props' types counted too: whether a placeholder occurs *anywhere*
+// in the node, which is what a placeholder substitution has to know before it may share a
+// subtree unchanged (`remap`). `pv` cannot answer it: `remap` rewrites a prop's `ty` and
+// §6's conformance reads it, while `has_var` deliberately leaves it out. Recorded by the
+// same constructors, from the same children plus the props.
+$decl has_pa $func ($decl t proto_ty, $decl i 0) $match t (
+  $case {$prop tag "var"}   true,
+  $case {$prop tag "block"} t.pa,
+  $case {$prop tag "group"} t.pa,
+  $case {$prop tag "func"}  t.pa,
+  $case {$prop tag "ref"}   t.pa,
+  $case {$prop tag "array"} t.pa,
+  $case {$prop tag "union"} t.pa,
+  $case {$prop tag "inter"} t.pa,
+  $case {$prop tag "rec"}   t.pa,
+  $case {$prop tag "over"}  t.pa,
+  $case {$prop tag "trait"} t.pa,
+  $case {$prop tag "with"}  t.pa,
+  $case t false
+)
+
+$decl has_pa_tys $func ($decl xs tys.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call has_pa ($call tval (xs.head),
+      0)) true ($call has_pa_tys (xs.tail, 0)),
+  $case xs false
+)
+
+$decl has_pa_fields $func ($decl xs fields.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call has_pa ($call tval (xs.head.ty),
+      0)) true ($call has_pa_fields (xs.tail, 0)),
+  $case xs false
+)
+
+$decl has_pa_props $func ($decl xs props.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call has_pa ($call tval (xs.head.ty),
+      0)) true ($call has_pa_props (xs.tail, 0)),
   $case xs false
 )
 
@@ -719,9 +767,10 @@ $decl raw_block $func ($decl fs fields.node, $decl ps props.node) {
                    strs.nil),
                            $call pvals_of (ps, cvals.nil), 0))
   $decl pvv $if ($call has_var_fields (fs, 0)) true false
+  $decl pav $if ($call has_pa_fields (fs, 0)) true ($call has_pa_props (ps, 0))
   $decl n  {
     $prop tag "block" $decl fields $alloc fs  $decl props $alloc ps  $decl h hv  $decl cid c
-    $decl pv pvv
+    $decl pv pvv  $decl pa pav
   }
   $decl ret  n
 }.ret
@@ -732,7 +781,10 @@ $decl raw_union $func ($decl ms tys.node) {
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (6, "", "", ks, strs.nil, strs.nil,
       cvals.nil, 0))
   $decl pvv $if ($call has_var_tys (ms, 0)) true false
-  $decl n   { $prop tag "union" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl pav $if ($call has_pa_tys (ms, 0)) true false
+  $decl n   {
+    $prop tag "union" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv  $decl pa pav
+  }
   $decl ret n
 }.ret
 $decl raw_inter $func ($decl ms tys.node) {
@@ -742,7 +794,10 @@ $decl raw_inter $func ($decl ms tys.node) {
                $call ckey (7, "", "", $call ci_sort (ks, cints.nil), strs.nil, strs.nil, cvals.nil,
                    0))
   $decl pvv $if ($call has_var_tys (ms, 0)) true false
-  $decl n   { $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl pav $if ($call has_pa_tys (ms, 0)) true false
+  $decl n   {
+    $prop tag "inter" $decl members $alloc ms  $decl h hv  $decl cid c  $decl pv pvv  $decl pa pav
+  }
   $decl ret n
 }.ret
 
@@ -752,7 +807,10 @@ $decl t_group $func ($decl xs tys.node) {
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (2, "", "", ks, strs.nil, strs.nil,
       cvals.nil, 0))
   $decl pvv $if ($call has_var_tys (xs, 0)) true false
-  $decl n   { $prop tag "group" $decl items $alloc xs  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl pav $if ($call has_pa_tys (xs, 0)) true false
+  $decl n   {
+    $prop tag "group" $decl items $alloc xs  $decl h hv  $decl cid c  $decl pv pvv  $decl pa pav
+  }
   $decl ret n
 }.ret
 // `frame` is §5.3a's closure clause. §7.3 keeps a closure's captures out of its
@@ -799,9 +857,11 @@ $decl t_func_x $func ($decl ps tys.node, $decl r proto_ty, $decl fr P.boolean,
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (3, $if rm "m" "", ess, ks, strs.nil,
       strs.nil, cvals.nil, 0))
   $decl pvv $if ($if ($call has_var_tys (ps, 0)) true ($call has_var (r, 0))) true false
+  $decl pav $if ($if ($call has_pa_tys (ps, 0)) true ($call has_pa (r, 0))) true false
   $decl n  {
     $prop tag "func" $decl params $alloc ps  $decl result $alloc r  $decl frame fr  $decl rmut rm
     $decl esc $alloc es  $decl marks $alloc mk  $decl h hv  $decl cid c  $decl pv pvv
+    $decl pa pav
   }
   $decl ret n
 }.ret
@@ -835,9 +895,10 @@ $decl t_ref_k $func ($decl q "", $decl t proto_ty, $decl k "") {
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (4, q, k, ks, strs.nil, strs.nil,
       cvals.nil, 0))
   $decl pvv $if ($call has_var (t, 0)) true false
+  $decl pav $if ($call has_pa (t, 0)) true false
   $decl n  {
     $prop tag "ref" $decl qual q  $decl inner $alloc t  $decl kind k  $decl h hv  $decl cid c
-    $decl pv pvv
+    $decl pv pvv  $decl pa pav
   }
   $decl ret  n
 }.ret
@@ -854,7 +915,10 @@ $decl t_array $func ($decl e proto_ty) {
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (5, "", "", ks, strs.nil, strs.nil,
       cvals.nil, 0))
   $decl pvv $if ($call has_var (e, 0)) true false
-  $decl n   { $prop tag "array" $decl elem $alloc e  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl pav $if ($call has_pa (e, 0)) true false
+  $decl n   {
+    $prop tag "array" $decl elem $alloc e  $decl h hv  $decl cid c  $decl pv pvv  $decl pa pav
+  }
   $decl ret n
 }.ret
 $decl t_rec   $func ($decl b proto_ty) {
@@ -863,7 +927,10 @@ $decl t_rec   $func ($decl b proto_ty) {
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (8, "", "", ks, strs.nil, strs.nil,
       cvals.nil, 0))
   $decl pvv $if ($call has_var (b, 0)) true false
-  $decl n   { $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl pav $if ($call has_pa (b, 0)) true false
+  $decl n   {
+    $prop tag "rec" $decl body $alloc b  $decl h hv  $decl cid c  $decl pv pvv  $decl pa pav
+  }
   $decl ret n
 }.ret
 // §6. Members are sorted by name: props are unordered (§4.10), and one canonical order
@@ -897,9 +964,10 @@ $decl t_trait_q $func ($decl ms fields.node, $decl fr P.boolean, $decl q "") {
   $decl c   $call cid_for ($call kids_ok (ks), hv,
                 $call ckey (11, q, "", ks, $call fnames_of (sm, strs.nil), strs.nil, cvals.nil, 0))
   $decl pvv $if ($call has_var_fields (sm, 0)) true false
+  $decl pav $if ($call has_pa_fields (sm, 0)) true false
   $decl n   {
     $prop tag "trait" $decl members $alloc sm  $decl frame fr  $decl qual q  $decl h hv
-    $decl cid c  $decl pv pvv
+    $decl cid c  $decl pv pvv  $decl pa pav
   }
   $decl ret n
 }.ret
@@ -912,7 +980,10 @@ $decl t_over  $func ($decl cs tys.node) {
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (9, "", "", ks, strs.nil, strs.nil,
       cvals.nil, 0))
   $decl pvv $if ($call has_var_tys (cs, 0)) true false
-  $decl n   { $prop tag "over" $decl cands $alloc cs  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl pav $if ($call has_pa_tys (cs, 0)) true false
+  $decl n   {
+    $prop tag "over" $decl cands $alloc cs  $decl h hv  $decl cid c  $decl pv pvv  $decl pa pav
+  }
   $decl ret n
 }.ret
 
@@ -925,7 +996,9 @@ $decl t_tmpl  $func ($decl i 0) {
   $decl c   $call cid_for (true, hv, $call ckey (10, "", "", cints.nil, strs.nil, strs.nil,
       cvals.nil, i))
   $decl pvv $if (false) true false
-  $decl n   { $prop tag "tmpl" $decl id i  $decl h hv  $decl cid c  $decl pv pvv }
+  $decl n   {
+    $prop tag "tmpl" $decl id i  $decl h hv  $decl cid c  $decl pv pvv  $decl pa pvv
+  }
   $decl ret n
 }.ret
 
@@ -955,9 +1028,10 @@ $decl t_with $func ($decl b proto_ty, $decl ps props.node) {
   $decl c   $call cid_for ($call kids_ok (ks), hv, $call ckey (12, "", "", ks, strs.nil,
                 $call pnames_of (sp, strs.nil), $call pvals_of (sp, cvals.nil), 0))
   $decl pvv $if ($call has_var (b, 0)) true false
+  $decl pav $if ($call has_pa (b, 0)) true ($call has_pa_props (sp, 0))
   $decl n   {
     $prop tag "with" $decl base $alloc b  $decl props $alloc sp  $decl h hv  $decl cid c
-    $decl pv pvv
+    $decl pv pvv  $decl pa pav
   }
   $decl ret n
 }.ret
@@ -1587,10 +1661,16 @@ $decl remap_props $func ($decl xs props.node, $decl o proto_rop, $decl d 0,
 
 $fwd remap_go
 
-// A placeholder substitution walks a subtree with no placeholder in it too, and cannot
-// skip it on `pv`: `pv` leaves out a prop's `ty`, which this rewrites and §6's conformance
-// reads, so a receiver's placeholder there would survive (`recv_param.mpl`; PERF.md).
-$decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $call remap_go (t, o, d)
+// A placeholder operation (`var`, `many`, `abs`) leaves a subtree with no placeholder
+// anywhere in it unchanged, so the subtree is shared rather than rebuilt. "Anywhere" is
+// `pa`, not `pv`: `pv` leaves out a prop's `ty`, which this rewrites and §6's conformance
+// reads, and skipping on it left a receiver's placeholder there (`recv_param.mpl`;
+// PERF.md). A bound-variable operation (`shift`, `bnd`) changes what no placeholder test
+// can see, so it always walks.
+$decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0)
+  $if ($call has_pa (t, 0)) ($call remap_go (t, o, d))
+  ($if ($call eq_str (o.kind, "shift")) ($call remap_go (t, o, d))
+  ($if ($call eq_str (o.kind, "bnd")) ($call remap_go (t, o, d)) t))
 
 $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "var"}

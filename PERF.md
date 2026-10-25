@@ -2846,6 +2846,7 @@ reached a fixed point.
   self-emit could not show it: it was the same program, byte for byte, because the compiler
   has no receiver members. Doing it soundly needs a second construction-time flag that
   counts props' types — a field on every compound node and a rule beside each `pv` rule.
+  **That is now done** (`pa`, below).
 
 What is left is flat — the largest site is `emit`'s O(L log n) output join at 65 MB, then
 renderings, environment tries, argument lists, verify's merge sort and the lexer's token
@@ -2883,3 +2884,22 @@ failing when a change needs a third round (anything that renames structs).
 Both installed the same bytes. The failure path was exercised too: forced never to agree,
 the script stops after its round limit, exits 1, and restores both `bootstrap/mplc.c` and
 the installed `mplc`.
+
+## The substitution skip, done soundly: −147 MB (−16%)
+
+`pa` is `pv` with the props' types counted: whether a placeholder occurs *anywhere* in a
+node. Each of the twelve constructors records it beside `pv`, from the same children plus,
+for a block and a `with`, the props' `ty`. `remap` returns a subtree unchanged when `pa` is
+false and the operation is about placeholders (`var`, `many`, `abs`); a bound-variable
+operation (`shift`, `bnd`) always walks, since what it rewrites no placeholder flag sees.
+
+| self-emit, same source | allocated | allocations | time |
+|---|---|---|---|
+| before | 915 MB | 16,988,165 | 5.6s |
+| `pa` | **768 MB** | **14,452,395** | 5.3s |
+
+Measured by counting bytes in `mpl_alloc` in the emitted C (an `atexit` total, nothing
+else changed), both compilers emitting the same source and producing byte-identical C. The
+extra word on every compound node is inside the figure. `pa` is true wherever `pv` is, so
+this skips strictly less than the unsound version did; the two figures (−134 MB then, −147
+MB now) are from different trees and do not compare. The receiver fixtures `pv` broke pass.
