@@ -3,16 +3,21 @@
 //
 // This is what a per-module cache would store, so it is also what has to be stable:
 // the same module reached from two different programs must render identically.
-$decl I $import "infer"
-$decl T $import "types"
-$decl P $import "prelude"
-$decl Y $import "tyio"
+//
+// It fails rather than printing a placeholder, because the check compares two runs with
+// each other: an import that failed in both, or a member missing from both, would print
+// the same `!` twice and pass.
+$decl I  $import "infer"
+$decl T  $import "types"
+$decl Pa $import "parser"
+$decl P  $import "prelude"
+$decl Y  $import "tyio"
 
 $decl pick $func ($decl fs T.fields.node, $decl nm "") $match fs (
   $case {$prop tag "cons"}
     $if ($call eq_str (fs.head.name, nm)) ($call T.tval (fs.head.ty))
         ($call pick ($call T.fields.val (fs.tail), nm)),
-  $case fs T.t_bot
+  $case fs ($call panic ($call concat ("no member named ", nm)))
 )
 
 // A prop is in the type's *props*, not its fields (§4.10), and what a cache has to
@@ -30,6 +35,11 @@ $decl want $call P.sval ($call at (argv, 1))
 $decl rf   $call read_file (path)
 $decl src  $match rf ($case {$prop tag "some"} rf.v, $case rf ($call panic ("cannot read")))
 $decl r    $call I.check_source (src, $call P.dirname (path), path)
+$decl ds   $call Pa.diags.val (r.errs)
+$decl g1   $match ds (
+    $case {$prop tag "cons"} ($call panic ($call concat ("check: ", ds.head.msg))),
+    $case ds ()
+  )
 $decl rty  $call T.tval (r.ty)
 $decl fs   $match rty ($case {$prop tag "block"} ($call T.fields.val (rty.fields)),
     $case rty T.fields.nil)

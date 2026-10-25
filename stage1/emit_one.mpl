@@ -5,14 +5,18 @@
 // single file, which is what makes the linkage property testable: a module's output has
 // to be a function of its own source, so the same module in two different programs must
 // come out byte-identical. `test-stable` in `build.zig` is that check.
-$decl C $import "compiler"
-$decl P $import "prelude"
+//
+// It fails rather than printing nothing, because the check compares two runs with each
+// other: two programs that both stopped short would print the same empty text and pass.
+$decl C  $import "compiler"
+$decl Pa $import "parser"
+$decl P  $import "prelude"
 
 $decl pick $func ($decl want "", $decl fs C.ir.ofiles.node) $match fs (
   $case {$prop tag "cons"}
     $if ($call eq_str (fs.head.path, want)) ($call print (fs.head.text))
         ($call pick (want, $call C.ir.ofiles.val (fs.tail))),
-  $case fs ()
+  $case fs ($call panic ($call concat ("no output named ", want)))
 )
 
 $decl argv $call args ()
@@ -24,5 +28,10 @@ $decl src  $match rf (
     $case rf ($call panic ($call concat ("cannot read ", path)))
   )
 $decl ckd $call C.check ($call C.parse (src, path))
+$decl cd  $call Pa.diags.val (ckd.diagnostics)
+$decl g1  $match cd (
+    $case {$prop tag "cons"} ($call panic ($call concat ("check: ", cd.head.msg))),
+    $case cd ()
+  )
 $decl out $call C.emit (ckd.program)
 $decl go  $call pick (want, $call C.ir.ofiles.val (out.files))
