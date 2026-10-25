@@ -132,6 +132,9 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/strings.mpl", .want = "hello, world! 9 a\n" },
         .{ .src = "stage1/fixtures/storage.mpl", .want = "154\n" },
         .{ .src = "stage1/fixtures/match.mpl", .want = "25\n" },
+        // §4.7's catch-all on a name bound to storage, which stage 0 alone never matched:
+        // it dereferenced the scrutinee and not a name pattern. 2122121.
+        .{ .src = "stage1/fixtures/match_storage.mpl", .want = "2122121\n" },
         .{ .src = "stage1/fixtures/closures.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/try.mpl", .want = "5\n" },
         .{ .src = "stage1/fixtures/mutual.mpl", .want = "1\n" },

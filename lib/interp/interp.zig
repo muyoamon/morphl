@@ -1986,8 +1986,16 @@ pub const Interp = struct {
             // A name. §4.7's catch-all `$match x ($case x …)` needs no special
             // case: the pattern's type is the type of whatever `x` names, so
             // when it names the scrutinee it matches by construction.
+            //
+            // Dereferenced like the scrutinee, because §4.7 narrows a reference
+            // to its pointee. Without it a name bound to storage (`$decl c
+            // $alloc …`, which §5.4 keeps a reference) compared a ref against
+            // the block it points at, and the catch-all never matched — under
+            // stage 0 only, since the checker and the compiled C both narrow.
+            // A top-level ref pattern could never match a dereferenced
+            // scrutinee, so nothing that matched before changes.
             .name => |n| {
-                const pv = try self.lookup(scope, n, pat.span);
+                const pv = (try self.lookup(scope, n, pat.span)).deref();
                 return try self.shapeMatches(pv, scrutinee, max_shape_depth);
             },
 
