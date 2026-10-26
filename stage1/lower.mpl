@@ -1525,6 +1525,7 @@ $decl rcv_ty $func ($decl rv rcv_list.node) $match rv (
 )
 
 $decl is_ref_ty $func ($decl t T.proto_ty) $match t ($case {$prop tag "ref"} true, $case t false)
+$decl is_union_ty $func ($decl t T.proto_ty) $match t ($case {$prop tag "union"} true, $case t false)
 
 // Whether a lifted index is a member that captures its receiver.
 $decl has_recvfn $func ($decl st proto_lst, $decl i 0)
@@ -1564,10 +1565,22 @@ $decl recv_wrap $func ($decl st proto_lst, $decl raw proto_lres, $decl tgt proto
               $case ru rt)
           $decl ok   $if same rk ($call intern (st, own))
           $decl isr  $call is_ref_ty ($call T.unroll (raw.ty))
-          $decl cap0 $if isr raw.ir
+          // §4.12 over a union: a member narrowed out of a `with` (an arm's value, what a
+          // `$try` returned) has the member's layout, and the receiver the union's, with a
+          // discriminator — so no cast reaches it. The capture is a copy injected into the
+          // union, which a read-only receiver cannot tell from the original, and an arm's
+          // narrowed value is a copy already.
+          $decl pt   $match ru ($case {$prop tag "ref"} ($call T.tval (ru.inner)), $case ru rt)
+          $decl inj  $if same false
+                         ($if ($call is_union_ty ($call T.unroll ($call T.with_base (pt))))
+                              ($call P.not ($call is_union_ty ($call T.unroll
+                                  ($call T.with_base (tgt.ty)))))
+                              false)
+          $decl cap0 $if inj ($call IR.e_new (rk, $call IR.e_copy ($call intern (st, pt), tgt.ir)))
+                     ($if isr raw.ir
                          ($if ($call is_name_at (x)) ($call IR.e_addr (ok, raw.ir))
-                              ($call IR.e_new (ok, tgt.ir)))
-          $decl cap  $if same cap0 ($call IR.e_copy (rk, cap0))
+                              ($call IR.e_new (ok, tgt.ir))))
+          $decl cap  $if ($if same true inj) cap0 ($call IR.e_copy (rk, cap0))
           $decl ret2 $call lres ($call IR.e_closure (ir.ty, ir.fn,
                          $call IR.exprs.cons (cap, IR.exprs.nil)), r.ty)
         }.ret2 r,
@@ -2190,13 +2203,8 @@ $decl ty_at $func ($decl st proto_lst, $decl i 0) $call IR.ix_get ($call IR.tval
 $decl canon_ty $func ($decl st proto_lst, $decl t T.proto_ty)
   $call ty_at (st, $call intern (st, t))
 
-$decl members_of $func ($decl t0 T.proto_ty) {
-  $decl t $call T.unroll (t0)
-  $decl ret $match t (
-      $case {$prop tag "union"} ($call T.tys.val (t.members)),
-      $case t ($call T.tys.cons (t, T.tys.nil))
-    )
-}.ret
+// §4.12: a `with` over a union discriminates as the union, its members keeping the props.
+$decl members_of $func ($decl t0 T.proto_ty) $call T.match_members (t0)
 
 // §5.4 reads a reference as its pointee, so a union some of whose members are references
 // is projected through each: a `switch` on the discriminator, every arm reading its own
@@ -2318,12 +2326,10 @@ $decl member_ix $func ($decl ms T.fields.node, $decl nm "", $decl i 0) $match ms
   $case ms -1
 )
 
-$decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
-  $decl raw $call lval ($call lower (st, e, n.target, false))
-  $decl tgt $call as_value (st, raw)
-  $decl tt  $call T.unroll (tgt.ty)
-  $decl own $if ($call lt (tgt.mod, 0)) false ($call mod_has (st, tgt.mod, n.field))
-  $decl ret $match tt (
+// `tgt` projected by `n.field` at its unrolled type `tt` — `own` when its module holds the
+// field — which `lower_proj` asks once and a `with` asks again of its base.
+$decl proj_at $func ($decl st proto_lst, $decl n proto_projn, $decl raw proto_lres,
+                     $decl tgt proto_lres, $decl tt T.proto_ty, $decl own P.boolean) $match tt (
       // §7.6: the root `allocator`'s members are §8's `raw_alloc` and `raw_free`.
       // DEFER.md: and `defer_at`, the runtime's table that `raw_free` consults.
       $case {$prop tag "block"} $if ($call T.same (tt, T.ffi_alloc)) {
@@ -2373,11 +2379,16 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
       }.ret2,
       // §4.12: an added prop, from the `$impl`'s override where its source is known and by
       // its identity in the type otherwise — exactly a block's props.
+      // A field is the base's: a `with` is laid out as it, so a block's field or a union's
+      // common one is read where the base has it — `r.v` on a narrowed result.
       $case {$prop tag "with"}
         $if own ($call recv_wrap (st, raw, tgt, n.target,
                      $call lower_prop (st, tgt.mod, n.field, n)))
-            ($call recv_wrap (st, raw, tgt, n.target,
-                $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n))),
+        ($if ($call T.props.is_nil ($call find_prop ($call T.props.val (tt.props), n.field)))
+             ($call proj_at (st, n, raw, $call lres (tgt.ir, $call T.tval (tt.base)),
+                  $call T.unroll ($call T.tval (tt.base)), false))
+             ($call recv_wrap (st, raw, tgt, n.target,
+                 $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n)))),
       $case {$prop tag "union"} {
         $decl ums  $call T.tys.val (tt.members)
         $decl f    $call common_fld (ums, n.field, fld_found_proto)
@@ -2396,6 +2407,12 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
       $case tt ($call lres ($call IR.e_unit ($call err (st,
           $call concat ("projection needs a block, found ", $call T.show (tt)), n)), T.t_bot))
     )
+
+$decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
+  $decl raw $call lval ($call lower (st, e, n.target, false))
+  $decl tgt $call as_value (st, raw)
+  $decl own $if ($call lt (tgt.mod, 0)) false ($call mod_has (st, tgt.mod, n.field))
+  $decl ret $call proj_at (st, n, raw, tgt, $call T.unroll (tgt.ty), own)
 }.ret
 
 // §4.6's `.n`. §2.3 makes a group the only thing it applies to — a block's

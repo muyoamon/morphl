@@ -258,6 +258,9 @@ pub fn build(b: *std.Build) void {
         // ...and a choice inside an instance whose argument inference closes into a `μ` only
         // through a prop's type, which lowering keyed differently until `T.show_key`. 210.
         .{ .src = "stage1/fixtures/overload_tmpl_mu.mpl", .want = "210\n", .stage0 = false },
+        // §4.12's `$impl` over a union: methods on a result type that `$match` and `$try` see as
+        // the union (STDLIB.md P15).
+        .{ .src = "stage1/fixtures/with_union.mpl", .want = "91147\n" },
         // §4.12a's `$override`, on a value and on a template (STDLIB.md, P8). Stage 0 leaves
         // it out of the bootstrap subset.
         .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n", .stage0 = false },

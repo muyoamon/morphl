@@ -2475,6 +2475,32 @@ $decl with_base $func ($decl t proto_ty) $match t (
   $case t t
 )
 
+// The members a `$match` or a `$try` discriminates over (§4.7, §4.15), in §7.5's order.
+// A `with` over a union is laid out as the union, so its discriminator is the union's — and
+// each member keeps the props, so an arm's narrowed value still answers them and is still a
+// subtype of the whole. Both passes ask this, so a member lowering interns is the one emit
+// looks up.
+$decl wrap_members $func ($decl xs tys.node, $decl ps props.node, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call wrap_members (xs.tail, ps, $call tys.cons ($call t_with ($call tval (xs.head), ps), acc)),
+  $case xs ($call tys.reverse (acc, tys.nil))
+)
+$decl match_members $func ($decl t proto_ty) {
+  $decl u   $call tval ($call unroll (t))
+  $decl ret $match u (
+      $case {$prop tag "union"} ($call tys.val (u.members)),
+      $case {$prop tag "with"} {
+        $decl b    $call tval ($call unroll ($call tval (u.base)))
+        $decl ps   $call props.val (u.props)
+        $decl ret2 $match b (
+            $case {$prop tag "union"} ($call wrap_members ($call tys.val (b.members), ps, tys.nil)),
+            $case b ($call tys.cons (u, tys.nil))
+          )
+      }.ret2,
+      $case u ($call tys.cons (u, tys.nil))
+    )
+}.ret
+
 $fwd sub_seen
 
 $decl subs_all_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_actx) $match xs (
@@ -2764,7 +2790,13 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
       $case {$prop tag "rec"}
         $if ($call mem_goal (st.goals, a, b)) true
             ($call sub_seen (a, $call unroll (b), $call with_goal (st, a, b))),
-      $case {$prop tag "union"} $call subs_any_right (a, b.members, st),
+      // §4.12: a `with` is a subtype of its base, so of a union its base is a subtype of —
+      // which no single member need be: `with (<ok, err>, P)` is in no member of `<ok, err>`.
+      $case {$prop tag "union"}
+        $if ($call subs_any_right (a, b.members, st)) true ($match a (
+            $case {$prop tag "with"} $call sub_seen (a.base, b, st),
+            $case a false
+          )),
       $case {$prop tag "inter"} $call subs_all_right (a, b.members, st),
       $case b $if ($call is_trait (b)) ($call sub_trait (a, b, st)) ($match a (
           $case {$prop tag "inter"} $call subs_any_left (a.members, b, st),
@@ -2995,6 +3027,12 @@ $decl restrict $func ($decl t proto_ty, $decl pat proto_ty)
       $case t ($call restrict_at (t, pat))
     ))
 
+// `t` with the props `ps` added back — and nothing, if narrowing left nothing (§3.6's ⊥).
+$decl with_kept $func ($decl t proto_ty, $decl ps props.node) $match t (
+  $case {$prop tag "bottom"} t,
+  $case t $call t_with (t, ps)
+)
+
 $decl restrict_at $func ($decl t proto_ty, $decl pat proto_ty) $match t (
   // Selecting does not need the type unrolled. A pattern is a tag block, and
   // §5.1 compares a block's *props* — which every member carries as it stands.
@@ -3017,6 +3055,12 @@ $decl restrict_at $func ($decl t proto_ty, $decl pat proto_ty) $match t (
     $decl kept $call keep_covered (t.members, pat, tys.nil)
     $decl ret  $if ($call tys.is_nil (kept)) ($call meet (t, pat)) ($call t_union (kept))
   }.ret,
+  // §4.12: a `with` is its base with props added, so it narrows as its base does and keeps
+  // them — an arm on `with (<ok, err>, P)` selecting `ok` sees `with (ok, P)`, whose members
+  // still answer, and which is still a subtype of the whole. A `with` pattern selects by its
+  // base, since props have no discriminator (§7.5).
+  $case {$prop tag "with"} $call with_kept ($call restrict ($call tval (t.base),
+                               $call with_base (pat)), $call props.val (t.props)),
   $case t ($call meet (t, pat))
 )
 
@@ -3041,6 +3085,9 @@ $decl drop_var $func ($decl t proto_ty, $decl i 0) $match t (
 
 $decl minus $func ($decl t proto_ty, $decl pat proto_ty) $match t (
   $case {$prop tag "union"} $call t_union ($call remove_covered (t.members, pat, tys.nil)),
+  // As `restrict_at` does: what survives a `$try` on a `with` keeps its props (§4.12).
+  $case {$prop tag "with"} $call with_kept ($call minus ($call tval (t.base), $call with_base (pat)),
+                               $call props.val (t.props)),
   $case t ($if ($call sub (t, pat)) t_bot t)
 )
 

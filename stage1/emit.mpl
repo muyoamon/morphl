@@ -1123,8 +1123,30 @@ $decl same_layout_refs $func ($decl ft T.proto_ty, $decl wt T.proto_ty) {
     )
 }.ret
 
+// §4.12: a `with` is laid out as its base, so a coercion *into* one is the coercion of the
+// bases — `with (ok, P)` into `with (<ok, err>, P)` is `ok` injected into `<ok, err>`. Only
+// the target is asked: a `with` into a plain union is found by `member_slot`'s subtype step,
+// and unwrapping it there would lose the props a union of `with` members is told apart by.
+$decl layout_id $func ($decl ts T.tys.node, $decl i 0) {
+  $decl t   $call T.unroll ($call type_at (ts, i))
+  $decl ret $match t (
+      $case {$prop tag "with"} {
+        $decl f    $call IR.find_ty (ts, $call T.tval (t.base))
+        $decl ret2 $if f.hit f.id i
+      }.ret2,
+      $case t i
+    )
+}.ret
+$decl is_with_at $func ($decl ts T.tys.node, $decl i 0) {
+  $decl t   $call T.unroll ($call type_at (ts, i))
+  $decl ret $match t ($case {$prop tag "with"} true, $case t false)
+}.ret
+
 $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
-                         $decl src "", $decl from 0, $decl want 0) {
+                         $decl src "", $decl from0 0, $decl want0 0) {
+  $decl unw  $call is_with_at (ts, want0)
+  $decl from $if unw ($call layout_id (ts, from0)) from0
+  $decl want $if unw ($call layout_id (ts, want0)) want0
   $decl wt $call type_at (ts, want)
   $decl ft $call type_at (ts, from)
   // §7.4: one C shape either way and the coercion is nothing — a change of
@@ -3205,13 +3227,16 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     // over are the unrolling's — and they are in the order
     // `emit_union_struct` laid the C union out in, because both ask
     // `T.unroll` the same question.
-    $decl st2 $call T.unroll ($call type_at (ts, sc.ty))
+    // §4.12: a `with` is laid out as its base, so it switches on the base's discriminator.
+    $decl sct $call type_at (ts, sc.ty)
+    $decl st2 $call T.unroll ($call T.with_base ($call T.unroll (sct)))
     $decl ret $match st2 (
         $case {$prop tag "union"} {
           $decl sv $call into_tmp (st, fi, sc, ts)
           // §3.2: a boolean is its own discriminator.
           $decl bl $call T.same (st2, T.t_bool)
-          $decl ms $call T.tys.val (st2.members)
+          // The members as lowering numbered them, a `with`'s keeping its props.
+          $decl ms $call T.match_members (sct)
           $decl d0 $call say (st, $call concat ("  switch ((int)",
                        $call concat (sv, $if bl ") {\n" ".tag) {\n")))
           $decl d1 $call emit_cases (st, fi, $call IR.arms.val (e.arms), dest, e.ty, ts, sv,
@@ -3284,7 +3309,9 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     $decl v  $call IR.eval (e.value)
     $decl vt $call type_at (ts, v.ty)
     $decl tv $call into_tmp (st, fi, v, ts)
-    $decl ms $match vt ($case {$prop tag "union"} ($call T.tys.val (vt.members)), $case vt T.tys.nil)
+    $decl ms $match ($call T.with_base (vt)) (
+        $case {$prop tag "union"} ($call T.match_members (vt)),
+        $case vt T.tys.nil)
     $decl mf $call IR.find_ty (ts, $call T.tys.nth (ms, e.disc))
     $decl rf $call IR.find_ty (ts, $call type_at (ts, e.ty))
     $decl d0 $call say (st, $call concat ("  if ((int)", $call concat (tv,

@@ -185,6 +185,28 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   (`free_sc`): a block's props are bound throughout, a `$decl` after its initializer, a
   `$func`'s parameters in its body. `lower_test`'s `t35`/`t35b` pin both directions.
 
+- **P15. An `$impl` over a union — methods on a result type.** **Done.** §4.12 makes an
+  `$impl` over anything but a block a `with`, laid out as its base, so a union carrying
+  members is already expressible; four places did not follow it through:
+  - **Subtyping**: a `with` is a subtype of its base, and a union base is one no single member
+    of the union is — the right-hand union was asked member by member before the `with` was
+    unwrapped (`sub_step`).
+  - **Narrowing**: `$match` and `$try` narrow a `with` as its base and keep the props
+    (`restrict_at`, `minus`), so an arm's `ok` is `with (ok, P)`, still answering the methods
+    and still a subtype of the whole. Both passes take the members from `T.match_members`,
+    so the member lowering interns is the one emit switches and returns on.
+  - **Projection**: a field of a narrowed member is the base's (`proj_at`).
+  - **Receivers**: a method asked of a narrowed member gets a copy injected back into the
+    union, since the member's layout has no discriminator to cast to (`recv_wrap`); emit
+    coerces into a `with` as into its base (`layout_id`).
+
+  The members must be tag blocks — `$union (T, E)` is one type when `T` and `E` are — and one
+  `$impl` site must make every value, since each site's props are their own identities and
+  so their own type: a `wrap (r)` over the raw union, with `ok`/`err` built on it. A
+  template body holding `$decl`s is an instance, whose generics are slots a prop function
+  would capture, so such a body is props-only. `stage1/fixtures/with_union.mpl` (91147, both
+  stages) is the shape `std/result` will take.
+
 ## D1. Location and naming
 
 A top-level `std/` directory of ordinary modules, imported by name:
