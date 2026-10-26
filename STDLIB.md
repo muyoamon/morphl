@@ -122,7 +122,18 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   one's cover.
 - **P8. `$override`** (D3a): a §2.2 row of arity 2, a §4.12-style section, and support in both
   passes, on a value and on a template. Stage 0 needs it only if a stage-0 test uses it, and
-  the library's tests are compiled-only (P5). *Required by D3a.*
+  the library's tests are compiled-only (P5). *Required by D3a.* **Done**, as SPEC §4.12a.
+  On a value it is `$impl`'s shape with props replaced: each must exist, at a subtype, and
+  the base's members keep calling the base's. On a template it splices: the override's
+  props take the body's places, the body's other members reach them (open within the body,
+  which is what keeps the replaced member from ever being typed), and the override's other
+  names are renamed so they resolve where the `$override` is written, never in the base's
+  body. So the template case has no subtype check, there being no replaced type to compare.
+  Both passes make the same rewrite (`Pa.ov_body`), with the base's items moved a million
+  lines down so nothing either pass keys by position can collide with the override's.
+  `stage1/fixtures/override.mpl` (with D3a's overload in its module, compiled only, and in
+  `test-split`) and `override_bad.mpl` in `test-reject`. Stage 0 refuses the form. Not
+  done: overriding a template that `$override` made.
 
 - **P11. A receiver member reached through a parameter's type, too early, is called bare.**
   **Done.** A function whose parameter is a block type with receiver members — a list
@@ -276,7 +287,11 @@ derive a candidate from the base is `$override`, which can only replace.
   replaced, checked when it is specialised. This is not a convenience: §4.9 types a body after
   substitution, so `$override ($specialize base Str) …` would type `base`'s own `find` at `Str`
   — and fail on `x.eq` — before replacing it. Overriding the template means the replaced
-  member is never typed at an argument it was not written for.
+  member is never typed at an argument it was not written for. That forces two differences
+  from the value case (SPEC §4.12a): inside the body binding is open, since a sibling naming
+  the replaced member must reach the replacement or the original would be typed after all,
+  and there is no subtype check, since the original's type at `Str` is exactly what is never
+  computed. The override's own names resolve where it is written.
 
 **Primitives** reach the same interface either way: a candidate overrides the members that
 compare, or wraps its elements with `$impl`, which costs nothing — an `$impl` over a non-block
@@ -571,7 +586,7 @@ So a list stays a value — `push` answers a new list — and a container that c
 | D1 | location and naming | `std/`, module-qualified |
 | D2 | prelude and `std/` | separate |
 | D3 | generic requirements | bounds; a passed function for `_by`; trait objects for heterogeneous behaviour; not an overloaded operation |
-| D3a | per-element-type containers | `$overload` of templates (P7); candidates derived by `$override` (P8): replace-only, subtype-checked, static binding, applicable to a template |
+| D3a | per-element-type containers | `$overload` of templates (P7); candidates derived by `$override` (P8): replace-only, subtype-checked on a value, static binding on a value, spliced into a template's body |
 | D4 | `eq` and `show` on blocks | a member per type; build-time generation later; not an intrinsic |
 | D5 | container allocators | the root's; `_in` variants on measured need |
 | D6 | strings | a builder |

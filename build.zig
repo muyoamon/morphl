@@ -255,6 +255,9 @@ pub fn build(b: *std.Build) void {
         // body and across a module. Stage 0 has no types to check a bound against.
         // 12341381821107105.
         .{ .src = "stage1/fixtures/overload_tmpl.mpl", .want = "12341381821107105\n", .stage0 = false },
+        // §4.12a's `$override`, on a value and on a template (STDLIB.md, P8). Stage 0 leaves
+        // it out of the bootstrap subset.
+        .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n", .stage0 = false },
         // §6's trait objects: coercion at a call and at `$set`, `$traitsof` of a name, of
         // `$mut` storage and of an expression, `$impl` over an `Int`, and `$match` on an
         // object. 87.
@@ -500,6 +503,22 @@ pub fn build(b: *std.Build) void {
             .count = "errors: 2\n",
             .stage0 = "$specialize expects a template, found overload",
         },
+        // §4.12a: an `$override` only replaces, at a subtype, with props; a template's is
+        // written in place and is not overridden again.
+        .{
+            .src = "stage1/fixtures/override_bad.mpl",
+            .stage1 = &.{
+                "override_bad.mpl:5:10: 'size' is not a prop of the $override's base",
+                "override_bad.mpl:6:10: 'w' is a field of the $override's base",
+                "override_bad.mpl:7:10: member 'area' of this $override is []->Str, which is no subtype of the []->Int it replaces",
+                "override_bad.mpl:8:10: an $override's override is a block of props only",
+                "override_bad.mpl:10:10: 'take' is not a prop of this template's body",
+                "override_bad.mpl:12:10: an $override of a template takes its props as a block written in place",
+                "override_bad.mpl:14:10: this template was made by an $override",
+            },
+            .count = "errors: 7\n",
+            .stage0 = "$override is outside the bootstrap subset",
+        },
         // §5.3a's provenance (STORAGE.md): a place this call made may not be returned,
         // stored inside a value, or passed by a tail call.
         .{
@@ -647,6 +666,10 @@ pub fn build(b: *std.Build) void {
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",
                .mods = &.{ "import_order_inner", "import_order_util" } },
             .{ .src = "stage1/fixtures/tscalar.mpl", .want = "47\n", .mods = &.{"tscalar_util"} },
+            // §4.12a: a template made by `$override` is emitted where the `$override` is, so
+            // its spliced body names the base's module members from another output.
+            .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n",
+               .mods = &.{"override_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);

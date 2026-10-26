@@ -1382,6 +1382,7 @@ pub const Interp = struct {
             // member writing through its receiver is seen.
             .traitsof => self.eval(&node.data.form.operands[0], scope),
             .@"extern" => self.outOfSubset(node.span, "$extern", "stage 0 provides the platform as builtins instead (BOOTSTRAP.md §2)"),
+            .override => self.outOfSubset(node.span, "$override", "nothing stage 1 runs uses it, and the library's tests are compiled (STDLIB.md, P8)"),
         };
     }
 
@@ -2031,7 +2032,7 @@ pub const Interp = struct {
                 if (!it.isForm(.prop)) break false;
             } else true,
             .form => |f| switch (f.keyword) {
-                .func, .template, .@"union", .overload, .specialize, .impl, .traitsof => true,
+                .func, .template, .@"union", .overload, .specialize, .impl, .override, .traitsof => true,
                 else => false,
             },
             else => false,

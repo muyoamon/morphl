@@ -1098,6 +1098,31 @@ $decl coerce_err $func ($decl st proto_est, $decl ft T.proto_ty, $decl wt T.prot
   $call eerr (st, $call concat ("cannot coerce ", $call concat ($call T.show (ft),
       $call concat (" to ", $call T.show (wt)))))
 
+// §4.12a: an `$override`'s result is laid out as its base and differs only in props, which
+// have no layout (§4.10) — so a reference to one is a reference to the other, and the two
+// C pointer types differ in nothing but the struct's name. A base member reached through
+// the result takes its receiver that way.
+$decl layout_ty $func ($decl t T.proto_ty) {
+  $decl u   $call T.unroll (t)
+  $decl ret $match u (
+      $case {$prop tag "block"} ($call T.t_block ($call T.fields.val (u.fields), T.props.nil)),
+      $case {$prop tag "with"}  ($call T.tval (u.base)),
+      $case u u
+    )
+}.ret
+$decl same_layout_refs $func ($decl ft T.proto_ty, $decl wt T.proto_ty) {
+  $decl a   $call T.unroll (ft)
+  $decl b   $call T.unroll (wt)
+  $decl ret $match a (
+      $case {$prop tag "ref"} $match b (
+          $case {$prop tag "ref"}
+            $call T.same ($call layout_ty ($call T.tval (a.inner)),
+                          $call layout_ty ($call T.tval (b.inner))),
+          $case b false),
+      $case a false
+    )
+}.ret
+
 $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                          $decl src "", $decl from 0, $decl want 0) {
   $decl wt $call type_at (ts, want)
@@ -1132,6 +1157,9 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
       ($if ($call not ($call T.tys.is_nil (fs)))
            ($if ($call T.tys.is_nil (ws)) ($call coerce_err (st, ft, wt))
                 ($call emit_retag (st, ts, dest, src, ft, fs, ws, wt)))
+      ($if ($call same_layout_refs (ft, wt))
+           ($call assign (st, dest, $call concat ("(", $call concat ($call c_type (st, ts, want),
+               $call concat (")", src)))))
       ($if ($call lt (k, 0)) ($call coerce_err (st, ft, wt)) {
         $decl a  $call assign (st, $call concat (dest, ".tag"), $call int_to_str (k))
         // The payload is not always a plain move. `member_slot` finds a
@@ -1145,7 +1173,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  $call concat (".u.m", $call int_to_str (k))), src, from, wk.id))
             ($call assign (st, $call concat (dest,
                  $call concat (".u.m", $call int_to_str (k))), src))
-      }.ret2))))
+      }.ret2)))))
 }.ret
 
 // Emit `e` into `dest`, injecting into a union first if `e` is a member of one

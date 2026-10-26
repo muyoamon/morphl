@@ -6,7 +6,7 @@
 //!
 //! This table covers the whole language, not just the bootstrap subset. Forms
 //! that BOOTSTRAP.md §1.2 excludes (`$overload`, `$impl`, `$traitsof`,
-//! `$extern`, `$const`) still parse: the subset restricts what stage-1 *source*
+//! `$extern`, `$const`, `$override`) still parse: the subset restricts what stage-1 *source*
 //! may use, and the evaluator is what declines to implement them. Parsing them
 //! costs nothing and keeps this table checkable against the spec line by line.
 
@@ -38,6 +38,7 @@ pub const Keyword = enum {
     @"extern",
     @"defer",
     free,
+    override,
 
     /// The source spelling, including the `$`.
     pub fn text(self: Keyword) []const u8 {
@@ -100,6 +101,7 @@ const signatures = [_]Signature{
     &.{ .str_lit, .expr }, // $extern "symbol" sig
     &.{.expr}, // $defer e        (DEFER.md: a block item, run when the block is done)
     &.{.expr}, // $free r         (DEFER.md: release allocated storage through its allocator)
+    &.{ .expr, .expr }, // $override x override  (§4.12a: replace props, the mirror of `$impl`)
 };
 
 /// Maps a keyword's name *without* the `$` to its tag.
@@ -129,6 +131,7 @@ const table = std.StaticStringMap(Keyword).initComptime(.{
     .{ "extern", .@"extern" },
     .{ "defer", .@"defer" },
     .{ "free", .free },
+    .{ "override", .override },
 });
 
 pub fn lookup(name_without_dollar: []const u8) ?Keyword {

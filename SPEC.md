@@ -62,6 +62,7 @@ Newlines are whitespace. The language does not dictate formatting.
 | `$template T body` | 2 | name or group of names, expression |
 | `$specialize t args` | 2 | template, expression or group |
 | `$impl x trait override` | 3 | value, trait, block of props |
+| `$override x override` | 2 | value or template, block of props |
 | `$traitsof e` | 1 | block |
 | `$import "name"` | 1 | string literal |
 | `$try e pat` | 2 | expression, type-only pattern |
@@ -311,7 +312,7 @@ Declares a **compile-time constant** member of the enclosing block. `e` must be 
 - a `$func` or `$template` literal, whose body is not evaluated here;
 - a block made only of props, each initializer a constant expression;
 - `$union` or `$overload` whose *evaluated* operands are constant expressions; type-only positions (§5.7) are exempt;
-- `$impl` whose base and override are constant expressions (its trait is type-only, §4.12);
+- `$impl` whose base and override are constant expressions (its trait is type-only, §4.12), and `$override` whose base and override are (§4.12a);
 - a name bound to a prop, or to a generic whose argument is a constant expression;
 - a projection of a constant expression.
 
@@ -348,6 +349,50 @@ Implements `trait` for `x`'s type. The result is **`x`'s value, at `x`'s type wi
 The result conforms to the trait by itself (§6), so it becomes a trait object the ordinary way, by coercion. Its receiver (§4.10) is the name of the `$decl` over the `$impl`, because that `$decl`'s value is the block the props belong to: `$decl n_s $impl n ($traitsof shape_proto) { $prop area $func () $call add (n_s, 0) }`. An `$impl` that no `$decl` binds has no nameable receiver; the return idiom names one. `x`'s own members keep their own receiver. A prop `x` already has is reused by naming it, `{ $prop area x.area }`, and an `override` prop whose name `x`'s type already binds is a name bound twice, which is an error (§4.1).
 
 `x` may be of any type, including one with no props. There is no registration and no coherence problem: an implementation is chosen where it is written, and it is part of the type of the value it was written for.
+
+### 4.12a `$override x override`
+
+The mirror of `$impl`: **replaces** props where `$impl` adds them. The result is `x`'s value at `x`'s type with each prop `override` names replaced, in place, by `override`'s. Props have no layout (§4.10), so the value is `x`'s unchanged. `override` is a block of props, and each must be one `x`'s type already has: a prop `x` lacks, or one `x` binds as a field, is an error. Each replacement's type must be a subtype of the type of the prop it replaces.
+
+| | `$impl x trait override` | `$override x override` |
+|---|---|---|
+| each prop in `override` | must be new (§4.1) | must be one `x` already has |
+| checked against | the named trait | the type of the prop it replaces: a subtype |
+| layout | `x`'s | `x`'s |
+| receiver | the `$decl` over the form | the same |
+
+- **Conformance is preserved.** No member is lost and none changes beyond a subtype, so every trait `x` conforms to (§6), the result conforms to, and a bound `x` meets (§4.9), the result meets.
+- **Identity is not.** Props are part of the type and §5.1 compares them by value, so the result is a distinct type and no subtype of `x`'s: code asking for `x`'s type does not take it, and code asking for a trait, or bounded by one, takes both.
+- **Binding is static.** A member of `x` that calls another keeps calling `x`'s, as `$impl` keeps `x`'s own members on their own receiver. A member of `x` reached through the result receives the result.
+
+```
+$decl a { $decl w 3  $prop area $func () $call mul (a.w, 10)
+                     $prop dbl  $func () $call add ($call a.area (), a.w) }
+$decl b $override a { $prop area $func () $call add (b.w, 1) }
+// $call b.area () is 4; $call b.dbl () is 33, since a's dbl calls a's area
+```
+
+**On a template**, `$override t override` is a template with `t`'s generics and bounds, whose body is `t`'s with `override`'s props **spliced in** in place of the ones they name. `t`'s body must be a block, `override` must be written in place as a block literal, and each of its props must be one of the body's props. Typing waits for specialization (§4.9), as any template's does, and this is the reason for the form: §4.9 types a body after substitution, so `$override ($specialize t Str) …` would type `t`'s own member at `Str`, where it may not typecheck, before replacing it. Overriding the template means a replaced member is never typed at an argument it was not written for. So there is no subtype check in this case, since there is no replaced type to compare against; the replacement is checked by its uses.
+
+Inside the spliced body the override's props are props of that block, and two things follow:
+
+- **Within the body, binding is open.** The body's other members name a replaced one by its bare name (§4.10), and reach the replacement. That is what keeps the replaced member from ever being typed.
+- **Names resolve where they are written.** A name in the override that is one of the body's members means that member. Any other name means what it means where the `$override` is written, and never what it would mean in `t`'s body. In particular, `t`'s generics are not in scope: the override names its own.
+
+```
+$decl box $template T {
+  $prop make  $func ($decl x T) { $decl item x }
+  $prop has   $func ($decl b ($call make (T)), $decl y T) $call b.item.same (y)
+  $prop count $func ($decl b ($call make (T)), $decl y T) $if ($call has (b, y)) 1 0
+}
+$decl str_box $override box {
+  $prop has $func ($decl b ($call make ("")), $decl y "") $call eq (b.item, y)
+}
+// ($specialize str_box "") types `count` against the new `has`; `box`'s own `has`,
+// which needs a `same` member `Str` lacks, is never typed at `Str`
+```
+
+A template made by `$override` cannot be overridden again yet.
 
 ### 4.13 `$traitsof e`
 

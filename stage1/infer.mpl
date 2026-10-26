@@ -90,10 +90,12 @@ $decl join_strs $func ($decl xs strs.node, $decl acc strs.node) $match xs (
 // `ctg` is §4.9's compile-time generics: the ones whose value reaches a prop, each
 // with the prop it reaches. Computed at the declaration (`ctg_fix`).
 // `bounds` is each generic's bound in order, unit when it has none (§4.9).
+// `bfile` is where the base of an `$override` of a template was written (§4.12a): its
+// items sit `Pa.ov_shift` lines down in `body`, and a diagnostic there names that file.
 $decl tmpl_rec_c $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en env.node,
-                        $decl fl "", $decl cg Pa.ctgs.node, $decl bs Pa.nodes.node)
+                        $decl fl "", $decl cg Pa.ctgs.node, $decl bs Pa.nodes.node, $decl bf "")
   { $decl id i  $decl generics gs  $decl body bd  $decl env en  $decl file fl  $decl ctg cg
-    $decl bounds bs }
+    $decl bounds bs  $decl bfile bf }
 $decl tmpl_rec $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node, $decl en env.node,
                       $decl fl "")
   $call tmpl_rec_c (i, gs, bd, en, fl, Pa.ctgs.nil)
@@ -218,6 +220,8 @@ $decl ctx $func () {
   // source raised it, which is not the file the checker was invoked on as
   // soon as anything is imported.
   $decl file   $mut $alloc ""
+  // §4.12a: the file an `$override`'s base was written in, while its spliced body is typed.
+  $decl bfile  $mut $alloc ""
   // Which `$specialize` body is being typed, as §4.9's memo key — "" at a file's
   // top level. It exists so a compile-time identity can be a function of its
   // *source* rather than of a counter: `specialize_with` retargets `cx.file` to the
@@ -292,6 +296,9 @@ $decl ctx $func () {
   $decl rbase   $mut $alloc T.proto_ty
   $decl rbline  $mut $alloc -1
   $decl rbcol   $mut $alloc -1
+  // §4.12a: whether that form is an `$override`, whose result replaces props, not an
+  // `$impl`, whose result adds them.
+  $decl rbov    $mut $alloc $union (false, true)
   // TRAITS.md, design point 7: while a block with a receiver name is typed, `$traitsof` of
   // that name is §5.5's placeholder `stid` — not a trait built from members still being
   // typed, which captured them as ⊥. `stblk` is the block so far, which a projection off
@@ -388,7 +395,8 @@ $decl bval $func ($decl b P.boolean) b
 
 $decl err $func ($decl cx proto_ctx, $decl m "", $decl x P.proto_span) {
   $decl noted $if ($call bval (cx.quiet)) ()
-      ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, x.line, x.col, cx.file), cx.errs)))
+      ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, $call Pa.ov_line (x.line), x.col,
+          $if ($call Pa.ov_far (x.line)) ($call sval (cx.bfile)) ($call sval (cx.file))), cx.errs)))
   $decl ret   T.t_bot
 }.ret
 
@@ -951,7 +959,8 @@ $decl infer_impl $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl tr  $call T.tval ($call infer (cx, e, $call op (n, 1)))
   $decl ov  $call op (n, 2)
   $decl sp  $call P.span_of (ov)
-  $decl sb  $do ($set cx.rbase bt) ($do ($set cx.rbline sp.line) ($set cx.rbcol sp.col))
+  $decl sb  $do ($set cx.rbase bt) ($do ($set cx.rbline sp.line)
+                ($do ($set cx.rbcol sp.col) ($set cx.rbov false)))
   $decl ot  $call T.tval ($call infer (cx, e, ov))
   // `{}` is `()` (§2.1), so an empty override arrives as unit, with no props.
   $decl ok  $match ot (
@@ -1459,7 +1468,8 @@ $decl owns_form $func ($decl cx proto_ctx, $decl e owns.node, $decl x Pa.proto_n
       ($if ($call eq_str (k, "match")) ($call owns_arms (cx, e, $call group_items ($call op (x, 1))))
       ($if ($call eq_str (k, "set")) ($call owns_x (cx, e, $call op (x, 1)))
       ($if ($call P.or ($call eq_str (k, "try"), $call P.or ($call eq_str (k, "mut"),
-               $call P.or ($call eq_str (k, "const"), $call eq_str (k, "impl")))))
+               $call P.or ($call eq_str (k, "const"), $call P.or ($call eq_str (k, "impl"),
+                   $call eq_str (k, "override"))))))
           ($call owns_x (cx, e, $call op (x, 0)))
       ($if ($call eq_str (k, "union"))
           ($call owns_any (cx, e, $call group_items ($call op (x, 0))))
@@ -1555,7 +1565,7 @@ $decl tail_callee_ok $func ($decl cx proto_ctx, $decl ie env.node, $decl e owns.
       ($if ($call eq_str (nm, "")) false
       ($if ($call bound_here (e, nm)) false {
          $decl f    $call lookup (ie, nm)
-         $decl r    $call lookup ($call eval_env (root_env), nm)
+         $decl r    $call lookup ($call eval_env (root_env), $call Pa.ov_plain (nm))
          $decl ret2 $if ($call and (f.ok, r.ok)) ($call T.same (f.ty, r.ty)) false
        }.ret2))
 }.ret
@@ -2071,9 +2081,10 @@ $decl fwd_lazy $func ($decl k "")
   ($if ($call eq_str (k, "prop")) true
   ($if ($call eq_str (k, "fwd")) true
   ($if ($call eq_str (k, "impl")) true
+  ($if ($call eq_str (k, "override")) true
   ($if ($call eq_str (k, "traitsof")) true
   ($if ($call eq_str (k, "extern")) true
-  ($call eq_str (k, "import")))))))))
+  ($call eq_str (k, "import"))))))))))
 
 // §4.8a evaluates a `$union` to its first member; the rest are type-only (§5.7)
 // and may name a declaration in progress.
@@ -2611,8 +2622,10 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
 // it cannot say "for any T" (`T.ffi_box`). Recognised by name *and* marker, so a
 // user's own `unbox` shadows the intrinsic as it shadows any other.
 $decl ffi_which $func ($decl e env.node, $decl c Pa.proto_node) {
-  $decl nm  $call callee_name (c)
-  $decl f   $call lookup (e, nm)
+  $decl nw  $call callee_name (c)
+  $decl f   $call lookup (e, nw)
+  // A name an `$override` renamed (§4.12a) is the intrinsic it stands for.
+  $decl nm  $call Pa.ov_plain (nw)
   $decl ret $if ($call not (f.ok)) ""
       ($if ($call and ($call eq_str (nm, "box_ptr"), $call T.same (f.ty, T.ffi_box))) nm
       ($if ($call and ($call eq_str (nm, "unbox"), $call T.same (f.ty, T.ffi_unbox))) nm
@@ -2966,6 +2979,145 @@ $decl infer_template $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
   $decl ret   $call T.t_tmpl (id)
 }.ret
 
+// ----------------------------------------------------------- §4.12a `$override`
+//
+// The mirror of `$impl`: each prop of the override must be one the base already has, at a
+// subtype of that one's type, and replaces it in place — so every trait the base conforms
+// to, the result does, and the result is a distinct type (§5.1 compares props by value).
+// The base's own members keep calling the base's (binding is static); the override's
+// receiver is the result, which is why its block is told the base first, as `$impl`'s is.
+$decl override_members $func ($decl cx proto_ctx, $decl ps T.props.node, $decl bps T.props.node,
+    $decl bt T.proto_ty, $decl n proto_form) $match ps (
+  $case {$prop tag "cons"} {
+    $decl nm   ps.head.name
+    $decl bp   $call T.find_prop (bps, nm)
+    $decl got  $call T.tval (ps.head.ty)
+    $decl want $call T.tval (bp.ty)
+    $decl chk  $if ($call eq_str (bp.name, ""))
+        ($if ($call T.binds_name (bt, nm))
+             ($call err (cx, $call concat ("'", $call concat (nm,
+                 "' is a field of the $override's base, and only a prop is replaced (§4.12a)")), n))
+             ($call err (cx, $call concat ("'", $call concat (nm,
+                 "' is not a prop of the $override's base, and an $override only replaces (§4.12a)")),
+                 n)))
+        ($if ($call T.sub (got, want)) T.t_unit
+             ($do ($call T.explain (got, want))
+                  ($call err (cx, $call concat ("member '", $call concat (nm, $call concat (
+                      "' of this $override is ", $call concat ($call T.show (got),
+                      $call concat (", which is no subtype of the ", $call concat ($call T.show (want),
+                      " it replaces (§4.12a)")))))), n))))
+    $decl ret  $call override_members (cx, $call T.props.val (ps.tail), bps, bt, n)
+  }.ret,
+  $case ps T.t_unit
+)
+
+$decl override_val $func ($decl cx proto_ctx, $decl e env.node, $decl bt T.proto_ty,
+                          $decl n proto_form) {
+  $decl ov  $call op (n, 1)
+  $decl sp  $call P.span_of (ov)
+  $decl sb  $do ($set cx.rbase bt) ($do ($set cx.rbline sp.line)
+                ($do ($set cx.rbcol sp.col) ($set cx.rbov true)))
+  $decl ot  $call T.tval ($call infer (cx, e, ov))
+  // `{}` is `()` (§2.1), so an empty override arrives as unit, with no props.
+  $decl ok  $match ot (
+      $case {$prop tag "block"} ($call T.fields.is_nil ($call T.fields.val (ot.fields))),
+      $case {$prop tag "unit"}  true,
+      $case ot false
+    )
+  $decl ps  $match ot ($case {$prop tag "block"} ($call T.props.val (ot.props)), $case ot T.props.nil)
+  $decl ret $if ($call not (ok))
+      ($call err (cx, "an $override's override is a block of props only (§4.12a)", n)) {
+        $decl chk  $call override_members (cx, ps, $call T.props_of (bt), bt, n)
+        $decl ret2 $call T.override_ty (bt, ps)
+      }.ret2
+}.ret
+
+// The template case splices (`Pa.ov_splice`): a template with the base's generics and
+// bounds whose body is the base's with the override's props in place of the ones they
+// name, typed only at specialisation, so a replaced member is never typed at an argument it
+// was not written for. The override's names are renamed (`Pa.ov_rename`) and bound here to
+// what they mean where the `$override` is written; the body's resolve where the template is.
+// There is no subtype check, because the member replaced is never typed to compare against.
+$decl ov_block_items $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "block"} ($call Pa.nodes.val (n.items)),
+  $case n Pa.nodes.nil
+)
+$decl ov_is_block $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "block"} true,
+  $case {$prop tag "unit"}  true,
+  $case n false
+)
+$decl ov_all_props $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"} $if ($call is_form (xs.head, "prop")) ($call ov_all_props (xs.tail)) false,
+  $case xs true
+)
+// The first prop of `ov` that is not a prop of `body`, or "".
+$decl ov_missing $func ($decl ov Pa.nodes.node, $decl body Pa.nodes.node) $match ov (
+  $case {$prop tag "cons"} {
+    $decl nm  $call name_of ($call op (ov.head, 0))
+    $decl ret $if ($call Pa.is_unit_node ($call Pa.prop_item (body, nm))) nm
+                  ($call ov_missing (ov.tail, body))
+  }.ret,
+  $case ov ""
+)
+
+// Each renamed name bound to what it is where the `$override` is written. A compile-time
+// or top-level name stays one, since §4.10 and §4.16 ask by name.
+$decl hide_names $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
+                        $decl acc env.node) $match ns (
+  $case {$prop tag "cons"} {
+    $decl nm  ns.head
+    $decl hn  $call Pa.ov_hidden (nm)
+    $decl f   $call lookup (e, nm)
+    $decl cn  $call strs.val (cx.ctnames)
+    $decl ct  $set cx.ctnames ($if ($call in_strs (cn, nm)) ($call strs.cons (hn, cn)) cn)
+    $decl tn  $call strs.val (cx.topnames)
+    $decl tp  $set cx.topnames ($if ($call in_strs (tn, nm)) ($call strs.cons (hn, tn)) tn)
+    $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail),
+                  $if f.ok ($call bind (acc, hn, f.ty)) acc)
+  }.ret,
+  $case ns acc
+)
+
+$decl override_tmpl $func ($decl cx proto_ctx, $decl e env.node, $decl id 0, $decl n proto_form) {
+  $decl r   $call find_tmpl (cx.tmpls, id)
+  $decl ov  $call op (n, 1)
+  $decl ois $call ov_block_items (ov)
+  $decl bis $call ov_block_items (r.body)
+  $decl mis $call ov_missing (ois, bis)
+  $decl ret $if ($call not ($call ov_is_block (ov)))
+      ($call err (cx, "an $override of a template takes its props as a block written in place, which is spliced into the template's body (§4.12a)", n))
+    ($if ($call not ($call Pa.is_block (r.body)))
+      ($call err (cx, "this template's body is not a block, so it has no props to override (§4.12a)", n))
+    ($if ($call not ($call ov_all_props (ois)))
+      ($call err (cx, "an $override's override is a block of props only (§4.12a)", n))
+    ($if ($call not ($call eq_str (mis, "")))
+      ($call err (cx, $call concat ("'", $call concat (mis,
+          "' is not a prop of this template's body, and an $override only replaces (§4.12a)")), n))
+    ($if ($call not ($call eq_str (r.bfile, "")))
+      ($call err (cx, "this template was made by an $override, and overriding one again is not implemented yet (§4.12a)", n)) {
+      $decl ns   $call Pa.ov_names (bis, ois)
+      $decl body $call Pa.ov_body (r.body, ois, ns)
+      $decl en   $call hide_names (cx, e, ns, r.env)
+      $decl nid  $call ct_id (cx, 7, n)
+      $decl cg   $call ctg_fix (cx, en, nid, r.generics, body, Pa.ctgs.nil,
+                     $call strs.length (r.generics, 0))
+      $decl rec  $call tmpl_rec_c (nid, r.generics, body, en, $call sval (cx.file), cg, r.bounds,
+                     r.file)
+      $decl add  $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
+      $decl ret2 $call T.t_tmpl (nid)
+    }.ret2))))
+}.ret
+
+$decl infer_override $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl x0  $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+  $decl xt  $call T.tval (x0)
+  $decl ret $match xt (
+      $case {$prop tag "tmpl"} ($call override_tmpl (cx, e, xt.id, n)),
+      $case xt ($call override_val (cx, e, x0, n))
+    )
+}.ret
+
 $decl memo_find $func ($decl xs memo_list.node, $decl k "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.key, k)) ($call found (true, xs.head.ty)) ($call memo_find (xs.tail,
@@ -3106,6 +3258,8 @@ $decl specialize_at $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
               // The body's spans are the template's file, not this one.
               $decl outer   $call sval (cx.file)
               $decl entered $set cx.file r.file
+              $decl bouter  $call sval (cx.bfile)
+              $decl bent    $set cx.bfile r.bfile
               // The body's compile-time identities belong to *this* instantiation.
               $decl souter $call sval (cx.sctx)
               $decl sent   $set cx.sctx key
@@ -3141,6 +3295,7 @@ $decl specialize_at $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
               }.ret4
                   ty1
               $decl left  $set cx.file outer
+              $decl bleft $set cx.bfile bouter
               $decl sleft $set cx.sctx souter
               $decl m1    $set cx.memo ($call memo_list.cons ($call memo_ent (key, ty),
                   $call eval_memo (cx.memo)))
@@ -3887,9 +4042,13 @@ $decl ct_form_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n proto_fo
     ($if ($call eq_str (k, "impl"))
          ($call ct_why_list (cx, pe, $call Pa.nodes.cons ($call op (n, 0),
              $call Pa.nodes.cons ($call op (n, 2), Pa.nodes.nil))))
+    // §4.12a: so is `$override`, for the same reason.
+    ($if ($call eq_str (k, "override"))
+         ($call ct_why_list (cx, pe, $call Pa.nodes.cons ($call op (n, 0),
+             $call Pa.nodes.cons ($call op (n, 1), Pa.nodes.nil))))
     ($if ($call eq_str (k, "traitsof"))
          "$traitsof, which makes a trait object (§6),"
-         ($call concat ("$", k)))))))
+         ($call concat ("$", k))))))))
 }.ret
 
 $decl ct_why $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node) $match n (
@@ -4258,6 +4417,7 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl isimp  $call P.and ($call eq_int ($call ival (cx.rbline), x.line),
                    $call eq_int ($call ival (cx.rbcol), x.col))
   $decl rbase  $call T.tval (cx.rbase)
+  $decl isov   $call bval (cx.rbov)
   // Restored, not cleared: this block may itself sit inside a quiet pass — a member's
   // provisional typing (`prop_pass`), whose body is a `{ … }.ret` — and clearing the flag
   // made the rest of that pass report the placeholder errors it exists to swallow.
@@ -4286,7 +4446,9 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   // The members that name the receiver, typed for real: the block's type exists now,
   // and the receiver is a reference to it at the declaration's qualifier (§4.10). A
   // prop's `ty` is outside the block's identity (§5.1), so replacing it moves nothing.
-  $decl bt0  $if isimp ($call T.impl_ty (rbase, $call T.props.val (s.prps)))
+  $decl bt0  $if isimp
+                 ($if isov ($call T.override_ty (rbase, $call T.props.val (s.prps)))
+                      ($call T.impl_ty (rbase, $call T.props.val (s.prps))))
                  ($call T.t_block (flds, s.prps))
   $decl sb2  $set cx.stblk ($if ($call eq_str (rn, "")) ($call T.tval (cx.stblk)) bt0)
   $decl prps $if ($call eq_str (rn, "")) ($call T.props.val (s.prps))
@@ -4416,11 +4578,12 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "extern"))     ($call infer_extern (cx, e, n))
     ($if ($call eq_str (k, "traitsof"))   ($call infer_traitsof (cx, e, n))
     ($if ($call eq_str (k, "impl"))       ($call infer_impl (cx, e, n))
+    ($if ($call eq_str (k, "override"))   ($call infer_override (cx, e, n))
     ($if ($call eq_str (k, "overload"))   ($call infer_overload (cx, e, n))
     ($if ($call eq_str (k, "defer"))
          ($call err (cx, "$defer is a block item: it belongs directly in a block's items (§4.15a)", n))
          ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-    ))))))))))))))))))))
+    )))))))))))))))))))))
 }.ret
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (
@@ -4435,7 +4598,8 @@ $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) 
   $case {$prop tag "name"} {
     $decl f $call lookup (e, n.text)
     $decl ret $if f.ok f.ty
-        ($call err (cx, $call concat ("unknown name '", $call concat (n.text, "'")), n))
+        ($call err (cx, $call concat ("unknown name '", $call concat ($call Pa.ov_plain (n.text),
+            "'")), n))
   }.ret,
   $case {$prop tag "group"} $call T.t_group ($call infer_tys (cx, e, n.items, T.tys.nil)),
   $case {$prop tag "block"} $call infer_block (cx, e, n.items, n),

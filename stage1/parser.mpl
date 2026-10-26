@@ -172,6 +172,7 @@ $call add_kw ("try",        2, "expr",  "expr", "")
 $call add_kw ("extern",     2, "str",   "expr", "")
 $call add_kw ("defer",      1, "expr",  "",     "")
 $call add_kw ("free",       1, "expr",  "",     "")
+$call add_kw ("override",   2, "expr",  "expr", "")
 
 $decl find_kw $func ($decl xs kws.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
@@ -865,7 +866,8 @@ $decl ct_reads $func ($decl n proto_node, $decl gs pstrs.node, $decl pn "",
             ($call group_list ($call operand (n, 1)))
         $decl ret2 $call ct_spec_args (args, mask, gs, pn, rs, acc)
       }.ret2
-      ($if ($call or ($call eq_str (k, "impl"), $call eq_str (k, "traitsof")))
+      ($if ($call or ($call or ($call eq_str (k, "impl"), $call eq_str (k, "override")),
+                     $call eq_str (k, "traitsof")))
         ($call ct_reads_list (n.operands, gs, pn, rs, acc))
         acc)))
   }.ret,
@@ -1051,18 +1053,167 @@ $decl subst_lit $func ($decl n proto_node, $decl nm "", $decl lit proto_node) $m
   $case n n
 )
 
+// ------------------------------------------------ §4.12a's `$override` of a template
+//
+// The template case splices: the override's props take the places of the body's props of
+// the same names, and the body is then typed and lowered as one block in which the replaced
+// members never appear — so a member the override replaces is never typed at an argument it
+// was not written for, and the body's other members reach the replacement. Both passes ask
+// for the same rewrite, so it is here.
+//
+// The override's names resolve where it is written, though, and the body's where the
+// template is. So every name the override mentions that is not one of the body's own members
+// is renamed to `$o:<name>`, which no identifier can be (§2.1: none starts with `$`), and
+// each pass binds the renamed names to what they meant at the `$override`. The walk keeps
+// scope: a name the override binds itself — a parameter, a `$decl`, a generic — is left
+// alone wherever that binding reaches, and a binder is never renamed.
+$decl ov_hidden $func ($decl nm "") $call concat ("$o:", nm)
+// The name a renamed one stands for, or the name itself.
+$decl ov_plain $func ($decl nm "")
+  $if ($call lt ($call len (nm), 3)) nm
+      ($if ($call eq_str ($call slice (nm, 0, 3), "$o:")) ($call slice (nm, 3, $call len (nm))) nm)
+
+// A `$template`'s generics, bare or as `$decl`s carrying a bound (§4.9).
+$decl ov_generics $func ($decl n proto_node) $match n (
+  $case {$prop tag "group"} ($call block_binders (n.items, $call bound_group (n, pstrs.nil))),
+  $case {$prop tag "form"}  ($call block_binders ($call nodes.cons (n, nodes.nil), pstrs.nil)),
+  $case n ($call generic_binders (n))
+)
+
+$fwd ov_rename
+$decl ov_renames $func ($decl xs nodes.node, $decl ns pstrs.node, $decl acc nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call ov_renames (xs.tail, ns, $call nodes.cons ($call ov_rename (xs.head, ns), acc)),
+  $case xs ($call nodes.reverse (acc, nodes.nil))
+)
+// A form's operands after the first, which a binder names.
+$decl ov_rest $func ($decl xs nodes.node, $decl ns pstrs.node) $match xs (
+  $case {$prop tag "cons"} ($call nodes.cons (xs.head, $call ov_renames (xs.tail, ns, nodes.nil))),
+  $case xs xs
+)
+$decl ov_rename $func ($decl n proto_node, $decl ns pstrs.node) $match n (
+  $case {$prop tag "name"}
+    $if ($call mem_pstr (ns, n.text)) ($call n_name ($call ov_hidden (n.text), n.line, n.col)) n,
+  $case {$prop tag "proj_name"}
+    $call n_projn ($call ov_rename (n.target, ns), n.field, n.line, n.col),
+  $case {$prop tag "proj_index"}
+    $call n_proji ($call ov_rename (n.target, ns), n.index, n.line, n.col),
+  $case {$prop tag "group"} ($call n_group ($call ov_renames (n.items, ns, nodes.nil), n.line,
+      n.col)),
+  $case {$prop tag "block"}
+    $call n_block ($call ov_renames (n.items,
+        $call pstrs_without (ns, $call block_binders (n.items, pstrs.nil), pstrs.nil), nodes.nil),
+        n.line, n.col),
+  $case {$prop tag "form"} {
+    $decl k    n.keyword
+    $decl ops  $call nodes.val (n.operands)
+    $decl inner $if ($call eq_str (k, "func"))
+                    ($call pstrs_without (ns, $call param_binders ($call operand (n, 0)),
+                        pstrs.nil))
+                    ($if ($call eq_str (k, "template"))
+                         ($call pstrs_without (ns, $call ov_generics ($call operand (n, 0)),
+                             pstrs.nil))
+                         ns)
+    $decl binds $if ($call eq_str (k, "decl")) true
+                    ($if ($call eq_str (k, "prop")) true ($call eq_str (k, "fwd")))
+    $decl ret  $if binds ($call n_form (k, $call ov_rest (ops, ns), n.line, n.col))
+        ($if ($call or ($call eq_str (k, "func"), $call eq_str (k, "template")))
+             ($call n_form (k, $call nodes.cons ($call ov_rename ($call operand (n, 0), ns),
+                 $call nodes.cons ($call ov_rename ($call operand (n, 1), inner), nodes.nil)),
+                 n.line, n.col))
+             ($call n_form (k, $call ov_renames (ops, ns, nodes.nil), n.line, n.col)))
+  }.ret,
+  $case n n
+)
+
+// The names `ov_rename` renames: every one the override mentions, less the body's members.
+$decl ov_names $func ($decl body nodes.node, $decl ov nodes.node)
+  $call pstrs_without ($call free_names_list (ov, pstrs.nil),
+      $call block_binders (body, pstrs.nil), pstrs.nil)
+
+// The `$prop` named `nm` among `xs`, or the unit node.
+$decl prop_item $func ($decl xs nodes.node, $decl nm "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($if ($call is_kw (xs.head, "prop"))
+             ($call eq_str ($call name_text ($call operand (xs.head, 0)), nm)) false)
+        xs.head ($call prop_item (xs.tail, nm)),
+  $case xs ($call n_unit (0, 0))
+)
+$decl is_unit_node $func ($decl n proto_node) $match n ($case {$prop tag "unit"} true, $case n false)
+
+// The body's items with each prop the override names replaced in place.
+$decl ov_splice $func ($decl body nodes.node, $decl ov nodes.node, $decl acc nodes.node)
+  $match body (
+    $case {$prop tag "cons"} {
+      $decl it  body.head
+      $decl rp  $if ($call is_kw (it, "prop"))
+                    ($call prop_item (ov, $call name_text ($call operand (it, 0))))
+                    ($call n_unit (0, 0))
+      $decl ret $call ov_splice (body.tail, ov,
+                    $call nodes.cons ($if ($call is_unit_node (rp)) it rp, acc))
+    }.ret,
+    $case body ($call nodes.reverse (acc, nodes.nil))
+  )
+
+// Both passes key what they record about a node by the file it is typed in and its span —
+// §4.9's identities, `$alloc`'s allocator, an overload's choice — and a spliced body is
+// typed in one file, the override's, although its items were written in two. So the base's
+// items are moved `ov_shift` lines down, past any line a file has, where nothing of the
+// override's can share a key with them; a diagnostic there is the base's file's, at the
+// line less the shift (`ov_far`, `ov_line`).
+$decl ov_shift 1000000
+$decl ov_far   $func ($decl line 0) $call lt ($call sub (ov_shift, 1), line)
+$decl ov_line  $func ($decl line 0) $if ($call ov_far (line)) ($call sub (line, ov_shift)) line
+
+$fwd shift_node
+$decl shift_nodes $func ($decl xs nodes.node, $decl acc nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call shift_nodes (xs.tail, $call nodes.cons ($call shift_node (xs.head), acc)),
+  $case xs ($call nodes.reverse (acc, nodes.nil))
+)
+$decl shift_node $func ($decl n proto_node) {
+  $decl l   $call add (n.line, ov_shift)
+  $decl ret $match n (
+      $case {$prop tag "int"}        ($call n_int (n.value, l, n.col)),
+      $case {$prop tag "float"}      ($call n_float (n.text, l, n.col)),
+      $case {$prop tag "str"}        ($call n_str (n.text, l, n.col)),
+      $case {$prop tag "bool"}       ($call n_bool (n.value, l, n.col)),
+      $case {$prop tag "name"}       ($call n_name (n.text, l, n.col)),
+      $case {$prop tag "unit"}       ($call n_unit (l, n.col)),
+      $case {$prop tag "error"}      ($call n_err (n.msg, l, n.col)),
+      $case {$prop tag "group"}      ($call n_group ($call shift_nodes (n.items, nodes.nil), l, n.col)),
+      $case {$prop tag "block"}      ($call n_block ($call shift_nodes (n.items, nodes.nil), l, n.col)),
+      $case {$prop tag "proj_name"}  ($call n_projn ($call shift_node (n.target), n.field, l, n.col)),
+      $case {$prop tag "proj_index"} ($call n_proji ($call shift_node (n.target), n.index, l, n.col)),
+      $case {$prop tag "form"}
+        ($call n_form (n.keyword, $call shift_nodes (n.operands, nodes.nil), l, n.col))
+    )
+}.ret
+
+// The spliced body: the base's items shifted, with the renamed override's in place of the
+// props they name, under the base body's own span shifted with them.
+$decl ov_body $func ($decl body proto_node, $decl ov nodes.node, $decl ns pstrs.node) $match body (
+  $case {$prop tag "block"}
+    $call n_block ($call ov_splice ($call shift_nodes (body.items, nodes.nil),
+        $call ov_renames (ov, ns, nodes.nil), nodes.nil), $call add (body.line, ov_shift),
+        body.col),
+  $case body body
+)
+
 // ------------------------------------------------------------ §4.10's receiver
 //
 // The block a `$decl`'s initializer is, directly or through `$new`, `$alloc`, `$mut`,
-// `$const` or `$impl` — for `$impl` the override, whose props are the ones the declaring
-// name is the receiver of (§4.12). Anything else answers itself. Inference and lowering
-// both ask, so the answer is here.
+// `$const`, `$impl` or `$override` — for those two the override, whose props are the ones
+// the declaring name is the receiver of (§4.12, §4.12a). Anything else answers itself.
+// Inference and lowering both ask, so the answer is here.
 $decl recv_target $func ($decl n proto_node) $match n (
   $case {$prop tag "form"}
     $if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
                    $call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const"))))
         ($call recv_target ($call operand (n, 0)))
-        ($if ($call eq_str (n.keyword, "impl")) ($call recv_target ($call operand (n, 2))) n),
+        ($if ($call eq_str (n.keyword, "impl")) ($call recv_target ($call operand (n, 2)))
+             ($if ($call eq_str (n.keyword, "override")) ($call recv_target ($call operand (n, 1)))
+                  n)),
   $case n n
 )
 

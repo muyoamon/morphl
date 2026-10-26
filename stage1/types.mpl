@@ -2309,6 +2309,39 @@ $decl impl_ty $func ($decl b proto_ty, $decl ps props.node) {
     )
 }.ret
 
+// §4.12a: `$override`'s type — the base's with each of its props that the override names
+// replaced in place, by the override's. Nothing is added and nothing moves.
+$decl override_props $func ($decl xs props.node, $decl ps props.node, $decl acc props.node)
+  $match xs (
+    $case {$prop tag "cons"} {
+      $decl p   $call find_prop (ps, xs.head.name)
+      $decl ret $call override_props ($call props.val (xs.tail), ps,
+                    $call props.cons ($if ($call eq_str (p.name, "")) xs.head p, acc))
+    }.ret,
+    $case xs ($call props.reverse (acc, props.nil))
+  )
+$decl override_ty $func ($decl b proto_ty, $decl ps props.node) {
+  $decl u   $call tval ($call unroll (b))
+  $decl ret $match u (
+      $case {$prop tag "block"}
+        ($call tval ($call t_block ($call fields.val (u.fields),
+            $call override_props ($call props.val (u.props), ps, props.nil)))),
+      $case {$prop tag "with"}
+        ($call tval ($call t_with ($call tval (u.base),
+            $call override_props ($call props.val (u.props), ps, props.nil)))),
+      $case u b
+    )
+}.ret
+// The props a type carries, which an `$override` may replace: a block's, or a `with`'s.
+$decl props_of $func ($decl b proto_ty) {
+  $decl u   $call tval ($call unroll (b))
+  $decl ret $match u (
+      $case {$prop tag "block"} ($call props.val (u.props)),
+      $case {$prop tag "with"}  ($call props.val (u.props)),
+      $case u props.nil
+    )
+}.ret
+
 // Whether a type already binds `nm` — a field or a prop — which an `$impl` adding a prop of
 // that name would bind a second time (§4.1).
 $decl binds_name $func ($decl b proto_ty, $decl nm "") {

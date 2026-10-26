@@ -681,6 +681,8 @@ $decl lstate $func () {
   $decl rbase   $mut $alloc T.proto_ty
   $decl rbline  $mut $alloc -1
   $decl rbcol   $mut $alloc -1
+  // §4.12a: whether that form is an `$override`, whose result replaces props.
+  $decl rbov    $mut $alloc $union (false, true)
   // One rank counter per module, so a function's identity is (module, rank) and an
   // edit to one module renumbers only its own. An assoc list because there are a
   // handful of modules, not thousands.
@@ -1506,10 +1508,24 @@ $decl recv_wrap $func ($decl st proto_lst, $decl raw proto_lres, $decl tgt proto
           // off a parameter of block type reaches the member through its type's props
           // and has no module, and the receiver is still what it was reached through.
           $decl rv   $call find_rcv ($call rcv_list.val (st.recvfns), ir.fn)
-          $decl rk   $call intern (st, $call rcv_ty (rv))
-          $decl cap  $if ($call is_ref_ty ($call T.unroll (raw.ty))) raw.ir
-                         ($if ($call is_name_at (x)) ($call IR.e_addr (rk, raw.ir))
-                              ($call IR.e_new (rk, tgt.ir)))
+          $decl rt   $call rcv_ty (rv)
+          $decl rk   $call intern (st, rt)
+          // §4.12a: a base member reached through an `$override`'s result receives the
+          // result, which has the base's layout and not its type, so the capture is made
+          // at the target's own type and coerced — a cast in C (`same_layout_refs`).
+          $decl ru   $call T.unroll (rt)
+          $decl same $match ru (
+              $case {$prop tag "ref"} ($call T.same ($call T.tval (ru.inner), tgt.ty)),
+              $case ru true)
+          $decl own  $match ru (
+              $case {$prop tag "ref"} ($call T.t_ref_k (ru.qual, tgt.ty, ru.kind)),
+              $case ru rt)
+          $decl ok   $if same rk ($call intern (st, own))
+          $decl isr  $call is_ref_ty ($call T.unroll (raw.ty))
+          $decl cap0 $if isr raw.ir
+                         ($if ($call is_name_at (x)) ($call IR.e_addr (ok, raw.ir))
+                              ($call IR.e_new (ok, tgt.ir)))
+          $decl cap  $if same cap0 ($call IR.e_copy (rk, cap0))
           $decl ret2 $call lres ($call IR.e_closure (ir.ty, ir.fn,
                          $call IR.exprs.cons (cap, IR.exprs.nil)), r.ty)
         }.ret2 r,
@@ -1835,14 +1851,17 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
     ($if ($call eq_str (f.bnd.kind, "prop"))
       // §4.10: a prop is compile-time, so naming one is not reading a slot —
       // it is asking the module what that prop's value lowered to.
-      ($call bare_recv (st, $call lower_prop (st, f.bnd.mod, nm, n), nm, n)) {
+      // A name an `$override` renamed (`Pa.ov_rename`) is the prop's own name there.
+      ($call bare_recv (st, $call lower_prop (st, f.bnd.mod, $call Pa.ov_plain (nm), n),
+          $call Pa.ov_plain (nm), n)) {
         $decl bt $call T.tval (f.bnd.ty)
         $decl id $call mod_ty_id (st, f.bnd.mod, bt)
         $decl ir $if ($call eq_str (f.bnd.kind, "local"))   ($call IR.e_local (id, f.bnd.slot))
             ($if ($call eq_str (f.bnd.kind, "capture")) ($call IR.e_capture (id, f.bnd.slot))
             ($if ($call eq_str (f.bnd.kind, "global"))  ($call IR.e_global (id, f.bnd.slot))
                  ($call IR.e_prim ($if ($call is_over_l (bt))
-                     ($call intern_cands (st, $call over_cands (bt), id)) id, nm))))
+                     ($call intern_cands (st, $call over_cands (bt), id)) id,
+                     $call Pa.ov_plain (nm)))))
         $decl ret2  $call lres4 (ir, bt, f.bnd.mod, f.bnd.tmpl)
       }.ret2)
 }.ret
@@ -2281,7 +2300,11 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
             ($call recv_wrap (st, raw, tgt, n.target, $call lower_prop (st, tgt.mod, n.field, n)))
             ($if f.hit
             ($call lres ($call IR.e_field ($call intern (st, f.ty), tgt.ir, f.idx), f.ty))
-            ($if ($call lt (tgt.mod, 0))
+            // A prop the target's module does not hold is read off the type too: §4.12's and
+            // §4.12a's results carry the base's props there, with the base's identities.
+            ($if ($if ($call lt (tgt.mod, 0)) true
+                      ($call not ($call T.props.is_nil
+                          ($call find_prop ($call T.props.val (tt.props), n.field)))))
                  ($call recv_wrap (st, raw, tgt, n.target,
                      $call prop_from_ty (st, $call T.props.val (tt.props), n.field, n)))
                  ($call recv_wrap (st, raw, tgt, n.target,
@@ -3889,6 +3912,60 @@ $decl lower_apply $func ($decl st proto_lst, $decl e benv.node, $decl n proto_fo
   $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
 }.ret
 
+// §4.12a, lowering's half of `infer.mpl`'s `infer_override`. The value case is `$impl`'s
+// shape with the props replaced rather than added: the base's value, the result's type, and
+// the override's module, so a projection onto a replaced prop is answered from the override
+// and one onto any other from the type, whose identities name the base's sources
+// (`lower_proj`). The template case builds the same spliced template inference did — the
+// same body, with the override's names renamed and bound to what they are here — under
+// inference's identity for it, which every key in its specialisations is minted from.
+$decl lov_items $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "block"} ($call Pa.nodes.val (n.items)),
+  $case n Pa.nodes.nil
+)
+$decl hide_binds $func ($decl e benv.node, $decl ns Pa.pstrs.node, $decl acc benv.node) $match ns (
+  $case {$prop tag "cons"} {
+    $decl f   $call lookup (e, ns.head)
+    $decl b   f.bnd
+    $decl ret $call hide_binds (e, $call Pa.pstrs.val (ns.tail),
+                  $if f.hit ($call benv.cons ($call bind_ent6 ($call Pa.ov_hidden (ns.head), b.kind,
+                                b.slot, b.ty, b.mod, b.tmpl), acc)) acc)
+  }.ret,
+  $case ns acc
+)
+$decl lower_override $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form) {
+  $decl bx  $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+  $decl ts  $if ($call lt (bx.tmpl, 0)) tmpls_list.nil ($call find_tmpl (st.tmpls, bx.tmpl))
+  $decl ret $match ts (
+      $case {$prop tag "cons"} {
+        $decl r    ts.head
+        $decl ois  $call lov_items ($call op (n, 1))
+        $decl bis  $call lov_items (r.body)
+        $decl ns   $call Pa.ov_names (bis, ois)
+        $decl body $call Pa.ov_body (r.body, ois, ns)
+        $decl sp   $call P.span_of (n)
+        $decl tid  $call fresh_tmpl (st, r.generics, body,
+                       $call hide_binds (e, ns, $call benv.val (r.env)),
+                       $call concat ($call P.sval (st.curmod),
+                       $call concat ("_o", $call concat ($call int_to_str (sp.line),
+                       $call concat ("_", $call int_to_str (sp.col))))),
+                       $call P.sval (st.curfile), $call P.sval (st.isctx), n)
+        $decl ret2 $call lres4 ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit, -1, tid)
+      }.ret2,
+      $case ts {
+        $decl ov   $call op (n, 1)
+        $decl sp   $call P.span_of (ov)
+        $decl sb   $do ($set st.rbase bx.ty) ($do ($set st.rbline sp.line)
+                       ($do ($set st.rbcol sp.col) ($set st.rbov true)))
+        $decl ovr  $call lval ($call lower (st, e, ov, false))
+        $decl rt   $call T.override_ty (bx.ty, $call own_props (ovr.ty))
+        $decl ir   $if ($call T.same (rt, bx.ty)) bx.ir
+                       ($call IR.e_copy ($call intern (st, rt), bx.ir))
+        $decl ret2 $call lres3 (ir, rt, ovr.mod)
+      }.ret2
+    )
+}.ret
+
 $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean) {
   $decl k n.keyword
@@ -4127,13 +4204,15 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl tro  $call type_only (st, e, $call op (n, 1))
       $decl ov   $call op (n, 2)
       $decl sp   $call P.span_of (ov)
-      $decl sb   $do ($set st.rbase bx.ty) ($do ($set st.rbline sp.line) ($set st.rbcol sp.col))
+      $decl sb   $do ($set st.rbase bx.ty) ($do ($set st.rbline sp.line)
+                     ($do ($set st.rbcol sp.col) ($set st.rbov false)))
       $decl ovr  $call lval ($call lower (st, e, ov, false))
       $decl rt   $call T.impl_ty (bx.ty, $call own_props (ovr.ty))
       $decl ir   $if ($call T.same (rt, bx.ty)) bx.ir
                      ($call IR.e_copy ($call intern (st, rt), bx.ir))
       $decl ret2 $call lres3 (ir, rt, ovr.mod)
     }.ret2
+    ($if ($call eq_str (k, "override")) ($call lower_override (st, e, n))
     // §4.8: an overload as the callee resolves to its first fitting candidate — the
     // arguments lowered first, as they stand, then made what that candidate's parameters
     // want; lowering them twice could lift a `$func` literal twice.
@@ -4162,7 +4241,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl ret2 $call lres ($call IR.e_panic (ti, "an inferred generic has no value"), t)
     }.ret2
       ($call lres ($call IR.e_unit ($call err (st, $call concat ("$", $call concat (k,
-           " is not lowered yet")), n)), T.t_unit)))))))))))))))))))))
+           " is not lowered yet")), n)), T.t_unit))))))))))))))))))))))
 }.ret
 
 $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
@@ -6049,7 +6128,11 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
   // `$decl` over it holds (§4.12). See `recv_wrap`.
   $decl imp $call and ($call eq_int ($call P.ival (st.rbline), x.line),
                 $call eq_int ($call P.ival (st.rbcol), x.col))
-  $decl rty $if imp ($call T.impl_ty ($call T.tval (st.rbase), $call T.props.val (a.prps))) ty
+  $decl rty $if imp
+                ($if ($call P.bval (st.rbov))
+                     ($call T.override_ty ($call T.tval (st.rbase), $call T.props.val (a.prps)))
+                     ($call T.impl_ty ($call T.tval (st.rbase), $call T.props.val (a.prps))))
+                ty
   $decl rct $if ($call eq_str (rq, "mut"))
                 ($call T.t_ref_k ("mut", rty, $if ($call eq_str (rk, "alloc")) T.k_alloc ""))
                 ($call T.t_ref ("const", rty))
