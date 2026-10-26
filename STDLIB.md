@@ -119,7 +119,10 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   nested overloads. `stage1/fixtures/overload_tmpl.mpl` (12341381821107105, compiled only:
   stage 0 has no types to check a bound against) and `overload_tmpl_none.mpl` in
   `test-reject`. Not done: §4.8's lint for a template candidate whose bounds an earlier
-  one's cover.
+  one's cover. A choice inside an instance whose argument inference closes into a `μ` only
+  through a prop's type (a list wrapper) was missed by lowering, whose key had no `mu.`:
+  both passes key by `T.show_key` now (`overload_tmpl_mu.mpl`, 210), which surfaced with
+  `std/seq`'s algorithms over primitives.
 - **P8. `$override`** (D3a): a §2.2 row of arity 2, a §4.12-style section, and support in both
   passes, on a value and on a template. Stage 0 needs it only if a stage-0 test uses it, and
   the library's tests are compiled-only (P5). *Required by D3a.* **Done**, as SPEC §4.12a.
@@ -247,6 +250,15 @@ bundle every type shares, not something each type carries. And §6's extension i
 user's `$decl eq $overload (eq_mine, C.eq)` is never seen by `std/list`'s `find`, which names
 `C.eq` where it is written. A member travels with its type; an overload does not.
 
+**What was done instead, once P7 existed:** `std/core`'s `equal` and `less` are an
+`$overload` of the primitives' §8 `eq`/`lt` with the member form as the last candidate,
+and the algorithms are bounded by `eq_like`/`ord_like`, a `$union` of the prototype and the
+primitive examples. Neither flaw above applies, because **extension is still by member**:
+the overload is closed over the primitives, which cannot carry a member, and a user's type
+joins by having `eq`/`lt`, not by being added to the overload. What remains of the first
+flaw is that `C.less` held as a *value* is that bundle; pass `$func ($decl a k, $decl b k)
+$call C.less (a, b)`, as `std/map`'s users already do.
+
 ## D3a. Containers that differ by element type
 
 A container whose **structure** should depend on its element type — bytes kept as a `Str`, a
@@ -319,12 +331,19 @@ block — it cannot see the fields. So:
 - **`show` writes into a builder** (`$prop show $func ($decl b S.builder) …`) rather than
   returning a `Str`: a nested record rendering its children by `concat` is D6's O(n²) trap.
   It takes no value of its own type, so a `show` object needs no F-bound.
-- **Primitives** have no props; D3a is how a container over them gets the same interface.
+- **Primitives** have no props. For equality and order, `std/core`'s `equal`/`less`
+  overloads give them the same interface as a member would (above); D3a is for a
+  container whose *representation* should differ.
 - **`eq_proto` and `ord_proto` are in `std/core`**, as F-bounded prototypes (`ord_proto`
   reuses `eq_proto`'s `eq` by projection), with `equal`, `unequal`, `less`, `less_eq`,
   `greater`, `greater_eq`, `max_ord` and `min_ord` over them. A bound is written
   `$decl T $traitsof ($specialize C.ord_proto T)`. `Int` and `Str` have no props, so they
-  conform to neither; `max`/`min` are their forms.
+  conform to neither; `max`/`min` are their forms. **Since P7, the comparisons take them
+  too:** `equal` and `less` are an `$overload` of `int_eq`, `float_eq`, `str_eq`, `bool_eq`
+  (and the `_lt` forms, `Str` by bytes) with `member_eq`/`member_lt` last, and the rest
+  are bounded by `C.eq_like T`/`C.ord_like T`, a `$union` of the prototype and the
+  primitives — so `$call C.max_ord (3, 9)` and `$call Q.sort (ints)` work, and a type
+  with neither is refused at the call by the bound.
 - **`std/list` has the bounded forms beside the `_by` ones.** `contains` and `index_of` are
   members of `list T`, template-valued so `list Int` still types, their generic read off the
   value searched for. `sort`, `is_sorted`, `max_of` and `min_of` take no element, so §4.9's
@@ -478,7 +497,7 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
     O(n), and "indexed" promises better).
   - Algorithms over any conforming `S`: `count`, `fold`, `map` (to a list), `for_each`, `any`,
     `all`, `find`, `to_list`; bounded by the element's order or equality: `contains`,
-    `index_of` (`eq_proto`), `sort`, `max_of`, `min_of`, `is_sorted` (`ord_proto`). These
+    `index_of` (`eq_like`), `sort`, `max_of`, `min_of`, `is_sorted` (`ord_like`). These
     replace `ord_list E` and the template members `contains`/`index_of`, which point 4 rules
     out as methods anyway.
   - **Done**, with `std/seq_test.mpl` (29), which runs them over a list and over a sequence
@@ -486,9 +505,10 @@ any value with the right capabilities (TRAITS.md's traits, as bounds).
     - **The element type is never the algorithm's generic**, since nothing names it. Where it
       must be named, a helper takes one element as an example and reads `E` off it
       (`sorted_go`, `max_go`, `sort_as`), behind an emptiness check, as `head` panics. That
-      is also where `eq_proto`/`ord_proto` sit. The cost: sorting `Int`s is refused, as it
-      should be, but the diagnostic points at the helper's call inside `std/seq.mpl`, not at
-      the caller's line.
+      is also where the bounds sit, so a refusal points at the helper's call inside
+      `std/seq.mpl`, not at the caller's line. Since P7 an `Int`, `Float`, `Str` or `Bool`
+      element is not refused: `eq_like`/`ord_like` admit the primitives, and `C.equal`/
+      `C.less` pick their §8 `eq`/`lt` per instance (`seq_test`'s c30–c36).
     - **`to_list (xs, into)` takes a list to collect after**, because the result's element
       type has to come from somewhere: `$call Q.to_list (xs, $call ints.empty ())`.
     - **`search_by (xs, x, less)` and `search (xs, x)`** are binary search over `indexed_of`,

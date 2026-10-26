@@ -2754,7 +2754,7 @@ $decl infer_key $func ($decl st proto_lst, $decl i 0, $decl ks IR.ints.node,
     $decl acc "") $match ks (
   $case {$prop tag "cons"}
     $call infer_key (st, i, $call IR.ints.val (ks.tail),
-        $call concat (acc, $call concat ("|", $call T.show ($call ty_at (st, ks.head))))),
+        $call concat (acc, $call concat ("|", $call T.show_key ($call ty_at (st, ks.head))))),
   $case ks ($call concat ($call int_to_str (i), acc))
 )
 

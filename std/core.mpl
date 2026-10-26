@@ -41,32 +41,63 @@ $decl min $overload (min_int, min_float)
 //   $call C.max_ord (p, q)       // T = pt; pt conforms to ord_proto pt
 //
 // Inside a type, a member named `eq` or `lt` shadows the intrinsic for the whole block —
-// alias it first, `$decl ieq eq`. `Int`, `Str` and the rest have no props, so they conform
-// to neither; `max` and `min` above are their forms.
+// alias it first, `$decl ieq eq`.
 $decl eq_proto  $template T { $prop eq $func ($decl other T) bool }
 $decl ord_proto $template T {
   $prop eq ($specialize eq_proto T).eq
   $prop lt $func ($decl other T) bool
 }
 
-$decl equal   $template ($decl T $traitsof ($specialize eq_proto T))
-  $func ($decl a T, $decl b T) $call a.eq (b)
-$decl unequal $template ($decl T $traitsof ($specialize eq_proto T))
-  $func ($decl a T, $decl b T) $call not ($call a.eq (b))
+// `Int`, `Str` and the rest have no props, so they conform to neither prototype. They have
+// §8's `eq` and `lt` instead, and `equal` and `less` are an `$overload` of those and of the
+// member forms (§4.8, STDLIB.md P7): a primitive takes its function candidate, a type with
+// the member takes the bounded template, each resolved at compile time. `Str` is ordered
+// by bytes, which for UTF-8 is by code point.
+$decl int_eq   $func ($decl a 0, $decl b 0)       $call eq (a, b)
+$decl float_eq $func ($decl a 0.0, $decl b 0.0)   $call eq (a, b)
+$decl str_eq   $func ($decl a "", $decl b "")     $call eq (a, b)
+$decl bool_eq  $func ($decl a bool, $decl b bool) $if a b ($call not (b))
+$decl int_lt   $func ($decl a 0, $decl b 0)       $call lt (a, b)
+$decl float_lt $func ($decl a 0.0, $decl b 0.0)   $call lt (a, b)
+$decl str_lt_go $func ($decl a "", $decl b "", $decl i 0)
+  $if ($call lt (i, $call len (a)))
+      ($if ($call lt (i, $call len (b)))
+           ($if ($call lt ($call byte (a, i), $call byte (b, i))) true
+           ($if ($call lt ($call byte (b, i), $call byte (a, i))) false
+                ($call str_lt_go (a, b, $call add (i, 1)))))
+           false)
+      ($call lt (i, $call len (b)))
+$decl str_lt   $func ($decl a "", $decl b "")     $call str_lt_go (a, b, 0)
 
-$decl less       $template ($decl T $traitsof ($specialize ord_proto T))
+$decl member_eq $template ($decl T $traitsof ($specialize eq_proto T))
+  $func ($decl a T, $decl b T) $call a.eq (b)
+$decl member_lt $template ($decl T $traitsof ($specialize ord_proto T))
   $func ($decl a T, $decl b T) $call a.lt (b)
-$decl greater    $template ($decl T $traitsof ($specialize ord_proto T))
-  $func ($decl a T, $decl b T) $call b.lt (a)
-$decl less_eq    $template ($decl T $traitsof ($specialize ord_proto T))
-  $func ($decl a T, $decl b T) $call not ($call b.lt (a))
-$decl greater_eq $template ($decl T $traitsof ($specialize ord_proto T))
-  $func ($decl a T, $decl b T) $call not ($call a.lt (b))
+
+$decl equal $overload (int_eq, float_eq, str_eq, bool_eq, member_eq)
+$decl less  $overload (int_lt, float_lt, str_lt, member_lt)
+
+// The bounds for "has an equality" and "has an order", either way: a `$union` of the
+// prototype and the primitives that have one (§4.9 asks `T.sub (arg, bound)`, which a
+// union answers member by member). An algorithm bounded by one calls `equal` or `less`,
+// and each instance picks its candidate.
+$decl eq_like  $template T $union ($traitsof ($specialize eq_proto T), 0, 0.0, "", bool)
+$decl ord_like $template T $union ($traitsof ($specialize ord_proto T), 0, 0.0, "")
+
+$decl unequal $template ($decl T $specialize eq_like T)
+  $func ($decl a T, $decl b T) $call not ($call equal (a, b))
+
+$decl greater    $template ($decl T $specialize ord_like T)
+  $func ($decl a T, $decl b T) $call less (b, a)
+$decl less_eq    $template ($decl T $specialize ord_like T)
+  $func ($decl a T, $decl b T) $call not ($call less (b, a))
+$decl greater_eq $template ($decl T $specialize ord_like T)
+  $func ($decl a T, $decl b T) $call not ($call less (a, b))
 // On a tie the first: `max_ord (a, b)` is `a` unless `a < b`.
-$decl max_ord    $template ($decl T $traitsof ($specialize ord_proto T))
-  $func ($decl a T, $decl b T) $if ($call a.lt (b)) b a
-$decl min_ord    $template ($decl T $traitsof ($specialize ord_proto T))
-  $func ($decl a T, $decl b T) $if ($call b.lt (a)) b a
+$decl max_ord    $template ($decl T $specialize ord_like T)
+  $func ($decl a T, $decl b T) $if ($call less (a, b)) b a
+$decl min_ord    $template ($decl T $specialize ord_like T)
+  $func ($decl a T, $decl b T) $if ($call less (b, a)) b a
 
 // ---------------------------------------------------------- reading storage
 

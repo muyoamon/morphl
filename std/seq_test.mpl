@@ -11,6 +11,7 @@ $decl V $import "std/vec"
 $decl ints $specialize L.list 0
 $decl ivec $specialize V.vec 0
 $decl strs $specialize L.list ""
+$decl bools $specialize L.list C.bool
 
 $decl upto $func ($decl n 0, $decl acc ($call ints.empty ()))
   $if ($call lt (0, n)) ($call upto ($call sub (n, 1), $call acc.push ($call sub (n, 1)))) acc
@@ -134,5 +135,26 @@ $decl main $func () {
   $decl c29 $call T.expect (r, "search by the element's lt",
                 $call C.and ($call eq ($call at_or ($call Q.search (kx, $call kv (5, ""))), 2),
                              $call C.is_none ($call Q.search (kx, $call kv (4, "")))))
+  // A primitive's own equality and order (§8's `eq` and `lt`), through `std/core`'s
+  // `equal` and `less`: the same algorithms, no wrapping.
+  $decl c30 $call T.expect (r, "contains an Int",
+                $call C.and ($call Q.contains (xs, 7), $call C.not ($call Q.contains (xs, 42))))
+  $decl ss  $call ($call ($call ($call strs.empty ()).push ("fig")).push ("apple")).push ("pear")
+  $decl c31 $call T.expect (r, "index_of a Str",
+                $call eq ($call C.or_else ($call Q.index_of (ss, "fig", 0), -1), 2))
+  $decl us  $call ($call ($call ($call ints.empty ()).push (2)).push (3)).push (1)
+  $decl c32 $call T.expect (r, "sort Ints", $call C.and ($call eq ($call show ($call Q.sort (us)),
+                "123"), $call C.not ($call Q.is_sorted (us))))
+  $decl c33 $call T.expect (r, "sort Strs, by bytes",
+                $call eq ($call cat ($call Q.sort (ss)), "applefigpear"))
+  $decl c34 $call T.expect (r, "max_of and min_of Ints",
+                $call C.and ($call eq ($call C.or_else ($call Q.max_of (us), -1), 3),
+                             $call eq ($call C.or_else ($call Q.min_of (us), -1), 1)))
+  $decl c35 $call T.expect (r, "search an Int",
+                $call eq ($call at_or ($call Q.search (ev, 1000)), 501))
+  $decl bs  $call ($call ($call bools.empty ()).push (false)).push (false)
+  $decl c36 $call T.expect (r, "contains a Bool",
+                $call C.and ($call Q.contains (bs, false),
+                             $call C.not ($call Q.contains (bs, true))))
   $decl ret $call T.finish (r)
 }.ret

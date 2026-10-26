@@ -3127,7 +3127,9 @@ $decl memo_find $func ($decl xs memo_list.node, $decl k "") $match xs (
 
 $decl memo_key $func ($decl i 0, $decl ats T.tys.node, $decl acc "") $match ats (
   $case {$prop tag "cons"}
-    $call memo_key (i, ats.tail, $call concat (acc, $call concat ("|", $call T.show (ats.head)))),
+    // `show_key`, not `show`: lowering builds this key from its own types (`infer_key`).
+    $call memo_key (i, ats.tail,
+        $call concat (acc, $call concat ("|", $call T.show_key (ats.head)))),
   $case ats ($call concat ($call int_to_str (i), acc))
 )
 

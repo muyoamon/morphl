@@ -77,6 +77,20 @@ $decl t_maxo { $prop name "max_ord and min_ord, and a tie keeps the first"
     $call C.and ($call C.and ($call eq (($call C.max_ord (lo, hi)).name, "hi"),
                               $call eq (($call C.min_ord (lo, hi)).name, "lo")),
                  $call eq (($call C.max_ord ($call kv (5, "one"), $call kv (5, "two"))).name, "one")) }
+$decl t_peq  { $prop name "equal and unequal on primitives, by §8's eq"
+  $prop run $func ()
+    $call C.and ($call C.and ($call C.equal (3, 3), $call C.equal ("ab", "ab")),
+                 $call C.and ($call C.and ($call C.unequal (2.5, 3.0), $call C.equal (true, true)),
+                              $call C.unequal ($call C.bval (true), false))) }
+$decl t_pord { $prop name "the comparisons on primitives, Str by bytes"
+  $prop run $func ()
+    $call C.and ($call C.and ($call C.less (1, 2), $call C.less (1.5, 2.0)),
+                 $call C.and ($call C.and ($call C.less ("ab", "abc"), $call C.less ("ab", "b")),
+                              $call C.and ($call C.not ($call C.less ("b", "b")),
+                                           $call C.greater_eq ("b", "b")))) }
+$decl t_pmax { $prop name "max_ord and min_ord on primitives"
+  $prop run $func ()
+    $call C.and ($call eq ($call C.max_ord (3, 9), 9), $call eq ($call C.min_ord ("b", "a"), "a")) }
 
 $decl main $func () {
   $decl r   $call T.results ()
@@ -93,5 +107,8 @@ $decl main $func () {
   $decl a11 $call T.check (r, t_eq)
   $decl a12 $call T.check (r, t_ord)
   $decl a13 $call T.check (r, t_maxo)
+  $decl a14 $call T.check (r, t_peq)
+  $decl a15 $call T.check (r, t_pord)
+  $decl a16 $call T.check (r, t_pmax)
   $decl ret $call T.finish (r)
 }.ret

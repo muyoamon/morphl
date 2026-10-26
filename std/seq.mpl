@@ -18,8 +18,9 @@
 // Inference never reads a generic out of a bound, so an element type `E` must come from an
 // argument: the value searched for, a function over elements, or — where the algorithm takes
 // neither — one element passed to a helper as an example (`sort`, `max_of`). That is also
-// where the element's own equality or order is required, as `std/core`'s `eq_proto`/
-// `ord_proto` bounds, checked at the call.
+// where an equality or order is required, as `std/core`'s `eq_like`/`ord_like` bounds,
+// checked at the call: a primitive's own (§8's `eq` and `lt`), or a type's `eq` and `lt`
+// members.
 //
 // Every recursion is a tail call, so §7.7 makes each a loop.
 
@@ -85,30 +86,31 @@ $decl to_list $template ($decl S $traitsof ($specialize seq_of S), O)
 
 // ------------------------------------------------- by the element's equality
 
-// Whether `x` is an element, by the element's `eq`. `E` is `x`'s type, the element's.
+// Whether `x` is an element, by the element's equality — `std/core`'s `equal`, so a
+// primitive's §8 `eq` or a type's own `eq` member. `E` is `x`'s type, the element's.
 $decl contains $template ($decl S $traitsof ($specialize seq_of S),
-                          $decl E $traitsof ($specialize C.eq_proto E))
+                          $decl E $specialize C.eq_like E)
   $func ($decl xs S, $decl x E)
     $if ($call xs.is_empty ()) false
-        ($if ($call x.eq ($call xs.head ())) true ($call contains ($call xs.rest (), x)))
+        ($if ($call C.equal (x, $call xs.head ())) true ($call contains ($call xs.rest (), x)))
 
 // The position of the first element equal to `x`, as an option.
 $decl index_of $template ($decl S $traitsof ($specialize seq_of S),
-                          $decl E $traitsof ($specialize C.eq_proto E))
+                          $decl E $specialize C.eq_like E)
   $func ($decl xs S, $decl x E, $decl i 0)
     $if ($call xs.is_empty ()) none
-        ($if ($call x.eq ($call xs.head ())) ($call C.some (i))
+        ($if ($call C.equal (x, $call xs.head ())) ($call C.some (i))
              ($call index_of ($call xs.rest (), x, $call add (i, 1))))
 
 // ---------------------------------------------------- by the element's order
 
 // `prev` is the element before `xs`, and the example that names `E`.
 $decl sorted_go $template ($decl S $traitsof ($specialize seq_of S),
-                           $decl E $traitsof ($specialize C.ord_proto E))
+                           $decl E $specialize C.ord_like E)
   $func ($decl xs S, $decl prev E)
     $if ($call xs.is_empty ()) true {
       $decl h    $call xs.head ()
-      $decl ret2 $if ($call h.lt (prev)) false ($call sorted_go ($call xs.rest (), h))
+      $decl ret2 $if ($call C.less (h, prev)) false ($call sorted_go ($call xs.rest (), h))
     }.ret2
 $decl is_sorted $template ($decl S $traitsof ($specialize seq_of S))
   $func ($decl xs S)
@@ -116,12 +118,12 @@ $decl is_sorted $template ($decl S $traitsof ($specialize seq_of S))
 
 // The greatest and the least, as options; on a tie the first.
 $decl max_go $template ($decl S $traitsof ($specialize seq_of S),
-                        $decl E $traitsof ($specialize C.ord_proto E))
+                        $decl E $specialize C.ord_like E)
   $func ($decl xs S, $decl best E)
     $if ($call xs.is_empty ()) best
         ($call max_go ($call xs.rest (), $call C.max_ord (best, $call xs.head ())))
 $decl min_go $template ($decl S $traitsof ($specialize seq_of S),
-                        $decl E $traitsof ($specialize C.ord_proto E))
+                        $decl E $specialize C.ord_like E)
   $func ($decl xs S, $decl best E)
     $if ($call xs.is_empty ()) best
         ($call min_go ($call xs.rest (), $call C.min_ord (best, $call xs.head ())))
@@ -137,7 +139,7 @@ $decl min_of $template ($decl S $traitsof ($specialize seq_of S))
 // Sorted by the element's `lt`, stably, for a sequence that sorts by a function — a
 // `std/list` list: `xs.sort_by` with `C.less`. `ex` names `E`.
 $decl sort_as $template ($decl S $traitsof ($specialize seq_of S),
-                         $decl E $traitsof ($specialize C.ord_proto E))
+                         $decl E $specialize C.ord_like E)
   $func ($decl xs S, $decl ex E)
     $call xs.sort_by ($func ($decl a ex, $decl b ex) $call C.less (a, b))
 $decl sort $template ($decl S $traitsof ($specialize seq_of S))
@@ -178,8 +180,8 @@ $decl search_by $template (E, $decl S $traitsof ($specialize indexed_of E))
                   ($if ($call less (x, $call xs.get (i))) none ($call C.some (i))) none
   }.ret
 
-// The same by the element's own `lt` (`std/core`'s `ord_proto`).
-$decl search $template ($decl E $traitsof ($specialize C.ord_proto E),
+// The same by the element's order (`std/core`'s `less`).
+$decl search $template ($decl E $specialize C.ord_like E,
                         $decl S $traitsof ($specialize indexed_of E))
   $func ($decl xs S, $decl x E)
     $call search_by (xs, x, $func ($decl a x, $decl b x) $call C.less (a, b))

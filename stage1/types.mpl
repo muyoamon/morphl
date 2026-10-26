@@ -1138,6 +1138,117 @@ $decl show $func ($decl t proto_ty) $match t (
   $case t "?"
 )
 
+// ------------------------------------------- the rendering a specialisation is keyed by
+//
+// Both passes key a specialisation by its argument types rendered (§4.9's memo key, and
+// every identity minted in its body), so the two renderings must agree — and on one shape
+// they did not. Inference closes a block over §5.5's placeholder when the placeholder
+// occurs only in a prop's *type* (`close_rec`: `$traitsof` needs the μ to find `Self`),
+// while lowering, which keeps a prop's identity and not its type, has nothing to close. A
+// prop's type is outside a block's identity (§5.1) and `show` does not print it, so the
+// two differ by nothing but the `mu.`: a list wrapper rendered `mu.{cells:…}` in one and
+// `{cells:…}` in the other, and every overload choice recorded inside its instances was
+// missed. `show_key` is `show` with such a μ — one whose binder is nowhere it prints —
+// rendered as its body, each bound variable's index less the binders skipped inside it.
+$fwd shown_bnd
+$decl shown_bnd_tys $func ($decl xs tys.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call shown_bnd (xs.head, k)) true ($call shown_bnd_tys (xs.tail, k)),
+  $case xs false
+)
+$decl shown_bnd_fields $func ($decl xs fields.node, $decl k 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call shown_bnd (xs.head.ty, k)) true ($call shown_bnd_fields (xs.tail, k)),
+  $case xs false
+)
+// Whether bound variable `k` appears where `show` prints.
+$decl shown_bnd $func ($decl t proto_ty, $decl k 0) $match t (
+  $case {$prop tag "bnd"}   $call eq_int (t.idx, k),
+  $case {$prop tag "block"} $call shown_bnd_fields (t.fields, k),
+  $case {$prop tag "group"} $call shown_bnd_tys (t.items, k),
+  $case {$prop tag "func"}
+    $if ($call shown_bnd_tys (t.params, k)) true ($call shown_bnd (t.result, k)),
+  $case {$prop tag "ref"}   $call shown_bnd (t.inner, k),
+  $case {$prop tag "array"} $call shown_bnd (t.elem, k),
+  $case {$prop tag "union"} $call shown_bnd_tys (t.members, k),
+  $case {$prop tag "inter"} $call shown_bnd_tys (t.members, k),
+  $case {$prop tag "rec"}   $call shown_bnd (t.body, $call add (k, 1)),
+  $case {$prop tag "trait"} $call shown_bnd_fields (t.members, k),
+  $case {$prop tag "with"}  $call shown_bnd (t.base, k),
+  $case {$prop tag "over"}  $call shown_bnd_tys (t.cands, k),
+  $case t false
+)
+
+// `vs` says, innermost first, which enclosing binders were skipped (1) or kept (0).
+$decl skipped_in $func ($decl vs cints.node, $decl n 0, $decl acc 0)
+  $if ($call eq_int (n, 0)) acc ($match vs (
+    $case {$prop tag "cons"}
+      $call skipped_in ($call cints.val (vs.tail), $call isub (n, 1), $call add (acc, vs.head)),
+    $case vs acc))
+
+$fwd kshow
+$decl kshow_tys $func ($decl xs tys.node, $decl vs cints.node, $decl acc "",
+                       $decl first P.boolean) $match xs (
+    $case {$prop tag "cons"} $call kshow_tys (xs.tail, vs,
+        $call concat (acc, $call concat ($if first "" ",", $call kshow (xs.head, vs))), false),
+    $case xs acc
+  )
+$decl kshow_sorted $func ($decl xs tys.node, $decl vs cints.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call kshow_sorted (xs.tail, vs, $call strs_insert ($call kshow (xs.head, vs), acc)),
+  $case xs acc
+)
+$decl kshow_fields $func ($decl xs fields.node, $decl vs cints.node, $decl acc "") $match xs (
+  $case {$prop tag "cons"} $call kshow_fields (xs.tail, vs,
+      $call concat (acc, $call concat (xs.head.name,
+      $call concat (":", $call concat ($call kshow (xs.head.ty, vs), ","))))),
+  $case xs acc
+)
+$decl kshow $func ($decl t proto_ty, $decl vs cints.node) $match t (
+  $case {$prop tag "block"}  $call concat ("{", $call concat ($call kshow_fields (t.fields, vs, ""),
+                                 $call concat ($call show_props (t.props, ""), "}"))),
+  $case {$prop tag "group"}
+    $call concat ("(", $call concat ($call kshow_tys (t.items, vs, "", true), ")")),
+  $case {$prop tag "func"} {
+    $decl es  $call ci_str_half ($call cints.val (t.esc), 0, "")
+    $decl bs  $call ci_str_half ($call cints.val (t.esc), 1, "")
+    $decl fs  $call ci_str_half ($call cints.val (t.esc), 2, "")
+    $decl ns  $call ci_str_half ($call cints.val (t.esc), 3, "")
+    $decl ret $call concat ($if t.rmut "mut" "",
+        $call concat ($if ($call eq_str (es, "")) "" ($call concat ("esc(", $call concat (es, ")"))),
+        $call concat ($if ($call eq_str (bs, "")) "" ($call concat ("brw(", $call concat (bs, ")"))),
+        $call concat ($if ($call eq_str (fs, "")) "" ($call concat ("free(", $call concat (fs, ")"))),
+        $call concat ($if ($call eq_str (ns, "")) "" "nonroot",
+        $call concat ("[", $call concat ($call kshow_tys (t.params, vs, "", true),
+        $call concat ("]->", $call kshow (t.result, vs)))))))))
+  }.ret,
+  $case {$prop tag "ref"}
+    $call concat ($call show_qual (t.qual, t.kind), $call kshow (t.inner, vs)),
+  $case {$prop tag "array"}  $call concat ("[]", $call kshow (t.elem, vs)),
+  $case {$prop tag "union"}
+    $call concat ("<", $call concat ($call join_strs ($call kshow_sorted (t.members, vs, strs.nil),
+        "", true), ">")),
+  $case {$prop tag "inter"}
+    $call concat ("^", $call concat ($call join_strs ($call kshow_sorted (t.members, vs, strs.nil),
+        "", true), "^")),
+  $case {$prop tag "bnd"}
+    $call concat ("b", $call int_to_str ($call isub (t.idx, $call skipped_in (vs, t.idx, 0)))),
+  $case {$prop tag "rec"}
+    $if ($call shown_bnd (t.body, 0))
+        ($call concat ("mu.", $call kshow (t.body, $call cints.cons (0, vs))))
+        ($call kshow (t.body, $call cints.cons (1, vs))),
+  $case {$prop tag "trait"}
+    $call concat ($if ($call eq_str (t.qual, "")) "" "mut ",
+        $call concat ("trait{", $call concat ($call kshow_fields (t.members, vs, ""), "}"))),
+  $case {$prop tag "with"}
+    $call concat ($call kshow (t.base, vs),
+        $call concat ("+{", $call concat ($call show_props (t.props, ""), "}"))),
+  $case {$prop tag "over"}
+    $call concat ("O<", $call concat ($call kshow_tys (t.cands, vs, "", true), ">")),
+  $case t ($call show (t))
+)
+$decl show_key $func ($decl t proto_ty) $call kshow (t, cints.nil)
+
 // Structural equality, without rendering.
 //
 // `show` allocates a string proportional to the whole type, and equality is the

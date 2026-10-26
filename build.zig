@@ -255,6 +255,9 @@ pub fn build(b: *std.Build) void {
         // body and across a module. Stage 0 has no types to check a bound against.
         // 12341381821107105.
         .{ .src = "stage1/fixtures/overload_tmpl.mpl", .want = "12341381821107105\n", .stage0 = false },
+        // ...and a choice inside an instance whose argument inference closes into a `μ` only
+        // through a prop's type, which lowering keyed differently until `T.show_key`. 210.
+        .{ .src = "stage1/fixtures/overload_tmpl_mu.mpl", .want = "210\n", .stage0 = false },
         // §4.12a's `$override`, on a value and on a template (STDLIB.md, P8). Stage 0 leaves
         // it out of the bootstrap subset.
         .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n", .stage0 = false },
@@ -820,9 +823,9 @@ pub fn build(b: *std.Build) void {
     // count is the verdict and a run that stopped early cannot match it.
     const std_step = b.step("test-std", "Build and run the standard library's tests");
     for ([_]struct { src: []const u8, want: []const u8 }{
-        .{ .src = "std/core_test.mpl", .want = "13\n" },
+        .{ .src = "std/core_test.mpl", .want = "16\n" },
         .{ .src = "std/list_test.mpl", .want = "28\n" },
-        .{ .src = "std/seq_test.mpl", .want = "29\n" },
+        .{ .src = "std/seq_test.mpl", .want = "36\n" },
         .{ .src = "std/str_test.mpl", .want = "30\n" },
         .{ .src = "std/vec_test.mpl", .want = "26\n" },
         .{ .src = "std/map_test.mpl", .want = "16\n" },
