@@ -76,7 +76,8 @@ Because every form has fixed arity and groups/blocks are delimited, parsing need
 
 - A group is a tuple. `(a, b)` has two elements, indexed `.1`, `.2`.
 - **A one-element group is the element.** `(e)` is just `e`. There is no one-tuple.
-- **The empty group `()` and the empty block `{}` are the same value** (unit).
+- **`()`, the empty group, is the top type.** Its value carries nothing, and every type is a subtype of it (§5.1): a group is a subtype of its prefixes, the empty one included, so `() :> T :> (T, …)`. A function with nothing to answer answers `()`, and a parameter defaulted to `()` accepts any argument and can only ignore it.
+- **`{}`, the empty block, is the top of blocks.** It has no fields and no props, so every block type is a subtype of it (§5.1) — and no type that is not a block is. `()` and `{}` both occupy nothing; they are two types, and only `()` is above everything.
 
 ### 2.4 Application
 
@@ -112,6 +113,8 @@ Blocks are also records, modules and namespaces. A source file is a block.
 
 `$func params body`. `params` is a group of `$decl`s; each default fixes the parameter's type. Parameters are ordinary declarations (immutable bindings). Defaults are evaluated at call time when the argument is omitted.
 
+A parameter list is matched **exactly**, not as a group (§5.1): a call passes one argument per parameter, position by position, and may leave off trailing parameters that have defaults, but never passes more. `$call f (a, b)` to a one-parameter `f` is an error, not `(a, b)` coerced to its prefix `a`.
+
 A function's type is `params -> result`, where `result` is the type of `body`.
 
 ### 3.5 References
@@ -131,9 +134,15 @@ The kind is written `&T` for frame and `&^T` for allocated *in diagnostics only*
 — there is still no syntax for writing a type (§1). Which kind an expression has
 follows from which form created the storage.
 
-### 3.6 Unions, intersections, bottom
+### 3.6 Unions, intersections, top and bottom
 
-Types form a lattice with `|` (union) and `&` (intersection), and `⊥` (bottom, the type of `panic`). Unions arise from `$if`/`$match`, recursion, and the `$union` form (§4.8a); there is still no type syntax — `$union` takes example expressions.
+Types are combined by `|` (union) and `&` (intersection), and bounded by `()` (top, §2.3) and `⊥` (bottom, the type of `panic`). Unions arise from `$if`/`$match`, recursion, and the `$union` form (§4.8a); there is still no type syntax — `$union` takes example expressions.
+
+**A union is a set of member types, and it does not absorb.** A member that is a subtype of another member stays a member of its own: `$union ({$prop tag "ok"}, {$prop tag "ok" $decl v 0})` has two members, and §5.5's list is `{} | {head, tail}` rather than `{}`. Each member has its own discriminator (§7.5), so a value keeps its exact type through a union and `$match` recovers it; absorbing a subtype into its supertype would lose that at the first join. What merges is only the same type written twice, and a union inside a union, whose members join the outer set.
+
+**A value enters a union as its most specific member**: the member whose type it has, if there is one; otherwise the one member it is a subtype of that is itself a subtype of every other member it is a subtype of. A value that is not exactly a member is copied to that member's type, as any coercion to a supertype is (§7.4). If no member is most specific — the value is a subtype of two members unrelated to each other — the coercion is ambiguous and an error.
+
+So a union is an upper bound of its members but not always the least one, and §5.1 is a preorder on unions rather than an order: with `B <: A`, `A | B` and `A` are subtypes of each other and are two types, with two layouts. Intersections and `⊥` are as in a lattice.
 
 ### 3.7 Overloads, templates and trait objects
 
@@ -210,6 +219,7 @@ Field access on blocks, index on groups. If `e` is a reference, projection reach
 - Inside an arm, `e` (by its name) is narrowed to `type(e) & P`. If `e` is a `&mut` reference, the narrowing applies to the pointee and stays exact (`&mut` is invariant), so writes through it are allowed.
 - `$match` binds nothing. Fields are reached through the narrowed scrutinee.
 - **Exhaustiveness is required.** Uncovered members of `e`'s type are an error. A catch-all is `$match x ($case x …)`: the pattern's type is the scrutinee's full type.
+- **`$case ()` is a catch-all for any scrutinee**, named or not, since every type is a subtype of `()` (§5.1). **`$case {}` covers every member that is a block**, and nothing else. Both narrow as any arm does — `type(e) & ()` is `type(e)` — and under first fit a block pattern after `$case {}` is unreachable, so specific arms come first.
 - An arm whose type is covered by an earlier arm is unreachable → lint.
 - Block patterns compare props as part of the type: `{$prop kind "circle"}` matches only blocks whose `kind` prop has that value.
 - A literal pattern is its base type: `$match x ($case 0 …)` means `Int`. Dispatch on runtime values is done with `$if` and `eq`, not `$match`.
@@ -244,7 +254,7 @@ $decl s $union (circle, square)        // s : circle | square, value circle
 $decl area $func ($decl s $union (circle, square)) $match s ( … )
 ```
 
-A member whose type is a subtype of another member's is redundant → lint.
+A member whose type is the same as another member's is redundant → lint. A member that is a *subtype* of another is not: §3.6 keeps it a member of its own.
 
 Members after the first are **type-only positions** (§5.7): they may reference names still being defined, which is how recursive data types are named:
 
@@ -417,7 +427,9 @@ Loads a source file as a block and evaluates to it; the type is that block's typ
 - **Outside a `$func`** (file top level, prop initializer) it is a compile error. A module that cannot initialize panics.
 - `$try` is the language's only non-local exit, and only conditional. There is no `return`.
 
-The root block declares `$prop err {$prop tag "err"}` and `$prop none {$prop tag "none"}` so the common forms read `$try x err` and `$try x none`. Any user-defined union shape works as `pat`.
+The root block declares `$prop ok {$prop tag "ok"}`, `$prop err {$prop tag "err"}` and `$prop none {$prop tag "none"}`, so the common forms read `$try x err` and `$try x none`. Any user-defined union shape works as `pat`.
+
+**Success is `ok`.** An operation that can fail and has nothing else to answer answers `ok | err`, not `() | err`: a tag is a pattern that says what it matched, where `$case ()` matches the `err` as well (§4.7). A success carrying a value is `{$prop tag "ok" $decl v x}`, a failure carrying one `{$prop tag "err" $decl e x}` — §5.1 keeps each a subtype of its bare tag, so `$try x err` still passes the `ok` on, payload and all.
 
 **`panic` is not an error value.** It aborts; there is no catch and no unwinding. Expected failures are values; bugs panic. A panic handler is a runtime/build concern.
 
@@ -471,7 +483,7 @@ function — would be declared wrongly. So `symbol` may be the C prototype itsel
 `$extern "int puts(const char *)" $func ($decl s 0) 0`. It is declared as written, which
 agrees with any header that declares it too, with the name parenthesised so that a
 function-like macro of that name is not expanded; each argument is converted to its declared
-C type and the result back, so an `int` arrives sign-extended and a `void` result is unit. A
+C type and the result back, so an `int` arrives sign-extended and a `void` result is `()`. A
 pointer is an `Int` address (§8's `str_ptr`, `box_ptr`), a reference, or a callback's code
 pointer, and a pointer result is an address. The prototype and the signature must take the
 same number of parameters. A type the subset of C declarators does not cover — a function
@@ -492,18 +504,21 @@ pointer parameter, say — is written through a `typedef` the build supplies.
 
 - **Base types**: `Int`, `Float`, `Str` are unrelated. `true <: Bool`, `false <: Bool`.
 - **Blocks (prefix & depth)**: `S <: T` if `T`'s `$decl` fields are an ordered **prefix** of `S`'s — the same names at the same positions, each with `S_n <: T_n` — and for every prop of `T`, `S` has the same prop with the **same value**. Props are unordered, because props have no layout (§4.10).
-- **Block identity**: layout *is* the type. `S <: T` and `T <: S` exactly when `S` and `T` have the same fields in the same order and the same props — so mutual subtyping is equality, and nothing is ever reordered to satisfy a coercion.
+- **Block identity**: layout *is* the type. `S <: T` and `T <: S` exactly when `S` and `T` have the same fields in the same order and the same props — so for blocks mutual subtyping is equality, and nothing is ever reordered to satisfy a coercion.
+- **Top of blocks**: every block type is a subtype of `{}`, which has no fields and no props. No type that is not a block is.
 
-Prefix rather than unordered width, for three reasons. Subtyping stays antisymmetric, so mutual subtyping and equality coincide and a canonical form is meaningful. A supertype's fields sit at the same offsets as the subtype's, so a structural upcast never reorders and never needs an offset table: through a reference it is free and stays a thin pointer, and by value it is a copy of the supertype's fields (§7.4). And a block's field *order* becomes part of its published interface, which is checkable by reading the declaration rather than by computing a coercion.
-- **Groups**: elementwise, same arity.
-- **Functions**: contravariant in parameters, covariant in result.
-- **Unions/intersections**: standard lattice rules. `⊥` is a subtype of everything.
+Prefix rather than unordered width, for three reasons. Subtyping on blocks stays antisymmetric, so mutual subtyping and equality coincide there and a canonical form is meaningful. A supertype's fields sit at the same offsets as the subtype's, so a structural upcast never reorders and never needs an offset table: through a reference it is free and stays a thin pointer, and by value it is a copy of the supertype's fields (§7.4). And a block's field *order* becomes part of its published interface, which is checkable by reading the declaration rather than by computing a coercion.
+- **Groups (prefix)**: `(S₁, …, Sₙ) <: (T₁, …, Tₘ)` when `m ≤ n` and `Sᵢ <: Tᵢ` for each `i ≤ m` — the blocks' prefix rule, by position. With §2.3's `(T)` being `T`, a group is a subtype of its first element, `(T, …) <: T`, and of the empty group.
+- **Top**: every type is a subtype of `()`, the empty prefix.
+- **Argument lists and functions are exact.** A parameter list is not a value, so the group rule does not reach it (§3.4): `(P₁, …, Pₙ) -> R <: (Q₁, …, Qₘ) -> S` when `n = m`, each `Qᵢ <: Pᵢ` (contravariant) and `R <: S` (covariant). A function of fewer parameters is not a subtype of one taking more; the C signatures differ (§7.3).
+- **Unions**: `S <: A | B` when `S <: A` or `S <: B`, and `A | B <: T` when `A <: T` and `B <: T`. A union does not absorb (§3.6), so mutual subtyping is not equality here: `A | B` with `B <: A` and `A` are subtypes of each other and are two types, and a coercion between them is a re-tag (§7.4).
+- **Intersections** are dual to unions, and `⊥` is a subtype of everything.
 
 Implicit coercion by subtyping is the only implicit conversion in the language.
 
 ### 5.2 Inference
 
-Every expression has a principal type determined by its parts. Since there is no annotation syntax, inference is total. The design follows algebraic subtyping (Dolan; Parreaux's Simple-sub): unions, intersections, recursive types, and principal types with subtyping. Widening never occurs; there are no singleton literal types to widen.
+Every expression has a principal type determined by its parts. Since there is no annotation syntax, inference is total. The design follows algebraic subtyping (Dolan; Parreaux's Simple-sub): unions, intersections, recursive types, and principal types with subtyping. It departs from it in one place: a union does not absorb a member that is a subtype of another (§3.6), so a join keeps every distinct type it is given. Widening never occurs; there are no singleton literal types to widen.
 
 ### 5.3 References
 
@@ -610,7 +625,7 @@ $decl list_of $func ($decl n 0)
     { $decl head n  $decl tail $alloc ($call list_of ($call sub (n, 1))) }
 ```
 
-infers `μR. {} | {head: Int, tail: &^R}` — a list type — with no declaration. Recursive data is always obtained this way.
+infers `μR. {} | {head: Int, tail: &^R}` — a list type — with no declaration. Recursive data is always obtained this way. The cell is a block, so a subtype of `{}` (§5.1), and stays a member of its own (§3.6); a union that absorbed would have made the list `{}`.
 
 The tail is `$alloc` rather than `$new` because the list outlives the call that
 built it (§5.3a). A list that does not — built and consumed within one scope —
@@ -695,9 +710,10 @@ A capture-free `$func` has an empty environment and is one pointer plus a null. 
 Prefix subtyping (§5.1) makes structural coercion nearly free: a supertype's fields are at the same offsets as the subtype's, so no reordering and no offset table ever arise.
 
 - Value → block prefix supertype: a prefix copy. No field-by-field scatter.
+- Value → group prefix supertype: the same, by position; to `()` or `{}`, nothing is copied.
 - `&const S → &const T` with `T` a prefix supertype: **free**, and still a thin pointer.
 - `&mut` never coerces structurally (invariant), so it is always a thin pointer.
-- Member → union: a discriminator write and a copy of the member.
+- Member → union: a discriminator write and a copy of the member — of the value's most specific member (§3.6), so a prefix copy when the value is a subtype of it rather than it.
 - **Union → union**: one `case` per source member, each writing the target's position and moving the payload — a branch, not a copy, because §3.6 makes a union a set and §7.5 makes the position the discriminator, so the two need not agree. Where the source's members are a prefix of the target's canonical order the map is the identity and the branch is a copy.
 - `μR. B` ↔ its unrolling: free. They are one type (§5.5) and two terms, so the backend emits one as an alias of the other.
 - From `⊥`: nothing. The code is unreachable.
@@ -758,7 +774,7 @@ type, beside which parameters escape and which are borrowed:
   is one). A result of a function without it is root storage a caller may free.
 
 Anything else is a compile error. What a reference may be used for after its allocator
-released it is still the author's error. Its value is `unit`.
+released it is still the author's error. Its value is `()`.
 
 **An `$alloc` block's deferrals** (§4.15a) are the allocator's to run: straight after
 `alloc`, `$alloc` calls `allocator.defer_at (addr, fin)` with a function running them, and
@@ -822,12 +838,12 @@ Every program is wrapped in an implicit **root block**, assembled by the build p
 | Strings | `concat len slice byte` | **byte** units. `byte (s, i)` reads one byte as `Int`. `len` counts bytes; `slice (s, i, j)` takes byte offsets and panics if an offset splits a code point, preserving the validity invariant. Code-point and grapheme iteration are library; `eq` is bytewise (equal to code-point equality under the invariant) |
 | Arrays | `array at alen` | `$call array (n, example)` → `&mut [T]`, contiguous, bounds-checked; `at` → fat `&mut T` (or `&const T` through a `&const` array); length not part of the type |
 | Control | `panic` | returns `⊥`; aborts, no catch |
-| Shapes | `err none` | patterns for `$try` |
+| Shapes | `ok err none` | success, failure and absence (§4.15); patterns for `$try` and `$match` |
 | Bounds | `sendable` | compiler-known template bound (§7.8) |
 | FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox raw_alloc raw_free` | raw addresses for `$extern` and for allocators written in the language (§7.6), each an `Int` (§3.1 has one integer type): `str_ptr (s)` and `array_ptr (a)` give the base of the bytes or elements (a `Str` is not NUL-terminated, so its length travels separately); `box_ptr (r)` takes the address of storage, which must be a reference; `unbox (addr, example)` recovers a reference typed by the example — allocated and writable, since what it points at is outside every frame. `str_from_ptr (addr, n)` is the way back for bytes: it copies `n` bytes from the address and answers `option Str`, `none` when they are not valid UTF-8 or `n` is negative — the validating function this section's ABI mapping requires. `raw_alloc (n)` answers the address of `n` fresh bytes, 0 when none is to be had, and `raw_free (addr)` releases one; they are the root `allocator`'s `alloc` and `free`. All unsafe by declaration |
 | Build | `compiler` | see §9 |
 
-**Platform** — library code over `$extern`, present per target: `print`, `read`, files, sockets, `spawn`/`join`/`channel`/`mutex`/`atomic`, `malloc`-backed allocators. The root block defines `option` and `result` before any of these so failing operations return them; `Int` arithmetic (overflow, `div` by zero) and `slice` out of range panic. `Float` arithmetic does not: its failures are values (§3.1), and the program meets them where a `Float` becomes an `Int`, since `to_int` answers `none` for NaN and out-of-range values.
+**Platform** — library code over `$extern`, present per target: `print`, `read`, files, sockets, `spawn`/`join`/`channel`/`mutex`/`atomic`, `malloc`-backed allocators. The root block defines `option` and `result` before any of these so failing operations return them — an operation with nothing to answer but success answers `ok | err` (§4.15), as writing a file does; `Int` arithmetic (overflow, `div` by zero) and `slice` out of range panic. `Float` arithmetic does not: its failures are values (§3.1), and the program meets them where a `Float` becomes an `Int`, since `to_int` answers `none` for NaN and out-of-range values.
 
 Everything else — `not`, `and`, `or`, `max`, lists, maps, formatting — is library code. Sanity check that the core suffices:
 
@@ -994,6 +1010,8 @@ These follow from stated rules and are accepted by design:
 14. Storage that outlives the scope it was made in must be written `$alloc`, so a container returned to a caller names an allocator (§5.3a) while one used within a scope is free. The cost lands at the container, not at every use.
 15. There is no optimisation level and no canonical pass pipeline (§9.2), so `emit` must stay correct on unoptimised input and no pass may be assumed to have run. The cost of "optimisation is a library" is paid by the compiler, not by the user.
 16. Frame storage is safe by construction and allocated storage is **unsafe by declaration**: the language guarantees a frame reference never dangles, and says nothing about an allocated one after its allocator released it. There is no collector, and the one thing inferred — which places an activation made — is read off the source (§5.3a). A tail call may not pass storage its activation made, so a loop that hands storage on writes it `$alloc` and releases it.
+17. A union keeps a member that is a subtype of another (§3.6), so a value is never reduced to a supertype by being joined, and `$match` order decides which arm a subtype reaches. The price is that two types can be subtypes of each other without being one type — `A | B` with `B <: A`, and `A` — and moving between them is a re-tag rather than nothing.
+18. `()` accepts anything and keeps nothing: a value coerced to it has no data left, so a parameter defaulted to `()` can only ignore its argument. It is the type of "any value, discarded" — a callback's result, an effect's value — not a dynamic type, and `$match` on it has only the catch-all.
 
 ---
 
@@ -1067,8 +1085,8 @@ $decl list $template T {
 **A loop**
 
 ```
-$decl while $func ($decl cond $func () true, $decl body $func () {})
-  $if ($call cond ()) ($do ($call body ()) ($call while (cond, body))) {}
+$decl while $func ($decl cond $func () $union (true, false), $decl body $func () ())
+  $if ($call cond ()) ($do ($call body ()) ($call while (cond, body))) ()
 ```
 
 **Error propagation**
