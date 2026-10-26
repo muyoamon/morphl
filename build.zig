@@ -249,6 +249,12 @@ pub fn build(b: *std.Build) void {
         // template, and a template applying itself in tail position. Stage 0 refuses
         // application (BOOTSTRAP.md §1.1). 2000251.
         .{ .src = "stage1/fixtures/apply.mpl", .want = "2000251\n", .stage0 = false },
+        // An `$overload` of templates (STDLIB.md, P7): `$specialize` by bounds — `Int`, a
+        // trait, unbounded, nested with two generics — and `$call` by application, after a
+        // function candidate and past one it cannot infer, per instance inside a template
+        // body and across a module. Stage 0 has no types to check a bound against.
+        // 12341381821107105.
+        .{ .src = "stage1/fixtures/overload_tmpl.mpl", .want = "12341381821107105\n", .stage0 = false },
         // §6's trait objects: coercion at a call and at `$set`, `$traitsof` of a name, of
         // `$mut` storage and of an expression, `$impl` over an `Int`, and `$match` on an
         // object. 87.
@@ -480,6 +486,19 @@ pub fn build(b: *std.Build) void {
             },
             .count = "errors: 3\n",
             .stage0 = "is not initialized yet",
+        },
+        // An overload of templates none of whose candidates fits (STDLIB.md, P7): reported
+        // at the use, never at a candidate's failing bound. Matched in pieces, since the
+        // overload renders as its templates' identities.
+        .{
+            .src = "stage1/fixtures/overload_tmpl_none.mpl",
+            .stage1 = &.{
+                "overload_tmpl_none.mpl:8:16: no candidate of O<",
+                "accepts these arguments: none is a template whose bounds hold (§4.8, §4.9)",
+                "overload_tmpl_none.mpl:12:13: no candidate of O<",
+            },
+            .count = "errors: 2\n",
+            .stage0 = "$specialize expects a template, found overload",
         },
         // §5.3a's provenance (STORAGE.md): a place this call made may not be returned,
         // stored inside a value, or passed by a tail call.

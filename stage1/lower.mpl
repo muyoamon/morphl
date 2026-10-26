@@ -3443,10 +3443,94 @@ $decl lower_import $func ($decl st proto_lst, $decl n proto_form) {
   $decl ret $call init_first (st, key, r)
 }.ret
 
+// ----------------------------------------------- an overload of templates (STDLIB.md, P7)
+//
+// A template has no run-time value, so an `$overload` with one among its candidates is
+// recorded as a template of its own — generics none, body `$over` listing each candidate's
+// template id (-1 for a candidate that is not one), a keyword no source can write (§2.1) —
+// and a name bound to it carries it as a name carries a template. Lowering does not choose
+// a candidate: it derives types and has no bounds to check, so it follows the choice
+// inference recorded for the site (`infer.mpl`'s `note_over`), a path through nested
+// overloads. A `$call` that chose a function candidate records nothing and resolves as
+// any overloaded call does, which skips the templates, as inference's first fit did.
+$decl is_over_tmpl $func ($decl r proto_tmpl) $call is_form (r.body, "$over")
+
+$decl over_body $func ($decl rs lres_list.node, $decl n Pa.proto_node, $decl acc Pa.nodes.node) {
+  $decl sp  $call P.span_of (n)
+  $decl ret $match rs (
+      $case {$prop tag "cons"}
+        $call over_body ($call lres_list.val (rs.tail), n,
+            $call Pa.nodes.cons ($call Pa.n_int (rs.head.tmpl, sp.line, sp.col), acc)),
+      $case rs ($call Pa.n_form ("$over", $call Pa.nodes.reverse (acc, Pa.nodes.nil),
+                                 sp.line, sp.col)))
+}.ret
+$decl any_tmpl $func ($decl rs lres_list.node) $match rs (
+  $case {$prop tag "cons"} $if ($call lt (-1, rs.head.tmpl)) true
+                               ($call any_tmpl ($call lres_list.val (rs.tail))),
+  $case rs false
+)
+
+// What inference chose at `n`, or "" — keyed as `over_key` keys it.
+$decl choice_in $func ($decl xs strs.node, $decl pre "") $match xs (
+  $case {$prop tag "cons"} {
+    $decl k   $call len (pre)
+    $decl hit $if ($call lt (k, $call len (xs.head)))
+                  ($call eq_str ($call slice (xs.head, 0, k), pre)) false
+    $decl ret $if hit ($call slice (xs.head, k, $call len (xs.head)))
+                  ($call choice_in ($call strs.val (xs.tail), pre))
+  }.ret,
+  $case xs ""
+)
+$decl over_choice $func ($decl st proto_lst, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl key $call concat ("o:", $call concat ($call P.sval (st.isctx), $call concat ("|",
+                $call concat ($call fshort (st, $call P.sval (st.curfile)), $call concat (":",
+                $call concat ($call int_to_str (sp.line), $call concat (":",
+                $call concat ($call int_to_str (sp.col), "="))))))))
+  $decl ret $call choice_in ($call strs.val (st.ualloc), key)
+}.ret
+
+$decl slash_at $func ($decl s "", $decl i 0)
+  $if ($call lt (i, $call len (s)))
+      ($if ($call eq ($call byte (s, i), 47)) i ($call slash_at (s, $call add (i, 1)))) i
+$decl num_in $func ($decl s "", $decl i 0, $decl j 0, $decl acc 0)
+  $if ($call lt (i, j))
+      ($call num_in (s, $call add (i, 1), j,
+           $call add ($call mul (acc, 10), $call sub ($call byte (s, i), 48)))) acc
+$decl int_val $func ($decl n Pa.proto_node) $match n ($case {$prop tag "int"} n.value, $case n -1)
+
+// The template a path chooses, or none: the path ran out of candidates, or names one that
+// is not a template.
+$decl over_resolve $func ($decl st proto_lst, $decl r proto_tmpl, $decl path "") {
+  $decl j   $call slash_at (path, 0)
+  $decl i   $call num_in (path, 0, j, 0)
+  $decl b   r.body
+  $decl ops $match b ($case {$prop tag "form"} ($call Pa.nodes.val (b.operands)), $case b Pa.nodes.nil)
+  $decl id  $if ($call P.or ($call eq_str (path, ""),
+                             $call P.not ($call lt (i, $call Pa.nodes.length (ops, 0))))) -1
+                ($call int_val ($call Pa.nodes.nth (ops, i)))
+  $decl hit $if ($call lt (id, 0)) tmpls_list.nil ($call find_tmpl (st.tmpls, id))
+  $decl ret $match hit (
+      $case {$prop tag "cons"}
+        $if ($call lt (j, $call len (path)))
+            ($if ($call is_over_tmpl (hit.head))
+                 ($call over_resolve (st, hit.head,
+                      $call slice (path, $call add (j, 1), $call len (path))))
+                 tmpls_list.nil)
+            hit,
+      $case hit hit
+    )
+}.ret
+
 $decl lower_specialize $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form) {
   $decl f  $call lval ($call lower (st, e, $call op (n, 0), false))
-  $decl ts $if ($call lt (f.tmpl, 0)) tmpls_list.nil
+  $decl t0 $if ($call lt (f.tmpl, 0)) tmpls_list.nil
                ($call find_tmpl (st.tmpls, f.tmpl))
+  $decl ts $match t0 (
+      $case {$prop tag "cons"}
+        $if ($call is_over_tmpl (t0.head))
+            ($call over_resolve (st, t0.head, $call over_choice (st, n))) t0,
+      $case t0 t0)
   $decl ret $match ts (
       $case {$prop tag "cons"} ($call spec_with (st, e, ts.head, $call op (n, 1), n)),
       $case ts ($call lres ($call IR.e_unit ($call err (st,
@@ -4020,7 +4104,10 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl rs   $call lower_raws (st, e, $call group_items ($call op (n, 0)), lres_list.nil)
       $decl vs   $call over_vals (st, rs, IR.exprs.nil, T.tys.nil)
       $decl ty   $call T.t_over (vs.tys)
-      $decl ret2 $call lres ($call IR.e_group ($call intern (st, ty), vs.irs), ty)
+      $decl tid  $if ($call any_tmpl (rs))
+                     ($call fresh_tmpl (st, strs.nil, $call over_body (rs, n, Pa.nodes.nil), e, "",
+                          $call P.sval (st.curfile), $call P.sval (st.isctx), n)) -1
+      $decl ret2 $call lres4 ($call IR.e_group ($call intern (st, ty), vs.irs), ty, -1, tid)
     }.ret2
     // §4.13: the trait of the operand's type, with the operand as the referent.
     ($if ($call eq_str (k, "traitsof")) {
@@ -4055,7 +4142,14 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl fw   $call ffi_l (f0)
       $decl ts   $if ($call lt (f0.tmpl, 0)) tmpls_list.nil ($call find_tmpl (st.tmpls, f0.tmpl))
       $decl ret2 $match ts (
-          $case {$prop tag "cons"} ($call lower_apply (st, e, n, tail, ts.head)),
+          $case {$prop tag "cons"}
+            $if ($call is_over_tmpl (ts.head)) {
+              $decl ch   $call over_resolve (st, ts.head, $call over_choice (st, n))
+              $decl ret3 $match ch (
+                  $case {$prop tag "cons"} ($call lower_apply (st, e, n, tail, ch.head)),
+                  $case ch ($call lower_call (st, e, n, tail, f0)))
+            }.ret3
+                ($call lower_apply (st, e, n, tail, ts.head)),
           $case ts $if ($call eq_str (fw, "")) ($call lower_call (st, e, n, tail, f0))
                        ($call lower_ffi (st, e, n, tail, fw)))
     }.ret2

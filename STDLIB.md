@@ -108,7 +108,18 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   arguments**, the bound standing where a parameter type stands, and §4.8's lint carries over
   (a candidate whose bounds are covered by an earlier one's is unreachable). Application
   inference (P1) applies it per candidate. A SPEC addition to §4.8 and §4.9. *Required by
-  D3a.*
+  D3a.* **Done**, in SPEC §4.8 and §4.9 and in stage 1. Inference chooses: it asks each
+  template's bounds quietly (a candidate that does not fit is not an error), and for `$call`
+  it infers the generics, asks the bounds, then whether the specialised `$func` takes the
+  arguments. Lowering derives its types and has no bounds to check, so it does not choose
+  again. Inference records the choice per site beside `ualloc`'s facts, keyed by
+  specialisation context, file and span, so a site inside a template body chooses per
+  instance. Lowering registers an overload with a template among its candidates as an
+  `$over` template record listing the candidates, and follows the recorded path through
+  nested overloads. `stage1/fixtures/overload_tmpl.mpl` (12341381821107105, compiled only:
+  stage 0 has no types to check a bound against) and `overload_tmpl_none.mpl` in
+  `test-reject`. Not done: §4.8's lint for a template candidate whose bounds an earlier
+  one's cover.
 - **P8. `$override`** (D3a): a §2.2 row of arity 2, a §4.12-style section, and support in both
   passes, on a value and on a template. Stage 0 needs it only if a stage-0 test uses it, and
   the library's tests are compiled-only (P5). *Required by D3a.*

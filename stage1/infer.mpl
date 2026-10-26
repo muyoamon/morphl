@@ -2542,6 +2542,19 @@ $decl check_typed $func ($decl cx proto_ctx, $decl ps T.tys.node, $decl as Pa.no
 // Below `specialize_with`, which it needs.
 $fwd infer_apply
 
+// An overload's choice (§4.8): the candidate's type, its position as a path through nested
+// overloads (`"1/0"`), and whether a template was chosen, which is when lowering needs the
+// choice handed across (`note_over`). ⊥ when nothing fits.
+$decl pick_res $func ($decl t T.proto_ty, $decl p "", $decl tm P.boolean)
+  { $decl ty t  $decl path p  $decl tmpl tm }
+$decl pick_none $call pick_res (T.t_bot, "", false)
+// The identity at `pick_res`: `pick_cx` is `$fwd`'d, so above its completion its result is
+// §5.5's placeholder, and projecting off one fails.
+$decl pick_val  $func ($decl x pick_none) x
+// Below `infer_apply`, whose pieces it shares.
+$fwd pick_cx
+$fwd note_over
+
 $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl ft   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
   $decl args $call group_items ($call op (n, 1))
@@ -2567,9 +2580,12 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
         $decl ret2  $if ok ($call T.tval (ft.result)) T.t_bot
       }.ret2,
       // §4.8: the first candidate accepting the arguments, then checked as an ordinary call.
+      // A template candidate is applied (§4.9) to see whether it fits (STDLIB.md, P7).
       $case {$prop tag "over"} {
         $decl rs   $call arg_types (cx, e, args, T.tys.nil)
-        $decl c    $call pick_cand ($call T.tys.val (ft.cands), rs)
+        $decl pk   $call pick_val ($call pick_cx (cx, e, $call T.tys.val (ft.cands), rs, n, 0))
+        $decl nt   $if pk.tmpl ($call note_over (cx, n, pk.path)) ()
+        $decl c    $call T.tval (pk.ty)
         $decl ret2 $match c (
             $case {$prop tag "func"} {
               $decl ok   $call check_typed (cx, $call T.tys.val (c.params), args, rs, n, 1,
@@ -3216,12 +3232,152 @@ $decl infer_apply $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
       }.ret2)
 }.ret
 
+// ----------------------------------------------- an overload of templates (STDLIB.md, P7)
+//
+// §4.8's rule with a template's bounds standing where a function's parameter types stand:
+// **the first candidate whose bounds accept the arguments**, a nested overload looked into.
+// For `$specialize` the arguments are the ones written; for `$call` they are inferred by
+// application (§4.9), and the specialised `$func` must then accept the call's arguments as
+// a function candidate must. Both questions are asked quietly — a candidate that does not
+// fit is not an error — but a candidate that fits is specialised as ever, so an error in
+// its body is reported: §4.9's bound is a precondition, not a proof.
+//
+// Lowering derives its types and has no bounds to check, so it does not choose again:
+// inference records the choice for a site that chose a template (`note_over`), keyed as
+// `ct_id` keys an identity — the specialisation context, the file's short name and the
+// span — so a site inside a template body chooses per instance.
+$decl over_key $func ($decl cx proto_ctx, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl ret $call concat ("o:", $call concat ($call sval (cx.sctx), $call concat ("|",
+                $call concat ($call short_of ($call sval (cx.file)), $call concat (":",
+                $call concat ($call int_to_str (sp.line), $call concat (":",
+                $call concat ($call int_to_str (sp.col), "="))))))))
+}.ret
+$decl note_over $func ($decl cx proto_ctx, $decl n Pa.proto_node, $decl path "")
+  $do ($set cx.ualloc ($call strs.cons ($call concat ($call over_key (cx, n), path),
+                                        $call strs.val (cx.ualloc))))
+      ()
+
+// Whether every bound accepts `ats`, asked without reporting.
+$decl bounds_fit $func ($decl cx proto_ctx, $decl r proto_tmpl, $decl ats T.tys.node,
+                        $decl n Pa.proto_node) {
+  $decl e0  $call Pa.diags.val (cx.errs)
+  $decl ok  $call check_bounds (cx, $call bind_generics (r.env, r.generics, ats), r.generics,
+                r.bounds, ats, n)
+  $decl bk  $set cx.errs e0
+  $decl ret ok
+}.ret
+
+// A template candidate of a call: its generics inferred from `rs` quietly, its bounds asked,
+// and only then specialised. ⊥ when it does not fit.
+$decl apply_fit $func ($decl cx proto_ctx, $decl e env.node, $decl id 0, $decl rs T.tys.node,
+                       $decl n Pa.proto_node) {
+  $decl r   $call find_tmpl (cx.tmpls, id)
+  $decl ret $if ($call not ($call is_form (r.body, "func"))) T.t_bot
+      ($if ($call not ($call Pa.ctgs.is_nil (r.ctg))) T.t_bot {
+        $decl e0   $call Pa.diags.val (cx.errs)
+        $decl ats  $call app_tys (cx, $call Pa.app_sources (r.body, r.generics, Pa.app_srcs.nil),
+                       rs, r.generics, n, T.tys.nil)
+        $decl bk   $set cx.errs e0
+        $decl ok   $if ($call has_bot (ats)) false ($call bounds_fit (cx, r, ats, n))
+        $decl ft   $if ok ($call deref_ty ($call specialize_at (cx, e, id, Pa.nodes.nil, ats, n)))
+                       T.t_bot
+        $decl ret2 $match ft (
+            $case {$prop tag "func"}
+              $if ($call args_fit ($call T.tys.val (ft.params), rs)) ft T.t_bot,
+            $case ft T.t_bot)
+      }.ret2)
+}.ret
+
+$decl pick_cx $func ($decl cx proto_ctx, $decl e env.node, $decl cs T.tys.node,
+                     $decl rs T.tys.node, $decl n Pa.proto_node, $decl i 0) $match cs (
+  $case {$prop tag "cons"} {
+    $decl c   $call T.unroll ($call deref_ty ($call T.tval (cs.head)))
+    $decl ix  $call int_to_str (i)
+    $decl hit $match c (
+        $case {$prop tag "func"}
+          $if ($call args_fit ($call T.tys.val (c.params), rs)) ($call pick_res (c, ix, false))
+              pick_none,
+        $case {$prop tag "over"} {
+          $decl in   $call pick_val ($call pick_cx (cx, e, $call T.tys.val (c.cands), rs, n, 0))
+          $decl ret2 $call pick_res (in.ty, $call concat (ix, $call concat ("/", in.path)), in.tmpl)
+        }.ret2,
+        $case {$prop tag "tmpl"} $call pick_res ($call apply_fit (cx, e, c.id, rs, n), ix, true),
+        $case c pick_none
+      )
+    $decl ret $if ($call is_bot_ty (hit.ty))
+                  ($call pick_val ($call pick_cx (cx, e, $call T.tys.val (cs.tail), rs, n,
+                       $call add (i, 1))))
+                  hit
+  }.ret,
+  $case cs pick_none
+)
+
+// `$specialize` on an overload: the candidate and the arguments it takes. A template of
+// one generic takes the whole operand (§2.3), so its type is the items' as a group.
+$decl spec_pick_res $func ($decl i -1, $decl p "", $decl a Pa.nodes.node, $decl t T.tys.node)
+  { $decl id i  $decl path p  $decl args a  $decl ats t }
+$decl spec_pick_none $call spec_pick_res (-1, "", Pa.nodes.nil, T.tys.nil)
+// The identity at `spec_pick_res`, for `spec_pick`'s result inside its own body (§5.5).
+$decl spec_pick_val  $func ($decl x spec_pick_none) x
+
+$decl spec_pick $func ($decl cx proto_ctx, $decl cs T.tys.node, $decl argn Pa.proto_node,
+                       $decl items Pa.nodes.node, $decl its T.tys.node, $decl wt T.proto_ty,
+                       $decl n Pa.proto_node, $decl i 0) $match cs (
+  $case {$prop tag "cons"} {
+    $decl c   $call T.unroll ($call deref_ty ($call T.tval (cs.head)))
+    $decl ix  $call int_to_str (i)
+    $decl hit $match c (
+        $case {$prop tag "tmpl"} {
+          $decl r    $call find_tmpl (cx.tmpls, c.id)
+          $decl one  $call eq_int ($call strs.length (r.generics, 0), 1)
+          $decl as   $if one ($call Pa.nodes.cons (argn, Pa.nodes.nil)) items
+          $decl ts   $if one ($call T.tys.cons (wt, T.tys.nil)) its
+          $decl ok   $if ($call eq_int ($call strs.length (r.generics, 0),
+                                       $call Pa.nodes.length (as, 0)))
+                         ($call bounds_fit (cx, r, ts, n)) false
+          $decl ret2 $if ok ($call spec_pick_res (c.id, ix, as, ts)) spec_pick_none
+        }.ret2,
+        $case {$prop tag "over"} {
+          $decl in   $call spec_pick_val ($call spec_pick (cx, $call T.tys.val (c.cands), argn,
+                         items, its, wt, n, 0))
+          $decl ret2 $if ($call lt (in.id, 0)) spec_pick_none
+                         ($call spec_pick_res (in.id, $call concat (ix, $call concat ("/", in.path)),
+                              in.args, in.ats))
+        }.ret2,
+        $case c spec_pick_none
+      )
+    $decl ret $if ($call lt (hit.id, 0))
+                  ($call spec_pick_val ($call spec_pick (cx, $call T.tys.val (cs.tail), argn,
+                       items, its, wt, n, $call add (i, 1))))
+                  hit
+  }.ret,
+  $case cs spec_pick_none
+)
+
+$decl specialize_over $func ($decl cx proto_ctx, $decl e env.node, $decl tt T.proto_ty,
+                             $decl cs T.tys.node, $decl argn Pa.proto_node, $decl n Pa.proto_node) {
+  $decl items $call group_items (argn)
+  $decl its   $call infer_tys (cx, e, items, T.tys.nil)
+  $decl ni    $call T.tys.length (its, 0)
+  $decl wt    $if ($call eq_int (ni, 1)) ($call T.tys.nth (its, 0))
+                  ($if ($call eq_int (ni, 0)) T.t_unit ($call T.t_group (its)))
+  $decl pk    $call spec_pick (cx, cs, argn, items, its, wt, n, 0)
+  $decl ret   $if ($call lt (pk.id, 0))
+      ($call err (cx, $call concat ("no candidate of ", $call concat ($call T.show (tt),
+          " accepts these arguments: none is a template whose bounds hold (§4.8, §4.9)")), n))
+      ($do ($call note_over (cx, n, pk.path))
+           ($call specialize_at (cx, e, pk.id, pk.args, pk.ats, n)))
+}.ret
+
 // §4.9 steps 2 and 3: type the substituted expression with ordinary rules, and
 // have exactly its type.
 $decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl tt $call deref_ty ($call infer (cx, e, $call op (n, 0)))
   $decl ret $match tt (
       $case {$prop tag "tmpl"}   $call specialize_with (cx, e, tt.id, $call op (n, 1), n),
+      $case {$prop tag "over"}
+        $call specialize_over (cx, e, tt, $call T.tys.val (tt.cands), $call op (n, 1), n),
       $case {$prop tag "bottom"} T.t_bot,
       $case tt ($call err (cx, $call concat ("$specialize expects a template, found ",
                     $call T.show (tt)), n))

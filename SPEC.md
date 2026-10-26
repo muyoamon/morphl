@@ -224,12 +224,13 @@ Field access on blocks, index on groups. If `e` is a reference, projection reach
 
 - In `$call f args`: if `f` is an overload, pick the **first** candidate whose parameter types accept `args`. If an argument is an overload, pick the first candidate accepted by the parameter. Resolve left to right, no backtracking.
 - If a candidate is itself an overload, it fits if any of its candidates fit (recursive; no flattening rule).
+- If a candidate is a template, it fits a `$call` when application infers its generics from `args` (§4.9), each bound accepts its generic, and the specialized `$func` accepts `args`. A template's bounds stand where a function's parameter types stand. A candidate that does not fit is not an error, because not fitting is how first fit moves on. The candidate chosen is specialized as usual, so an error in its body is reported (§4.9's bound is a precondition, not a proof).
 - `$decl y x` where `x` is an overload keeps `y` an overload (nothing constrains it yet).
 - Passing an overload as an argument is fine if the parameter's default is an overload with matching candidate types; otherwise it resolves.
 - `$set x ($overload …)` requires identical candidate types in identical order.
 - `$set x.i e` replaces a candidate; the new value must match that slot's type.
 
-An overload is a *type-level switch*: write specific candidates first, general ones later. A candidate whose parameter types are a subtype of an earlier candidate's is unreachable → lint.
+An overload is a *type-level switch*: write specific candidates first, general ones later. A candidate whose parameter types are a subtype of an earlier candidate's is unreachable → lint. The same holds for a template candidate whose bounds are covered by an earlier one's.
 
 ### 4.8a `$union members`
 
@@ -288,7 +289,17 @@ Nothing deeper is inferred (no unification through arbitrary expressions); use `
 
 **Self-specialization and evaluation.** The memoization that ties a self-specializing template's knot (§5.5) is a typing matter. Evaluating a body whose `$decl` initializer specializes the same template evaluates that instance in turn, without bound. Like any unconditional recursion, put it inside a `$func`. The instantiation depth limit bounds typing; it does not bound evaluation.
 
-Specializing with an overload argument is an error; resolve first.
+**An overload of templates.** `$specialize t args` where `t` is an overload (§4.8) resolves it first: the **first** candidate that is a template taking as many generics as `args` gives (one takes the whole operand, §2.3) and whose bounds all accept their arguments. A nested overload fits if any of its candidates fits, and a candidate that is not a template never fits. If none fits, that is reported at the `$specialize`. This is how a container's representation can depend on its element type: specific candidates first, the general one last.
+
+```
+$decl by_str $template ($decl T "") { $prop kind "bytes" }
+$decl by_any $template T { $prop kind "cells" }
+$decl rep    $overload (by_str, by_any)
+$decl a ($specialize rep "x").kind     // "bytes"
+$decl b ($specialize rep 0).kind       // "cells"
+```
+
+Specializing with an overload *argument* is an error; resolve first.
 
 ### 4.10 `$prop name e`
 
