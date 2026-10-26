@@ -205,7 +205,7 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   so their own type: a `wrap (r)` over the raw union, with `ok`/`err` built on it. A
   template body holding `$decl`s is an instance, whose generics are slots a prop function
   would capture, so such a body is props-only. `stage1/fixtures/with_union.mpl` (91147, both
-  stages) is the shape `std/result` will take.
+  stages) is the shape `std/result` took (D7).
 
 ## D1. Location and naming
 
@@ -229,6 +229,7 @@ Proposed modules, in the order they can be written:
 | `std/map` | an ordered map (sorted vecs; keys ordered by a `less` given at `new`) | done |
 | `std/mem` | an arena allocator over `raw_alloc`, as `arena.mpl` does | — |
 | `std/test` | a runner for §9's test interface | — |
+| `std/result` | `result (T, E)`: `ok`/`err` with `is_ok`, `value_or`, `unwrap` and the rest as methods; `map`, `map_err` | P15 |
 
 Names are reached through the module's binding (`L.map`, `S.split`), so nothing in `std/`
 is global and nothing shadows a root name. A module is a block (§4.14), so this is the
@@ -448,6 +449,18 @@ group goes on answering the shapes directly. The shapes are:
   subtype of a shorter one (§5.1), so `$try x err` still matches when the failure carries a
   payload — the caller decides whether to look at it.
 - **Bugs panic** (§4.15): `nth` out of range, `unwrap` of `none`.
+
+**`std/result` is the result with methods** (P15). `$decl ires $specialize R.result (0, "")`
+gives `ires.ok (5)` and `ires.err ("why")`, each answering `is_ok`, `is_err`, `value_or`,
+`error_or`, `unwrap` and `unwrap_err` (the last two panic on the wrong side). It is the
+union `<{tag ok, v T}, {tag err, e E}>` under an `$impl`, so it is still `$match`ed and
+`$try`ed as that union, a narrowed arm keeps the methods, and `ires.wrap` puts them on a bare
+union. `map` and `map_err` change a type, so they are templates on the specialisation —
+`$call ires.map (r, f)` — rather than free functions: §4.9 infers a generic from a default
+that is exactly it or a `$func` literal, never from inside a union, so a free `map` could not
+learn `T` and `E` from `r`, while the specialisation already knows them and only `f`'s result
+is inferred. `std/core`'s `fail` stays the light form, a bare `{tag err, e E}` beside a plain
+value, for a function that does not want a result type.
 
 ## D8. Testing
 
