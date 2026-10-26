@@ -7,6 +7,7 @@
 //   $decl F $import "std/fmt"
 //   $decl b $call S.builder ()
 //   $call F.str (b, "x = ")  $call F.int (b, 42)  $call b.build ()     // "x = 42"
+//   $call F.fixed (b, 2.675, 2)                                        // "2.67"
 //
 // A block opts in by having a `show` member (D4): `$prop show $func ($decl b F.builder) …`,
 // writing itself into `b`. §9 keeps reflection out of the language, so nothing is derived.
@@ -156,3 +157,136 @@ $decl quoted_go $func ($decl b builder, $decl s "", $decl start 0, $decl i 0)
 $decl quoted $func ($decl b builder, $decl s "")
   $do ($call b.write ("\""))
       ($do ($call quoted_go (b, s, 0, 0)) ($call b.write ("\"")))
+
+// ------------------------------------------------------------- fixed decimals
+
+// `x` with exactly `d` digits after the point, rounded correctly: to the nearest, ties to
+// even, on the double's *exact* value — so `fixed (b, 2.675, 2)` is `2.67`, since the
+// double nearest 2.675 is just below it, and `fixed (b, 0.125, 2)` is `0.12`. That is C's
+// `%.*f`. Scaling by a power of ten and rounding would round twice, and `x * 10^d` stops
+// being exact long before `d` is large.
+//
+// A finite double is `m · 2^e` exactly, `m` a whole number below 2^53, and found exactly:
+// halving a whole number that big, or doubling any double, is exact. So `x · 10^d` is
+// `m · 5^d · 2^(e+d)`, a whole number when `e + d` is not negative, and otherwise one
+// divided by `2^s` — whose quotient is the answer up to rounding, and whose remainder
+// decides it. Both are a whole number of up to ~1,100 bits, held as base-10⁹ limbs, low
+// limb first; `d` digits cost O(d) limbs.
+//
+// A negative `x` writes `-`, `-0.0` and a negative that rounds to zero included, as `%f`
+// does; NaN and the infinities are `to_str`'s `nan`, `inf` and `-inf`.
+
+$decl limbs $specialize L.list 0
+$decl lc    limbs.cell
+$decl lbase 1000000000
+
+// `xs · k + carry`, for `k` no more than 10⁹ so a limb's product fits an `Int`.
+$decl big_mul_go $func ($decl xs limbs.node, $decl k 0, $decl carry 0, $decl acc limbs.node)
+  $match xs (
+    $case {$prop tag "cons"} {
+      $decl v    $call add ($call mul (xs.head, k), carry)
+      $decl ret2 $call big_mul_go (xs.tail, k, $call div (v, lbase),
+                     $call lc.cons ($call mod (v, lbase), acc))
+    }.ret2,
+    $case xs
+      $call lc.reverse ($if ($call eq (carry, 0)) acc ($call lc.cons (carry, acc)), limbs.nil)
+  )
+$decl big_mul $func ($decl xs limbs.node, $decl k 0) $call big_mul_go (xs, k, 0, limbs.nil)
+
+// `xs · k^n`, `k^c` at a time, `k^c` no more than 10⁹.
+$decl big_pow $func ($decl xs limbs.node, $decl k 0, $decl n 0, $decl c 0, $decl kc 0)
+  $if ($call lt (n, c))
+      ($if ($call eq (n, 0)) xs ($call big_pow ($call big_mul (xs, k), k, $call sub (n, 1), c, kc)))
+      ($call big_pow ($call big_mul (xs, kc), k, $call sub (n, c), c, kc))
+
+// `xs` divided by `p` ≤ 2^29, from the high limb down — `hi` is the limbs high first — so
+// the quotient comes out low limb first. `{q, r}`.
+$decl big_div_go $func ($decl hi limbs.node, $decl p 0, $decl rm 0, $decl acc limbs.node)
+  $match hi (
+    $case {$prop tag "cons"} {
+      $decl v    $call add ($call mul (rm, lbase), hi.head)
+      $decl ret2 $call big_div_go (hi.tail, p, $call mod (v, p),
+                     $call lc.cons ($call div (v, p), acc))
+    }.ret2,
+    $case hi { $decl q acc  $decl r rm }
+  )
+
+// `xs + 1`.
+$decl big_add1_go $func ($decl xs limbs.node, $decl acc limbs.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq (xs.head, $call sub (lbase, 1)))
+        ($call big_add1_go (xs.tail, $call lc.cons (0, acc)))
+        ($call lc.reverse ($call lc.cons ($call add (xs.head, 1), acc), xs.tail)),
+  $case xs $call lc.reverse ($call lc.cons (1, acc), limbs.nil)
+)
+$decl big_add1 $func ($decl xs limbs.node) $call big_add1_go (xs, limbs.nil)
+
+// `xs` divided by `2^s`, rounded to the nearest and ties to even: `half` is the remainder's
+// top bit and `sticky` whether any bit below it is set, over the chunks taken so far.
+$decl big_shr $func ($decl xs limbs.node, $decl s 0, $decl sticky C.bool)
+  $if ($call lt (29, s)) {
+    $decl dv   $call big_div_go ($call lc.reverse (xs, limbs.nil), 536870912, 0, limbs.nil)
+    $decl ret2 $call big_shr (dv.q, $call sub (s, 29), $call C.or (sticky, $call lt (0, dv.r)))
+  }.ret2 {
+    $decl p    $call shl (1, s)
+    $decl dv   $call big_div_go ($call lc.reverse (xs, limbs.nil), p, 0, limbs.nil)
+    $decl hb   $call shr (p, 1)
+    $decl half $call C.not ($call lt (dv.r, hb))
+    $decl low  $call C.or (sticky, $call lt (0, $call sub (dv.r, $if half hb 0)))
+    $decl odd  $call eq ($call mod ($call lc.head (dv.q), 2), 1)
+    $decl up   $call C.and (half, $call C.or (low, odd))
+    $decl ret2 $if up ($call big_add1 (dv.q)) dv.q
+  }.ret2
+
+// The decimal digits, high limb first and without its leading zeros, the rest nine wide.
+$decl big_str_go $func ($decl hi limbs.node, $decl acc strs.node) $match hi (
+  $case {$prop tag "cons"} {
+    $decl s    $call int_to_str (hi.head)
+    $decl ret2 $call big_str_go (hi.tail, $call cl.cons (s, $call cl.cons ($call S.repeat ("0",
+                   $call sub (9, $call len (s))), acc)))
+  }.ret2,
+  $case hi $call S.concat_all ($call strs.of ($call cl.reverse (acc, strs.nil)))
+)
+$decl big_str_top $func ($decl hi limbs.node) $match hi (
+  $case {$prop tag "cons"}
+    $if ($call C.and ($call eq (hi.head, 0), $call C.not ($call lc.is_nil (hi.tail))))
+        ($call big_str_top (hi.tail))
+        ($call big_str_go (hi.tail, $call cl.cons ($call int_to_str (hi.head), strs.nil))),
+  $case hi "0"
+)
+$decl big_str $func ($decl xs limbs.node) $call big_str_top ($call lc.reverse (xs, limbs.nil))
+
+// `a` ≥ 0 as `{m, e}`, `a = m · 2^e` with `m` whole and below 2^53.
+$decl whole $func ($decl a 0.0) $call eq ($call to_float ($call C.or_else ($call to_int (a), 0)), a)
+$decl split_go $func ($decl a 0.0, $decl ex 0)
+  $if ($call C.not ($call lt (a, 9007199254740992.0)))
+      ($call split_go ($call div (a, 2.0), $call add (ex, 1)))
+      ($if ($call whole (a)) { $decl m $call C.or_else ($call to_int (a), 0)  $decl e ex }
+           ($call split_go ($call mul (a, 2.0), $call sub (ex, 1))))
+
+// The digits of `|x| · 10^d`, rounded — at least `d + 1` of them, so a point fits.
+$decl scaled $func ($decl a 0.0, $decl d 0) {
+  $decl sp  $call split_go (a, 0)
+  $decl m5  $call big_pow ($call big_mul ($call lc.cons (sp.m, limbs.nil), 1), 5, d, 12, 244140625)
+  $decl t   $call add (sp.e, d)
+  $decl q   $if ($call lt (t, 0)) ($call big_shr (m5, $call neg (t), false))
+                ($call big_pow (m5, 2, t, 29, 536870912))
+  $decl s   $call big_str (q)
+  $decl ret $call concat ($call S.repeat ("0", $call sub ($call add (d, 1), $call len (s))), s)
+}.ret
+
+$decl fixed_str $func ($decl x 0.0, $decl d 0)
+  $if ($call lt (d, 0)) ($call panic ($call concat ("fmt: no ", $call concat (
+          $call int_to_str (d), " decimals"))))
+  ($if ($call C.not ($call eq ($call sub (x, x), 0.0))) ($call to_str (x)) {
+    $decl minus $call C.or ($call lt (x, 0.0),
+                    $call C.and ($call eq (x, 0.0), $call lt ($call div (1.0, x), 0.0)))
+    $decl s     $call scaled ($if minus ($call neg (x)) x, d)
+    $decl k     $call sub ($call len (s), d)
+    $decl body  $if ($call eq (d, 0)) s
+                    ($call concat ($call slice (s, 0, k),
+                         $call concat (".", $call slice (s, k, $call len (s)))))
+    $decl ret2  $if minus ($call concat ("-", body)) body
+  }.ret2)
+
+$decl fixed $func ($decl b builder, $decl x 0.0, $decl d 0) $call b.write ($call fixed_str (x, d))

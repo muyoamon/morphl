@@ -572,7 +572,7 @@ So a list stays a value — `push` answers a new list — and a container that c
    `str_from_ptr` over `array_ptr` (§4.16) to turn bytes into a `Str`; the pairwise join is
    O(L log n) already, so it waits for a measurement.
 4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`. **`std/fmt` is done**
-   (`std/fmt_test.mpl`, 19): every writer takes a builder first and answers unit — `int`,
+   (`std/fmt_test.mpl`, 27): every writer takes a builder first and answers unit — `int`,
    `float` (§8's shortest round-trip `to_str`), `str`, `bool`, `code` (U+FFFD for what
    `from_code` refuses), and `put`, an `$overload` of the four; `radix (b, n, base)` and `hex`,
    correct at both ends of `Int`; `pad_left`/`pad_right` in code points and `zeros` with the
@@ -581,9 +581,11 @@ So a list stays a value — `push` answers a new list — and a container that c
    ($decl b F.builder) …`; `show (b, x)` and `render (x)` are templates bounded by
    `show_proto`, so the call is static and `x` a value — taking a `showable` object instead
    refuses a field (a trait object refers to its value) and refuses a tail call, which a
-   nested `show` ends in. `showable` is there for heterogeneous values. Not yet: a fixed
-   number of decimals for a `Float`, which wants correct decimal rounding rather than
-   scaling by a power of ten. `sort` is `std/seq`'s, and
+   nested `show` ends in. `showable` is there for heterogeneous values. `fixed (b, x, d)`
+   writes `d` decimals rounded correctly — nearest, ties to even, on the double's exact
+   value, which is C's `%.*f`: `x` is split exactly into `m · 2^e`, and `m · 5^d ·
+   2^(e+d)` is worked in base-10⁹ limbs, so nothing is rounded twice (3,000 random values
+   agreed with `printf` byte for byte). `sort` is `std/seq`'s, and
    **`std/map` is done** (`std/map_test.mpl`, 16): `$specialize M.map (<key>, <value>)`, then
    `new (less)`; `put` (whether the key is new), `get` (an option), `get_or`, `has`,
    `remove`, `length`, `is_empty`, `key_at`/`value_at` by position, `min_key`/`max_key`,
