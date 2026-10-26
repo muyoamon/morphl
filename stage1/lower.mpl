@@ -302,9 +302,13 @@ $decl dx_empty $call dx_leaf (mdones.nil)
 
 $decl mod_ent_g $func ($decl i 0, $decl ps mprops.node, $decl ds mdones.node,
                        $decl en benv.node, $decl bs "", $decl pt "", $decl pe benv.node,
-                       $decl fl "", $decl rc no_mrec, $decl ic "", $decl dx dxtrie) {
+                       $decl fl "", $decl rc no_mrec, $decl ic "", $decl dx dxtrie,
+                       $decl bf "") {
   $decl id   i  $decl props $alloc ps  $decl done $alloc ds  $decl env $alloc en
   $decl base bs  $decl path pt  $decl file fl  $decl isctx ic
+  // Where a spliced template's base was written (`lstate`'s `bfile`), so a prop of the
+  // module lowered later still reports a far line against that file.
+  $decl bfile bf
   // `with_props (en, ps, i)`, built once at registration. See `with_props`.
   $decl penv $alloc pe
   $decl rec  $alloc rc
@@ -369,9 +373,10 @@ $decl with_props $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0) $m
 // `body`, so the build paths read both off `r` like everything else.
 $decl tmpl_rec_x $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node,
                         $decl en benv.node, $decl ky "", $decl fl "", $decl ii 0,
-                        $decl cg Pa.ctgs.node, $decl ck P.boolean, $decl v "") {
+                        $decl cg Pa.ctgs.node, $decl ck P.boolean, $decl v "", $decl bf "") {
   $decl id   i  $decl generics gs  $decl body bd  $decl env en  $decl key ky
   $decl file fl  $decl iid ii  $decl ctg cg  $decl ctok ck  $decl vk v
+  $decl bfile bf
 }
 $decl tmpl_rec_k $func ($decl i 0, $decl gs strs.node, $decl bd Pa.proto_node,
                         $decl en benv.node, $decl ky "", $decl fl "", $decl ii 0)
@@ -532,12 +537,13 @@ $decl dfr_list  $specialize P.list proto_dfr
 // its parameters' source and the scope they are evaluated in — and the wrappers built
 // from it. See `short_callee`.
 $decl fdef_ent $func ($decl i 0, $decl ps Pa.nodes.node, $decl en benv.node,
-                      $decl md "", $decl fl "", $decl ic "", $decl nm "") {
+                      $decl md "", $decl fl "", $decl ic "", $decl nm "", $decl bf "") {
   $decl idx   i  $decl params $alloc ps  $decl env $alloc en  $decl mod md  $decl file fl
   $decl isctx ic
   $decl name  nm
+  $decl bfile bf
 }
-$decl proto_fdef $call fdef_ent (0, Pa.nodes.nil, benv.nil, "", "", "", "")
+$decl proto_fdef $call fdef_ent (0, Pa.nodes.nil, benv.nil, "", "", "", "", "")
 $decl fdef_list  $specialize P.list proto_fdef
 
 // A wrapper `w` for calls to `g` that supply `k` arguments; `ty` and `node` are kept
@@ -632,6 +638,10 @@ $decl lstate $func () {
   // whose source produced it. One field serving both put a block literal in an
   // output nothing compiled.
   $decl curfile $mut $alloc ""
+  // §4.12a: the file an `$override`'s base template was written in, while a body it
+  // spliced is lowered — the base's items sit `Pa.ov_shift` lines down, so a diagnostic
+  // on such a line belongs to this file (`err`). `""` is the entry file, as `curfile`.
+  $decl bfile   $mut $alloc ""
   // The entry file's short name, and which `$specialize` body is being lowered in
   // *inference's* spelling — both only so `opaque_at` can mint the identity inference
   // minted for the same prop. See `opaque_at`.
@@ -782,27 +792,31 @@ $decl ct_hash $func ($decl ic "", $decl fs "", $decl tag 0, $decl n Pa.proto_nod
 // And the specialisation context: entering a module restores the one it was written in
 // (`mod_ent_g`'s `isctx`), and `spec_build` enters its own.
 $decl msave_rec   $func ($decl nm "", $decl fl "",
-    $decl ic "") { $decl name nm  $decl file fl  $decl isctx ic }
-$decl proto_msave $call msave_rec ("", "", "")
+    $decl ic "", $decl bf "") { $decl name nm  $decl file fl  $decl isctx ic  $decl bfile bf }
+$decl proto_msave $call msave_rec ("", "", "", "")
 
 $decl cur_msave $func ($decl st proto_lst)
-  $call msave_rec ($call P.sval (st.curmod), $call P.sval (st.curfile), $call P.sval (st.isctx))
+  $call msave_rec ($call P.sval (st.curmod), $call P.sval (st.curfile), $call P.sval (st.isctx),
+                   $call P.sval (st.bfile))
 
 // A real source module: it is both the name and the file.
 $decl enter_mod $func ($decl st proto_lst, $decl mid "") {
   $decl prev $call cur_msave (st)
   $decl s0   $set st.curmod mid
   $decl s1   $set st.curfile mid
+  $decl s2   $set st.bfile ""
   $decl ret  prev
 }.ret
 
 // A module whose code belongs to a *different* file than its name: `fl` is where it is
 // emitted, `mid` is what it is named from.
-$decl enter_mod_in $func ($decl st proto_lst, $decl mid "", $decl fl "", $decl ic "") {
+$decl enter_mod_in $func ($decl st proto_lst, $decl mid "", $decl fl "", $decl ic "",
+                          $decl bf "") {
   $decl prev $call cur_msave (st)
   $decl s0   $set st.curmod mid
   $decl s1   $set st.curfile fl
   $decl s2   $set st.isctx ic
+  $decl s3   $set st.bfile bf
   $decl ret  prev
 }.ret
 
@@ -810,6 +824,7 @@ $decl leave_mod $func ($decl st proto_lst, $decl prev proto_msave) {
   $decl s0  $set st.curmod prev.name
   $decl s1  $set st.curfile prev.file
   $decl s2  $set st.isctx prev.isctx
+  $decl s3  $set st.bfile prev.bfile
   $decl ret 0
 }.ret
 
@@ -849,9 +864,29 @@ $decl next_rank $func ($decl st proto_lst) {
 $decl eval_tys   $func ($decl x T.tys.node) x
 $decl eval_diags $func ($decl x Pa.diags.node) x
 
+// The path of the module whose short name is `fl` (`curfile`'s spelling), or `""` — the
+// entry file, which a driver names itself. Only an `$import`'s module has a path ending
+// in `.mpl`; a specialisation's or a block literal's is a key.
+$decl path_of $func ($decl xs mods_list.node, $decl fl "") $match xs (
+  $case {$prop tag "cons"} {
+    $decl pt  xs.head.path
+    $decl n   $call len (pt)
+    $decl src $if ($call lt (4, n)) ($call eq_str ($call slice (pt, $call sub (n, 4), n), ".mpl"))
+                  false
+    $decl ret $if ($if src ($call eq_str ($call mod_short (pt), fl)) false) pt
+                  ($call path_of ($call mods_list.val (xs.tail), fl))
+  }.ret,
+  $case xs ""
+)
+
+// A diagnostic names the file it is in. A line `Pa.ov_shift` down is an `$override`'s
+// base, spliced (§4.12a): it is mapped back and named by `bfile`, as inference's `err`
+// does with `cx.bfile`.
 $decl err $func ($decl st proto_lst, $decl m "", $decl x P.proto_span) {
-  $decl noted $set st.errs ($call Pa.diags.cons ($call Pa.diag (m, x.line, x.col, ""),
-                                                 $call eval_diags (st.errs)))
+  $decl fl    $if ($call Pa.ov_far (x.line)) ($call P.sval (st.bfile)) ($call P.sval (st.curfile))
+  $decl pt    $if ($call eq_str (fl, "")) "" ($call path_of ($call mods_list.val (st.mods), fl))
+  $decl noted $set st.errs ($call Pa.diags.cons ($call Pa.diag (m, $call Pa.ov_line (x.line),
+                                                 x.col, pt), $call eval_diags (st.errs)))
   $decl ret   0
 }.ret
 
@@ -1196,16 +1231,23 @@ $decl put_snap $func ($decl st proto_lst, $decl sn proto_lsnap) {
   $decl ret 0
 }.ret
 
-$decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
-                        $decl en benv.node, $decl ky "", $decl fl "", $decl ic "",
-                        $decl fm Pa.proto_node) {
+// `bf` is the base's file when `bd` was spliced by an `$override` (§4.12a), and otherwise
+// whatever spliced body this template is written in, if any.
+$decl fresh_tmpl_b $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
+                          $decl en benv.node, $decl ky "", $decl fl "", $decl ic "",
+                          $decl fm Pa.proto_node, $decl bf "") {
   $decl i  $call P.ival (st.ntmpls)
   $decl n  $set st.ntmpls ($call add (i, 1))
   $decl ii $call ct_hash (ic, $call fshort (st, fl), 7, fm)
-  $decl t $set st.tmpls ($call tmpls_list.cons ($call tmpl_rec_k (i, gs, bd, en, ky, fl, ii),
+  $decl t $set st.tmpls ($call tmpls_list.cons ($call tmpl_rec_x (i, gs, bd, en, ky, fl, ii,
+                             Pa.ctgs.nil, false, "", bf),
                              $call eval_tmpls (st.tmpls)))
   $decl ret i
 }.ret
+$decl fresh_tmpl $func ($decl st proto_lst, $decl gs strs.node, $decl bd Pa.proto_node,
+                        $decl en benv.node, $decl ky "", $decl fl "", $decl ic "",
+                        $decl fm Pa.proto_node)
+  $call fresh_tmpl_b (st, gs, bd, en, ky, fl, ic, fm, $call P.sval (st.bfile))
 
 // §4.9's self-specialisation, lowering's half of what `infer.mpl`'s `self_tmpl_env`
 // does. A template records the environment it was *written* in, and its own name was
@@ -1223,7 +1265,7 @@ $decl tmpl_self $func ($decl st proto_lst, $decl tid 0, $decl nm "", $decl kind 
         $decl nr $call tmpl_rec_x (t.id, t.generics, t.body,
                      $call benv.cons ($call bind_ent6 (nm, kind, idx, ty, -1, tid),
                          $call benv.val (t.env)),
-                     t.key, t.file, t.iid, t.ctg, t.ctok, t.vk)
+                     t.key, t.file, t.iid, t.ctg, t.ctok, t.vk, t.bfile)
         $decl w    $set st.tmpls ($call tmpls_list.cons (nr, $call eval_tmpls (st.tmpls)))
         $decl ret2 0
       }.ret2,
@@ -1239,13 +1281,13 @@ $decl add_spec $func ($decl st proto_lst, $decl sp proto_spec) {
 $decl eval_benv $func ($decl x benv.node) x
 
 $decl fresh_mod_ic $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
-                          $decl bs "", $decl pt "", $decl fl "", $decl ic "") {
+                          $decl bs "", $decl pt "", $decl fl "", $decl ic "", $decl bf "") {
   $decl i $call P.ival (st.nmods)
   $decl n $set st.nmods ($call add (i, 1))
   // The prop environment is a function of the module alone, so it is built
   // here and never again.
   $decl pe  $call with_index ($call with_props (en, ps, i))
-  $decl me  $call mod_ent_g (i, ps, mdones.nil, en, bs, pt, pe, fl, no_mrec, ic, dx_empty)
+  $decl me  $call mod_ent_g (i, ps, mdones.nil, en, bs, pt, pe, fl, no_mrec, ic, dx_empty, bf)
   $decl m   $set st.mods ($call mods_list.cons (me, $call eval_mods (st.mods)))
   $decl x   $set st.modix ($call mx_put ($call mx_val (st.modix), i, 0, me))
   $decl ret i
@@ -1262,7 +1304,7 @@ $decl fresh_mod_gen $func ($decl st proto_lst, $decl ps mprops.node, $decl en be
   $decl i $call P.ival (st.nmods)
   $decl n $set st.nmods ($call add (i, 1))
   $decl me $call mod_ent_g (i, ps, mdones.nil, en, "", pt, $call with_index (en), fl, no_mrec,
-               $call P.sval (st.isctx), dx_empty)
+               $call P.sval (st.isctx), dx_empty, $call P.sval (st.bfile))
   $decl m   $set st.mods ($call mods_list.cons (me, $call eval_mods (st.mods)))
   $decl x   $set st.modix ($call mx_put ($call mx_val (st.modix), i, 0, me))
   $decl ret i
@@ -1271,7 +1313,7 @@ $decl fresh_mod_gen $func ($decl st proto_lst, $decl ps mprops.node, $decl en be
 // Written where it stands, so in whatever specialisation is being lowered.
 $decl fresh_mod_in $func ($decl st proto_lst, $decl ps mprops.node, $decl en benv.node,
                           $decl bs "", $decl pt "", $decl fl "")
-  $call fresh_mod_ic (st, ps, en, bs, pt, fl, $call P.sval (st.isctx))
+  $call fresh_mod_ic (st, ps, en, bs, pt, fl, $call P.sval (st.isctx), $call P.sval (st.bfile))
 
 // A real `$import`: the module is its own file, so `mod_short (pt)` is both. Never in a
 // specialisation, even when the first `$import` of it is reached from inside one.
@@ -2780,7 +2822,7 @@ $decl spec_build_props $func ($decl st proto_lst, $decl e benv.node, $decl r pro
   // Inference's memo key for the same specialisation (`infer.mpl`'s `memo_key`):
   // the template's id, then each argument type rendered. Every identity minted in
   // the body hashes it, exactly as inference's `sctx` does.
-  $decl ms $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys))
+  $decl ms $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys), r.bfile)
   $decl v0 $call lval ($call lower (st, be, r.body, false))
   $decl mr $call leave_mod (st, ms)
   $decl v  v0
@@ -2891,7 +2933,7 @@ $decl spec_reuse_inst $func ($decl st proto_lst, $decl e benv.node, $decl r prot
                              $decl args Pa.nodes.node, $decl keys IR.ints.node,
                              $decl sp   proto_spec, $decl n Pa.proto_node) {
   $decl sk  $call spec_key (st, r, keys)
-  $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys))
+  $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys), r.bfile)
   $decl v   $call lval ($call spec_inst (st, e, r, args, -1, sp.mod, sp.bty, false, n))
   $decl mr  $call leave_mod (st, ms)
   $decl ret v
@@ -2906,7 +2948,7 @@ $decl spec_build_inst $func ($decl st proto_lst, $decl e benv.node, $decl r prot
   // In progress: a use reached while the body's own items are being lowered is the
   // body reaching itself, which §4.9 makes evaluate without bound.
   $decl pg  $call add_spec (st, $call spec_ent_v (r.id, keys, -2, T.t_bot, r.vk))
-  $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys))
+  $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys), r.bfile)
   $decl v   $call lval ($call spec_inst (st, e, r, args, gm, -1, T.t_bot, true, n))
   $decl mr  $call leave_mod (st, ms)
   $decl sp  $call add_spec (st, $call spec_ent_v (r.id, keys, v.mod, v.ty, r.vk))
@@ -2950,11 +2992,11 @@ $decl ctg_fix_l $func ($decl st proto_lst, $decl r proto_tmpl, $decl cur Pa.ctgs
 $decl tmpl_ctg $func ($decl st proto_lst, $decl r proto_tmpl)
   $if r.ctok r {
     $decl busy $set st.tmpls ($call tmpls_list.cons ($call tmpl_rec_x (r.id, r.generics, r.body,
-                   r.env, r.key, r.file, r.iid, Pa.ctgs.nil, true, ""),
+                   r.env, r.key, r.file, r.iid, Pa.ctgs.nil, true, "", r.bfile),
                        $call eval_tmpls (st.tmpls)))
     $decl cg   $call ctg_fix_l (st, r, Pa.ctgs.nil, $call strs.length (r.generics, 0))
     $decl done $call tmpl_rec_x (r.id, r.generics, r.body, r.env, r.key, r.file, r.iid, cg, true,
-        "")
+        "", r.bfile)
     $decl kept $set st.tmpls ($call tmpls_list.cons (done, $call eval_tmpls (st.tmpls)))
     $decl ret  done
   }.ret
@@ -3017,7 +3059,7 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
         $decl isfn $call is_form (b0, "func")
         $decl r    $call tmpl_rec_x (r0.id, r0.generics, $if isfn ($call fn_wrap (b0)) b0,
                        r0.env, r0.key, r0.file, r0.iid, r0.ctg, true,
-                       $call spec_vals (st, r0.generics, args, r0.ctg, ""))
+                       $call spec_vals (st, r0.generics, args, r0.ctg, ""), r0.bfile)
         $decl hit  $call find_spec (st.specs, r.id, keys, r.vk)
         $decl inst $call inst_body (r.body)
         $decl ret2 $match hit (
@@ -3242,7 +3284,7 @@ $decl mod_effect $func ($decl st proto_lst, $decl mid 0, $decl pn Pa.proto_node,
         // "dropped" looks like.
         $decl pe    $call benv.val (ms.head.penv)
         $decl msave $call enter_mod_in (st, $call mod_short (ms.head.path), ms.head.file,
-            ms.head.isctx)
+            ms.head.isctx, ms.head.bfile)
         $decl ret2  $call lower_effect (st, pe, pn, $call isub (-1, pos))
         $decl mrest $call leave_mod (st, msave)
       }.ret2,
@@ -3384,7 +3426,8 @@ $decl mod_value $func ($decl st proto_lst, $decl mid 0) {
               // The module is entered while its props' identities are minted, so
               // every value of one module has one type — `const_of` names an
               // opaque prop by `curmod`.
-              $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
+              $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx,
+                              m.bfile)
               $decl a     $call rec_build (st, ds, ps, proto_racc)
               $decl reg   $call note_opaqs (st, mid, ps)
               $decl back  $call leave_mod (st, msave)
@@ -3397,7 +3440,7 @@ $decl mod_value $func ($decl st proto_lst, $decl mid 0) {
               $decl kept $if a.settled
                   ($call save_mod (st, $call mod_ent_g (m.id, ps, ds, $call benv.val (m.env),
                        m.base, m.path, $call benv.val (m.penv), m.file,
-                       $call mrec (true, t, id, fs), m.isctx, $call dx_val (m.dix))))
+                       $call mrec (true, t, id, fs), m.isctx, $call dx_val (m.dix), m.bfile)))
                   0
               $decl ret3  $call lres3 ($call IR.e_block (id,
                            $call IR.bslots.reverse ($call IR.bslots.val (a.slots),
@@ -3684,7 +3727,7 @@ $decl ints_of_tys $func ($decl st proto_lst, $decl ts T.tys.node,
 $decl build_wrap $func ($decl st proto_lst, $decl d proto_fdef, $decl g 0, $decl k 0,
     $decl fty T.proto_ty,
                         $decl wm "", $decl wn "") {
-  $decl msave $call enter_mod_in (st, d.mod, d.file, d.isctx)
+  $decl msave $call enter_mod_in (st, d.mod, d.file, d.isctx, d.bfile)
   $decl outer $call take_slots (st)
   $decl ps    $call params_of (fty)
   $decl rty   $call result_of (fty)
@@ -3944,12 +3987,12 @@ $decl lower_override $func ($decl st proto_lst, $decl e benv.node, $decl n proto
         $decl ns   $call Pa.ov_names (bis, ois)
         $decl body $call Pa.ov_body (r.body, ois, ns)
         $decl sp   $call P.span_of (n)
-        $decl tid  $call fresh_tmpl (st, r.generics, body,
+        $decl tid  $call fresh_tmpl_b (st, r.generics, body,
                        $call hide_binds (e, ns, $call benv.val (r.env)),
                        $call concat ($call P.sval (st.curmod),
                        $call concat ("_o", $call concat ($call int_to_str (sp.line),
                        $call concat ("_", $call int_to_str (sp.col))))),
-                       $call P.sval (st.curfile), $call P.sval (st.isctx), n)
+                       $call P.sval (st.curfile), $call P.sval (st.isctx), n, r.file)
         $decl ret2 $call lres4 ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit, -1, tid)
       }.ret2,
       $case ts {
@@ -4540,7 +4583,7 @@ $decl note_prop $func ($decl st proto_lst, $decl mid 0, $decl d proto_mdone) {
             $call benv.val (ms.head.env), ms.head.base, ms.head.path,
             $call benv.val (ms.head.penv), ms.head.file, $call mrec_val (ms.head.rec),
             ms.head.isctx, $call dx_add ($call dx_val (ms.head.dix), $call dx_key (d.name), 0,
-                d)))),
+                d), ms.head.bfile))),
       $case ms 0
     )
 }.ret
@@ -4739,7 +4782,7 @@ $decl member_key $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_
 )
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node) {
-  $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
+  $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
   $decl pe0   $call benv.val (m.penv)
   $decl chk   $call no_caps (st, pe0, pn)
   // §4.10: a member that names its receiver captures it — capture 0, at the type the
@@ -4763,7 +4806,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // §3.4: where a short call's omitted defaults are evaluated. Before the snapshot,
   // so a first pass that §5.5 rolls back does not take it with it.
   $decl fd    $call note_fdef (st, $call fdef_ent (idx, $call group_items ($call op (pn, 0)), pe,
-                  $call mod_short (m.path), m.file, m.isctx, nm))
+                  $call mod_short (m.path), m.file, m.isctx, nm, m.bfile))
   // A prop that names itself has to be lowered twice, and the reason is the
   // one place lowering feels the absence of §5.5's knot: it *derives* types,
   // so while the body is being lowered its own result is not known yet and a
@@ -4847,7 +4890,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 // `B(R)`, and the result is `μR. B(R)` — or simply `B`, when `R` did not occur.
 $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node) {
-  $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
+  $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
   $decl pe    $call benv.val (m.penv)
   $decl self  $call mem_str ($call free_names (pn, strs.nil), nm)
   $decl pv    $call fresh_var (st)
@@ -4916,7 +4959,7 @@ $decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.prot
 
 $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node) {
-  $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx)
+  $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
   $decl pe   $call with_index ($call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
                  ($union (false, true))))
   $decl chk $call no_caps (st, pe, pn)
@@ -6391,7 +6434,7 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
     // §3.4: an entry-file function's defaults are evaluated in the file's scope.
     $decl fd   $if ($call is_form (init, "func"))
         ($call note_fdef (st, $call fdef_ent ($call IR.fns.length (acc, 0),
-             $call group_items ($call op (init, 0)), e, "", "", "", nm))) 0
+             $call group_items ($call op (init, 0)), e, "", "", "", nm, ""))) 0
     $decl fm   $if ($call is_form (init, "func"))
         ($call topfn ($call lower_func (st, e, nm, init, fty, IR.ints.nil), -1, -1)) {
           // A thunk: no parameters, the value as its body (§7.2's frame is

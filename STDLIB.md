@@ -133,7 +133,9 @@ $decl area_of $template (T ($traitsof shape)) $func ($decl x T) $call x.area ()
   names are renamed so they resolve where the `$override` is written, never in the base's
   body. So the template case has no subtype check, there being no replaced type to compare.
   Both passes make the same rewrite (`Pa.ov_body`), with the base's items moved a million
-  lines down so nothing either pass keys by position can collide with the override's.
+  lines down so nothing either pass keys by position can collide with the override's; a
+  diagnostic on such a line, from either pass, is mapped back and names the base's file
+  (`override_diag.mpl` in `test-reject`).
   `stage1/fixtures/override.mpl` (with D3a's overload in its module, compiled only, and in
   `test-split`) and `override_bad.mpl` in `test-reject`. Stage 0 refuses the form. Not
   done: overriding a template that `$override` made.

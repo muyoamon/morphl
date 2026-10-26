@@ -36,6 +36,19 @@ $decl show_errs $func ($decl xs Pa.diags.node, $decl what "") $match xs (
   $case xs ()
 )
 
+// A check diagnostic has a position, as `typecheck.mpl` prints it: the file is its own,
+// and `path` only for one naming none — lowering's, in the entry file.
+$decl show_at $func ($decl xs Pa.diags.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call nl ($call concat ("  ", $call concat (
+         $if ($call eq_str (xs.head.file, "")) path xs.head.file,
+         $call concat (":", $call concat ($call int_to_str (xs.head.line),
+         $call concat (":", $call concat ($call int_to_str (xs.head.col),
+         $call concat (": ", xs.head.msg)))))))))
+        ($call show_at ($call Pa.diags.val (xs.tail))),
+  $case xs ()
+)
+
 // `read_file` answers `none | {$prop tag "some" $decl v Str}` (§8).
 $decl rf  $call read_file (path)
 $decl src $match rf (
@@ -49,7 +62,7 @@ $decl bad  $call C.verify (prog)
 
 $decl e0 $call nl ($call concat ("check errors: ",
     $call int_to_str ($call Pa.diags.length ($call Pa.diags.val (ckd.diagnostics), 0))))
-$decl e1 $call show_errs ($call Pa.diags.val (ckd.diagnostics), "  ")
+$decl e1 $call show_at ($call Pa.diags.val (ckd.diagnostics))
 $decl e2 $call nl ($call concat ("verify errors: ", $call int_to_str ($call Pa.diags.length (bad, 0))))
 $decl e3 $call show_errs (bad, "  ")
 $decl a  $call nl ($call concat ("types: ",

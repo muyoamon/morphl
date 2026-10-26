@@ -482,7 +482,9 @@ pub fn build(b: *std.Build) void {
     // `stage0 = null` is for a rule stage 0 does not check: BOOTSTRAP §1.3 gives it no
     // static checking, so a program only the checker refuses still runs there. That
     // direction is safe — the compiler is stricter, never more permissive.
-    for ([_]struct { src: []const u8, stage1: []const []const u8, count: []const u8, stage0: ?[]const u8 }{
+    // `driver` is what stage 1 runs: `typecheck.mpl` stops after inference, so a refusal
+    // only lowering makes needs `lower_dump.mpl`, which counts `check errors:`.
+    for ([_]struct { src: []const u8, stage1: []const []const u8, count: []const u8, stage0: ?[]const u8, driver: []const u8 = "stage1/typecheck.mpl" }{
         .{
             .src = "stage1/fixtures/fwd_uninit.mpl",
             .stage1 = &.{
@@ -568,6 +570,19 @@ pub fn build(b: *std.Build) void {
             .count = "errors: 5\n",
             .stage0 = null,
         },
+        // Lowering's diagnostics name their own file: a base template's line spliced by an
+        // `$override` is mapped back from `Pa.ov_shift` (§4.12a), and a module member's
+        // used to be reported against the entry file.
+        .{
+            .src = "stage1/fixtures/override_diag.mpl",
+            .stage1 = &.{
+                "override_diag_util.mpl:5:61: an omitted argument needs its default",
+                "override_diag_util.mpl:7:60: an omitted argument needs its default",
+            },
+            .count = "check errors: 2\n",
+            .stage0 = "$override is outside the bootstrap subset",
+            .driver = "stage1/lower_dump.mpl",
+        },
         .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
@@ -578,7 +593,7 @@ pub fn build(b: *std.Build) void {
         },
     }) |bad| {
         const s1 = b.addRunArtifact(runner);
-        s1.addArgs(&.{ "--run", "stage1/typecheck.mpl", bad.src });
+        s1.addArgs(&.{ "--run", bad.driver, bad.src });
         s1.setCwd(b.path("."));
         s1.has_side_effects = true;
         for (bad.stage1) |m| s1.expectStdOutMatch(m);
