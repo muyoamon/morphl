@@ -1176,12 +1176,11 @@ $decl is_with_at $func ($decl ts T.tys.node, $decl i 0) {
 // separately and concatenated alike. A coercion whose components agree costs nothing,
 // which is nearly all of them.
 //
-// Two limits. A shim calls the original in no tail position, since it has a result to
+// One limit: a shim calls the original in no tail position, since it has a result to
 // coerce, so a chain of tail calls through a coerced value costs a frame per hop through
-// the shim: §7.7 holds up to the coercion, not across it. And a trait object's table is
-// not adapted yet — its shims (`emit_shim`) call a member with the member's own
-// signature, so an implementation whose member answers a subtype of the trait's is the
-// same mismatch, in a different place.
+// the shim — §7.7 holds up to the coercion, not across it. A trait object's table meets
+// the same mismatch between a member's signature and the trait's, and adapts it the same
+// way (`emit_tad`).
 $decl is_fn_at $func ($decl ts T.tys.node, $decl i 0) {
   $decl t   $call T.unroll ($call type_at (ts, i))
   $decl ret $match t ($case {$prop tag "func"} true, $case t false)
@@ -3014,6 +3013,77 @@ $decl tbl_key $func ($decl st proto_est, $decl xs IR.ints.node, $decl acc "") $m
 $decl tbl_name $func ($decl st proto_est, $decl xs IR.ints.node)
   $call concat ("mpl_tbl", $call int_to_str ($call T.hash_str ($call tbl_key (st, xs, ""), 0, 0)))
 
+$decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
+  $decl f   $call IR.find_ty (ts, t)
+  $decl ret $if f.hit f.id -1
+}.ret
+
+$decl is_fn_ty $func ($decl t T.proto_ty) $match t ($case {$prop tag "func"} true, $case t false)
+
+// The signature a call through the object makes for member `j`: the trait's member type,
+// or `() -> T` for a scalar member, whose entry answers it (`scalar_fn`). -1 when it is not
+// interned, which the entry then takes as agreeing — what it always did.
+$decl tab_want $func ($decl ts T.tys.node, $decl tid 0, $decl j 0) {
+  $decl tt  $call T.unroll ($call type_at (ts, tid))
+  $decl ret $match tt (
+      $case {$prop tag "trait"} {
+        $decl m    $call T.fields.nth ($call T.fields.val (tt.members), j)
+        $decl mt   $call T.trait_member (tt, m.name, tt)
+        $decl ret2 $call ty_id (ts, $if ($call is_fn_ty (mt)) mt ($call T.t_func (T.tys.nil, mt)))
+      }.ret2,
+      $case tt -1
+    )
+}.ret
+
+// Whether member function `k` can stand in the table as itself for signature `want`: each
+// of the trait's parameters coerces freely into the member's, and the member's result
+// into the trait's — `fn_free`'s question, with the member's side read off `IR.fn`.
+// A component not interned in the form the trait's member gives it — a trait naming
+// itself, whose substituted member types are spelt differently from lowering's — is taken
+// as agreeing, which is what every entry did before; the adapter is for what is known.
+$decl comp_free_or $func ($decl st proto_est, $decl ts T.tys.node, $decl a 0, $decl b 0)
+  $if ($call P.or ($call lt (a, 0), $call lt (b, 0))) true ($call comp_free (st, ts, a, b, 0))
+$decl ids_free $func ($decl st proto_est, $decl ts T.tys.node, $decl ws T.tys.node,
+                      $decl fs IR.ints.node) $match ws (
+  $case {$prop tag "cons"} $match fs (
+      $case {$prop tag "cons"}
+        $if ($call comp_free_or (st, ts, $call ty_id (ts, ws.head), fs.head))
+            ($call ids_free (st, ts, $call T.tys.val (ws.tail), $call IR.ints.val (fs.tail)))
+            false,
+      $case fs false),
+  $case ws ($call IR.ints.is_nil (fs))
+)
+$decl entry_free $func ($decl st proto_est, $decl ts T.tys.node, $decl want 0, $decl k 0)
+  $if ($call lt (want, 0)) true {
+    $decl w   $call T.unroll ($call type_at (ts, want))
+    $decl f   ($call em_at ($call res_fn (st, k))).fn
+    $decl ret $match w (
+        $case {$prop tag "func"}
+          $if ($call comp_free_or (st, ts, f.result, $call ty_id (ts, w.result)))
+              ($call ids_free (st, ts, $call T.tys.val (w.params), $call IR.ints.val (f.params)))
+              false,
+        $case w true
+      )
+  }.ret
+
+$decl tab_free $func ($decl st proto_est, $decl ts T.tys.node, $decl xs IR.ints.node,
+                      $decl tid 0, $decl j 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call entry_free (st, ts, $call tab_want (ts, tid, j), xs.head))
+        ($call tab_free (st, ts, $call IR.ints.val (xs.tail), tid, $call add (j, 1)))
+        false,
+  $case xs true
+)
+
+// A table that needs no adapter is named from its members alone, as it always was, so a
+// program with none emits what it did before; one that does is named for its trait too.
+$decl tab_name $func ($decl st proto_est, $decl ts T.tys.node, $decl xs IR.ints.node,
+                      $decl tid 0)
+  $if ($call tab_free (st, ts, xs, tid, 0)) ($call tbl_name (st, xs))
+      ($call concat ($call tbl_name (st, xs), $call concat ("_", $call ty_name (ts, tid))))
+$decl tad_name $func ($decl tn "", $decl j 0)
+  $call concat (tn, $call concat ("_a", $call int_to_str (j)))
+
 // §4.13: the storage a name already has — a frame slot, a capture in the environment, or
 // a global's static (§4.10). `verify` has checked it is one of the three.
 $decl addr_of $func ($decl st proto_est, $decl fi 0, $decl x IR.proto_expr) $match x (
@@ -3421,7 +3491,7 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
     $decl rv  $call into_tmp (st, fi, $call IR.eval (e.ref), ts)
     $decl d0  $call assign (st, $call concat (dest, ".ref"), $call concat ("(void *)", rv))
     $decl ret $call assign (st, $call concat (dest, ".tbl"),
-                  $call concat ($call tbl_name (st, $call IR.ints.val (e.fns)), "()"))
+                  $call concat ($call tab_name (st, ts, $call IR.ints.val (e.fns), e.ty), "()"))
   }.ret,
   // A member through the object is §7.3's pair: the table's shim, whose environment
   // *is* the referent — so a call is an ordinary indirect call (§10 item 13).
@@ -4049,10 +4119,6 @@ $decl ad_params $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.n
   }.ret,
   $case ps acc
 )
-$decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
-  $decl f   $call IR.find_ty (ts, t)
-  $decl ret $if f.hit f.id -1
-}.ret
 $decl ad_head $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent) {
   $decl b   $call T.unroll ($call type_at (ts, e.want))
   $decl ret $match b (
@@ -4212,7 +4278,13 @@ $decl find_main $func ($decl fs IR.fns.node, $decl i 0) $match fs (
 // captures (§10 item 13). A table is a function returning its array, because a static
 // array a translation unit does not use is a warning where a static function is not.
 
-$decl itabs $specialize P.list IR.ints.node
+// A table is an implementation's member functions *and* the trait they are viewed as:
+// §5.1 lets a member answer a subtype of the trait's member, and the call through the
+// object is made with the trait's signature (`tmem`), so where the two C signatures
+// differ the entry is an adapter (`emit_tad`) rather than the member's shim.
+$decl itab $func ($decl f IR.ints.node, $decl t 0) { $decl fns f  $decl tid t }
+$decl proto_itab $call itab (IR.ints.nil, 0)
+$decl itabs $specialize P.list proto_itab
 
 $decl is_ref_c $func ($decl t T.proto_ty) $match t ($case {$prop tag "ref"} true, $case t false)
 
@@ -4225,8 +4297,10 @@ $decl ints_eq $func ($decl xs IR.ints.node, $decl ys IR.ints.node) $match xs (
   $case xs ($call IR.ints.is_nil (ys))
 )
 
-$decl has_tab $func ($decl xs itabs.node, $decl t IR.ints.node) $match xs (
-  $case {$prop tag "cons"} $if ($call ints_eq (xs.head, t)) true ($call has_tab (xs.tail, t)),
+$decl has_tab $func ($decl xs itabs.node, $decl t proto_itab) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call ints_eq (xs.head.fns, t.fns), $call eq_int (xs.head.tid, t.tid))) true
+        ($call has_tab (xs.tail, t)),
   $case xs false
 )
 
@@ -4252,8 +4326,8 @@ $decl tobs_arms $func ($decl xs IR.arms.node, $decl acc itabs.node) $match xs (
 
 $decl tobs_of $func ($decl e IR.proto_expr, $decl acc itabs.node) $match e (
   $case {$prop tag "tobj"} {
-    $decl fs  $call IR.ints.val (e.fns)
-    $decl a2  $if ($call has_tab (acc, fs)) acc ($call itabs.cons (fs, acc))
+    $decl it  $call itab ($call IR.ints.val (e.fns), e.ty)
+    $decl a2  $if ($call has_tab (acc, it)) acc ($call itabs.cons (it, acc))
     $decl ret $call tobs_of ($call IR.eval (e.ref), a2)
   }.ret,
   $case {$prop tag "tmem"}    ($call tobs_of ($call IR.eval (e.obj), acc)),
@@ -4332,7 +4406,7 @@ $decl shims_add $func ($decl xs IR.ints.node, $decl acc IR.ints.node) $match xs 
 )
 
 $decl shims_of $func ($decl xs itabs.node, $decl acc IR.ints.node) $match xs (
-  $case {$prop tag "cons"} $call shims_of (xs.tail, $call shims_add (xs.head, acc)),
+  $case {$prop tag "cons"} $call shims_of (xs.tail, $call shims_add (xs.head.fns, acc)),
   $case xs acc
 )
 
@@ -4344,28 +4418,114 @@ $decl emit_shims $func ($decl st proto_est, $decl ts T.tys.node, $decl xs IR.int
   $case xs ()
 )
 
-$decl tbl_entries $func ($decl st proto_est, $decl xs IR.ints.node, $decl acc "") $match xs (
-  $case {$prop tag "cons"}
-    $call tbl_entries (st, $call IR.ints.val (xs.tail),
-        $call concat (acc, $call concat ($if ($call eq_str (acc, "")) "" ", ",
-        $call concat ("(void *)", $call tsh_name (st, xs.head))))),
+// The adapter for entry `j`: the trait's signature, the referent passed straight through
+// as the member's shim expects it, each argument coerced into the member's parameter and
+// the result into the trait's — `emit_ad`'s body, with a direct call in place of the pair.
+$decl tad_args $func ($decl st proto_est, $decl ts T.tys.node, $decl ws T.tys.node,
+                      $decl fs IR.ints.node, $decl i 0, $decl acc "") $match ws (
+  $case {$prop tag "cons"} $match fs (
+      $case {$prop tag "cons"} {
+        $decl bn   $call concat ("b", $call int_to_str (i))
+        $decl d0   $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, fs.head),
+                       $call concat (" ", $call concat (bn, ";\n")))))
+        $decl d1   $call emit_inject (st, ts, bn, $call concat ("a", $call int_to_str (i)),
+                       $call ty_id (ts, ws.head), fs.head)
+        $decl ret2 $call tad_args (st, ts, $call T.tys.val (ws.tail), $call IR.ints.val (fs.tail),
+                       $call add (i, 1), $call concat (acc, $call concat (", ", bn)))
+      }.ret2,
+      $case fs acc),
+  $case ws acc
+)
+$decl tad_head $func ($decl st proto_est, $decl ts T.tys.node, $decl nm "", $decl want 0) {
+  $decl w   $call T.unroll ($call type_at (ts, want))
+  $decl ret $match w (
+      $case {$prop tag "func"}
+        $call concat ("static ", $call concat ($call c_type (st, ts, $call ty_id (ts, w.result)),
+            $call concat (" ", $call concat (nm, $call concat ("(void *env",
+            $call concat ($call ad_params (st, ts, $call T.tys.val (w.params), 0, ""), ")")))))),
+      $case w ""
+    )
+}.ret
+$decl emit_tad $func ($decl st proto_est, $decl ts T.tys.node, $decl nm "", $decl want 0,
+                      $decl k 0) {
+  $decl w   $call T.unroll ($call type_at (ts, want))
+  $decl f   $call fn_at (IR.fns.nil, $call res_fn (st, k))
+  $decl z0  $set st.ntmp 0
+  $decl ret $match w (
+      $case {$prop tag "func"} {
+        $decl rw   $call ty_id (ts, w.result)
+        $decl h    $call say (st, $call concat ("\n", $call concat ($call tad_head (st, ts, nm, want),
+                       " {\n")))
+        $decl as   $call tad_args (st, ts, $call T.tys.val (w.params), $call IR.ints.val (f.params),
+                       0, "")
+        $decl c0   $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, f.result),
+                       " r;\n")))
+        $decl c1   $call assign (st, "r", $call concat ($call tsh_name (st, k),
+                       $call concat ("(env", $call concat (as, ")"))))
+        $decl c2   $if ($call any_reports (st)) ($call say (st, "  mpl_tcdrive(&r);\n")) ()
+        $decl c3   $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, rw),
+                       " ret;\n  memset(&ret, 0, sizeof ret);\n")))
+        $decl c4   $call emit_inject (st, ts, "ret", "r", f.result, rw)
+        $decl ret2 $call say (st, "  return ret;\n}\n")
+      }.ret2,
+      $case w ()
+    )
+}.ret
+
+// Each entry, as the name the table holds — and, for an adapter, its prototype or its
+// definition, by `mode`: 0 the names, 1 the prototypes, 2 the definitions.
+$decl tab_entries $func ($decl st proto_est, $decl ts T.tys.node, $decl tn "", $decl tid 0,
+                         $decl xs IR.ints.node, $decl j 0, $decl mode 0, $decl acc "") $match xs (
+  $case {$prop tag "cons"} {
+    $decl want $call tab_want (ts, tid, j)
+    $decl own  $call entry_free (st, ts, want, xs.head)
+    $decl nm   $if own ($call tsh_name (st, xs.head)) ($call tad_name (tn, j))
+    $decl item $if ($call eq_int (mode, 0))
+        ($call concat ($if ($call eq_str (acc, "")) "" ", ", $call concat ("(void *)", nm)))
+        ($if ($if own true ($call not ($call eq_int (mode, 1)))) ""
+             ($call concat ($call tad_head (st, ts, nm, want), ";\n")))
+    $decl d    $if ($if own false ($call eq_int (mode, 2)))
+                   ($call emit_tad (st, ts, nm, want, xs.head)) ()
+    $decl ret  $call tab_entries (st, ts, tn, tid, $call IR.ints.val (xs.tail), $call add (j, 1),
+                   mode, $call concat (acc, item))
+  }.ret,
   $case xs acc
 )
 
-$decl emit_tbls $func ($decl st proto_est, $decl xs itabs.node) $match xs (
+$decl emit_tbls $func ($decl st proto_est, $decl ts T.tys.node, $decl xs itabs.node,
+                       $decl done strs.node, $decl mode 0) $match xs (
   $case {$prop tag "cons"} {
-    $decl es  $call tbl_entries (st, xs.head, "")
-    $decl d0  $call say (st, $call concat ("static void *const *", $call concat (
-                  $call tbl_name (st, xs.head), $call concat (
-                  "(void) {\n  static void *const t[] = { ",
-                  $call concat ($if ($call eq_str (es, "")) "0" es, " };\n  return t;\n}\n")))))
-    $decl ret $call emit_tbls (st, xs.tail)
+    $decl tn  $call tab_name (st, ts, xs.head.fns, xs.head.tid)
+    $decl dup $call has_str (done, tn)
+    $decl es  $if dup "" ($call tab_entries (st, ts, tn, xs.head.tid, xs.head.fns, 0, mode, ""))
+    $decl d0  $if dup ()
+        ($if ($call eq_int (mode, 0))
+             ($call say (st, $call concat ("static void *const *", $call concat (tn, $call concat (
+                 "(void) {\n  static void *const t[] = { ",
+                 $call concat ($if ($call eq_str (es, "")) "0" es, " };\n  return t;\n}\n"))))))
+             ($if ($call eq_int (mode, 1)) ($call say (st, es)) ()))
+    $decl ret $call emit_tbls (st, ts, xs.tail, $if dup done ($call strs.cons (tn, done)), mode)
   }.ret,
   $case xs ()
 )
 
-$decl emit_tables $func ($decl st proto_est, $decl ts T.tys.node, $decl xs itabs.node)
-  $do ($call emit_shims (st, ts, $call shims_of (xs, IR.ints.nil))) ($call emit_tbls (st, xs))
+// The members' shims; the adapters' prototypes and the tables; then the adapters
+// themselves, after the `mpl_ad_` shims their coercions asked for — which need the
+// shims' prototypes ahead of them, so this part of the header is assembled here and said
+// back as one piece, leaving none of those pending for the header's own cut.
+$decl emit_tables $func ($decl st proto_est, $decl ts T.tys.node, $decl xs itabs.node) {
+  $decl s0  $call emit_shims (st, ts, $call shims_of (xs, IR.ints.nil))
+  $decl p0  $call emit_tbls (st, ts, xs, strs.nil, 1)
+  $decl t0  $call emit_tbls (st, ts, xs, strs.nil, 0)
+  $decl h1  $call cut_out (st)
+  $decl a0  $call emit_tbls (st, ts, xs, strs.nil, 2)
+  $decl ds  $call cut_out (st)
+  $decl g   $call emit_ads (st, ts)
+  $decl sd  $call cut_out (st)
+  $decl sp  $call ad_protos (st, ts, $call adents.val (st.ads), "")
+  $decl r0  $set st.ads adents.nil
+  $decl ret $call say (st, $call concat (h1, $call concat (sp, $call concat (sd, ds))))
+}.ret
 
 // Whether any trait type is interned — so that a program without one emits exactly
 // what it did before trait objects existed.

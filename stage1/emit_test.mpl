@@ -633,4 +633,16 @@ $decl t75 $call check ("...which calls the original through its own signature an
 $decl t76 $call check ("...and one between agreeing signatures is the pair, with no shim",
   $call not ($call has (ad0_c.code, "mpl_ad_")))
 
+// §7.4 through a trait object: an entry whose member's C signature differs from the
+// trait's is an adapter, and its table is named for the trait too; one that agrees keeps
+// the member's own shim and the table its old name.
+$decl tad_c $call compile ("$decl p { $prop mk $func () { $decl a 0 } }  $decl t $alloc { $prop mk $func () { $decl a 1  $decl b 2 } }  $decl u $func ($decl o $traitsof p) ($call o.mk ()).a  $decl main $func () $call u (t)")
+$decl tad0_c $call compile ("$decl p { $prop mk $func () 0 }  $decl t $alloc { $prop mk $func () 1 }  $decl u $func ($decl o $traitsof p) $call o.mk ()  $decl main $func () $call u (t)")
+$decl t77 $call check ("a table entry whose signature differs from the trait's is an adapter",
+  $if ($call has (tad_c.code, "_a0(void *env)")) ($call has (tad_c.code, "_mpl_t")) false)
+$decl t78 $call check ("...which passes the referent through to the member's shim",
+  $call has (tad_c.code, "(env);\n"))
+$decl t79 $call check ("...and one that agrees keeps the shim and the plain name",
+  $call not ($call has (tad0_c.code, "_a0(void *env")))
+
 $decl done $call nl ("all C backend tests passed")

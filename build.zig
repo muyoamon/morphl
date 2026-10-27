@@ -252,6 +252,9 @@ pub fn build(b: *std.Build) void {
         // shim, for a `()` or prefix result, a union member, a parameter the other way, a
         // callback's callback, a join, a cell and a tail call. The old backend crashed.
         .{ .src = "stage1/fixtures/fn_coerce.mpl", .want = "1243586789\n" },
+        // The same through a trait object: a member answering a subtype of the trait's, or
+        // taking a supertype, gets an adapter as its table entry. The old backend crashed.
+        .{ .src = "stage1/fixtures/trait_coerce.mpl", .want = "7345869\n" },
         // The same with the resource in a library: `M.close` frees its parameter and
         // `M.open`'s result is root storage, facts inference hands lowering for a module
         // member (`member_facts`). 52431.
@@ -702,6 +705,9 @@ pub fn build(b: *std.Build) void {
             // A function adapter is `static` in the output that coerces, named after its
             // module, so each output carries its own and the program links either way.
             .{ .src = "stage1/fixtures/fn_coerce.mpl", .want = "1243586789\n", .mods = &.{"fn_coerce_util"} },
+            // A trait adapter is static in the shared header and calls a member's shim there,
+            // whose member is defined in the module's output.
+            .{ .src = "stage1/fixtures/trait_coerce.mpl", .want = "7345869\n", .mods = &.{"trait_coerce_util"} },
             // §4.12a: a template made by `$override` is emitted where the `$override` is, so
             // its spliced body names the base's module members from another output.
             .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n",
