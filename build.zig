@@ -252,6 +252,9 @@ pub fn build(b: *std.Build) void {
         // join of two lengths, a group answered at a shorter type. 35729. Compiled only:
         // stage 0 coerces nothing, so a group passed as its first element stays a group.
         .{ .src = "stage1/fixtures/group_prefix.mpl", .want = "35729\n", .stage0 = false },
+        // §2.1's float literals with an exponent, through arithmetic. 163. Compiled only:
+        // stage 0 has no float arithmetic.
+        .{ .src = "stage1/fixtures/float_exp.mpl", .want = "163\n", .stage0 = false },
         // §3.6: a value enters a union as its most specific member, whatever the union's
         // order; first fit by position put it in the shorter one. 121 (221 before).
         .{ .src = "stage1/fixtures/inject.mpl", .want = "121\n" },

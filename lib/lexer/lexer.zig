@@ -264,9 +264,27 @@ pub const Lexer = struct {
 
         // A `.` continues the number only when a digit follows it; otherwise it
         // is a projection, so `1.2` is a float and `(a, b).1` is an index.
+        var is_float = false;
         if (self.peek() == @as(u8, '.') and isDigitOpt(self.peekAt(1))) {
             self.advance();
             while (self.pos < self.src.len and isDigit(self.src[self.pos])) self.advance();
+            is_float = true;
+        }
+        // §2.1's exponent: `e` or `E`, an optional sign, and at least one digit. Without
+        // the digit it is not one, so `1e` stays the integer `1` before the name `e`.
+        const e = self.peek();
+        if (e == @as(u8, 'e') or e == @as(u8, 'E')) {
+            const s1 = self.peekAt(1);
+            const signed = s1 == @as(u8, '+') or s1 == @as(u8, '-');
+            const at: u32 = if (signed) 2 else 1;
+            if (isDigitOpt(self.peekAt(at))) {
+                var k: u32 = 0;
+                while (k < at) : (k += 1) self.advance();
+                while (self.pos < self.src.len and isDigit(self.src[self.pos])) self.advance();
+                is_float = true;
+            }
+        }
+        if (is_float) {
             const text = self.src[start..self.pos];
             return .{ .kind = .{ .float = text }, .span = self.spanFrom(start, start_line, start_col) };
         }
@@ -541,6 +559,17 @@ test "intrinsics are ordinary names" {
     defer h.deinit();
     try testing.expect(!h.diags.any());
     for (h.tokens[0..4]) |t| try testing.expectEqual(TokenKind.name, std.meta.activeTag(t.kind));
+}
+
+test "numbers: an exponent makes a float, and needs a digit" {
+    var h = try Harness.init("1.5e3 2e-8 -6.02E+23 1e x");
+    defer h.deinit();
+    try testing.expectEqualStrings("1.5e3", h.tokens[0].kind.float);
+    try testing.expectEqualStrings("2e-8", h.tokens[1].kind.float);
+    try testing.expectEqualStrings("-6.02E+23", h.tokens[2].kind.float);
+    // `1e` is the integer 1 and the name `e`: no digit, no exponent.
+    try testing.expectEqual(@as(i64, 1), h.tokens[3].kind.int);
+    try testing.expectEqualStrings("e", h.tokens[4].kind.name);
 }
 
 test "numbers: negative ints, floats kept as text" {

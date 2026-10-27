@@ -72,6 +72,17 @@ $decl t14 $call check ("floats keep their source text",
   $call eq_str ($call text_at ("3.14", 0), "3.14"))
 $decl t15 $call check ("a negative float keeps its text",
   $call eq_str ($call text_at ("-2.5", 0), "-2.5"))
+// §2.1's exponent: `e` or `E`, an optional sign and a digit make a float, with or without a
+// fraction; an `e` with no digit after it is a name after an integer.
+$decl t15a $call check ("an exponent makes a float",
+  $call eq_str ($call text_at ("1.5e3", 0), "1.5e3"))
+$decl t15b $call check ("...without a fraction, and signed",
+  $call eq_str ($call text_at ("2e-8", 0), "2e-8"))
+$decl t15c $call check ("...upper case, with a plus",
+  $call eq_str ($call kind_at ("-6.02E+23", 0), "float"))
+$decl t15d $call check ("an e with no digit is no exponent",
+  $call P.and ($call eq_str ($call kind_at ("1e", 0), "int"),
+               $call eq_str ($call kind_at ("1e", 1), "name")))
 $decl t16 $call check ("an oversized integer is invalid",
   $call eq_str ($call kind_at ("99999999999999999999", 0), "invalid"))
 

@@ -42,6 +42,9 @@ $decl c_space  $call byte (" ", 0)
 $decl c_quote  $call byte ("\"", 0)
 $decl c_dollar $call byte ("$", 0)
 $decl c_dot    $call byte (".", 0)
+$decl c_e      $call byte ("e", 0)
+$decl c_ee     $call byte ("E", 0)
+$decl c_plus   $call byte ("+", 0)
 $decl c_comma  $call byte (",", 0)
 $decl c_lparen $call byte ("(", 0)
 $decl c_rparen $call byte (")", 0)
@@ -210,19 +213,36 @@ $decl is_number_start $func ($decl cu proto_cursor, $decl ch 0)
   $call or ($call is_digit (ch),
             $call and ($call eq_int (ch, c_minus), $call is_digit ($call peek_at (cu, 1))))
 
+// §2.1's exponent: `e` or `E`, an optional sign, and at least one digit. Without the digit
+// it is not one, and `1e` is the integer `1` before the name `e`, as it always was.
+$decl is_e $func ($decl ch 0) $call or ($call eq_int (ch, c_e), $call eq_int (ch, c_ee))
+$decl exp_at $func ($decl cu proto_cursor)
+  $if ($call is_e ($call peek (cu)))
+      ($if ($call is_digit ($call peek_at (cu, 1))) 1
+           ($if ($call or ($call eq_int ($call peek_at (cu, 1), c_plus),
+                           $call eq_int ($call peek_at (cu, 1), c_minus)))
+                ($if ($call is_digit ($call peek_at (cu, 2))) 2 0) 0))
+      0
+$decl take_exp $func ($decl cu proto_cursor, $decl k 0)
+  $if ($call lt (0, k)) ($do ($call advance (cu)) ($call take_exp (cu, $call sub (k, 1))))
+      ($call take_digits (cu))
+
 // Float literals are kept as their source text: BOOTSTRAP.md §1.2 drops float
-// arithmetic from the bootstrap, not float literals.
+// arithmetic from the bootstrap, not float literals. C reads every form §2.1 allows —
+// `3.14`, `1.5e3`, `2e-8` — as written.
 $decl lex_number $func ($decl cu proto_cursor, $decl l 0, $decl c 0) {
   $decl start $call ival (cu.pos)
   $decl sign  $if ($call eq_int ($call peek (cu), c_minus)) ($call advance (cu)) ()
   $decl whole $call take_digits (cu)
   // A `.` continues the number only when a digit follows, so `1.2` is a
   // float and `(a, b).1` is a projection.
-  $decl is_float $call and ($call eq_int ($call peek (cu), c_dot),
+  $decl has_frac $call and ($call eq_int ($call peek (cu), c_dot),
                             $call is_digit ($call peek_at (cu, 1)))
+  $decl frac  $if has_frac ($do ($call advance (cu)) ($call take_digits (cu))) ()
+  $decl xk    $call exp_at (cu)
+  $decl expo  $if ($call lt (0, xk)) ($call take_exp (cu, xk)) ()
+  $decl is_float $call or (has_frac, $call lt (0, xk))
   $decl ret $if is_float {
-    $decl dot  $call advance (cu)
-    $decl frac $call take_digits (cu)
     $decl text $call slice (cu.src, start, cu.pos)
     $decl ret2 $call token ("float", text, 0, l, c)
   }.ret2 {

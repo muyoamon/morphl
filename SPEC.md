@@ -25,7 +25,7 @@ The language is prefix notation with **fixed arity** for every keyword. There is
 | Element | Form |
 |---|---|
 | Integer literal | `0`, `42`, `-7` |
-| Float literal | `0.0`, `3.14` |
+| Float literal | `0.0`, `3.14`, `1.5e3`, `2e-8`, `-6.02E+23` — digits with a fraction, an exponent (`e` or `E`, an optional sign, digits), or both; `1e` alone is the integer `1` before the name `e` |
 | String literal | `"hi"`; escapes `\n \t \\ \"` and `\u{…}`; validated as UTF-8 at compile time |
 | Boolean tags | `true`, `false` |
 | Name | identifier |
