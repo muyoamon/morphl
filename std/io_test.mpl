@@ -9,8 +9,11 @@ $decl T $import "std/test"
 $decl strs $specialize L.list ""
 $decl ws   $specialize L.list I.writer
 
-// A test opens its own file: `std/io` has no file streams yet.
-$decl c_open $extern "int open(const char *, int)" $func ($decl p 0, $decl f 0) 0
+$decl tmp2 "/tmp/morphl_std_io_test_lines.txt"
+
+// The text of a read line, `END` at the end of the input, or `ERR`.
+$decl line_of $func ($decl c ($call I.line_got ("")))
+  $match c ($case {$prop tag "ok"} c.v, $case {$prop tag "none"} "END", $case c "ERR")
 
 $decl tmp "/tmp/morphl_std_io_test.txt"
 
@@ -83,11 +86,11 @@ $decl main $func () {
   $decl cp  $call I.copy (cr, co)
   $decl c19 $call T.expect (r, "copy", $call C.and ($call is_ok (cp), $call eq ($call co.text (), uni)))
   $decl fw  $call write_file (tmp, uni)
-  $decl fd  $call c_open ($call str_ptr ($call concat (tmp, "\u{0}")), 0)
   // Five bytes at a time, so code points straddle reads.
-  $decl fdr $alloc $call I.fd_reader (fd, 5)
-  $decl c20 $call T.expect (r, "a file descriptor through a small buffer",
-                $call eq ($call text_of ($call I.read_all (fdr)), uni))
+  $decl fo  $call I.open_read (tmp, 5)
+  $decl c20 $call T.expect (r, "a file through a small buffer", $match fo (
+                $case {$prop tag "ok"} $call eq ($call text_of ($call I.read_all (fo.v)), uni),
+                $case fo false))
   $decl bad $alloc $call I.fd_reader (-1)
   $decl br  $call bad.read (16)
   $decl c21 $call T.expect (r, "a failed read answers errno",
@@ -96,5 +99,39 @@ $decl main $func () {
   $decl c23 $call T.expect (r, "stdout flushes",
                 $call C.and ($call is_ok ($call I.stdout.flush ()),
                              $call is_ok ($call ($call I.as_writer (I.stderr)).flush ())))
+  $decl wo  $call I.open_write (tmp2)
+  $decl c24 $call T.expect (r, "a file written through a stream, and closed", $match wo (
+                $case {$prop tag "ok"} $call C.and ($call is_ok ($call I.write_line (wo.v, "alpha")),
+                    $call C.and ($call is_ok ($call I.write_line (wo.v, "")),
+                    $call C.and ($call is_ok ($call wo.v.write ("gamma\u{d}\nlast")),
+                                 $call is_ok ($call wo.v.close ())))),
+                $case wo false))
+  $decl ro  $call I.open_read (tmp2)
+  $decl ls2 $match ro (
+      $case {$prop tag "ok"} {
+        $decl lr   $call I.line_reader (ro.v)
+        $decl l1   $call line_of ($call lr.read_line ())
+        $decl l2   $call line_of ($call lr.read_line ())
+        $decl l3   $call line_of ($call lr.read_line ())
+        $decl l4   $call line_of ($call lr.read_line ())
+        $decl l5   $call line_of ($call lr.read_line ())
+        $decl cl   $call ro.v.close ()
+        $decl ret2 $call concat (l1, $call concat ("|", $call concat (l2, $call concat ("|",
+                       $call concat (l3, $call concat ("|", $call concat (l4,
+                       $call concat ("|", l5))))))))
+      }.ret2,
+      $case ro "ERR")
+  $decl c25 $call T.expect (r, "read_line: lines, an empty one, a kept \\r, a last one, the end",
+                $call eq (ls2, "alpha||gamma\u{d}|last|END"))
+  $decl sr  $alloc $call I.from_str ("x\ny")
+  $decl lr2 $call I.line_reader (sr)
+  $decl l21 $call line_of ($call lr2.read_line ())
+  $decl l22 $call line_of ($call lr2.read_line ())
+  $decl c26 $call T.expect (r, "...over any reader",
+                $call C.and ($call eq (l21, "x"), $call C.and ($call eq (l22, "y"),
+                    $call eq ($call line_of ($call lr2.read_line ()), "END"))))
+  $decl mo  $call I.open_read ("/nonexistent/morphl/file")
+  $decl c27 $call T.expect (r, "opening a missing file answers its errno",
+                $match mo ($case {$prop tag "err"} $call eq (mo.e, 2), $case mo false))
   $decl ret $call T.finish (r)
 }.ret

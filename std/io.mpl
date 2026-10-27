@@ -1,8 +1,10 @@
 // std/io: the platform group (§8) in the shapes a program wants — lines, whole files,
 // the argument list — over `print`, `eprint`, `read_file`, `write_file` and `args`; and
-// streams — `stdin`, `stdout`, `stderr`, readers and writers in memory, and the helpers
-// that take any of them (see "streams" below). A failure that is expected is a value
-// (§4.15): reading a file answers an option, writing one `ok` or `err`.
+// streams — `stdin`, `stdout`, `stderr`, files opened for reading or writing, readers and
+// writers in memory, a reader of lines over any reader, and the helpers that take any of
+// them (see "streams" below). A failure that is expected is a value (§4.15): reading a
+// whole file answers an option, writing one `ok` or `err`, and a stream's failure carries
+// its errno.
 
 $decl C $import "std/core"
 $decl L $import "std/list"
@@ -82,9 +84,22 @@ $decl c_strlen   $extern "size_t strlen(const char *)"
   $func ($decl s 0) 0
 $decl c_fflush   $extern "int fflush(FILE *)"
   $func ($decl f 0) 0
+$decl c_write    $extern "ssize_t write(int, const void *, size_t)"
+  $func ($decl fd 0, $decl p 0, $decl n 0) 0
+$decl c_close    $extern "int close(int)"
+  $func ($decl fd 0) 0
+// `open` is variadic in C and only `O_CREAT` reads its third argument, so reading takes the
+// two-argument form, and writing takes `creat`, which is `open`'s create-and-truncate form
+// with a fixed prototype.
+$decl c_open     $extern "int open(const char *, int)"
+  $func ($decl p 0, $decl f 0) 0
+$decl c_creat    $extern "int creat(const char *, unsigned int)"
+  $func ($decl p 0, $decl m 0) 0
 
 $decl e_intr  4
 $decl e_ilseq 84
+$decl o_rdonly 0
+$decl mode_rw  420
 
 $decl errno $func () {
   $decl cell $mut $alloc 0
@@ -125,6 +140,10 @@ $decl as_reader $func ($decl r reader) r
 // `flush` flushes every stream (`fflush (NULL)`). §7.8's `panic` aborts without flushing.
 $decl flushed $func ()
   $if ($call eq ($call c_fflush (0), 0)) wrote ($call write_failed ($call errno ()))
+// `close`'s answer, as a write's.
+$decl closed $func ($decl rc 0)
+  $if ($call eq (rc, 0)) wrote ($call write_failed ($call errno ()))
+
 $decl stdout $alloc {
   $prop write $func ($decl s "") $do ($call print (s)) wrote
   $prop flush $func () $call flushed ()
@@ -147,6 +166,8 @@ $decl fd_reader $func ($decl fd 0, $decl cap 4096) {
     $decl room  size
     $decl have  $mut $alloc 0
     $prop read  $func ($decl max 0) $call r.next ($call C.max (4, $call C.min (max, r.room)))
+    // The descriptor closed and the buffer given back; nothing may read it after.
+    $prop close $func () $do ($call raw_free (r.buf)) ($call closed ($call c_close (r.file)))
     // The longest of the first `k`, `k - 1` … `k - 3` bytes that is text, or `none`.
     $prop take  $func ($decl k 0, $decl j 0)
       $if ($call C.or ($call eq (j, 4), $call lt ($call sub (k, j), 1))) none {
@@ -183,6 +204,55 @@ $decl fd_reader $func ($decl fd 0, $decl cap 4096) {
 
 $decl stdin $alloc $call fd_reader (0, 4096)
 
+// A writer straight to file descriptor `fd` — `write (2)`, unbuffered, so `flush` has
+// nothing to do — taking up a short write where it stopped, and retrying an interrupted one.
+$decl fd_writer $func ($decl fd 0) {
+  $decl w   {
+    $decl file  fd
+    $prop write $func ($decl s "") $call w.put ($call str_ptr (s), $call len (s))
+    $prop put   $func ($decl p 0, $decl n 0) $if ($call eq (n, 0)) wrote {
+      $decl k    $call c_write (w.file, p, n)
+      $decl e    $if ($call lt (k, 0)) ($call errno ()) 0
+      $decl ret2 $if ($call lt (k, 0))
+          ($if ($call eq (e, e_intr)) ($call w.put (p, n)) ($call write_failed (e)))
+          ($call w.put ($call add (p, k), $call sub (n, k)))
+    }.ret2
+    $prop flush $func () wrote
+    $prop close $func () $call closed ($call c_close (w.file))
+  }
+  $decl ret w
+}.ret
+
+// ------------------------------------------------------------------- files
+//
+// A file opened as a stream: `{tag ok, v <stream>}`, or the failure with its errno (§4.15),
+// so `$try … err` hands it up. The stream is allocated storage, as every stream here is,
+// and `close ()` gives the descriptor back — a scope that opens one can `$defer` it (DEFER.md):
+//
+//   $decl o   $try ($call I.open_read (path)) err
+//   $defer    $call o.v.close ()
+//   $decl txt $call I.read_all (o.v)
+//
+// A path is a `Str`, and C wants it ended by a NUL, which a `Str` may hold anywhere (§3.1);
+// one with a NUL inside names the file up to it.
+$decl c_path $func ($decl p "") $call str_ptr ($call concat (p, "\u{0}"))
+
+$decl open_read $func ($decl path "", $decl cap 4096) {
+  $decl fd  $call c_open ($call c_path (path), o_rdonly)
+  $decl ret $if ($call lt (fd, 0))
+      ($union ($call fail ($call errno ()), { $prop tag "ok"  $decl v $alloc $call fd_reader (0) }))
+      ($union ({ $prop tag "ok"  $decl v $alloc $call fd_reader (fd, cap) }, $call fail (0)))
+}.ret
+
+// Created if it is not there and truncated if it is, readable and writable by its owner
+// and readable by others (0644, less the umask).
+$decl open_write $func ($decl path "") {
+  $decl fd  $call c_creat ($call c_path (path), mode_rw)
+  $decl ret $if ($call lt (fd, 0))
+      ($union ($call fail ($call errno ()), { $prop tag "ok"  $decl v $alloc $call fd_writer (0) }))
+      ($union ({ $prop tag "ok"  $decl v $alloc $call fd_writer (fd) }, $call fail (0)))
+}.ret
+
 // ------------------------------------------------------------ in memory
 
 // A reader over `s`, cutting where a code point ends.
@@ -215,6 +285,50 @@ $decl to_text $func () {
     $prop text  $func () $call w.b.build ()
   }
   $decl ret w
+}.ret
+
+// ------------------------------------------------------------------- lines
+
+// A line, the end of the input (`none`), or the failure that stopped it — each at the one
+// type `read_line` answers.
+$decl line_got $func ($decl s "") $union ($call chunk (s), none, $call fail (0))
+$decl line_end $union (none, $call chunk (""), $call fail (0))
+$decl line_err $func ($decl e 0) $union ($call fail (e), $call chunk (""), none)
+
+// The lines of `src`, one per `read_line ()`: the text up to a newline, without it. A last
+// line with no newline after it is still a line, and an empty line is `""`, which the end of
+// the input is not — that is `none`. A `\r` before the newline is kept, as `lines` keeps it.
+// What has been read past the newline waits for the next line.
+$decl line_reader $func ($decl src reader) {
+  $decl lr  {
+    $decl from  src
+    $decl carry $mut $alloc ""
+    $prop read_line $func () $call lr.scan (0)
+    // A newline at or after `i` in what is carried, or more read.
+    $prop scan $func ($decl i 0) {
+      $decl c    $call C.sval (lr.carry)
+      $decl n    $call len (c)
+      $decl ret2 $if ($call lt (i, n))
+          ($if ($call eq ($call byte (c, i), c_nl)) {
+             $decl w    $set lr.carry ($call slice (c, $call add (i, 1), n))
+             $decl ret3 $call line_got ($call slice (c, 0, i))
+           }.ret3 ($call lr.scan ($call add (i, 1))))
+          ($call lr.more (n))
+    }.ret2
+    $prop more $func ($decl i 0) {
+      $decl ch   $call lr.from.read (4096)
+      $decl ret2 $match ch (
+          $case {$prop tag "ok"}
+            $if ($call eq (ch.v, "")) {
+              $decl c    $call C.sval (lr.carry)
+              $decl w    $set lr.carry ""
+              $decl ret3 $if ($call eq ($call len (c), 0)) line_end ($call line_got (c))
+            }.ret3 ($do ($set lr.carry ($call concat ($call C.sval (lr.carry), ch.v)))
+                        ($call lr.scan (i))),
+          $case {$prop tag "err"} $call line_err (ch.e))
+    }.ret2
+  }
+  $decl ret lr
 }.ret
 
 // ------------------------------------------------------------- helpers
