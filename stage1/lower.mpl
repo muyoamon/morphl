@@ -1007,6 +1007,8 @@ $decl is_rec $func ($decl t T.proto_ty) $match t (
   $case t false
 )
 
+$fwd intern_msigs
+$decl fn_shaped $func ($decl t T.proto_ty) $match t ($case {$prop tag "func"} true, $case t false)
 $decl intern $func ($decl st proto_lst, $decl t T.proto_ty) {
   // The count before anything is added: on a miss that *is* the new entry's
   // index, and `seal_rec` below may add more without changing it.
@@ -1017,9 +1019,26 @@ $decl intern $func ($decl st proto_lst, $decl t T.proto_ty) {
     // After the entry exists, never before: the unrolling names this
     // very type, and finding it is what ends the recursion.
     $decl sealed $if ($call is_rec (t)) ($call seal_rec (st, t)) 0
+    // A trait's members as a call through an object of it is typed (`T.trait_member`, a
+    // scalar member as `() -> T`), so the backend can give a coercion between two traits
+    // the C signatures of both sides' members (`emit_rethunk`). After the entry, for the
+    // reason above: a member naming the trait finds it.
+    $decl msigs  $match t ($case {$prop tag "trait"} ($call intern_msigs (st, t,
+                     $call T.fields.val (t.members))), $case t 0)
     $decl ret2   cnt
   }.ret2
 }.ret
+
+$decl intern_msigs $func ($decl st proto_lst, $decl t T.proto_ty, $decl ms T.fields.node)
+    $match ms (
+  $case {$prop tag "cons"} {
+    $decl mt   $call T.trait_member (t, ms.head.name, t)
+    $decl ft   $if ($call fn_shaped ($call T.unroll (mt))) mt ($call T.t_func (T.tys.nil, mt))
+    $decl k    $if ($call T.same (mt, T.t_bot)) 0 ($call intern (st, ft))
+    $decl ret2 $call intern_msigs (st, t, $call T.fields.val (ms.tail))
+  }.ret2,
+  $case ms 0
+)
 
 // The index of a module-valued name's type. A module's value is its record
 // (`mod_value`), whose type is enormous — and *naming* a module is the commonest thing

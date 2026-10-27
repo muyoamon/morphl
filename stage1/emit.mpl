@@ -51,9 +51,18 @@ $decl fnals      $specialize P.list proto_fnal
 // A §7.4 function adapter: the coercion of a function value from type `from` to type
 // `want` (interned indices) whose C signatures differ, and the shim that makes it. Held
 // on `estate` per output file; `adapt_fn` below says why one is needed at all.
-$decl adent $func ($decl f 0, $decl w 0, $decl n "") { $decl from f  $decl want w  $decl name n }
-$decl proto_adent $call adent (0, 0, "")
+// `slot` is -1 for that adapter, whose environment is the original pair; 0 or more for a
+// re-table thunk (`emit_retable`), whose environment is the original trait object and whose
+// callee is that object's table entry `slot`.
+$decl adent $func ($decl f 0, $decl w 0, $decl n "", $decl s -1)
+  { $decl from f  $decl want w  $decl name n  $decl slot s }
+$decl proto_adent $call adent (0, 0, "", -1)
 $decl adents      $specialize P.list proto_adent
+// A re-tabled object's table: the target trait's, made of thunks over the source object's.
+$decl rtent $func ($decl f 0, $decl w 0, $decl n "", $decl es strs.node)
+  { $decl from f  $decl want w  $decl name n  $decl entries es }
+$decl proto_rtent $call rtent (0, 0, "", strs.nil)
+$decl rtents      $specialize P.list proto_rtent
 
 // ------------------------------------------------------------------- state
 
@@ -138,6 +147,7 @@ $decl estate $func () {
   $decl admod  $mut $alloc ""
   $decl ads    $mut $alloc adents.node
   $decl adq    $mut $alloc adents.node
+  $decl rts    $mut $alloc rtents.node
 }
 
 $decl proto_est $call estate ()
@@ -1333,19 +1343,20 @@ $decl comp_free $func ($decl st proto_est, $decl ts T.tys.node, $decl a 0, $decl
            ($call eq_str ($call c_type (st, ts, a), $call c_type (st, ts, b)))))
 
 // The shim for `from` → `want` in this output, named on first use and queued to be written.
-$decl ad_find $func ($decl xs adents.node, $decl f 0, $decl w 0) $match xs (
+$decl ad_find $func ($decl xs adents.node, $decl f 0, $decl w 0, $decl sl -1) $match xs (
   $case {$prop tag "cons"}
-    $if ($call and ($call eq_int (xs.head.from, f), $call eq_int (xs.head.want, w))) xs.head.name
-        ($call ad_find ($call adents.val (xs.tail), f, w)),
+    $if ($if ($call and ($call eq_int (xs.head.from, f), $call eq_int (xs.head.want, w)))
+             ($call eq_int (xs.head.slot, sl)) false) xs.head.name
+        ($call ad_find ($call adents.val (xs.tail), f, w, sl)),
   $case xs ""
 )
-$decl ad_name $func ($decl st proto_est, $decl f 0, $decl w 0) {
-  $decl seen $call ad_find ($call adents.val (st.ads), f, w)
+$decl ad_name $func ($decl st proto_est, $decl f 0, $decl w 0, $decl sl -1) {
+  $decl seen $call ad_find ($call adents.val (st.ads), f, w, sl)
   $decl ret  $if ($call not ($call eq_str (seen, ""))) seen {
     $decl ads  $call adents.val (st.ads)
     $decl nm   $call concat ("mpl_ad_", $call concat ($call P.sval (st.admod),
                    $call concat ("_", $call int_to_str ($call adents.length (ads, 0)))))
-    $decl e    $call adent (f, w, nm)
+    $decl e    $call adent (f, w, nm, sl)
     $decl a1   $set st.ads ($call adents.cons (e, ads))
     $decl a2   $set st.adq ($call adents.cons (e, $call adents.val (st.adq)))
     $decl ret2 nm
@@ -1375,8 +1386,8 @@ $decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
 // The target trait's table built from the source object's: entry `j` is the source's entry
 // for the member of that name. Allocated per coercion, like a closure's environment, since
 // the object may outlive this frame. A member whose signature differs between the two —
-// not merely its place — would need an adapter around an entry known only at run time, and
-// is refused rather than called with the wrong one.
+// not merely its place — needs an adapter around an entry known only at run time, so then
+// the object is wrapped instead (`emit_retable`, `rt_name`).
 $decl member_ix $func ($decl ms T.fields.node, $decl nm "", $decl i 0) $match ms (
   $case {$prop tag "cons"}
     $if ($call eq_str (ms.head.name, nm)) i
@@ -1404,11 +1415,99 @@ $decl retable_fill $func ($decl st proto_est, $decl t "", $decl src "", $decl a 
   }.ret2,
   $case ws ()
 )
-$decl emit_retable $func ($decl st proto_est, $decl dest "", $decl src "", $decl ft T.proto_ty,
-                          $decl wt T.proto_ty) {
+// Whether every target member is the source's of that name with the same signature, so a
+// table of the source's own entries, reordered, serves.
+$decl retable_ok $func ($decl a T.proto_ty, $decl b T.proto_ty, $decl ams T.fields.node,
+                        $decl ws T.fields.node) $match ws (
+  $case {$prop tag "cons"}
+    $if ($if ($call lt ($call member_ix (ams, ws.head.name, 0), 0)) false
+             ($call ty_compat ($call T.trait_member (a, ws.head.name, a),
+                  $call T.trait_member (b, ws.head.name, b), tpairs.nil)))
+        ($call retable_ok (a, b, ams, $call T.fields.val (ws.tail))) false,
+  $case ws true
+)
+
+// A member's signature as a call through an object is typed, as lowering interns it
+// (`intern_msigs`): the member's function type, or `() -> T` for a scalar member.
+$decl fn_shaped $func ($decl t T.proto_ty) $match t ($case {$prop tag "func"} true, $case t false)
+$decl msig $func ($decl t T.proto_ty, $decl nm "") {
+  $decl mt  $call T.trait_member (t, nm, t)
+  $decl ret $if ($call fn_shaped ($call T.unroll (mt))) mt ($call T.t_func (T.tys.nil, mt))
+}.ret
+
+// The thunks of a wrapper's table, one per target member: the source's entry for the
+// member of that name, called through the original object and coerced around (`emit_ad`
+// with a `slot`). Refused where the source has no such member, a signature is not interned,
+// or the source's is no subtype of the target's — none of which §6's conformance allows.
+$decl rt_thunks $func ($decl st proto_est, $decl ts T.tys.node, $decl a T.proto_ty,
+                       $decl b T.proto_ty, $decl ams T.fields.node, $decl ws T.fields.node,
+                       $decl acc strs.node) $match ws (
+  $case {$prop tag "cons"} {
+    $decl nm   ws.head.name
+    $decl i    $call member_ix (ams, nm, 0)
+    $decl sa   $call msig (a, nm)
+    $decl sb   $call msig (b, nm)
+    $decl sid  $call ty_id (ts, sa)
+    $decl wid  $call ty_id (ts, sb)
+    $decl ok   $if ($call lt (i, 0)) false
+                   ($if ($call P.or ($call lt (sid, 0), $call lt (wid, 0))) false
+                        ($call T.sub (sa, sb)))
+    $decl tn   $if ok ($call ad_name (st, sid, wid, i)) {
+      $decl e    $call eerr (st, $call concat ("cannot coerce a trait object: member '",
+                     $call concat (nm, "' cannot be adapted to the target trait's (§6, §7.4)")))
+      $decl ret3 "0"
+    }.ret3
+    $decl ret2 $call rt_thunks (st, ts, a, b, ams, $call T.fields.val (ws.tail),
+                   $call strs.cons (tn, acc))
+  }.ret2,
+  $case ws ($call strs.reverse (acc, strs.nil))
+)
+$decl rt_find $func ($decl xs rtents.node, $decl f 0, $decl w 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_int (xs.head.from, f), $call eq_int (xs.head.want, w))) xs.head.name
+        ($call rt_find ($call rtents.val (xs.tail), f, w)),
+  $case xs ""
+)
+// The wrapper table for coercing an object of trait `from` to trait `want`, in this output.
+$decl rt_name $func ($decl st proto_est, $decl ts T.tys.node, $decl from 0, $decl want 0,
+                     $decl a T.proto_ty, $decl b T.proto_ty) {
+  $decl seen $call rt_find ($call rtents.val (st.rts), from, want)
+  $decl ret  $if ($call not ($call eq_str (seen, ""))) seen {
+    $decl rs   $call rtents.val (st.rts)
+    $decl nm   $call concat ("mpl_rt_", $call concat ($call P.sval (st.admod),
+                   $call concat ("_", $call int_to_str ($call rtents.length (rs, 0)))))
+    $decl es   $match a ($case {$prop tag "trait"} $match b (
+                     $case {$prop tag "trait"} ($call rt_thunks (st, ts, a, b,
+                         $call T.fields.val (a.members), $call T.fields.val (b.members), strs.nil)),
+                     $case b strs.nil), $case a strs.nil)
+    $decl w    $set st.rts ($call rtents.cons ($call rtent (from, want, nm, es),
+                   $call rtents.val (st.rts)))
+    $decl ret2 nm
+  }.ret2
+}.ret
+
+$decl emit_retable $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "", $decl src "",
+                          $decl from 0, $decl want 0) {
+  $decl ft  $call type_at (ts, from)
+  $decl wt  $call type_at (ts, want)
   $decl a   $call trait_at (ft)
   $decl b   $call trait_at (wt)
-  $decl ret $match a (
+  $decl ok  $match a ($case {$prop tag "trait"} $match b (
+                $case {$prop tag "trait"} ($call retable_ok (a, b, $call T.fields.val (a.members),
+                    $call T.fields.val (b.members))),
+                $case b false), $case a false)
+  // A member whose signature differs needs its entry adapted, and an entry is known only
+  // at run time — so the object is wrapped: its referent is the original object, and its
+  // table the target's, of thunks that call through that object (`rt_name`).
+  $decl ret $if ($call not (ok)) {
+    $decl tn   $call rt_name (st, ts, from, want, a, b)
+    $decl o    $call fresh_tmp (st)
+    $decl d0   $call say (st, $call concat ("  mpl_tobj *", $call concat (o,
+                   $call concat (" = (mpl_tobj *)mpl_alloc((int64_t)sizeof(mpl_tobj));\n  *",
+                   $call concat (o, $call concat (" = ", $call concat (src, ";\n")))))))
+    $decl d1   $call assign (st, $call concat (dest, ".ref"), $call concat ("(void *)", o))
+    $decl ret2 $call assign (st, $call concat (dest, ".tbl"), $call concat (tn, "()"))
+  }.ret2 ($match a (
       $case {$prop tag "trait"} $match b (
           $case {$prop tag "trait"} {
             $decl ws   $call T.fields.val (b.members)
@@ -1424,7 +1523,7 @@ $decl emit_retable $func ($decl st proto_est, $decl dest "", $decl src "", $decl
           }.ret2,
           $case b ($call coerce_err (st, ft, wt))),
       $case a ($call coerce_err (st, ft, wt))
-    )
+    ))
 }.ret
 
 // §5.1's group rule as a coercion of a value: a group into a shorter group is a copy of
@@ -1497,7 +1596,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  false
   $decl ret $if free ($call assign (st, dest, src))
       ($if adp ($call adapt_fn (st, ts, dest, src, from, want))
-      ($if trt ($call emit_retable (st, dest, src, ft, wt))
+      ($if trt ($call emit_retable (st, ts, dest, src, from, want))
       ($if gg ($call emit_group_copy (st, ts, dest, src, $call group_items_of (ft),
                    $call group_items_of (wt), 0))
       ($if g1 ($do ($call group_note (st, ft, wt))
@@ -4377,8 +4476,13 @@ $decl emit_ad $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_aden
           $case {$prop tag "func"} {
             $decl rf  $call ty_id (ts, a.result)
             $decl rw  $call ty_id (ts, b.result)
+            // The original pair, or — for a re-table thunk — the original object's entry
+            // `slot` paired with its referent, which is how a call through it is made.
+            $decl pro $if ($call lt (e.slot, 0)) "  mpl_fun f = *(mpl_fun *)env;\n"
+                          ($call concat ("  mpl_tobj o = *(mpl_tobj *)env;\n  mpl_fun f = { (void *)o.tbl[",
+                               $call concat ($call int_to_str (e.slot), "], o.ref };\n")))
             $decl h   $call say (st, $call concat ("\n", $call concat ($call ad_head (st, ts, e),
-                          " {\n  mpl_fun f = *(mpl_fun *)env;\n")))
+                          $call concat (" {\n", pro))))
             $decl bs  $call ad_args (st, ts, $call T.tys.val (b.params),
                           $call T.tys.val (a.params), 0, strs.nil)
             $decl c0  $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, rf),
@@ -4422,13 +4526,40 @@ $decl emit_ads $func ($decl st proto_est, $decl ts T.tys.node) {
 // none. Then the next output starts with none, named after `next`. The header puts them
 // *after* its text instead, since a shim names the structs the header defines; nothing in
 // the header coerces a function value today, so it has none.
+// A wrapper table's text, and its prototype: after the thunks it lists, which `emit_ads`
+// has written, and declared before the bodies that name it.
+$decl rt_join $func ($decl xs strs.node, $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call rt_join ($call strs.val (xs.tail), $call concat (acc,
+        $call concat ($if ($call eq_str (acc, "")) "" ", ", $call concat ("(void *)", xs.head)))),
+  $case xs acc
+)
+$decl rt_defs $func ($decl xs rtents.node, $decl acc "") $match xs (
+  $case {$prop tag "cons"} {
+    $decl es   $call rt_join (xs.head.entries, "")
+    $decl ret2 $call rt_defs ($call rtents.val (xs.tail), $call concat (acc,
+                   $call concat ("static void *const *", $call concat (xs.head.name,
+                   $call concat ("(void) {\n  static void *const t[] = { ",
+                   $call concat ($if ($call eq_str (es, "")) "0" es, " };\n  return t;\n}\n"))))))
+  }.ret2,
+  $case xs acc
+)
+$decl rt_protos $func ($decl xs rtents.node, $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call rt_protos ($call rtents.val (xs.tail), $call concat (acc,
+        $call concat ("static void *const *", $call concat (xs.head.name, "(void);\n")))),
+  $case xs acc
+)
+
 $decl cut_file $func ($decl st proto_est, $decl ts T.tys.node, $decl next "",
                       $decl after P.boolean) {
   $decl body $call cut_out (st)
   $decl g    $call emit_ads (st, ts)
-  $decl defs $call cut_out (st)
-  $decl pros $call ad_protos (st, ts, $call adents.val (st.ads), "")
+  $decl defs $call concat ($call cut_out (st), $call rt_defs ($call rtents.val (st.rts), ""))
+  $decl pros $call concat ($call ad_protos (st, ts, $call adents.val (st.ads), ""),
+                 $call rt_protos ($call rtents.val (st.rts), ""))
   $decl r0   $set st.ads adents.nil
+  $decl r0b  $set st.rts rtents.nil
   $decl r1   $set st.admod next
   $decl ret  $if ($call eq_str (pros, "")) body
                  ($if after ($call concat (body, $call concat ("\n", $call concat (pros, defs))))

@@ -268,6 +268,9 @@ pub fn build(b: *std.Build) void {
         // One trait object used as another whose table is laid out differently: the target's
         // table is built from the source's, by member name. 2334 (4444 before).
         .{ .src = "stage1/fixtures/trait_retable.mpl", .want = "2334\n" },
+        // ...and one whose member has another signature: the object is wrapped, its table
+        // thunks over the original's entries. 534168 (refused before).
+        .{ .src = "stage1/fixtures/trait_wrap.mpl", .want = "534168\n" },
         // The same with the resource in a library: `M.close` frees its parameter and
         // `M.open`'s result is root storage, facts inference hands lowering for a module
         // member (`member_facts`). 52431.
@@ -771,6 +774,8 @@ pub fn build(b: *std.Build) void {
             // Three levels across two files: the spliced bodies are emitted where each
             // `$override` is, and name the module's members across outputs.
             .{ .src = "stage1/fixtures/override2.mpl", .want = "31410\n", .mods = &.{"override2_util"} },
+            // A wrapper table is static in the output that coerces, named after its module.
+            .{ .src = "stage1/fixtures/trait_wrap.mpl", .want = "534168\n", .mods = &.{"trait_wrap_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);
