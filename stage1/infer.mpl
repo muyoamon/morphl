@@ -2564,7 +2564,8 @@ $decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_
           ($do ($call defer_check (cx, at, p, why, x)) true)
           ($do ($call T.explain (at, p))
                ($do ($call err (cx, $call concat (why, $call concat ($call T.show (at),
-                         $call concat (", expected ", $call T.show (p)))), x))
+                         $call concat (", expected ", $call concat ($call T.show (p),
+                             $call T.why_not (at, p))))), x))
                     false))))
 }.ret
 
@@ -4549,7 +4550,8 @@ $decl recheck_one $func ($decl cx proto_ctx, $decl d proto_def, $decl rs T.vsubs
       ($if ($call T.sub (a, b)) T.t_unit
            ($do ($call T.explain (a, b))
                 ($call err (cx, $call concat (d.msg, $call concat ($call T.show (a),
-                     $call concat (", expected ", $call T.show (b)))), d))))
+                     $call concat (", expected ", $call concat ($call T.show (b),
+                         $call T.why_not (a, b))))), d))))
 }.ret
 
 $decl recheck_list $func ($decl cx proto_ctx, $decl ds def_list.node,

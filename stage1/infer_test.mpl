@@ -1405,7 +1405,8 @@ $decl bw05 $call check_str ("a join keeps the frame-bound side, whichever arm it
 // is not its union through one — the union has a tag the member's storage does not hold.
 $decl cr01 $call check_str ("&const of a member is not &const of its union",
   $call errs_of ("$decl f $func ($decl r $const $new $union (1, \"s\")) 0  $decl x $call f ($const $new 5)"),
-  "argument 1 is &const Int, expected &const <Int,Str>")
+  $call concat ("argument 1 is &const Int, expected &const <Int,Str>; the value would be a ",
+    "subtype, but a pointer to one is not a pointer to the other: pass the value (§5.3)"))
 $decl cr02 $call check_str ("...while a block's prefix still is",
   $call errs_of ("$decl g $func ($decl r $const $new { $decl a 1 }) 0  $decl y $call g ($const $new { $decl a 1  $decl b 2 })"),
   "")

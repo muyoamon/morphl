@@ -2951,6 +2951,22 @@ $decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
 
 $decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, proto_actx)
 
+// Why `a <: b` failed, when the answer is §5.3's representation rule and not the types: a
+// reference to a subtype that a pointer cannot read as the supertype. "" otherwise, so a
+// caller can always append it.
+$decl why_not $func ($decl a proto_ty, $decl b proto_ty) $match b (
+  $case {$prop tag "ref"} $match a (
+      $case {$prop tag "ref"}
+        $if ($call and ($call eq_str (b.qual, "const"), $call sub_kind (a.kind, b.kind)))
+            ($if ($call sub ($call tval (a.inner), $call tval (b.inner)))
+                 ($call concat ("; the value would be a subtype, but a pointer to one is not a ",
+                                "pointer to the other: pass the value (§5.3)"))
+                 "")
+            "",
+      $case a ""),
+  $case b ""
+)
+
 // Re-run a check that has already failed, printing the goal tree. A no-op
 // unless the driver asked for it.
 $decl explain $func ($decl a proto_ty, $decl b proto_ty)
