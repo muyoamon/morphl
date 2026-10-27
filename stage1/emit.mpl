@@ -1192,6 +1192,97 @@ $decl is_fn_at $func ($decl ts T.tys.node, $decl i 0) {
   $decl t   $call T.unroll ($call type_at (ts, i))
   $decl ret $match t ($case {$prop tag "func"} true, $case t false)
 }.ret
+// ------------------------------------------ §7.4 / §6: coercing a trait object
+//
+// A trait object is `mpl_tobj` whatever its trait, so one trait object used as another
+// looked free — and a call through the result indexes the table by the *target* trait's
+// member order (§6 sorts members by name), so `$traitsof small` taken from a
+// `$traitsof big` object called `big`'s first member for `small`'s. It is free only when
+// the two traits lay their tables out alike: the same member names in the same order, each
+// with the same signature — a trait-typed part of one compared the same way, assuming the
+// pair being checked, so two traits that name themselves (`self_trait.mpl`'s `seq` and
+// `cd`) compare as their members do. Otherwise the coercion builds the target's table out
+// of the source's, by name (`emit_retable`).
+$decl tpair      $func ($decl x T.proto_ty, $decl y T.proto_ty) { $decl a x  $decl b y }
+$decl proto_tpair $call tpair (T.t_bot, T.t_bot)
+$decl tpairs     $specialize P.list proto_tpair
+$decl pair_seen $func ($decl xs tpairs.node, $decl x T.proto_ty, $decl y T.proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    $if ($if ($call T.same (xs.head.a, x)) ($call T.same (xs.head.b, y)) false) true
+        ($call pair_seen ($call tpairs.val (xs.tail), x, y)),
+  $case xs false
+)
+$decl member_names_eq $func ($decl xs T.fields.node, $decl ys T.fields.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (xs.head.name, ys.head.name))
+            ($call member_names_eq ($call T.fields.val (xs.tail), $call T.fields.val (ys.tail)))
+            false,
+      $case ys false),
+  $case xs ($call T.fields.is_nil (ys))
+)
+$decl trait_at $func ($decl t T.proto_ty) $call T.unroll (t)
+$fwd ty_compat
+$decl tys_compat $func ($decl xs T.tys.node, $decl ys T.tys.node, $decl seen tpairs.node)
+    $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call ty_compat ($call T.tval (xs.head), $call T.tval (ys.head), seen))
+            ($call tys_compat ($call T.tys.val (xs.tail), $call T.tys.val (ys.tail), seen)) false,
+      $case ys false),
+  $case xs ($call T.tys.is_nil (ys))
+)
+$decl members_compat $func ($decl a T.proto_ty, $decl b T.proto_ty, $decl ms T.fields.node,
+                            $decl seen tpairs.node) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call ty_compat ($call T.trait_member (a, ms.head.name, a),
+                          $call T.trait_member (b, ms.head.name, b), seen))
+        ($call members_compat (a, b, $call T.fields.val (ms.tail), seen)) false,
+  $case ms true
+)
+// Two trait types whose tables are laid out alike, so an object of one is an object of the
+// other as it stands.
+$decl tbl_compat_in $func ($decl x T.proto_ty, $decl y T.proto_ty, $decl seen tpairs.node) {
+  $decl a   $call trait_at (x)
+  $decl b   $call trait_at (y)
+  $decl ret $match a (
+      $case {$prop tag "trait"} $match b (
+          $case {$prop tag "trait"}
+            $if ($call member_names_eq ($call T.fields.val (a.members),
+                                        $call T.fields.val (b.members)))
+                ($call members_compat (a, b, $call T.fields.val (b.members),
+                     $call tpairs.cons ($call tpair (x, y), seen)))
+                false,
+          $case b false),
+      $case a false
+    )
+}.ret
+// The same type up to §5.5 is compatible at once — `sub` both ways, which reads a `μ`
+// through and assumes its goals, so two self-naming traits spelt with their unrollings
+// compare without this walk going round them. A ⊥ member is one not typed yet where the
+// trait was taken — inside the block it describes (`comp_free_or`) — and is taken as
+// agreeing, which is what the table did before.
+$decl ty_compat $func ($decl x T.proto_ty, $decl y T.proto_ty, $decl seen tpairs.node)
+  $if ($call P.or ($call T.same (x, T.t_bot), $call T.same (y, T.t_bot))) true
+  ($if ($if ($call T.same (x, y)) true ($if ($call T.sub (x, y)) ($call T.sub (y, x)) false)) true
+  ($if ($call pair_seen (seen, x, y)) true
+  ($if ($call P.and ($call T.is_trait (x), $call T.is_trait (y)))
+       ($call tbl_compat_in (x, y, seen)) {
+    $decl a   $call T.unroll (x)
+    $decl b   $call T.unroll (y)
+    $decl ret $match a (
+        $case {$prop tag "func"} $match b (
+            $case {$prop tag "func"}
+              $if ($call tys_compat ($call T.tys.val (a.params), $call T.tys.val (b.params), seen))
+                  ($call ty_compat ($call T.tval (a.result), $call T.tval (b.result), seen)) false,
+            $case b false),
+        $case a false
+      )
+  }.ret)))
+$decl tbl_compat $func ($decl x T.proto_ty, $decl y T.proto_ty)
+  $call tbl_compat_in (x, y, tpairs.nil)
+$decl is_trait_at $func ($decl ts T.tys.node, $decl i 0) $call T.is_trait ($call type_at (ts, i))
+
 $fwd comp_free
 $decl tys_free $func ($decl st proto_est, $decl ts T.tys.node, $decl as T.tys.node,
                       $decl bs T.tys.node, $decl d 0) $match as (
@@ -1236,7 +1327,9 @@ $decl comp_free $func ($decl st proto_est, $decl ts T.tys.node, $decl a 0, $decl
   $if ($call eq_int (a, b)) true
       ($if ($call and ($call is_fn_at (ts, a), $call is_fn_at (ts, b)))
            ($call fn_free (st, ts, a, b, d))
-           ($call eq_str ($call c_type (st, ts, a), $call c_type (st, ts, b))))
+      ($if ($call and ($call is_trait_at (ts, a), $call is_trait_at (ts, b)))
+           ($call tbl_compat ($call type_at (ts, a), $call type_at (ts, b)))
+           ($call eq_str ($call c_type (st, ts, a), $call c_type (st, ts, b)))))
 
 // The shim for `from` → `want` in this output, named on first use and queued to be written.
 $decl ad_find $func ($decl xs adents.node, $decl f 0, $decl w 0) $match xs (
@@ -1278,6 +1371,61 @@ $decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
   $decl ret $if f.hit f.id -1
 }.ret
 
+// The target trait's table built from the source object's: entry `j` is the source's entry
+// for the member of that name. Allocated per coercion, like a closure's environment, since
+// the object may outlive this frame. A member whose signature differs between the two —
+// not merely its place — would need an adapter around an entry known only at run time, and
+// is refused rather than called with the wrong one.
+$decl member_ix $func ($decl ms T.fields.node, $decl nm "", $decl i 0) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (ms.head.name, nm)) i
+        ($call member_ix ($call T.fields.val (ms.tail), nm, $call add (i, 1))),
+  $case ms -1
+)
+$decl retable_fill $func ($decl st proto_est, $decl t "", $decl src "", $decl a T.proto_ty,
+                          $decl b T.proto_ty, $decl ams T.fields.node, $decl ws T.fields.node,
+                          $decl j 0) $match ws (
+  $case {$prop tag "cons"} {
+    $decl i    $call member_ix (ams, ws.head.name, 0)
+    $decl ok   $if ($call lt (i, 0)) false
+                   ($call ty_compat ($call T.trait_member (a, ws.head.name, a),
+                        $call T.trait_member (b, ws.head.name, b), tpairs.nil))
+    $decl d0   $if ok
+        ($call say (st, $call concat ("  ", $call concat (t, $call concat ("[",
+             $call concat ($call int_to_str (j), $call concat ("] = (void *)",
+             $call concat (src, $call concat (".tbl[", $call concat ($call int_to_str (i),
+             "];\n"))))))))))
+        ($call eerr (st, $call concat ("cannot coerce a trait object: member '",
+             $call concat (ws.head.name,
+             "' has another signature in the target trait, and an entry known only at run time cannot be adapted (§6, §7.4)"))))
+    $decl ret2 $call retable_fill (st, t, src, a, b, ams, $call T.fields.val (ws.tail),
+                   $call add (j, 1))
+  }.ret2,
+  $case ws ()
+)
+$decl emit_retable $func ($decl st proto_est, $decl dest "", $decl src "", $decl ft T.proto_ty,
+                          $decl wt T.proto_ty) {
+  $decl a   $call trait_at (ft)
+  $decl b   $call trait_at (wt)
+  $decl ret $match a (
+      $case {$prop tag "trait"} $match b (
+          $case {$prop tag "trait"} {
+            $decl ws   $call T.fields.val (b.members)
+            $decl t    $call fresh_tmp (st)
+            $decl d0   $call say (st, $call concat ("  void **", $call concat (t,
+                           $call concat (" = (void **)mpl_alloc((int64_t)(", $call concat (
+                           $call int_to_str ($call T.fields.length (ws, 0)),
+                           " * sizeof(void *)));\n")))))
+            $decl d1   $call retable_fill (st, t, src, a, b, $call T.fields.val (a.members), ws, 0)
+            $decl d2   $call assign (st, $call concat (dest, ".ref"), $call concat (src, ".ref"))
+            $decl ret2 $call assign (st, $call concat (dest, ".tbl"),
+                           $call concat ("(void *const *)", t))
+          }.ret2,
+          $case b ($call coerce_err (st, ft, wt))),
+      $case a ($call coerce_err (st, ft, wt))
+    )
+}.ret
+
 // §5.1's group rule as a coercion of a value: a group into a shorter group is a copy of
 // its first items, each coerced into the target's — depth as well as prefix, so not a
 // plain field copy — and a group into a non-group is its first item (§2.3), coerced.
@@ -1313,7 +1461,12 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
   // Two function types are both `mpl_fun`, and that is not enough (see `adapt_fn`).
   $decl fns  $if same_c ($call and ($call is_fn_at (ts, from), $call is_fn_at (ts, want))) false
   $decl adp  $if fns ($call not ($call fn_free (st, ts, from, want, 0))) false
-  $decl free $if adp false same_c
+  // Two trait objects are both `mpl_tobj`, and that is not enough either (`tbl_compat`).
+  $decl trt  $if same_c
+                 ($if ($call P.and ($call T.is_trait (ft), $call T.is_trait (wt)))
+                      ($call not ($call tbl_compat (ft, wt))) false)
+                 false
+  $decl free $if ($call P.or (adp, trt)) false same_c
   // §5.5: a `μ` is laid out as its unrolling, so the members a value can be
   // injected into are the unrolling's — the discriminator is the member's
   // position there, which is also the order `emit_union_struct` wrote them
@@ -1343,6 +1496,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  false
   $decl ret $if free ($call assign (st, dest, src))
       ($if adp ($call adapt_fn (st, ts, dest, src, from, want))
+      ($if trt ($call emit_retable (st, dest, src, ft, wt))
       ($if gg ($call emit_group_copy (st, ts, dest, src, $call group_items_of (ft),
                    $call group_items_of (wt), 0))
       ($if g1 ($do ($call group_note (st, ft, wt))
@@ -1374,7 +1528,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  $call concat (".u.m", $call int_to_str (k))), src, from, wk.id))
             ($call assign (st, $call concat (dest,
                  $call concat (".u.m", $call int_to_str (k))), src))
-      }.ret2))))))))))
+      }.ret2)))))))))))
 }.ret
 
 $decl emit_group_copy $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "", $decl src "",

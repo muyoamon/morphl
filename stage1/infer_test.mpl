@@ -516,6 +516,9 @@ $decl t44ge $call check_str ("...and a nested overload is read through, once",
 $decl t44gf $call check_str ("an ambiguous injection is refused",
   $call errs_of ("$decl p1 { $prop p 1 }  $decl p2 { $prop q 2 }  $decl f $func ($decl u $union (p1, p2)) 0  $decl x $call f ({ $prop p 1  $prop q 2 })"),
   "ambiguous: {p=i1,q=i2,} is a subtype of two members of <{p=i1,},{q=i2,}> and neither is below the other (§3.6)")
+$decl t44gh $call check_str ("...nor is a ⊥ argument, which enters no member (§7.8)",
+  $call errs_of ("$decl f $func ($decl u $union (0, \"\")) 0  $decl g $func () $call f ($call panic (\"x\"))"),
+  "")
 $decl t44gg $call check_str ("...and one with a most specific member is not",
   $call errs_of ("$decl g { $prop t 1  $decl a 0 }  $decl s { $prop t 1  $decl a 0  $decl z 0 }  $decl f $func ($decl u $union (g, s)) 0  $decl x $call f ({ $prop t 1  $decl a 1  $decl z 2  $decl q 3 })"),
   "")

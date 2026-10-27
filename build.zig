@@ -262,6 +262,9 @@ pub fn build(b: *std.Build) void {
         // The same through a trait object: a member answering a subtype of the trait's, or
         // taking a supertype, gets an adapter as its table entry. The old backend crashed.
         .{ .src = "stage1/fixtures/trait_coerce.mpl", .want = "7345869\n" },
+        // One trait object used as another whose table is laid out differently: the target's
+        // table is built from the source's, by member name. 2334 (4444 before).
+        .{ .src = "stage1/fixtures/trait_retable.mpl", .want = "2334\n" },
         // The same with the resource in a library: `M.close` frees its parameter and
         // `M.open`'s result is root storage, facts inference hands lowering for a module
         // member (`member_facts`). 52431.

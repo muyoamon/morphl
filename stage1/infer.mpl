@@ -2489,7 +2489,9 @@ $decl inject_check $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl p T.prot
                           $decl x Pa.proto_node) {
   $decl pu  $call T.unroll ($call deref_ty (p))
   $decl au  $call T.unroll ($call deref_ty (a))
-  $decl ret $if ($if ($call has_free_var (a)) true ($call has_free_var (p))) () ($match pu (
+  // ⊥ is a subtype of every member and enters none — the code is unreachable (§7.8).
+  $decl ret $if ($if ($call has_free_var (a)) true ($if ($call has_free_var (p)) true
+                     ($call T.same (au, T.t_bot)))) () ($match pu (
       $case {$prop tag "union"} $match au (
           $case {$prop tag "union"}
             $call amb_members (cx, $call T.tys.val (au.members), $call T.tys.val (pu.members),
