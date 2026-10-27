@@ -11,6 +11,9 @@ $decl ws   $specialize L.list I.writer
 
 $decl tmp2 "/tmp/morphl_std_io_test_lines.txt"
 
+// So the append test starts with no file, which takes `open_append`'s create path.
+$decl c_unlink $extern "int unlink(const char *)" $func ($decl p 0) 0
+
 // The text of a read line, `END` at the end of the input, or `ERR`.
 $decl line_of $func ($decl c ($call I.line_got ("")))
   $match c ($case {$prop tag "ok"} c.v, $case {$prop tag "none"} "END", $case c "ERR")
@@ -130,6 +133,26 @@ $decl main $func () {
   $decl c26 $call T.expect (r, "...over any reader",
                 $call C.and ($call eq (l21, "x"), $call C.and ($call eq (l22, "y"),
                     $call eq ($call line_of ($call lr2.read_line ()), "END"))))
+  // Appending: to a file not there yet, then to the end of what one write left.
+  $decl tmp3 "/tmp/morphl_std_io_test_append.txt"
+  $decl rm0 $call c_unlink ($call str_ptr ($call concat (tmp3, "\u{0}")))
+  $decl ap1 $call I.open_append (tmp3)
+  $decl w1  $match ap1 ($case {$prop tag "ok"} $do ($call ap1.v.write ("one\n")) ($call ap1.v.close ()),
+                        $case ap1 C.ok)
+  $decl ap2 $call I.open_append (tmp3)
+  $decl w2  $match ap2 ($case {$prop tag "ok"} $do ($call ap2.v.write ("two\u{d}\n")) ($call ap2.v.close ()),
+                        $case ap2 C.ok)
+  $decl c28 $call T.expect (r, "open_append adds to the end",
+                $call eq ($call C.or_else ($call I.read (tmp3), ""), "one\ntwo\u{d}\n"))
+  $decl ar  $call I.open_read (tmp3)
+  $decl c29 $call T.expect (r, "...and line_reader can drop a \\r before the newline", $match ar (
+                $case {$prop tag "ok"} {
+                  $decl lr   $call I.line_reader (ar.v, true)
+                  $decl a1   $call line_of ($call lr.read_line ())
+                  $decl a2   $call line_of ($call lr.read_line ())
+                  $decl ret2 $call C.and ($call eq (a1, "one"), $call eq (a2, "two"))
+                }.ret2,
+                $case ar false))
   $decl mo  $call I.open_read ("/nonexistent/morphl/file")
   $decl c27 $call T.expect (r, "opening a missing file answers its errno",
                 $match mo ($case {$prop tag "err"} $call eq (mo.e, 2), $case mo false))

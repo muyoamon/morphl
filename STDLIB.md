@@ -224,7 +224,7 @@ Proposed modules, in the order they can be written:
 | `std/list` | `list T` with `map`, `filter`, `fold`, `find`, `any`, `all`, `zip`, `append`, `take`, `drop`, `sort` | P1; P2 for `sort` |
 | `std/str` | a builder, `join`, `split`, `find`, `starts_with`, `trim`, code-point iteration | P3 for the byte buffer |
 | `std/fmt` | formatting `Int`, `Float`, `Str` and anything with a `show` member into a builder | done |
-| `std/io` | `print_line`, reading and writing whole files and lines, over the platform group; streams — `stdin`/`stdout`/`stderr`, files (`open_read`, `open_write`, `close`), in-memory readers and writers, `line_reader`'s `read_line` over any reader, `write_line`, `read_all` and `copy` as bounded templates, `writer`/`reader` trait objects for a choice made at run time | — |
+| `std/io` | `print_line`, reading and writing whole files and lines, over the platform group; streams — `stdin`/`stdout`/`stderr`, files (`open_read`, `open_write`, `open_append`, `close`), in-memory readers and writers, `line_reader`'s `read_line` over any reader (optionally dropping a `\r` before the newline), `write_line`, `read_all` and `copy` as bounded templates, `writer`/`reader` trait objects for a choice made at run time | — |
 | `std/vec` | a growable vector over `array` | P3 |
 | `std/map` | an ordered map (sorted vecs; keys ordered by a `less` given at `new`) | done |
 | `std/mem` | an arena allocator over `raw_alloc`, as `arena.mpl` does | — |

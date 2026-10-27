@@ -1,8 +1,8 @@
 // std/io: the platform group (§8) in the shapes a program wants — lines, whole files,
 // the argument list — over `print`, `eprint`, `read_file`, `write_file` and `args`; and
-// streams — `stdin`, `stdout`, `stderr`, files opened for reading or writing, readers and
-// writers in memory, a reader of lines over any reader, and the helpers that take any of
-// them (see "streams" below). A failure that is expected is a value (§4.15): reading a
+// streams — `stdin`, `stdout`, `stderr`, files opened for reading, writing or appending,
+// readers and writers in memory, a reader of lines over any reader, and the helpers that
+// take any of them (see "streams" below). A failure that is expected is a value (§4.15): reading a
 // whole file answers an option, writing one `ok` or `err`, and a stream's failure carries
 // its errno.
 
@@ -94,7 +94,9 @@ $decl c_creat    $extern "int creat(const char *, unsigned int)"
 
 $decl e_intr  4
 $decl e_ilseq 84
+$decl e_noent  2
 $decl o_rdonly 0
+$decl o_append 1025
 $decl mode_rw  420
 
 // The text of an error code, as `strerror` gives it.
@@ -277,6 +279,24 @@ $decl to_text $func () {
   $decl ret w
 }.ret
 
+// Written at the end of what is there, and created if it is not. `O_APPEND` without
+// `O_CREAT` needs no third argument to C's variadic `open`; a file that is not there is made
+// by `creat`, whose start is its end since it is empty — so between the two, another process
+// creating it would leave this handle not appending, which is the cost of not declaring
+// `open` with a fixed third argument (§4.16 has no way to write C's `...`).
+$decl open_append $func ($decl path "") {
+  $decl p    $call c_path (path)
+  $decl fd0  $call c_open (p, o_append)
+  $decl e0   $if ($call lt (fd0, 0)) ($call errno ()) 0
+  $decl make $if ($call lt (fd0, 0)) ($call eq (e0, e_noent)) false
+  $decl fd   $if make ($call c_creat (p, mode_rw)) fd0
+  // Read straight after the call that set it: the open's, or the create's.
+  $decl e    $if ($call lt (fd, 0)) ($if make ($call errno ()) e0) 0
+  $decl ret  $if ($call lt (fd, 0))
+      ($union ($call fail (e), { $prop tag "ok"  $decl v $alloc $call fd_writer (0) }))
+      ($union ({ $prop tag "ok"  $decl v $alloc $call fd_writer (fd) }, $call fail (0)))
+}.ret
+
 // ------------------------------------------------------------------- lines
 
 // A line, the end of the input (`none`), or the failure that stopped it — each at the one
@@ -288,10 +308,13 @@ $decl line_err $func ($decl e 0) $union ($call fail (e), $call chunk (""), none)
 // The lines of `src`, one per `read_line ()`: the text up to a newline, without it. A last
 // line with no newline after it is still a line, and an empty line is `""`, which the end of
 // the input is not — that is `none`. A `\r` before the newline is kept, as `lines` keeps it.
-// What has been read past the newline waits for the next line.
-$decl line_reader $func ($decl src reader) {
+// What has been read past the newline waits for the next line. With `crlf`, a `\r` before
+// the newline is dropped, for text written with Windows' line endings.
+$decl c_cr $call byte ("\u{d}", 0)
+$decl line_reader $func ($decl src reader, $decl crlf C.bool) {
   $decl lr  {
     $decl from  src
+    $decl strip crlf
     $decl carry $mut $alloc ""
     $prop read_line $func () $call lr.scan (0)
     // A newline at or after `i` in what is carried, or more read.
@@ -301,7 +324,9 @@ $decl line_reader $func ($decl src reader) {
       $decl ret2 $if ($call lt (i, n))
           ($if ($call eq ($call byte (c, i), c_nl)) {
              $decl w    $set lr.carry ($call slice (c, $call add (i, 1), n))
-             $decl ret3 $call line_got ($call slice (c, 0, i))
+             $decl cr   $if lr.strip ($if ($call lt (0, i)) ($call eq ($call byte (c,
+                            $call sub (i, 1)), c_cr)) false) false
+             $decl ret3 $call line_got ($call slice (c, 0, $if cr ($call sub (i, 1)) i))
            }.ret3 ($call lr.scan ($call add (i, 1))))
           ($call lr.more (n))
     }.ret2
