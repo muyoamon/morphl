@@ -852,7 +852,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "std/vec_test.mpl", .want = "26\n" },
         .{ .src = "std/map_test.mpl", .want = "16\n" },
         .{ .src = "std/fmt_test.mpl", .want = "27\n" },
-        .{ .src = "std/io_test.mpl", .want = "11\n" },
+        .{ .src = "std/io_test.mpl", .want = "23\n" },
         .{ .src = "std/mem_test.mpl", .want = "10\n" },
         .{ .src = "std/result_test.mpl", .want = "10\n" },
     }) |fx| {
