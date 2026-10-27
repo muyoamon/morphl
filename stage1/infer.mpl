@@ -3555,16 +3555,27 @@ $decl app_ty $func ($decl cx proto_ctx, $decl s Pa.proto_app_src, $decl rs T.tys
                 ($if ($call lt (s.arg, $call T.tys.length (rs, 0))) ($call T.tys.nth (rs, s.arg))
                      T.t_bot) T.t_bot
   $decl ft  $call T.unroll ($call deref_ty (at))
+  // `kind` 3: a field of the argument's union members (`Pa.app_src`).
+  $decl mf  $if ($call eq_int (s.kind, 3)) ($call T.member_field ($call deref_ty (at), s.fld))
+                T.proto_mfield
   $decl got $if ($call eq_int (s.kind, 0)) at
+      ($if ($call eq_int (s.kind, 3)) ($if ($call eq_int (mf.n, 1)) mf.ty T.t_bot)
       ($match ft (
         $case {$prop tag "func"}
           $if ($call eq_int (s.kind, 2)) ($call T.tval (ft.result))
               ($if ($call lt (s.pos, $call T.tys.length ($call T.tys.val (ft.params), 0)))
                    ($call T.tys.nth ($call T.tys.val (ft.params), s.pos)) T.t_bot),
-        $case ft T.t_bot))
+        $case ft T.t_bot)))
   $decl why $if ($call lt (s.arg, 0)) "no parameter default is shaped by it"
-                ($if ($call lt (s.arg, $call T.tys.length (rs, 0)))
-                     "its argument is not a function of that shape" "its argument is not passed")
+                ($if ($call not ($call lt (s.arg, $call T.tys.length (rs, 0))))
+                     "its argument is not passed"
+                ($if ($call eq_int (s.kind, 3))
+                     ($if ($call eq_int (mf.n, 2))
+                          ($call concat ("its argument's members disagree on the type of field '",
+                               $call concat (s.fld, "', so it is ambiguous")))
+                          ($call concat ("no member of its argument has the field '",
+                               $call concat (s.fld, "'"))))
+                     "its argument is not a function of that shape"))
   $decl ret $if ($call is_bot_ty (got))
       ($call err (cx, $call concat ("cannot infer '", $call concat (g, $call concat ("' from this call: ",
           $call concat (why, "; write the $specialize (§4.9)")))), n))

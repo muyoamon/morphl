@@ -13,9 +13,10 @@
 // a result too, and `wrap` puts the methods on a bare union.
 //
 // The methods are the operations that keep both types. `map` and `map_err` change one, so
-// they are templates on the specialisation rather than methods — `$call ires.map (r, f)` —
-// since a template-valued member cannot read its receiver (D9) and §4.9 infers nothing
-// from inside a union, which a free function's parameter would have to.
+// they are not methods — a template-valued member cannot read its receiver (D9) — but free
+// templates, `$call R.map (r, f)`: §4.9 infers `T` and `E` from the union `r` is, field by
+// field, and the new type from `f`. They are on the specialisation too, `ires.map`, which
+// is where they had to live before application could read into a union.
 //
 // Three things shape the template, all from P15. The members are tag blocks, because
 // `$union (T, E)` is one type when `T` and `E` are. Every result is made at the one `$impl`
@@ -69,7 +70,7 @@ $decl result $template (T, E) {
   $prop err $func ($decl x E) $call wrap ({ $prop tag "err" $decl e x })
 
   // `f` of the value, or the failure unchanged: a result of `f`'s type `B`, inferred from
-  // `f` (§4.9), and `E`.
+  // `f` (§4.9), and `E`. The free `map` below is the same, with `T` and `E` inferred too.
   $prop map $template B
     $func ($decl r $union ({ $prop tag "ok" $decl v T }, { $prop tag "err" $decl e E }),
            $decl f $func ($decl x T) B) $match r (
@@ -84,3 +85,19 @@ $decl result $template (T, E) {
       $case {$prop tag "ok"}  $call ($specialize result (T, F)).ok (r.v)
     )
 }
+
+// `$call R.map (r, f)` and `$call R.map_err (r, f)`: `ires.map`'s and `ires.map_err`'s work
+// with every generic inferred — `T` and `E` from `r`'s members' `v` and `e` (§4.9 reads one
+// level into a union), the new type from `f`'s result.
+$decl map $template (T, E, B)
+  $func ($decl r $union ({ $prop tag "ok" $decl v T }, { $prop tag "err" $decl e E }),
+         $decl f $func ($decl x T) B) $match r (
+    $case {$prop tag "ok"}  $call ($specialize result (B, E)).ok ($call f (r.v)),
+    $case {$prop tag "err"} $call ($specialize result (B, E)).err (r.e)
+  )
+$decl map_err $template (T, E, F)
+  $func ($decl r $union ({ $prop tag "ok" $decl v T }, { $prop tag "err" $decl e E }),
+         $decl f $func ($decl x E) F) $match r (
+    $case {$prop tag "err"} $call ($specialize result (T, F)).err ($call f (r.e)),
+    $case {$prop tag "ok"}  $call ($specialize result (T, F)).ok (r.v)
+  )

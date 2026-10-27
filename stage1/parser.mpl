@@ -963,8 +963,15 @@ $decl resolve_import $func ($decl base "", $decl roots pstrs.node, $decl nm "") 
 // of the argument's function type. The first in parameter order wins, and the call is
 // checked against the rest. `arg` is -1 when nothing names the generic. Shared, so the
 // two passes infer the same generics and so build the same memo key.
-$decl app_src $func ($decl a -1, $decl k 0, $decl j 0) { $decl arg a  $decl kind k  $decl pos j }
-$decl proto_app_src $call app_src (-1, 0, 0)
+//
+// `kind` 3 reaches into a union: a default that is a `$union` of block literals, one with a
+// field `$decl f T` — `{ $prop tag "ok" $decl v T }` — makes `T` the type of field `f` in
+// the argument's members (`fld` is `f`). One level into the union, as the rest is one level
+// into a `$func`; several members carrying `f` at different types is ambiguous, and the
+// passes report it rather than choose.
+$decl app_src $func ($decl a -1, $decl k 0, $decl j 0, $decl f "")
+  { $decl arg a  $decl kind k  $decl pos j  $decl fld f }
+$decl proto_app_src $call app_src (-1, 0, 0, "")
 $decl app_srcs      $specialize P.list proto_app_src
 
 $decl app_items $func ($decl n proto_node) $match n (
@@ -990,16 +997,40 @@ $decl app_in_params $func ($decl ps nodes.node, $decl g "", $decl j 0) $match ps
   $case ps -1
 )
 
+// The field of a block literal that is declared exactly `g`, or "".
+$decl field_named $func ($decl xs nodes.node, $decl g "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($if ($call is_kw (xs.head, "decl")) ($call is_named ($call operand (xs.head, 1), g)) false)
+        ($call name_text ($call operand (xs.head, 0)))
+        ($call field_named ($call nodes.val (xs.tail), g)),
+  $case xs ""
+)
+$decl member_field $func ($decl ms nodes.node, $decl g "") $match ms (
+  $case {$prop tag "cons"} {
+    $decl m    ms.head
+    $decl f    $match m ($case {$prop tag "block"} ($call field_named ($call nodes.val (m.items), g)),
+                         $case m "")
+    $decl ret2 $if ($call eq_str (f, "")) ($call member_field ($call nodes.val (ms.tail), g)) f
+  }.ret2,
+  $case ms ""
+)
+// A `$union` default's member field declared exactly `g`, or "".
+$decl union_field $func ($decl df proto_node, $decl g "")
+  $if ($call is_kw (df, "union")) ($call member_field ($call app_items ($call operand (df, 0)), g))
+      ""
+
 $decl app_find $func ($decl ps nodes.node, $decl g "", $decl i 0) $match ps (
   $case {$prop tag "cons"} {
     $decl df  $call param_default (ps.head)
+    $decl uf  $call union_field (df, g)
     $decl fj  $if ($call is_kw (df, "func"))
                   ($call app_in_params ($call app_items ($call operand (df, 0)), g, 0)) -1
     $decl fr  $if ($call is_kw (df, "func")) ($call is_named ($call operand (df, 1), g)) false
     $decl ret $if ($call is_named (df, g)) ($call app_src (i, 0, 0))
                   ($if ($call lt (-1, fj)) ($call app_src (i, 1, fj))
                   ($if fr ($call app_src (i, 2, 0))
-                       ($call app_find ($call nodes.val (ps.tail), g, $call add (i, 1)))))
+                  ($if ($call not ($call eq_str (uf, ""))) ($call app_src (i, 3, 0, uf))
+                       ($call app_find ($call nodes.val (ps.tail), g, $call add (i, 1))))))
   }.ret,
   $case ps ($call app_src (-1, 0, 0))
 )

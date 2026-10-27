@@ -536,6 +536,16 @@ $decl t44gk $call check_str ("...nor when the bounds do not meet",
 $decl t44gl $call check_str ("...nor for a $func template, which $call may still reach",
   $call errs_of ("$decl u $template T $func ($decl x 0) 9  $decl t $template ($decl T 0) $func ($decl x T) x  $decl o $overload (u, t)"), "")
 
+// §4.9 one level into a union: a default `$union` member declaring a field exactly `T`
+// infers `T` from that field of the argument's members, through a `with` too; members
+// disagreeing on the field's type is ambiguous and reported.
+$decl um_pre "$decl first $template (T, E) $func ($decl r $union ({ $prop tag \"ok\" $decl v T }, { $prop tag \"err\" $decl e E }), $decl d T) $match r ($case {$prop tag \"ok\"} r.v, $case r d)  $decl pick $func ($decl b $union (false, true)) $if b { $prop tag \"ok\" $decl v 41 } { $prop tag \"err\" $decl e \"no\" }  "
+$decl t44gm $call check_str ("a generic is inferred from a union member's field",
+  $call field_ty ($call concat (um_pre, "$decl z $call first ($call pick (true), 0)"), "z"), "Int")
+$decl t44gn $call check_str ("...and members disagreeing on it is ambiguous",
+  $call errs_of ("$decl get $template T $func ($decl u $union ({ $prop tag \"a\" $decl x T }, { $prop tag \"b\" $decl y 0 })) 0  $decl pick $func ($decl c $union (false, true)) $if c { $prop tag \"a\" $decl x 1 } { $prop tag \"b\" $decl x \"s\" }  $decl z $call get ($call pick (true))"),
+  "cannot infer 'T' from this call: its argument's members disagree on the type of field 'x', so it is ambiguous; write the $specialize (§4.9)")
+
 // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
 // error." Nothing enforced this. Such a program was rejected only *incidentally* —
 // the backend could not coerce the matched member into the thunk's result type —

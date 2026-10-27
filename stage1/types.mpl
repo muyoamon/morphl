@@ -3094,6 +3094,45 @@ $decl inject_slot $func ($decl ms tys.node, $decl t proto_ty) {
   }.ret2
 }.ret
 
+// §4.9's application through a union (`Pa.app_src`'s `kind` 3): the type of field `f` in
+// the members of `t` — through a `μ` and a `with`, and of `t` itself when it is no union;
+// the caller reads a reference through first. `n` is 0 when no member has the field, 1
+// when every member that has it agrees, and 2 when two disagree: ambiguous, which the
+// passes report rather than choose.
+$decl mfield $func ($decl k 0, $decl t proto_ty) { $decl n k  $decl ty t }
+$decl proto_mfield $call mfield (0, t_bot)
+$decl mfield_of $func ($decl m proto_ty, $decl f "") {
+  $decl u   $call tval ($call unroll ($call tval ($call with_base
+                ($call tval ($call unroll (m))))))
+  $decl ret $match u (
+      $case {$prop tag "block"} {
+        $decl fd   $call find_field ($call fields.val (u.fields), f)
+        $decl ret2 $if ($call eq_str (fd.name, "")) proto_mfield
+                       ($call mfield (1, $call tval (fd.ty)))
+      }.ret2,
+      $case u proto_mfield
+    )
+}.ret
+$decl mfield_all $func ($decl ms tys.node, $decl f "", $decl acc proto_mfield) $match ms (
+  $case {$prop tag "cons"} {
+    $decl h    $call mfield_of ($call tval (ms.head), f)
+    $decl nx   $if ($call eq_int (h.n, 0)) acc
+                   ($if ($call eq_int (acc.n, 0)) h
+                   ($if ($call eq_int (acc.n, 2)) acc
+                   ($if ($call eq_up (acc.ty, h.ty)) acc ($call mfield (2, acc.ty)))))
+    $decl ret2 $call mfield_all ($call tys.val (ms.tail), f, nx)
+  }.ret2,
+  $case ms acc
+)
+$decl member_field $func ($decl t proto_ty, $decl f "") {
+  $decl u   $call tval ($call unroll ($call tval ($call with_base
+                ($call tval ($call unroll (t))))))
+  $decl ret $match u (
+      $case {$prop tag "union"} ($call mfield_all ($call tys.val (u.members), f, proto_mfield)),
+      $case u ($call mfield_of (u, f))
+    )
+}.ret
+
 // `T & ¬P`, as far as a union can express it: drop the members `P` covers.
 //
 // §4.15 narrows the value of a failed `$try` this way, and §4.7 narrows a

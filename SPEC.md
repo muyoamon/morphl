@@ -294,7 +294,8 @@ A template is a compile-time abstraction. `T` (or each name in a group) denotes 
 **Application infers `T`.** If a template's body is a `$func`, then `$call t args` means `$call ($specialize t inferred) args`. Inference matches the **shape of each parameter default one level deep**:
 
 - default is exactly `T` → `T` is the argument's type;
-- default is a `$func` literal whose parameter defaults or body are exactly `T` → `T` is the corresponding parameter or result type of the argument's function type.
+- default is a `$func` literal whose parameter defaults or body are exactly `T` → `T` is the corresponding parameter or result type of the argument's function type;
+- default is a `$union` one of whose members is a block literal declaring a field exactly `T` — `$union ({ $prop tag "ok" $decl v T }, { $prop tag "err" $decl e E })` → `T` is that field's type in the argument's members (through a `$impl`'s result, which is its base's), or in the argument itself when it is no union. If two members that have the field disagree on its type, `T` is ambiguous and that is an error.
 
 Nothing deeper is inferred (no unification through arbitrary expressions); use `$specialize` explicitly. If `T` is inferred from several places, the first in parameter order wins and the rest are checked against it. A recursive call inside the template's own body uses the same rule, so `$call fold (xs.tail, acc2, f)` re-specializes on `acc2`'s type without writing `$specialize`.
 

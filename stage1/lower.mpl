@@ -3970,13 +3970,18 @@ $decl app_lty $func ($decl s Pa.proto_app_src, $decl rs lres_list.node) {
   $decl at  $if ($if ($call lt (-1, s.arg)) ($call lt (s.arg, $call lres_list.length (rs, 0)))
                 false) ($call lres_list.nth (rs, s.arg)).ty T.t_bot
   $decl ft  $call T.unroll ($call deref_ty (at))
+  // `kind` 3 reads a field of the argument's union members, as inference does; inference
+  // has already reported a call where it is missing or ambiguous.
+  $decl mf  $if ($call eq_int (s.kind, 3)) ($call T.member_field ($call deref_ty (at), s.fld))
+                T.proto_mfield
   $decl ret $if ($call eq_int (s.kind, 0)) at
+      ($if ($call eq_int (s.kind, 3)) ($if ($call eq_int (mf.n, 1)) mf.ty T.t_bot)
       ($match ft (
         $case {$prop tag "func"}
           $if ($call eq_int (s.kind, 2)) ($call T.tval (ft.result))
               ($if ($call lt (s.pos, $call T.tys.length ($call T.tys.val (ft.params), 0)))
                    ($call T.tys.nth ($call T.tys.val (ft.params), s.pos)) T.t_bot),
-        $case ft T.t_bot))
+        $case ft T.t_bot)))
 }.ret
 
 $decl app_holes $func ($decl st proto_lst, $decl ss Pa.app_srcs.node, $decl rs lres_list.node,
