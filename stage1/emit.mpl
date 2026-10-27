@@ -48,6 +48,13 @@ $decl fnal $func ($decl f 0, $decl t 0, $decl pn "", $decl xn "")
 $decl proto_fnal $call fnal (0, 0, "", "")
 $decl fnals      $specialize P.list proto_fnal
 
+// A §7.4 function adapter: the coercion of a function value from type `from` to type
+// `want` (interned indices) whose C signatures differ, and the shim that makes it. Held
+// on `estate` per output file; `adapt_fn` below says why one is needed at all.
+$decl adent $func ($decl f 0, $decl w 0, $decl n "") { $decl from f  $decl want w  $decl name n }
+$decl proto_adent $call adent (0, 0, "")
+$decl adents      $specialize P.list proto_adent
+
 // ------------------------------------------------------------------- state
 
 $decl estate $func () {
@@ -122,6 +129,11 @@ $decl estate $func () {
   $decl errs   $mut $alloc Pa.diags.node
   // The modules with an output, hence an `mpl_init_<mod>` an `$import` may call.
   $decl imods  $mut $alloc strs.node
+  // §7.4's function adapters for the output being emitted: the module it is named
+  // after, every pair seen so far, and the ones whose shim is not written yet.
+  $decl admod  $mut $alloc ""
+  $decl ads    $mut $alloc adents.node
+  $decl adq    $mut $alloc adents.node
 }
 
 $decl proto_est $call estate ()
@@ -1142,6 +1154,118 @@ $decl is_with_at $func ($decl ts T.tys.node, $decl i 0) {
   $decl ret $match t ($case {$prop tag "with"} true, $case t false)
 }.ret
 
+// ------------------------------------------------- §7.4: coercing a function value
+//
+// §7.3 makes every function value the pair `mpl_fun`, whatever its signature, and the
+// *call site* supplies the C signature from its own static type. §5.1 lets a function
+// stand where a function of a supertype is expected — a result that is a prefix of the
+// expected one, a member of the expected union, anything at all where `()` is expected,
+// and parameters the other way round — and then the caller calls the code pointer with
+// a signature it was not compiled with: a three-field block returned through a hidden
+// pointer the caller never passed, which crashed. The two pair types are one C type, so
+// `emit_inject` called that coercion free and copied the pair.
+//
+// So a coercion whose two signatures do not agree component by component goes through
+// a **shim**: a static function with the *target's* signature, whose environment is the
+// original pair, that coerces each argument into the source's parameter (§5.1's
+// contravariance: the target's parameter is the subtype), calls the original, and
+// coerces its result into the target's. Every step is an ordinary `emit_inject`, so a
+// prefix copy, an injection, a re-tag, a discard into `()` and a function-typed
+// parameter — which wants a shim of its own — all come from there. One per pair of
+// types per output, `static` and named after the output's module, so the outputs link
+// separately and concatenated alike. A coercion whose components agree costs nothing,
+// which is nearly all of them.
+//
+// Two limits. A shim calls the original in no tail position, since it has a result to
+// coerce, so a chain of tail calls through a coerced value costs a frame per hop through
+// the shim: §7.7 holds up to the coercion, not across it. And a trait object's table is
+// not adapted yet — its shims (`emit_shim`) call a member with the member's own
+// signature, so an implementation whose member answers a subtype of the trait's is the
+// same mismatch, in a different place.
+$decl is_fn_at $func ($decl ts T.tys.node, $decl i 0) {
+  $decl t   $call T.unroll ($call type_at (ts, i))
+  $decl ret $match t ($case {$prop tag "func"} true, $case t false)
+}.ret
+$fwd comp_free
+$decl tys_free $func ($decl st proto_est, $decl ts T.tys.node, $decl as T.tys.node,
+                      $decl bs T.tys.node, $decl d 0) $match as (
+  $case {$prop tag "cons"} $match bs (
+      $case {$prop tag "cons"} {
+        $decl fa  $call IR.find_ty (ts, as.head)
+        $decl fb  $call IR.find_ty (ts, bs.head)
+        $decl ret $if ($call and (fa.hit, fb.hit))
+            ($if ($call comp_free (st, ts, fa.id, fb.id, d))
+                 ($call tys_free (st, ts, $call T.tys.val (as.tail), $call T.tys.val (bs.tail), d))
+                 false)
+            false
+      }.ret,
+      $case bs false),
+  $case as $match bs ($case {$prop tag "cons"} false, $case bs true)
+)
+// Whether the pair of a `from` can be used as a `want` unchanged: the same arity, and each
+// parameter and the result free. `d` bounds a recursive function type; past it the answer
+// is "not free", which costs a shim and never a wrong call.
+$decl fn_free $func ($decl st proto_est, $decl ts T.tys.node, $decl from 0, $decl want 0,
+                     $decl d 0) {
+  $decl a   $call T.unroll ($call type_at (ts, from))
+  $decl b   $call T.unroll ($call type_at (ts, want))
+  $decl ret $match a (
+      $case {$prop tag "func"} $match b (
+          $case {$prop tag "func"} {
+            $decl ra   $call IR.find_ty (ts, a.result)
+            $decl rb   $call IR.find_ty (ts, b.result)
+            $decl ret2 $if ($call lt (16, d)) false
+                ($if ($call and (ra.hit, rb.hit))
+                     ($if ($call comp_free (st, ts, ra.id, rb.id, $call add (d, 1)))
+                          ($call tys_free (st, ts, $call T.tys.val (b.params),
+                               $call T.tys.val (a.params), $call add (d, 1)))
+                          false)
+                     false)
+          }.ret2,
+          $case b true),
+      $case a true
+    )
+}.ret
+$decl comp_free $func ($decl st proto_est, $decl ts T.tys.node, $decl a 0, $decl b 0, $decl d 0)
+  $if ($call eq_int (a, b)) true
+      ($if ($call and ($call is_fn_at (ts, a), $call is_fn_at (ts, b)))
+           ($call fn_free (st, ts, a, b, d))
+           ($call eq_str ($call c_type (st, ts, a), $call c_type (st, ts, b))))
+
+// The shim for `from` → `want` in this output, named on first use and queued to be written.
+$decl ad_find $func ($decl xs adents.node, $decl f 0, $decl w 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call and ($call eq_int (xs.head.from, f), $call eq_int (xs.head.want, w))) xs.head.name
+        ($call ad_find ($call adents.val (xs.tail), f, w)),
+  $case xs ""
+)
+$decl ad_name $func ($decl st proto_est, $decl f 0, $decl w 0) {
+  $decl seen $call ad_find ($call adents.val (st.ads), f, w)
+  $decl ret  $if ($call not ($call eq_str (seen, ""))) seen {
+    $decl ads  $call adents.val (st.ads)
+    $decl nm   $call concat ("mpl_ad_", $call concat ($call P.sval (st.admod),
+                   $call concat ("_", $call int_to_str ($call adents.length (ads, 0)))))
+    $decl e    $call adent (f, w, nm)
+    $decl a1   $set st.ads ($call adents.cons (e, ads))
+    $decl a2   $set st.adq ($call adents.cons (e, $call adents.val (st.adq)))
+    $decl ret2 nm
+  }.ret2
+}.ret
+
+// The coercion itself: the original pair into storage of its own, and a pair of the shim
+// and that storage. Allocated like a closure's environment, and for the same reason — the
+// value may outlive this frame — so it lives as long as the pair it wraps does.
+$decl adapt_fn $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "", $decl src "",
+                      $decl from 0, $decl want 0) {
+  $decl nm  $call ad_name (st, from, want)
+  $decl e   $call fresh_tmp (st)
+  $decl d0  $call say (st, $call concat ("  mpl_fun *", $call concat (e,
+                $call concat (" = (mpl_fun *)mpl_alloc((int64_t)sizeof(mpl_fun));\n  *",
+                $call concat (e, $call concat (" = ", $call concat (src, ";\n")))))))
+  $decl ret $call assign (st, dest, $call concat ("(mpl_fun){(void *)", $call concat (nm,
+                $call concat (", ", $call concat (e, "}")))))
+}.ret
+
 $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                          $decl src "", $decl from0 0, $decl want0 0) {
   $decl unw  $call is_with_at (ts, want0)
@@ -1152,7 +1276,11 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
   // §7.4: one C shape either way and the coercion is nothing — a change of
   // reference qualifier, or a member of `Bool`, whose discriminator is its
   // own value (§3.2).
-  $decl free $call eq_str ($call c_type (st, ts, from), $call c_type (st, ts, want))
+  $decl same_c $call eq_str ($call c_type (st, ts, from), $call c_type (st, ts, want))
+  // Two function types are both `mpl_fun`, and that is not enough (see `adapt_fn`).
+  $decl fns  $if same_c ($call and ($call is_fn_at (ts, from), $call is_fn_at (ts, want))) false
+  $decl adp  $if fns ($call not ($call fn_free (st, ts, from, want, 0))) false
+  $decl free $if adp false same_c
   // §5.5: a `μ` is laid out as its unrolling, so the members a value can be
   // injected into are the unrolling's — the discriminator is the member's
   // position there, which is also the order `emit_union_struct` wrote them
@@ -1176,6 +1304,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
   $decl wf  $call block_fields (wt)
   $decl how $if ($call block_is (wt)) ($call prefix_thru (ft)) ""
   $decl ret $if free ($call assign (st, dest, src))
+      ($if adp ($call adapt_fn (st, ts, dest, src, from, want))
       ($if from_bot ()
       ($if to_unit ($do ($call say (st, $call concat ("  (void)", $call concat (src, ";\n"))))
                         ($call assign (st, dest, "0")))
@@ -1201,7 +1330,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  $call concat (".u.m", $call int_to_str (k))), src, from, wk.id))
             ($call assign (st, $call concat (dest,
                  $call concat (".u.m", $call int_to_str (k))), src))
-      }.ret2))))))
+      }.ret2)))))))
 }.ret
 
 // Emit `e` into `dest`, injecting into a union first if `e` is a member of one
@@ -3905,6 +4034,129 @@ $decl emit_mod_init_decls $func ($decl st proto_est, $decl ms strs.node) $match 
   $case ms ()
 )
 
+// ------------------------------------------------------------ the shims themselves
+
+// `static <R> <name>(void *env, <P0> a0, …)` — the target's C signature, which is what
+// every caller of the coerced value calls it with.
+$decl ad_params $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node,
+                         $decl i 0, $decl acc "") $match ps (
+  $case {$prop tag "cons"} {
+    $decl f   $call IR.find_ty (ts, ps.head)
+    $decl ret $call ad_params (st, ts, $call T.tys.val (ps.tail), $call add (i, 1),
+                $call concat (acc, $call concat (", ", $call concat (
+                    $if f.hit ($call c_type (st, ts, f.id)) "int64_t",
+                    $call concat (" a", $call int_to_str (i))))))
+  }.ret,
+  $case ps acc
+)
+$decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
+  $decl f   $call IR.find_ty (ts, t)
+  $decl ret $if f.hit f.id -1
+}.ret
+$decl ad_head $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent) {
+  $decl b   $call T.unroll ($call type_at (ts, e.want))
+  $decl ret $match b (
+      $case {$prop tag "func"}
+        $call concat ("static ", $call concat ($call c_type (st, ts, $call ty_id (ts, b.result)),
+            $call concat (" ", $call concat (e.name, $call concat ("(void *env",
+            $call concat ($call ad_params (st, ts, $call T.tys.val (b.params), 0, ""), ")")))))),
+      $case b ""
+    )
+}.ret
+$decl ad_protos $func ($decl st proto_est, $decl ts T.tys.node, $decl xs adents.node,
+                         $decl acc "") $match xs (
+  $case {$prop tag "cons"}
+    $call ad_protos (st, ts, $call adents.val (xs.tail),
+        $call concat ($call concat ($call ad_head (st, ts, xs.head), ";\n"), acc)),
+  $case xs acc
+)
+
+// Each argument the shim receives, coerced into the original's parameter: `a<i>` at the
+// target's type into `b<i>` at the source's. Answers the `b` names, last first.
+$decl ad_args $func ($decl st proto_est, $decl ts T.tys.node, $decl ws T.tys.node,
+                       $decl fs T.tys.node, $decl i 0, $decl acc strs.node) $match ws (
+  $case {$prop tag "cons"} $match fs (
+      $case {$prop tag "cons"} {
+        $decl wi   $call ty_id (ts, ws.head)
+        $decl fi   $call ty_id (ts, fs.head)
+        $decl bn   $call concat ("b", $call int_to_str (i))
+        $decl d0   $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, fi),
+                       $call concat (" ", $call concat (bn, ";\n")))))
+        $decl d1   $call emit_inject (st, ts, bn, $call concat ("a", $call int_to_str (i)), wi, fi)
+        $decl ret2 $call ad_args (st, ts, $call T.tys.val (ws.tail), $call T.tys.val (fs.tail),
+                       $call add (i, 1), $call strs.cons (bn, acc))
+      }.ret2,
+      $case fs acc),
+  $case ws acc
+)
+
+$decl emit_ad $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent) {
+  $decl a   $call T.unroll ($call type_at (ts, e.from))
+  $decl b   $call T.unroll ($call type_at (ts, e.want))
+  $decl z0  $set st.ntmp 0
+  $decl ret $match a (
+      $case {$prop tag "func"} $match b (
+          $case {$prop tag "func"} {
+            $decl rf  $call ty_id (ts, a.result)
+            $decl rw  $call ty_id (ts, b.result)
+            $decl h   $call say (st, $call concat ("\n", $call concat ($call ad_head (st, ts, e),
+                          " {\n  mpl_fun f = *(mpl_fun *)env;\n")))
+            $decl bs  $call ad_args (st, ts, $call T.tys.val (b.params),
+                          $call T.tys.val (a.params), 0, strs.nil)
+            $decl c0  $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, rf),
+                          " r;\n")))
+            $decl c1  $call assign (st, "r", $call indirect_call ($call fn_sig (st, ts, e.from), "f",
+                          $call strs.reverse (bs, strs.nil)))
+            // §6a: the call is not in tail position here — its result is coerced — so a
+            // chain it starts is driven to its end before that.
+            $decl c2  $if ($call any_reports (st)) ($call say (st, "  mpl_tcdrive(&r);\n")) ()
+            $decl c3  $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, rw),
+                          " ret;\n  memset(&ret, 0, sizeof ret);\n")))
+            $decl c4  $call emit_inject (st, ts, "ret", "r", rf, rw)
+            $decl ret2 $call say (st, "  return ret;\n}\n")
+          }.ret2,
+          $case b ()),
+      $case a ()
+    )
+}.ret
+
+$decl emit_ad_list $func ($decl st proto_est, $decl ts T.tys.node, $decl xs adents.node)
+  $match xs (
+    $case {$prop tag "cons"}
+      $do ($call emit_ad (st, ts, xs.head))
+          ($call emit_ad_list (st, ts, $call adents.val (xs.tail))),
+    $case xs ()
+  )
+
+// Every shim queued, and the ones writing those queues: a shim's own components may ask
+// for more (a function-typed parameter). Each pair is queued once, so this ends.
+$decl emit_ads $func ($decl st proto_est, $decl ts T.tys.node) {
+  $decl q   $call adents.val (st.adq)
+  $decl ret $if ($call adents.is_nil (q)) () {
+    $decl c    $set st.adq adents.nil
+    $decl w    $call emit_ad_list (st, ts, $call adents.reverse (q, adents.nil))
+    $decl ret2 $call emit_ads (st, ts)
+  }.ret2
+}.ret
+
+// One output's text: what has been said for it, after the shims it asked for —
+// prototypes first, so one shim may name another — and nothing extra when it asked for
+// none. Then the next output starts with none, named after `next`. The header puts them
+// *after* its text instead, since a shim names the structs the header defines; nothing in
+// the header coerces a function value today, so it has none.
+$decl cut_file $func ($decl st proto_est, $decl ts T.tys.node, $decl next "",
+                      $decl after P.boolean) {
+  $decl body $call cut_out (st)
+  $decl g    $call emit_ads (st, ts)
+  $decl defs $call cut_out (st)
+  $decl pros $call ad_protos (st, ts, $call adents.val (st.ads), "")
+  $decl r0   $set st.ads adents.nil
+  $decl r1   $set st.admod next
+  $decl ret  $if ($call eq_str (pros, "")) body
+                 ($if after ($call concat (body, $call concat ("\n", $call concat (pros, defs))))
+                      ($call concat ("\n", $call concat (pros, $call concat (defs, body)))))
+}.ret
+
 // One output per module: that module's function bodies and its contified groups, and
 // nothing else — every declaration is in the header, which is what makes the outputs
 // valid to concatenate *and* separately compilable.
@@ -3925,7 +4177,9 @@ $decl emit_mod_files $func ($decl st proto_est, $decl fs IR.fns.node, $decl ts T
                   "(void) {\n  static int done = 0;\n  if (done) return;\n  done = 1;\n")))
     $decl j1 $call emit_mod_init (st, fs, $call IR.effects.val (efs), ms.head)
     $decl j2 $call say (st, "}\n")
-    $decl f  $call IR.ofile ($call concat (ms.head, ".c"), $call cut_out (st))
+    $decl mr $call strs.val (ms.tail)
+    $decl nx $match mr ($case {$prop tag "cons"} mr.head, $case mr "e")
+    $decl f  $call IR.ofile ($call concat (ms.head, ".c"), $call cut_file (st, ts, nx, false))
     $decl ret  $call emit_mod_files (st, fs, ts, gs, ms.tail, efs, fb, nf,
                  $call IR.ofiles.cons (f, acc))
   }.ret,
@@ -4128,6 +4382,10 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   // Before anything is emitted: every name comes from here.
   $decl nms $set st.fnames ($call fn_keys (fs, strs.nil))
   $decl ims $set st.imods ($call mods_of (fs, strs.nil))
+  // The header's shims are named `h`, each module's after it, the entry file's `e`.
+  $decl mods0 $call mods_of (fs, strs.nil)
+  $decl am  $set st.admod "h"
+  $decl ac  $do ($set st.ads adents.nil) ($set st.adq adents.nil)
   // And every lookup by index — `fn_at`, `key_at`, `type_at` — from these.
   $decl fx $set em_fnix ($call ft_fill ($call ft_leaf (fents.nil), fs, $call strs.val (st.fnames),
       0))
@@ -4174,7 +4432,8 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   // layouts, §4.16's extern decls, every prototype, §6a's driver, the capture structs
   // and §4.10's statics — and every declaration has to precede every definition both
   // for the outputs to be valid concatenated and for each to compile on its own.
-  $decl hdr $call cut_out (st)
+  $decl hdr $call cut_file (st, ts, $match mods0 ($case {$prop tag "cons"} mods0.head,
+                                                  $case mods0 "e"), true)
   // One output per imported module, then the entry file's own below. A module's
   // functions are *not* a contiguous range of the table — loading one module can load
   // another partway through a member — so each pass walks the whole table and keeps
@@ -4245,7 +4504,7 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   // a single artifact already was.
   // The entry file's output holds `mpl_init` and `main`, which is why it is last and
   // why it is the one place `runtime_state` is defined.
-  $decl bdy $call cut_out (st)
+  $decl bdy $call cut_file (st, ts, "h", false)
   $decl ret   $call IR.ofiles.cons ($call IR.ofile ("mpl.h", hdr),
                 $call append_ofiles (mfs,
                     $call IR.ofiles.cons ($call IR.ofile ("main.c", bdy), IR.ofiles.nil)))

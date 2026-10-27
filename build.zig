@@ -248,6 +248,10 @@ pub fn build(b: *std.Build) void {
         // member, a parameter defaulted to `()` takes any argument, and `$if c 5 ()` keeps
         // its `Int`. 654321.
         .{ .src = "stage1/fixtures/top.mpl", .want = "654321\n" },
+        // §7.4 on a function value: a coercion whose C signatures differ goes through a
+        // shim, for a `()` or prefix result, a union member, a parameter the other way, a
+        // callback's callback, a join, a cell and a tail call. The old backend crashed.
+        .{ .src = "stage1/fixtures/fn_coerce.mpl", .want = "1243586789\n" },
         // The same with the resource in a library: `M.close` frees its parameter and
         // `M.open`'s result is root storage, facts inference hands lowering for a module
         // member (`member_facts`). 52431.
@@ -695,6 +699,9 @@ pub fn build(b: *std.Build) void {
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",
                .mods = &.{ "import_order_inner", "import_order_util" } },
             .{ .src = "stage1/fixtures/tscalar.mpl", .want = "47\n", .mods = &.{"tscalar_util"} },
+            // A function adapter is `static` in the output that coerces, named after its
+            // module, so each output carries its own and the program links either way.
+            .{ .src = "stage1/fixtures/fn_coerce.mpl", .want = "1243586789\n", .mods = &.{"fn_coerce_util"} },
             // §4.12a: a template made by `$override` is emitted where the `$override` is, so
             // its spliced body names the base's module members from another output.
             .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n",

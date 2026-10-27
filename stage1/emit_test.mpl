@@ -619,4 +619,18 @@ $decl t72 $call check ("a C prototype is declared as written, its name parenthes
 $decl t73 $call check ("...and called with each argument cast to its C type",
   $call has (xp_c.code, "(int64_t)((abs)((int)"))
 
+// §7.4 on a function value: where the two C signatures differ — here a block result
+// used as `()` — the coercion is a shim with the target's signature over the original
+// pair; where they agree it is the pair itself, and nothing is generated.
+$decl ad_c $call compile ("$decl run $func ($decl f $func ($decl n 0) ()) $call f (1)  $decl main $func () $call run ($func ($decl n 0) { $decl a n  $decl b n })")
+$decl ad0_c $call compile ("$decl run $func ($decl f $func ($decl n 0) 0) $call f (1)  $decl main $func () $call run ($func ($decl n 0) n)")
+$decl t74 $call check ("a coercion between C signatures that differ goes through a shim",
+  $if ($call has (ad_c.code, "static int64_t mpl_ad_e_0(void *env, int64_t a0)"))
+      ($call has (ad_c.code, "(mpl_fun){(void *)mpl_ad_e_0, ")) false)
+$decl t75 $call check ("...which calls the original through its own signature and discards",
+  $if ($call has (ad_c.code, "mpl_fun f = *(mpl_fun *)env;"))
+      ($call has (ad_c.code, "  (void)r;\n  ret = 0;\n")) false)
+$decl t76 $call check ("...and one between agreeing signatures is the pair, with no shim",
+  $call not ($call has (ad0_c.code, "mpl_ad_")))
+
 $decl done $call nl ("all C backend tests passed")
