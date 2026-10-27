@@ -162,6 +162,21 @@ $decl t22m $call check ("a value enters the most specific member",
 $decl t22n $call check ("...and an exact member is its own",
   $call eq_int ($call T.inject_slot ($call T.tys.cons (va, $call T.tys.cons (vaz, T.tys.nil)), va),
                 0))
+// Siblings: one layout, neither a subtype of the other, merge field by field when every
+// joined field keeps both representations — and stay two when one would not.
+$decl vt $call T.t_block ($call T.fields.cons ($call T.field ("v", tru), T.fields.nil), T.props.nil)
+$decl vi $call T.t_block ($call T.fields.cons ($call T.field ("v", int), T.fields.nil), T.props.nil)
+$decl vs $call T.t_block ($call T.fields.cons ($call T.field ("v", str), T.fields.nil), T.props.nil)
+$decl t22o $call check ("{v: false} and {v: true} join to {v: Bool}",
+  $call T.ty_eq ($call T.join (vf, vt), vb))
+$decl t22p $call check ("...and {v: Int} and {v: Str} stay two",
+  $call T.ty_eq ($call T.join (vi, vs), $call T.union2 (vi, vs)))
+$decl g2 $func ($decl a T.proto_ty, $decl b T.proto_ty)
+  $call T.t_group ($call T.tys.cons (a, $call T.tys.cons (b, T.tys.nil)))
+$decl t22q $call check ("groups merge item by item the same way",
+  $call T.ty_eq ($call T.join ($call g2 (int, fls), $call g2 (int, tru)), $call g2 (int, bool)))
+$decl t22r $call check ("a merged sibling takes in a member it now covers",
+  $call T.ty_eq ($call T.join ($call T.union2 (vf, vi), vt), $call T.union2 (vb, vi)))
 
 // §5.1: blocks match by ordered prefix, with depth inside the prefix.
 $decl abc    $call T.t_block ($call T.fields.cons ($call T.field ("a", int), $call fld2 ("b", str,

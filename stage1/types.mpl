@@ -3093,11 +3093,88 @@ $decl drop_absorbed $func ($decl xs tys.node, $decl t proto_ty, $decl acc tys.no
     $call drop_absorbed ($call tys.val (xs.tail), t, $call keep_unless (xs.head, t, acc)),
   $case xs acc
 )
+// §3.6's siblings: two members of one layout, neither a subtype of the other — `{v: false}`
+// and `{v: true}` — are one member whose fields are joined, `{v: Bool}`, when every joined
+// field keeps the representation of both (§5.3's `repr_up`), so the coercion still changes
+// no stored data. `{v: Int}` and `{v: Str}` stay two: `<Int,Str>` is stored differently from
+// either, and a value's own discriminator is what tells the two apart.
+$fwd join
+$decl sib_pair $func ($decl x proto_ty, $decl y proto_ty, $decl j proto_ty)
+  $if ($call repr_up (x, j, 0)) ($call repr_up (y, j, 0)) false
+$decl sib_ok $func ($decl x proto_ty, $decl y proto_ty) $call sib_pair (x, y, $call join (x, y))
+$decl sib_fields_ok $func ($decl xs fields.node, $decl ys fields.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call sib_ok ($call tval (xs.head.ty), $call tval (ys.head.ty)))
+            ($call sib_fields_ok ($call fields.val (xs.tail), $call fields.val (ys.tail))) false,
+      $case ys true),
+  $case xs true
+)
+$decl sib_items_ok $func ($decl xs tys.node, $decl ys tys.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call sib_ok ($call tval (xs.head), $call tval (ys.head)))
+            ($call sib_items_ok ($call tys.val (xs.tail), $call tys.val (ys.tail))) false,
+      $case ys true),
+  $case xs true
+)
+$decl sib_fields $func ($decl xs fields.node, $decl ys fields.node, $decl acc fields.node)
+  $match xs (
+    $case {$prop tag "cons"} $match ys (
+        $case {$prop tag "cons"}
+          $call sib_fields ($call fields.val (xs.tail), $call fields.val (ys.tail),
+              $call fields.cons ($call field (xs.head.name,
+                  $call join ($call tval (xs.head.ty), $call tval (ys.head.ty))), acc)),
+        $case ys ($call fields.reverse (acc, fields.nil))),
+    $case xs ($call fields.reverse (acc, fields.nil)))
+$decl sib_items $func ($decl xs tys.node, $decl ys tys.node, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $call sib_items ($call tys.val (xs.tail), $call tys.val (ys.tail),
+            $call tys.cons ($call join ($call tval (xs.head), $call tval (ys.head)), acc)),
+      $case ys ($call tys.reverse (acc, tys.nil))),
+  $case xs ($call tys.reverse (acc, tys.nil))
+)
+$decl can_sib $func ($decl t proto_ty, $decl m proto_ty) $match t (
+  $case {$prop tag "block"} $match m (
+      $case {$prop tag "block"}
+        $if ($call same_layout (t, m))
+            ($call sib_fields_ok ($call fields.val (t.fields), $call fields.val (m.fields))) false,
+      $case m false),
+  $case {$prop tag "group"} $match m (
+      $case {$prop tag "group"}
+        $if ($call same_layout (t, m))
+            ($call sib_items_ok ($call tys.val (t.items), $call tys.val (m.items))) false,
+      $case m false),
+  $case t false
+)
+$decl sib $func ($decl t proto_ty, $decl m proto_ty) $match t (
+  $case {$prop tag "block"} $match m (
+      $case {$prop tag "block"}
+        $call t_block ($call sib_fields ($call fields.val (t.fields), $call fields.val (m.fields),
+                                         fields.nil), $call props.val (t.props)),
+      $case m t),
+  $case {$prop tag "group"} $match m (
+      $case {$prop tag "group"}
+        $call t_group ($call sib_items ($call tys.val (t.items), $call tys.val (m.items), tys.nil)),
+      $case m t),
+  $case t t
+)
+// Member `t`, absorbed by none of `acc`, merged with its first sibling there — and the result
+// added afresh, since it may now take in, or be a sibling of, another — or else added.
+$fwd join_add
+$decl sib_add $func ($decl t proto_ty, $decl xs tys.node, $decl rest tys.node,
+                     $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call can_sib (t, xs.head))
+        ($call join_add ($call sib (t, xs.head), $call tys.reverse (rest, $call tys.val (xs.tail))))
+        ($call sib_add (t, $call tys.val (xs.tail), $call tys.cons (xs.head, rest), acc)),
+  $case xs ($call tys.cons (t, $call drop_absorbed (acc, t, tys.nil)))
+)
 $decl join_add $func ($decl t proto_ty, $decl acc tys.node)
   $match t (
     $case {$prop tag "bottom"} acc,
-    $case t ($if ($call absorbed_any (t, acc)) acc
-                 ($call tys.cons (t, $call drop_absorbed (acc, t, tys.nil)))))
+    $case t ($if ($call absorbed_any (t, acc)) acc ($call sib_add (t, acc, tys.nil, acc))))
 $decl join_all $func ($decl xs tys.node, $decl acc tys.node) $match xs (
   $case {$prop tag "cons"} $call join_all ($call tys.val (xs.tail), $call join_add (xs.head, acc)),
   $case xs acc
