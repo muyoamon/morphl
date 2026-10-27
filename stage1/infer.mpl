@@ -964,7 +964,7 @@ $decl infer_impl $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl sb  $do ($set cx.rbase bt) ($do ($set cx.rbline sp.line)
                 ($do ($set cx.rbcol sp.col) ($set cx.rbov false)))
   $decl ot  $call T.tval ($call infer (cx, e, ov))
-  // `{}` is `()` (§2.1), so an empty override arrives as unit, with no props.
+  // An empty override is `{}`, a block with no props; `()` is taken as one too.
   $decl ok  $match ot (
       $case {$prop tag "block"} ($call T.fields.is_nil ($call T.fields.val (ot.fields))),
       $case {$prop tag "unit"}  true,
@@ -2798,6 +2798,14 @@ $decl dead_arm $func ($decl st T.proto_ty, $decl pt T.proto_ty) {
                  $case u false))
 }.ret
 
+// Whether a pattern covers the whole scrutinee by itself: its very type, or a supertype of
+// it — `$case ()` always, `$case {}` over blocks (§4.7). A type still holding §5.5's
+// placeholder is judged by identity alone, since subtyping against one is provisional.
+$decl covers_all $func ($decl st T.proto_ty, $decl pt T.proto_ty)
+  $if ($call T.same (pt, st)) true
+      ($if ($if ($call has_free_var (st)) true ($call has_free_var (pt))) false
+           ($call T.sub (st, pt)))
+
 $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.proto_node,
                         $decl st T.proto_ty, $decl arms Pa.nodes.node, $decl acc T.proto_ty)
                             $match arms (
@@ -2807,9 +2815,11 @@ $decl infer_arms $func ($decl cx proto_ctx, $decl e env.node, $decl scrut Pa.pro
     // type used — which is exactly what `infer` returns.
     $decl pt   $call infer (cx, e, $call op (a, 0))
     $decl rest $call Pa.nodes.val (arms.tail)
+    // A trait object's wider arm has its own message below; its very type is this one's.
     $decl dead $if ($call Pa.nodes.is_nil (rest)) 0
-        ($if ($call T.same (pt, st))
-             ($do ($call err (cx, "this arm's pattern is the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1", a)) 0)
+        ($if ($if ($call T.is_trait (st)) ($call T.same (pt, st))
+                  ($call covers_all (st, $call deref_ty (pt))))
+             ($do ($call err (cx, "this arm's pattern covers the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1", a)) 0)
              0)
     // §4.7: "A trait object is not inspected." Its referent's type is erased, so an arm is
     // decided here: a supertype of the trait always matches and leaves nothing for the arms
@@ -3020,7 +3030,7 @@ $decl override_val $func ($decl cx proto_ctx, $decl e env.node, $decl bt T.proto
   $decl sb  $do ($set cx.rbase bt) ($do ($set cx.rbline sp.line)
                 ($do ($set cx.rbcol sp.col) ($set cx.rbov true)))
   $decl ot  $call T.tval ($call infer (cx, e, ov))
-  // `{}` is `()` (§2.1), so an empty override arrives as unit, with no props.
+  // An empty override is `{}`, a block with no props; `()` is taken as one too.
   $decl ok  $match ot (
       $case {$prop tag "block"} ($call T.fields.is_nil ($call T.fields.val (ot.fields))),
       $case {$prop tag "unit"}  true,

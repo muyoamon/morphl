@@ -218,8 +218,9 @@ const Parser = struct {
     fn parseBlock(self: *Parser) ParseError!Node {
         const open = self.bump(); // '{'
         if (self.eat(.rbrace)) |close| {
-            // §2.3: the empty block and the empty group are the same value.
-            return self.node(open.span.to(close.span), .unit);
+            // §2.3: `{}` is the empty block, the top of blocks — not `()`, the top of
+            // everything. Two types, so two nodes.
+            return self.node(open.span.to(close.span), .{ .block = &.{} });
         }
 
         var exprs: std.ArrayList(Node) = .empty;
@@ -509,7 +510,7 @@ test "arity drives the parse: no separators needed" {
 
 test "groups: unit, folding, and tuples" {
     try expectDump("()", "()");
-    try expectDump("{}", "()"); // §2.3: same value
+    try expectDump("{}", "(block)"); // §2.3: the empty block, not ()
     try expectDump("(a)", "a"); // no one-tuple
     try expectDump("(a, b)", "(group a b)");
     try expectDump("(a, b, c)", "(group a b c)");
@@ -581,8 +582,8 @@ test "worked example: tagged blocks and match (SPEC 12)" {
 
 test "worked example: a loop (SPEC 12)" {
     try expectDump(
-        \\$decl while $func ($decl cond $func () true, $decl body $func () {})
-        \\  $if ($call cond ()) ($do ($call body ()) ($call while (cond, body))) {}
+        \\$decl while $func ($decl cond $func () true, $decl body $func () ())
+        \\  $if ($call cond ()) ($do ($call body ()) ($call while (cond, body))) ()
     ,
         "($decl while ($func (group ($decl cond ($func () true)) ($decl body ($func () ()))) " ++
             "($if ($call cond ()) ($do ($call body ()) ($call while (group cond body))) ())))",

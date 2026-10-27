@@ -127,6 +127,22 @@ $decl t20 $call check ("bottom <: Int", $call T.sub (bot, int))
 $decl t21 $call check ("bottom <: a block", $call T.sub (bot, ab))
 $decl t22 $call check ("Int is not <: bottom", $call not ($call T.sub (int, bot)))
 
+// §2.3: `()` is the top type and `{}` the top of blocks; neither absorbs in a join (§3.6).
+$decl eblk $call T.t_block (T.fields.nil, T.props.nil)
+$decl t22a $call check ("Int <: ()", $call T.sub (int, T.t_unit))
+$decl t22b $call check ("a block <: ()", $call T.sub (ab, T.t_unit))
+$decl t22c $call check ("a union <: ()", $call T.sub (bool, T.t_unit))
+$decl t22d $call check ("() is not <: Int", $call not ($call T.sub (T.t_unit, int)))
+$decl t22e $call check ("a block <: {}", $call T.sub (ab, eblk))
+$decl t22f $call check ("Int is not <: {}", $call not ($call T.sub (int, eblk)))
+$decl t22g $call check ("{} is not ()", $call not ($call T.ty_eq (eblk, T.t_unit)))
+$decl t22h $call check ("a join with () keeps both",
+  $call T.ty_eq ($call T.join (int, T.t_unit), $call T.union2 (int, T.t_unit)))
+$decl t22i $call check ("...and a join with {} keeps the block",
+  $call T.ty_eq ($call T.join (ab, eblk), $call T.union2 (ab, eblk)))
+$decl t22j $call check ("$case () narrows to the whole scrutinee",
+  $call T.ty_eq ($call T.restrict (bool, T.t_unit), bool))
+
 // §5.1: blocks match by ordered prefix, with depth inside the prefix.
 $decl abc    $call T.t_block ($call T.fields.cons ($call T.field ("a", int), $call fld2 ("b", str,
     "c", flt)), T.props.nil)
@@ -209,15 +225,17 @@ $decl t46 $call check ("a union is not a subtype of one member",
 $decl t47 $call check ("an intersection is a subtype of each member",
   $call T.sub ($call T.meet (abc, just_a), just_a))
 
-// §5.5: recursive types. The list from the spec's own example.
-//   μR. {} | {head: Int, tail: R}
+// §5.5: recursive types. The list from the spec's example, with its nil tagged:
+//   μR. {tag nil} | {head: Int, tail: R}
+// An untagged `{}` would be §2.3's top of blocks, and every block would be a list.
 $decl cons_cell $func ($decl tail T.proto_ty)
   $call T.t_block ($call fld2 ("head", int, "tail", tail), T.props.nil)
+$decl nil_ty $call T.tag_block ("tag", "nil")
 
-$decl list_ty $call T.close_var ($call T.union2 (unit, $call cons_cell ($call T.t_var (1))), 1)
+$decl list_ty $call T.close_var ($call T.union2 (nil_ty, $call cons_cell ($call T.t_var (1))), 1)
 
 $decl t48 $call check_str ("the inferred list type renders",
-  $call T.show (list_ty), "mu.<(),{head:Int,tail:b0,}>")
+  $call T.show (list_ty), "mu.<{head:Int,tail:b0,},{tag=s\"nil\",}>")
 
 // Equirecursive: one unrolling is the same type.
 $decl t49 $call check ("a recursive type equals its unrolling",
@@ -226,12 +244,12 @@ $decl t49 $call check ("a recursive type equals its unrolling",
 
 // A two-element list is a subtype of the recursive type. This is the case that
 // only terminates because `sub` assumes its goal before descending.
-$decl two_elem $call cons_cell ($call cons_cell (unit))
+$decl two_elem $call cons_cell ($call cons_cell (nil_ty))
 $decl t50 $call check ("a finite list is a subtype of the recursive type",
   $call T.sub (two_elem, list_ty))
-$decl t51 $call check ("unit is a subtype of the recursive type", $call T.sub (unit, list_ty))
+$decl t51 $call check ("nil is a subtype of the recursive type", $call T.sub (nil_ty, list_ty))
 $decl t52 $call check ("a Str-headed cell is not",
-  $call not ($call T.sub ($call cons_cell ($call T.t_block ($call fld2 ("head", str, "tail", unit),
+  $call not ($call T.sub ($call cons_cell ($call T.t_block ($call fld2 ("head", str, "tail", nil_ty),
       T.props.nil)),
                           list_ty)))
 
@@ -288,8 +306,7 @@ $decl t64 $call check ("...and the recursive type accepts the union of both form
 // The shape inference actually produces: the expansion sits inside a *second*
 // recursive type (a list) built from a different placeholder on each side — 126
 // against 372, as two declarations would give it. Tying the knot discards those
-// ids for an index, so the two lists come out as the same value.
-$decl nil_ty $call T.tag_block ("tag", "nil")
+// ids for an index, so the two lists come out as the same value. `nil_ty` is above.
 $decl cons_of $func ($decl elem T.proto_ty, $decl selfid 0)
   $call T.t_block ($call fld2 ("head", elem, "tail", $call T.t_var (selfid)),
                    $call T.p1 ("tag", $call T.cv_str ("cons")))

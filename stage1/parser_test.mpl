@@ -69,7 +69,7 @@ $decl t04 $call check_str ("a one-operand form", $call dump1 ("$new 0"), "($new 
 
 // §2.3: groups
 $decl t05 $call check_str ("the empty group is unit", $call dump1 ("()"), "()")
-$decl t06 $call check_str ("the empty block is the same value", $call dump1 ("{}"), "()")
+$decl t06 $call check_str ("the empty block is a block, not unit", $call dump1 ("{}"), "(block)")
 $decl t07 $call check_str ("a one-element group is the element", $call dump1 ("(a)"), "a")
 $decl t08 $call check_str ("a two-element group", $call dump1 ("(a, b)"), "(group a b)")
 $decl t09 $call check_str ("a three-element group", $call dump1 ("(a, b, c)"), "(group a b c)")
@@ -122,7 +122,7 @@ $decl t31 $call check_str ("the counter example",
   $call dump_all ("$decl n $mut $new 0\n$set n ($call add (n, 1))"),
   "($decl n ($mut ($new 0)))\n($set n ($call add (group n 1)))\n")
 $decl t32 $call check_str ("the while loop",
-  $call dump1 ("$decl while $func ($decl cond $func () true, $decl body $func () {}) $if ($call cond ()) ($do ($call body ()) ($call while (cond, body))) {}"),
+  $call dump1 ("$decl while $func ($decl cond $func () true, $decl body $func () ()) $if ($call cond ()) ($do ($call body ()) ($call while (cond, body))) ()"),
   "($decl while ($func (group ($decl cond ($func () true)) ($decl body ($func () ()))) ($if ($call cond ()) ($do ($call body ()) ($call while (group cond body))) ())))")
 $decl t33 $call check_str ("a single-arm match keeps the $case directly",
   $call dump1 ("$match x ($case x 1)"), "($match x ($case x 1))")

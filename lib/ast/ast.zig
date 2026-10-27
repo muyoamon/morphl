@@ -10,7 +10,7 @@
 //!
 //!   * `(e)` is `e` — there is no one-tuple, so a one-element group never
 //!     appears in the tree.
-//!   * `()` and `{}` are the same value (unit), so both parse to `.unit`.
+//!   * `()` is unit (§2.3's top type) and parses to `.unit`; `{}` is the empty block.
 //!
 //! Consequently `.group` always holds at least 2 children and `.block` at
 //! least 1. A one-expression *block* is still a block: only groups fold.

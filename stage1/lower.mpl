@@ -2654,9 +2654,12 @@ $decl cap_env $func ($decl cs benv.node, $decl i 0, $decl acc benv.node) $match 
 // for more than one member.
 $decl narrowed $func ($decl e benv.node, $decl s 0) { $decl env e  $decl slot s }
 
+// A scrutinee that is no union is its one member, so it narrows to itself — `$case ()`
+// on a `Str` — and needs no slot either.
 $decl narrow_arm $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
                         $decl ms T.tys.node, $decl ds IR.ints.node)
-  $if ($call eq_str (nm, "")) ($call narrowed (e, -1))
+  $if ($call P.or ($call eq_str (nm, ""), $call eq_int ($call T.tys.length (ms, 0), 1)))
+      ($call narrowed (e, -1))
   ($match ds (
       $case {$prop tag "cons"} {
         $decl rest $call IR.ints.val (ds.tail)

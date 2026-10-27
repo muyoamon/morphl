@@ -280,7 +280,7 @@ $decl group_items $func ($decl ps proto_parser, $decl acc nodes.node, $decl open
 $decl parse_group $func ($decl ps proto_parser) {
   $decl open $call bump (ps)
   $decl ret $if ($call at_kind (ps, "rparen"))
-      // §2.3: the empty group and the empty block are the same value.
+      // §2.3: `()` is unit, the top type. `{}` is the empty block, a different type.
       ($do ($call bump (ps)) ($call n_unit (open.line, open.col))) {
         $decl rev   $call group_items (ps, nodes.nil, open)
         $decl items $call nodes.reverse (rev, nodes.nil)
@@ -303,11 +303,8 @@ $decl block_items $func ($decl ps proto_parser, $decl acc nodes.node, $decl open
 
 $decl parse_block $func ($decl ps proto_parser) {
   $decl open $call bump (ps)
-  $decl ret $if ($call at_kind (ps, "rbrace"))
-      ($do ($call bump (ps)) ($call n_unit (open.line, open.col))) {
-        $decl rev  $call block_items (ps, nodes.nil, open)
-        $decl ret2 $call n_block ($call nodes.reverse (rev, nodes.nil), open.line, open.col)
-      }.ret2
+  $decl rev $call block_items (ps, nodes.nil, open)
+  $decl ret $call n_block ($call nodes.reverse (rev, nodes.nil), open.line, open.col)
 }.ret
 
 $decl parse_name_operand $func ($decl ps proto_parser, $decl kwt L.proto_token, $decl idx 0)

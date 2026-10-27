@@ -2774,7 +2774,21 @@ $decl sub_trait $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) 
   $case b false
 )
 
-$decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match a (
+// §2.3's two tops: `()`, above every type, and `{}`, above every block. Neither absorbs
+// in a join (§3.6), which is why `join` asks.
+$decl is_top $func ($decl t proto_ty) $match t (
+  $case {$prop tag "unit"}  true,
+  $case {$prop tag "block"}
+    $if ($call fields.is_nil ($call fields.val (t.fields)))
+        ($call props.is_nil ($call props.val (t.props))) false,
+  $case t false
+)
+
+// §5.1: every type is a subtype of `()`, the empty prefix — asked first, since it holds
+// whatever `a` is. `{}` needs no case: the block rule's empty prefix gives it.
+$decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match b (
+  $case {$prop tag "unit"} true,
+  $case b $match a (
   // §3.6: ⊥ is a subtype of everything.
   $case {$prop tag "bottom"} true,
   // Assume the goal, then unroll one step (§5.5 is equirecursive, so the
@@ -2845,7 +2859,7 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
           $case a false
         ))
     )
-)
+))
 
 // Indented by the number of assumptions in scope, which is how deep into
 // recursive types the goal sits — and needs no counter to restore afterwards,
@@ -2909,8 +2923,15 @@ $decl is_base $func ($decl t proto_ty) $match t (
 // need not be the frame-bound one — `$if c ($traitsof loc) ($traitsof tri)` kept the
 // second arm's and let a trait object over this call's own `loc` be returned. A join is
 // frame-bound if either side is.
+//
+// A join absorbs a subtype into its supertype, except into a top (§2.3): `$if c 5 ()` is
+// `<Int, ()>`, not `()`, which would keep nothing of the `Int` (§3.6: unions do not
+// absorb). That a join absorbs at all is narrower than §3.6 asks, and is left for the
+// change that makes a union's injection pick its most specific member.
 $decl join $func ($decl a proto_ty, $decl b proto_ty) {
-  $decl r   $if ($call sub (a, b)) b ($if ($call sub (b, a)) a ($call union2 (a, b)))
+  $decl r   $if ($call same (a, b)) a
+                ($if ($call P.or ($call is_top (a), $call is_top (b))) ($call union2 (a, b))
+                ($if ($call sub (a, b)) b ($if ($call sub (b, a)) a ($call union2 (a, b)))))
   $decl ret $if ($call frame_bound (r, 0)) r
                 ($if ($call P.or ($call frame_bound (a, 0), $call frame_bound (b, 0)))
                      ($call make_frame (r)) r)
@@ -3018,14 +3039,16 @@ $decl restrict_rec $func ($decl t proto_ty, $decl pat proto_ty) {
   }.ret2
 }.ret
 
+// `$case ()` narrows to the whole scrutinee (§4.7: `type(e) & ()` is `type(e)`).
+$decl is_unit_pat $func ($decl t proto_ty) $match t ($case {$prop tag "unit"} true, $case t false)
 $decl restrict $func ($decl t proto_ty, $decl pat proto_ty)
   // §4.7's catch-all arm narrows the scrutinee by its own type, and `T & T` is
   // `T`. Without this the common arm re-checks every member against every
   // member, which is quadratic for no information.
-  $if ($call same (t, pat)) t ($match t (
+  $if ($call same (t, pat)) t ($if ($call is_unit_pat (pat)) t ($match t (
       $case {$prop tag "rec"} ($call restrict_rec (t, pat)),
       $case t ($call restrict_at (t, pat))
-    ))
+    )))
 
 // `t` with the props `ps` added back — and nothing, if narrowing left nothing (§3.6's ⊥).
 $decl with_kept $func ($decl t proto_ty, $decl ps props.node) $match t (

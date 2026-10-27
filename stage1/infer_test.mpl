@@ -80,8 +80,8 @@ $decl t03 $call check_str ("a float literal is Float",
 $decl t04 $call check_str ("true has type true, not Bool",
   $call field_ty ("$decl x true", "x"), "true")
 $decl t05 $call check_str ("unit", $call field_ty ("$decl x ()", "x"), "()")
-$decl t06 $call check_str ("the empty block is unit too (§2.3)",
-  $call field_ty ("$decl x {}", "x"), "()")
+$decl t06 $call check_str ("the empty block is not unit: it is the top of blocks (§2.3)",
+  $call field_ty ("$decl x {}", "x"), "{}")
 
 // ---------------------------------------------------------- blocks and groups
 
@@ -267,7 +267,7 @@ $decl t42 $call check_str ("recursive data is inferred, not declared",
   $call field_ty (
     "$decl f $func ($decl n 0) $if ($call eq_int (n, 0)) {} { $decl head n  $decl tail $call f ($call sub (n, 1)) }",
     "f"),
-  "[Int]->mu.<(),{head:Int,tail:b0,}>")
+  "[Int]->mu.<{head:Int,tail:b0,},{}>")
 
 // §4.10: props are visible throughout their block regardless of order.
 // Asserted through the projection rather than the rendered block, so the test
@@ -452,7 +452,7 @@ $decl t44n $call check_str ("a growing chain of specialisations stops at the dep
 // the *first* arm's value. This was a documented footgun with no diagnostic.
 $decl t44f $call check_str ("an arm covering the whole scrutinee kills the arms after it",
   $call errs_of ("$decl f $func ($decl n 0) $match n ($case 1 100, $case n 200)"),
-  "this arm's pattern is the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1")
+  "this arm's pattern covers the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1")
 
 // The test that keeps it usable: §5.6 requires exhaustiveness and BOOTSTRAP §1.3
 // makes a trailing catch-all the idiom throughout stage 1, so an arm the *types*
@@ -463,6 +463,25 @@ $decl t44g $call check_str ("...but a trailing catch-all after exhaustive arms i
   $call errs_of ($call concat ("$decl a { $prop k \"a\" }  $decl b { $prop k \"b\" } ",
       "$decl f $func ($decl x $union (a, b)) $match x ($case {$prop k \"a\"} 1, $case {$prop k \"b\"} 2, $case x 3)")),
   "")
+
+// §2.3's tops as §4.7 patterns. `$case ()` covers any scrutinee, so an arm after it is
+// dead; `$case {}` covers the block members and leaves the rest to other arms; and a join
+// does not absorb into `()` (§3.6), so `$if c 5 ()` keeps its `Int`.
+$decl t44g2 $call check_str ("an arm after `$case ()` cannot be reached",
+  $call errs_of ("$decl f $func ($decl n 0) $match n ($case () 1, $case n 2)"),
+  "this arm's pattern covers the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1")
+$decl t44g3 $call check_str ("`$case {}` covers the blocks of a union, after its `Int` arm",
+  $call errs_of ("$decl f $func ($decl u $union (0, { $prop k \"a\" })) $match u ($case 0 1, $case {} 2)"),
+  "")
+$decl t44g4 $call check_str ("...and an arm after it is dead when every member is a block",
+  $call errs_of ("$decl f $func ($decl u $union ({ $prop k \"a\" }, { $prop k \"b\" })) $match u ($case {} 1, $case u 2)"),
+  "this arm's pattern covers the whole scrutinee type, so the arms after it cannot be reached (§4.7 is first fit). A pattern is a *type* (§5.7): `$case 1` means Int, not the value 1")
+$decl t44g5 $call check_str ("a parameter defaulted to `()` takes any argument",
+  $call errs_of ("$decl k $func ($decl x ()) 0  $decl a $call k (1)  $decl b $call k (\"s\")  $decl c $call k ({ $decl v 1 })"),
+  "")
+$decl t44g6 $call check_str ("a join keeps a type beside `()`",
+  $call field_ty ("$decl f $func ($decl c $union (false, true)) $if c 5 ()", "f"),
+  "[<false,true>]-><(),Int>")
 
 // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
 // error." Nothing enforced this. Such a program was rejected only *incidentally* —

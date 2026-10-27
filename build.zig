@@ -244,6 +244,10 @@ pub fn build(b: *std.Build) void {
         // `$match` and a `$try`, which lowering typed ⊥. 321. Stage 0 keeps patterns to
         // BOOTSTRAP §1.3's syntactic three.
         .{ .src = "stage1/fixtures/pattern_proj.mpl", .want = "321\n", .stage0 = false },
+        // §2.3's tops as §4.7 patterns: `$case ()` covers anything, `$case {}` every block
+        // member, a parameter defaulted to `()` takes any argument, and `$if c 5 ()` keeps
+        // its `Int`. 654321.
+        .{ .src = "stage1/fixtures/top.mpl", .want = "654321\n" },
         // The same with the resource in a library: `M.close` frees its parameter and
         // `M.open`'s result is root storage, facts inference hands lowering for a module
         // member (`member_facts`). 52431.

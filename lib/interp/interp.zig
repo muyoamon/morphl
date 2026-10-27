@@ -1948,7 +1948,10 @@ pub const Interp = struct {
             .int => return scrutinee == .int,
             .str => return scrutinee == .str,
             .float => return scrutinee == .float,
-            .unit => return scrutinee == .unit,
+            // §4.7: `$case ()` is a catch-all, since every type is a subtype of `()`
+            // (§2.3). `$case {}` needs nothing here: an empty block pattern is the
+            // literal-props case below with no props, so it matches every block.
+            .unit => return true,
 
             // §3.2: `true` and `false` are two *distinct nullary tag types*, so
             // unlike Int and Str a boolean pattern tests the exact tag. This is
@@ -2087,7 +2090,8 @@ pub const Interp = struct {
             else => {},
         }
         return switch (pat) {
-            .unit => val == .unit,
+            // `()` is the top type (§2.3), so a pattern of it matches anything.
+            .unit => true,
             .int => val == .int,
             .float => val == .float,
             .str => val == .str,
@@ -2443,6 +2447,17 @@ test "a name pattern tests the named value's shape; the scrutinee's own name is 
         \\$decl v { $prop tag "nil" }
         \\$decl r $match v ($case nil 1, $case v 2)
     , "r", 1);
+}
+
+test "$case () matches anything and $case {} every block (2.3, 4.7)" {
+    // `()` is the top type, so its pattern is a catch-all for any scrutinee.
+    try expectInt("$decl r $match 5 ($case \"\" 1, $case () 2)", "r", 2);
+    try expectInt("$decl r $match { $prop tag \"a\" } ($case () 3)", "r", 3);
+    // `{}` is the top of blocks: it takes a block, never an Int.
+    try expectInt("$decl r $match { $decl v 1 } ($case 0 1, $case {} 2)", "r", 2);
+    try expectInt("$decl r $match 7 ($case {} 1, $case () 2)", "r", 2);
+    // A name bound to `()` is the same pattern.
+    try expectInt("$decl u () $decl r $match \"s\" ($case u 4)", "r", 4);
 }
 
 test "a non-exhaustive match is a runtime error naming the rule" {

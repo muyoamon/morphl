@@ -1166,6 +1166,10 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
   // The code is unreachable — `mpl_panic` does not return — so there is
   // nothing to write and nothing to complain about.
   $decl from_bot $call T.same (ft, T.t_bot)
+  // §2.3: `()` is the top type and keeps nothing, so a coercion into it discards the
+  // value — which has already been computed into `src`, so `(void)` says so to `cc` —
+  // and writes `()`'s one value.
+  $decl to_unit  $call T.same (wt, T.t_unit)
   // A *block* on the right is §7.4's prefix copy, whichever shape the source
   // is — and it has to be tested before the union cases, since a union on the
   // left is a re-tag only when the target is a union too.
@@ -1173,6 +1177,8 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
   $decl how $if ($call block_is (wt)) ($call prefix_thru (ft)) ""
   $decl ret $if free ($call assign (st, dest, src))
       ($if from_bot ()
+      ($if to_unit ($do ($call say (st, $call concat ("  (void)", $call concat (src, ";\n"))))
+                        ($call assign (st, dest, "0")))
       ($if ($call not ($call eq_str (how, "")))
            ($call emit_prefix_copy (st, dest, src, $if ($call eq_str (how, "u")) ".u.m0" "",
                 $call T.fields.length (wf, 0), 0))
@@ -1195,7 +1201,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  $call concat (".u.m", $call int_to_str (k))), src, from, wk.id))
             ($call assign (st, $call concat (dest,
                  $call concat (".u.m", $call int_to_str (k))), src))
-      }.ret2)))))
+      }.ret2))))))
 }.ret
 
 // Emit `e` into `dest`, injecting into a union first if `e` is a member of one
