@@ -434,11 +434,12 @@ fn readFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return some(rt, try value.strVal(rt.arena, bytes));
 }
 
-/// `write_file (path, contents)` → `() | err`.
+/// `write_file (path, contents)` → `{$prop tag "ok"} | err`.
 ///
 /// §8 requires failing operations to return a value rather than panic; `err`
 /// is the shape §4.15 gives the root block, so a caller writes
-/// `$try ($call write_file (p, s)) err` and the error set is inferred.
+/// `$try ($call write_file (p, s)) err` and the error set is inferred. Success
+/// is §4.15's `ok` tag rather than `()`, which §2.3 makes every type's supertype.
 fn writeFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const path = try wantStr(rt, args, 0, "write_file", span);
     const data = try wantStr(rt, args, 1, "write_file", span);
@@ -448,7 +449,7 @@ fn writeFileFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
         error.OutOfMemory => return error.OutOfMemory,
         error.Failed => return tagBlock(rt, "err"),
     };
-    return .unit;
+    return tagBlock(rt, "ok");
 }
 
 /// `args ()` → an array of `Str`.
@@ -793,7 +794,7 @@ test "read_file returns option Str and refuses non-UTF-8 bytes (3.1, 4.16)" {
     try std.testing.expectEqualStrings("none", binary.block.findText("tag").?.str.bytes);
 }
 
-test "write_file returns unit or err, and args is an array of Str" {
+test "write_file returns ok or err, and args is an array of Str" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     var diags = diag.Diagnostics.init(std.testing.allocator);
@@ -815,7 +816,7 @@ test "write_file returns unit or err, and args is an array of Str" {
     };
 
     const wrote = try writeFileFn(&rt, &.{ value.litStr("out"), value.litStr("body") }, span);
-    try std.testing.expect(wrote == .unit);
+    try std.testing.expectEqualStrings("ok", wrote.block.findText("tag").?.str.bytes);
     try std.testing.expectEqualStrings("out", sink.?.path);
     try std.testing.expectEqualStrings("body", sink.?.bytes);
 

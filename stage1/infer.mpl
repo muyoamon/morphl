@@ -570,6 +570,8 @@ $decl s_bot $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), T.t_bot)
 // §4.15's shapes, and the `option` that §8 requires failing operations to use.
 $decl t_none $call T.tag_block ("tag", "none")
 $decl t_err  $call T.tag_block ("tag", "err")
+// §4.15's success shape, which the root does not name (`std/core` does): `write_file`'s.
+$decl t_ok   $call T.tag_block ("tag", "ok")
 
 $decl some_of $func ($decl t T.proto_ty)
   $call T.t_block ($call T.f1 ("v", t), $call T.p1 ("tag", $call T.cv_str ("some")))
@@ -656,7 +658,7 @@ $decl root_env
     "panic", s_bot), "print", s_u), "eprint", s_u),
     "read_file", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_str)),
     "write_file", $call T.t_func ($call T.tys.cons (T.t_str, $call T.tys.cons (T.t_str, T.tys.nil)),
-                                  $call T.union2 (T.t_unit, t_err))),
+                                  $call T.union2 (t_ok, t_err))),
     "array", T.ffi_array), "at", T.ffi_at), "alen", T.ffi_alen), "args", args_t),
     "err", t_err), "none", t_none)
 

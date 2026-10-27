@@ -427,9 +427,9 @@ Loads a source file as a block and evaluates to it; the type is that block's typ
 - **Outside a `$func`** (file top level, prop initializer) it is a compile error. A module that cannot initialize panics.
 - `$try` is the language's only non-local exit, and only conditional. There is no `return`.
 
-The root block declares `$prop ok {$prop tag "ok"}`, `$prop err {$prop tag "err"}` and `$prop none {$prop tag "none"}`, so the common forms read `$try x err` and `$try x none`. Any user-defined union shape works as `pat`.
+The root block declares `$prop err {$prop tag "err"}` and `$prop none {$prop tag "none"}`, so the common forms read `$try x err` and `$try x none`. Any user-defined union shape works as `pat`.
 
-**Success is `ok`.** An operation that can fail and has nothing else to answer answers `ok | err`, not `() | err`: a tag is a pattern that says what it matched, where `$case ()` matches the `err` as well (§4.7). A success carrying a value is `{$prop tag "ok" $decl v x}`, a failure carrying one `{$prop tag "err" $decl e x}` — §5.1 keeps each a subtype of its bare tag, so `$try x err` still passes the `ok` on, payload and all.
+**Success is `ok`, `{$prop tag "ok"}`.** An operation that can fail and has nothing else to answer answers `ok | err`, not `() | err`: a tag is a pattern that says what it matched, where `$case ()` matches the `err` as well (§4.7). A success carrying a value is `{$prop tag "ok" $decl v x}`, a failure carrying one `{$prop tag "err" $decl e x}` — §5.1 keeps each a subtype of its bare tag, so `$try x err` still passes the `ok` on, payload and all. The root does not name `ok`: it is not what `$try` is written with, and a props-only block's type is its props, so a library's `ok` is the same type wherever it is built.
 
 **`panic` is not an error value.** It aborts; there is no catch and no unwinding. Expected failures are values; bugs panic. A panic handler is a runtime/build concern.
 
@@ -838,7 +838,7 @@ Every program is wrapped in an implicit **root block**, assembled by the build p
 | Strings | `concat len slice byte` | **byte** units. `byte (s, i)` reads one byte as `Int`. `len` counts bytes; `slice (s, i, j)` takes byte offsets and panics if an offset splits a code point, preserving the validity invariant. Code-point and grapheme iteration are library; `eq` is bytewise (equal to code-point equality under the invariant) |
 | Arrays | `array at alen` | `$call array (n, example)` → `&mut [T]`, contiguous, bounds-checked; `at` → fat `&mut T` (or `&const T` through a `&const` array); length not part of the type |
 | Control | `panic` | returns `⊥`; aborts, no catch |
-| Shapes | `ok err none` | success, failure and absence (§4.15); patterns for `$try` and `$match` |
+| Shapes | `err none` | failure and absence (§4.15); patterns for `$try` and `$match` |
 | Bounds | `sendable` | compiler-known template bound (§7.8) |
 | FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox raw_alloc raw_free` | raw addresses for `$extern` and for allocators written in the language (§7.6), each an `Int` (§3.1 has one integer type): `str_ptr (s)` and `array_ptr (a)` give the base of the bytes or elements (a `Str` is not NUL-terminated, so its length travels separately); `box_ptr (r)` takes the address of storage, which must be a reference; `unbox (addr, example)` recovers a reference typed by the example — allocated and writable, since what it points at is outside every frame. `str_from_ptr (addr, n)` is the way back for bytes: it copies `n` bytes from the address and answers `option Str`, `none` when they are not valid UTF-8 or `n` is negative — the validating function this section's ABI mapping requires. `raw_alloc (n)` answers the address of `n` fresh bytes, 0 when none is to be had, and `raw_free (addr)` releases one; they are the root `allocator`'s `alloc` and `free`. All unsafe by declaration |
 | Build | `compiler` | see §9 |

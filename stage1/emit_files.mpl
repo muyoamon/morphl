@@ -11,7 +11,7 @@ $decl P $import "prelude"
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
 // Each output written where its `path` says, under `dir`. §8's `write_file` answers
-// `<unit, err>`; a failure is reported and does not stop the rest, because a build wants
+// `<ok, err>`; a failure is reported and does not stop the rest, because a build wants
 // to know about every one rather than the first.
 $decl put $func ($decl dir "", $decl fs C.ir.ofiles.node) $match fs (
   $case {$prop tag "cons"} {

@@ -240,6 +240,10 @@ pub fn build(b: *std.Build) void {
         // holds, freed by `close` — a function freeing its parameter — and through a
         // wrapper. 2431. Compiled only: stage 0 has no allocators.
         .{ .src = "stage1/fixtures/open_close.mpl", .want = "2431\n", .stage0 = false },
+        // §4.7: a pattern is any expression — a projection onto a module's member, in a
+        // `$match` and a `$try`, which lowering typed ⊥. 321. Stage 0 keeps patterns to
+        // BOOTSTRAP §1.3's syntactic three.
+        .{ .src = "stage1/fixtures/pattern_proj.mpl", .want = "321\n", .stage0 = false },
         // The same with the resource in a library: `M.close` frees its parameter and
         // `M.open`'s result is root storage, facts inference hands lowering for a module
         // member (`member_facts`). 52431.
@@ -841,7 +845,7 @@ pub fn build(b: *std.Build) void {
     // count is the verdict and a run that stopped early cannot match it.
     const std_step = b.step("test-std", "Build and run the standard library's tests");
     for ([_]struct { src: []const u8, want: []const u8 }{
-        .{ .src = "std/core_test.mpl", .want = "16\n" },
+        .{ .src = "std/core_test.mpl", .want = "17\n" },
         .{ .src = "std/list_test.mpl", .want = "28\n" },
         .{ .src = "std/seq_test.mpl", .want = "36\n" },
         .{ .src = "std/str_test.mpl", .want = "30\n" },

@@ -142,6 +142,12 @@ $decl map_opt $template (A, B) $func ($decl o $union (none, { $prop tag "some"  
 
 // -------------------------------------------------------------------- result
 
+// §4.15's success with nothing to carry: what `write_file` answers beside `err`. The root
+// block names `err` and `none`, the patterns `$try` is written with, and leaves this here
+// beside `some`; a props-only block's type is its props, so `C.ok` matches the root's
+// result wherever it was built. A success carrying a value is `std/result`'s.
+$decl ok { $prop tag "ok" }
+
 // §4.15: an expected failure is a value, and `$try x err` is how a caller passes one up.
 // A failure that carries something is `{tag err, e E}`, which §5.1 keeps a subtype of the
 // root block's `err`, so the same `$try` matches it.

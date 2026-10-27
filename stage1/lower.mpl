@@ -2479,8 +2479,8 @@ $decl append_ints $func ($decl xs IR.ints.node, $decl ys IR.ints.node) $match xs
 )
 
 // A pattern is a type-only position (§5.7) — never evaluated, only its type
-// used — and §1.3 keeps it to a prop-only block, a name, or a literal. So its
-// type is read straight off the syntax, with no inference needed.
+// used. BOOTSTRAP §1.3 keeps stage 1's own to a prop-only block, a name, or a
+// literal, whose types are read straight off the syntax; anything else is typed.
 $decl pat_props $func ($decl st proto_lst, $decl xs Pa.nodes.node,
     $decl acc T.props.node) $match xs (
   $case {$prop tag "cons"}
@@ -2512,7 +2512,10 @@ $decl pattern_ty $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
     $decl f   $call lookup (e, $call name_of (n))
     $decl ret $if f.hit ($call deref_ty (f.bnd.ty)) T.t_bot
   }.ret,
-  $case n T.t_bot
+  // §4.7: "a pattern is any expression, never evaluated" — a projection onto a module's
+  // member (`C.ok`), a call, anything else is typed as `$union`'s later members are, and
+  // read through as a name is. Without this it was ⊥, which no member is a subtype of.
+  $case n ($call deref_ty (($call type_only (st, e, n)).ty))
 )
 
 // Which member of a union a pattern selects. §1.3 keeps a pattern to a tag

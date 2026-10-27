@@ -91,6 +91,11 @@ $decl t_pord { $prop name "the comparisons on primitives, Str by bytes"
 $decl t_pmax { $prop name "max_ord and min_ord on primitives"
   $prop run $func ()
     $call C.and ($call eq ($call C.max_ord (3, 9), 9), $call eq ($call C.min_ord ("b", "a"), "a")) }
+$decl t_ok   { $prop name "ok is the success shape write_file answers"
+  $prop run $func () {
+    $decl r   $union ({ $prop tag "ok" }, err)
+    $decl ret $match r ($case C.ok true, $case err false)
+  }.ret }
 
 $decl main $func () {
   $decl r   $call T.results ()
@@ -110,5 +115,6 @@ $decl main $func () {
   $decl a14 $call T.check (r, t_peq)
   $decl a15 $call T.check (r, t_pord)
   $decl a16 $call T.check (r, t_pmax)
+  $decl a17 $call T.check (r, t_ok)
   $decl ret $call T.finish (r)
 }.ret

@@ -1,7 +1,7 @@
 // std/io: the platform group (§8) in the shapes a program wants — lines, whole files,
 // the argument list — over `print`, `eprint`, `read_file`, `write_file` and `args`.
 // A failure that is expected is a value (§4.15): reading answers an option, writing
-// `unit` or `err`.
+// `ok` or `err`.
 
 $decl C $import "std/core"
 $decl L $import "std/list"
@@ -13,7 +13,7 @@ $decl print_line  $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 $decl eprint_line $func ($decl s "") $do ($call eprint (s)) ($call eprint ("\n"))
 
 // A whole file, or `none` when it cannot be read or is not UTF-8 (§3.1); and a whole file
-// written, truncating, answering `unit` or `err`.
+// written, truncating, answering `ok` or `err`.
 $decl read  $func ($decl path "") $call read_file (path)
 $decl write $func ($decl path "", $decl text "") $call write_file (path, text)
 

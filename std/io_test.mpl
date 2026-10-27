@@ -29,7 +29,7 @@ $decl main $func () {
   $decl big $call I.unlines ($call many (5000, $call strs.empty ()))
   $decl c7  $call T.expect (r, "unlines joins many", $call eq ($call len (big), 10000))
   $decl w   $call I.write_lines (tmp, $call I.lines ("alpha\nbeta\n"))
-  $decl c8  $call T.expect (r, "write_lines writes", $match w ($case {$prop tag "err"} false, $case w true))
+  $decl c8  $call T.expect (r, "write_lines writes", $match w ($case C.ok true, $case err false))
   $decl back $call C.or_else ($call I.read_lines (tmp), $call strs.empty ())
   $decl c9  $call T.expect (r, "read_lines reads them back", $call eq ($call back.nth (1), "beta"))
   $decl c10 $call T.expect (r, "read of a missing file is none",

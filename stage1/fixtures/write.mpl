@@ -1,10 +1,10 @@
 // §8's `write_file`, which had no C backend at all. Prints 161.
 //
-// It answers `<unit, err>`, and **both members are nullary** — so `opt_slot`, which
+// It answers `<ok, err>`, and **both members are nullary** — so `opt_slot`, which
 // tells `some` from `none` by which one has a field, cannot separate them. They are
-// told apart structurally: one *is* the unit type, the other is §4.15's `err` tag
-// block. Which *position* each takes still belongs to the call site's interned union
-// rather than to the intrinsic, because §3.6 makes a union a set and §7.5 makes the
+// told apart structurally: one *is* §4.15's `ok` tag block, the other its `err`.
+// Which *position* each takes still belongs to the call site's interned union rather
+// than to the intrinsic, because §3.6 makes a union a set and §7.5 makes the
 // order the discriminator — the same reason `read_file` could not be a `prim_fn`.
 //
 // The round trip is the test that matters: §8 requires the two implementations of an
@@ -14,8 +14,8 @@ $decl path "/tmp/mpl_write_fixture.txt"
 
 $decl wrote $call write_file (path, "morphl")
 
-// 1 if the write reported success, 0 if it reported `err`.
-$decl ok $match wrote ($case {$prop tag "err"} 0, $case wrote 1)
+// 1 if the write reported `ok`, 0 if it reported `err`.
+$decl ok $match wrote ($case {$prop tag "ok"} 1, $case {$prop tag "err"} 0)
 
 // What came back: the length of the contents, or -1 if it could not be read.
 $decl back $call read_file (path)
