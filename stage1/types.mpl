@@ -2952,20 +2952,56 @@ $decl sub_seen $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
 $decl sub $func ($decl a proto_ty, $decl b proto_ty) $call sub_seen (a, b, proto_actx)
 
 // Why `a <: b` failed, when the answer is §5.3's representation rule and not the types: a
-// reference to a subtype that a pointer cannot read as the supertype. "" otherwise, so a
-// caller can always append it.
-$decl why_not $func ($decl a proto_ty, $decl b proto_ty) $match b (
+// reference to a subtype that a pointer cannot read as the supertype — at the top, or in the
+// first field or item of a block or group that fails, named by its path as a projection would
+// name it (`r`, `1.r`). "" otherwise, so a caller can always append it.
+$decl why_text "the value would be a subtype, but a pointer to one is not a pointer to the other: pass the value (§5.3)"
+$decl why_at $func ($decl path "")
+  $if ($call eq_str (path, "")) ($call concat ("; ", why_text))
+      ($call concat ("; in '", $call concat (path, $call concat ("', ", why_text))))
+$decl why_dot $func ($decl path "", $decl step "")
+  $if ($call eq_str (path, "")) step ($call concat (path, $call concat (".", step)))
+$fwd why_path
+$decl why_fields $func ($decl xs fields.node, $decl ys fields.node, $decl path "") $match ys (
+  $case {$prop tag "cons"} $match xs (
+      $case {$prop tag "cons"}
+        $if ($call not ($call eq_str (xs.head.name, ys.head.name))) ""
+        ($if ($call sub ($call tval (xs.head.ty), $call tval (ys.head.ty)))
+             ($call why_fields ($call fields.val (xs.tail), $call fields.val (ys.tail), path))
+             ($call why_path ($call tval (xs.head.ty), $call tval (ys.head.ty),
+                              $call why_dot (path, ys.head.name)))),
+      $case xs ""),
+  $case ys ""
+)
+$decl why_items $func ($decl xs tys.node, $decl ys tys.node, $decl path "", $decl k 0) $match ys (
+  $case {$prop tag "cons"} $match xs (
+      $case {$prop tag "cons"}
+        $if ($call sub ($call tval (xs.head), $call tval (ys.head)))
+            ($call why_items ($call tys.val (xs.tail), $call tys.val (ys.tail), path,
+                              $call add (k, 1)))
+            ($call why_path ($call tval (xs.head), $call tval (ys.head),
+                             $call why_dot (path, $call int_to_str (k)))),
+      $case xs ""),
+  $case ys ""
+)
+$decl why_path $func ($decl a proto_ty, $decl b proto_ty, $decl path "") $match b (
   $case {$prop tag "ref"} $match a (
       $case {$prop tag "ref"}
         $if ($call and ($call eq_str (b.qual, "const"), $call sub_kind (a.kind, b.kind)))
-            ($if ($call sub ($call tval (a.inner), $call tval (b.inner)))
-                 ($call concat ("; the value would be a subtype, but a pointer to one is not a ",
-                                "pointer to the other: pass the value (§5.3)"))
-                 "")
+            ($if ($call sub ($call tval (a.inner), $call tval (b.inner))) ($call why_at (path)) "")
             "",
+      $case a ""),
+  $case {$prop tag "block"} $match a (
+      $case {$prop tag "block"}
+        $call why_fields ($call fields.val (a.fields), $call fields.val (b.fields), path),
+      $case a ""),
+  $case {$prop tag "group"} $match a (
+      $case {$prop tag "group"}
+        $call why_items ($call tys.val (a.items), $call tys.val (b.items), path, 0),
       $case a ""),
   $case b ""
 )
+$decl why_not $func ($decl a proto_ty, $decl b proto_ty) $call why_path (a, b, "")
 
 // Re-run a check that has already failed, printing the goal tree. A no-op
 // unless the driver asked for it.

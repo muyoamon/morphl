@@ -1411,4 +1411,12 @@ $decl cr02 $call check_str ("...while a block's prefix still is",
   $call errs_of ("$decl g $func ($decl r $const $new { $decl a 1 }) 0  $decl y $call g ($const $new { $decl a 1  $decl b 2 })"),
   "")
 
+$decl cr03 $call check_str ("...and says where, when the reference is in a field",
+  $call errs_of ("$decl f $func ($decl b { $decl k 0  $decl r $const $new $union (1, \"s\") }) 0  $decl x $call f ({ $decl k 1  $decl r $const $new 5 })"),
+  $call concat ("argument 1 is {k:Int,r:&const Int,}, expected {k:Int,r:&const <Int,Str>,}; in 'r', ",
+    "the value would be a subtype, but a pointer to one is not a pointer to the other: pass the value (§5.3)"))
+$decl cr04 $call check_str ("...and an ordinary mismatch in a field gets no hint",
+  $call errs_of ("$decl h $func ($decl b { $decl k 0 }) 0  $decl z $call h ({ $decl k \"no\" })"),
+  "argument 1 is {k:Str,}, expected {k:Int,}")
+
 $decl done19 $call nl ("all borrowing tests passed")
