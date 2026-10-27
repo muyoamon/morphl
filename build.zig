@@ -488,6 +488,36 @@ pub fn build(b: *std.Build) void {
             panic_step.dependOn(&run0.step);
             test_step.dependOn(&run0.step);
         }
+        // What was printed before a `panic` survives it (§7.8): stdout here is a pipe,
+        // which C buffers and `abort` drops, so the runtime flushes first.
+        {
+            const psrc = "stage1/fixtures/panic_out.mpl";
+            const pemit = b.addRunArtifact(runner);
+            pemit.addArgs(&.{ "--run", "stage1/emit_c.mpl", psrc });
+            pemit.setCwd(b.path("."));
+            pemit.has_side_effects = true;
+            const pc = pemit.captureStdOut(.{ .basename = "out.c" });
+            const pcc = b.addSystemCommand(&.{ "cc", "-O0", "-Wall", "-Wno-unused-function", "-Wno-unused-but-set-variable", "-Werror", "-o" });
+            const pbin = pcc.addOutputFileArg("panic_out");
+            pcc.addFileArg(pc);
+            const prun = std.Build.Step.Run.create(b, "run panic_out");
+            prun.addFileArg(pbin);
+            prun.has_side_effects = true;
+            prun.addCheck(.{ .expect_stdout_exact = "before\n" });
+            prun.addCheck(.{ .expect_stderr_match = "boom" });
+            prun.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+            panic_step.dependOn(&prun.step);
+            test_step.dependOn(&prun.step);
+            const prun0 = b.addRunArtifact(runner);
+            prun0.addArgs(&.{ "--run", "--main", psrc });
+            prun0.setCwd(b.path("."));
+            prun0.has_side_effects = true;
+            prun0.addCheck(.{ .expect_stdout_exact = "before\n" });
+            prun0.addCheck(.{ .expect_stderr_match = "boom" });
+            prun0.expectExitCode(1);
+            panic_step.dependOn(&prun0.step);
+            test_step.dependOn(&prun0.step);
+        }
         // ...and `mod` by -1 at the bottom of the range is 0, not C's undefined `%`.
         const ok = std.Build.Step.Run.create(b, "run the overflow fixture");
         ok.addFileArg(bin);
