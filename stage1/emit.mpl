@@ -3093,9 +3093,11 @@ $decl tab_want $func ($decl ts T.tys.node, $decl tid 0, $decl j 0) {
 // Whether member function `k` can stand in the table as itself for signature `want`: each
 // of the trait's parameters coerces freely into the member's, and the member's result
 // into the trait's — `fn_free`'s question, with the member's side read off `IR.fn`.
-// A component not interned in the form the trait's member gives it — a trait naming
-// itself, whose substituted member types are spelt differently from lowering's — is taken
-// as agreeing, which is what every entry did before; the adapter is for what is known.
+// A component that is not interned is taken as agreeing, which is what every entry did
+// before; the adapter is for what is known. The case that reaches it is a trait taken inside
+// the block it describes — `$traitsof s2` in one of `s2`'s own props — whose member being
+// lowered at that point has no type yet (⊥), so its signature is unknown to lowering as much
+// as to this. Recording lowering's signatures on the object was tried and changed nothing.
 $decl comp_free_or $func ($decl st proto_est, $decl ts T.tys.node, $decl a 0, $decl b 0)
   $if ($call P.or ($call lt (a, 0), $call lt (b, 0))) true ($call comp_free (st, ts, a, b, 0))
 $decl ids_free $func ($decl st proto_est, $decl ts T.tys.node, $decl ws T.tys.node,
