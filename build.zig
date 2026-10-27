@@ -292,6 +292,9 @@ pub fn build(b: *std.Build) void {
         // §4.12a's `$override`, on a value and on a template (STDLIB.md, P8). Stage 0 leaves
         // it out of the bootstrap subset.
         .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n", .stage0 = false },
+        // §4.12a twice: an `$override` of a template an `$override` made, each override's
+        // names resolving where it is written. 31410. Compiled only, as `override.mpl` is.
+        .{ .src = "stage1/fixtures/override2.mpl", .want = "31410\n", .stage0 = false },
         // §6's trait objects: coercion at a call and at `$set`, `$traitsof` of a name, of
         // `$mut` storage and of an expression, `$impl` over an `Int`, and `$match` on an
         // object. 87.
@@ -580,9 +583,8 @@ pub fn build(b: *std.Build) void {
                 "override_bad.mpl:8:10: an $override's override is a block of props only",
                 "override_bad.mpl:10:10: 'take' is not a prop of this template's body",
                 "override_bad.mpl:12:10: an $override of a template takes its props as a block written in place",
-                "override_bad.mpl:14:10: this template was made by an $override",
             },
-            .count = "errors: 7\n",
+            .count = "errors: 6\n",
             .stage0 = "$override is outside the bootstrap subset",
         },
         // §5.3a's provenance (STORAGE.md): a place this call made may not be returned,
@@ -641,6 +643,17 @@ pub fn build(b: *std.Build) void {
                 "override_diag_util.mpl:7:60: an omitted argument needs its default",
             },
             .count = "check errors: 2\n",
+            .stage0 = "$override is outside the bootstrap subset",
+            .driver = "stage1/lower_dump.mpl",
+        },
+        // Two `$override`s deep: one shift down is the template overridden, two is the base.
+        .{
+            .src = "stage1/fixtures/override2_diag.mpl",
+            .stage1 = &.{
+                "override_diag_util.mpl:5:61: an omitted argument needs its default",
+                "override2_dmid.mpl:5:61: an omitted argument needs its default",
+            },
+            .count = "check errors: 3\n",
             .stage0 = "$override is outside the bootstrap subset",
             .driver = "stage1/lower_dump.mpl",
         },
@@ -755,6 +768,9 @@ pub fn build(b: *std.Build) void {
             // its spliced body names the base's module members from another output.
             .{ .src = "stage1/fixtures/override.mpl", .want = "4 33 30 4 4 2 7 1400 1010 101 101\n",
                .mods = &.{"override_util"} },
+            // Three levels across two files: the spliced bodies are emitted where each
+            // `$override` is, and name the module's members across outputs.
+            .{ .src = "stage1/fixtures/override2.mpl", .want = "31410\n", .mods = &.{"override2_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);

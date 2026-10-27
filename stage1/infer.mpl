@@ -396,7 +396,7 @@ $decl bval $func ($decl b P.boolean) b
 $decl err $func ($decl cx proto_ctx, $decl m "", $decl x P.proto_span) {
   $decl noted $if ($call bval (cx.quiet)) ()
       ($set cx.errs ($call Pa.diags.cons ($call Pa.diag (m, $call Pa.ov_line (x.line), x.col,
-          $if ($call Pa.ov_far (x.line)) ($call sval (cx.bfile)) ($call sval (cx.file))), cx.errs)))
+          $call Pa.ov_file ($call sval (cx.bfile), $call sval (cx.file), x.line)), cx.errs)))
   $decl ret   T.t_bot
 }.ret
 
@@ -3283,17 +3283,17 @@ $decl ov_missing $func ($decl ov Pa.nodes.node, $decl body Pa.nodes.node) $match
 // Each renamed name bound to what it is where the `$override` is written. A compile-time
 // or top-level name stays one, since §4.10 and §4.16 ask by name.
 $decl hide_names $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
-                        $decl acc env.node) $match ns (
+                        $decl acc env.node, $decl d 1) $match ns (
   $case {$prop tag "cons"} {
     $decl nm  ns.head
-    $decl hn  $call Pa.ov_hidden (nm)
+    $decl hn  $call Pa.ov_hidden_at (nm, d)
     $decl f   $call lookup (e, nm)
     $decl cn  $call strs.val (cx.ctnames)
     $decl ct  $set cx.ctnames ($if ($call in_strs (cn, nm)) ($call strs.cons (hn, cn)) cn)
     $decl tn  $call strs.val (cx.topnames)
     $decl tp  $set cx.topnames ($if ($call in_strs (tn, nm)) ($call strs.cons (hn, tn)) tn)
     $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail),
-                  $if f.ok ($call bind (acc, hn, f.ty)) acc)
+                  $if f.ok ($call bind (acc, hn, f.ty)) acc, d)
   }.ret,
   $case ns acc
 )
@@ -3313,19 +3313,22 @@ $decl override_tmpl $func ($decl cx proto_ctx, $decl e env.node, $decl id 0, $de
     ($if ($call not ($call eq_str (mis, "")))
       ($call err (cx, $call concat ("'", $call concat (mis,
           "' is not a prop of this template's body, and an $override only replaces (§4.12a)")), n))
-    ($if ($call not ($call eq_str (r.bfile, "")))
-      ($call err (cx, "this template was made by an $override, and overriding one again is not implemented yet (§4.12a)", n)) {
+    {
+      // A template made by an `$override` is overridden at the next level: its body shifted
+      // again and the new names hidden one level deeper (`Pa.ov_hidden_at`), and the file
+      // it was written in added to the front of its chain.
+      $decl d    $call add (1, $call Pa.ov_levels (r.bfile))
       $decl ns   $call Pa.ov_names (bis, ois)
-      $decl body $call Pa.ov_body (r.body, ois, ns)
-      $decl en   $call hide_names (cx, e, ns, r.env)
+      $decl body $call Pa.ov_body (r.body, ois, ns, d)
+      $decl en   $call hide_names (cx, e, ns, r.env, d)
       $decl nid  $call ct_id (cx, 7, n)
       $decl cg   $call ctg_fix (cx, en, nid, r.generics, body, Pa.ctgs.nil,
                      $call strs.length (r.generics, 0))
       $decl rec  $call tmpl_rec_c (nid, r.generics, body, en, $call sval (cx.file), cg, r.bounds,
-                     r.file)
+                     $call Pa.ov_chain (r.file, r.bfile))
       $decl add  $set cx.tmpls ($call tmpl_list.cons (rec, cx.tmpls))
       $decl ret2 $call T.t_tmpl (nid)
-    }.ret2))))
+    }.ret2)))
 }.ret
 
 $decl infer_override $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {

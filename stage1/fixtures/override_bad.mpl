@@ -1,6 +1,6 @@
-// What §4.12a refuses: on a value, a prop the base lacks, a field, a member that is no
-// subtype of the one it replaces, and a `$decl`; on a template, a prop its body lacks, an
-// override not written in place, and overriding an `$override`'s template again.
+// What §4.12a refuses: on a value, a prop the base lacks, a field, a member that is no subtype
+// of the one it replaces, and a `$decl`; on a template, a prop its body lacks and an override
+// not written in place. Overriding an `$override`'s template again is allowed (override2.mpl).
 $decl a { $decl w 1  $prop area $func () 2 }
 $decl b1 $override a { $prop size $func () 3 }
 $decl b2 $override a { $prop w 4 }
@@ -11,5 +11,4 @@ $decl t1 $override t { $prop take $func ($decl x 0) x }
 $decl ps { $prop make $func ($decl x 0) x }
 $decl t2 $override t ps
 $decl t3 $override t { $prop make $func ($decl x "") x }
-$decl t4 $override t3 { }
 $decl main $func () 0

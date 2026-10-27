@@ -1095,11 +1095,18 @@ $decl subst_lit $func ($decl n proto_node, $decl nm "", $decl lit proto_node) $m
 // each pass binds the renamed names to what they meant at the `$override`. The walk keeps
 // scope: a name the override binds itself — a parameter, a `$decl`, a generic — is left
 // alone wherever that binding reaches, and a binder is never renamed.
-$decl ov_hidden $func ($decl nm "") $call concat ("$o:", nm)
-// The name a renamed one stands for, or the name itself.
+//
+// An `$override` of a template that is itself one renames at the next level: `$o:` once per
+// override, so `$o:x` and `$o:$o:x` are the names two levels of overrides gave `x`, and the
+// two never meet.
+$decl ov_hidden_at $func ($decl nm "", $decl d 1)
+  $if ($call lt (d, 1)) nm ($call concat ("$o:", $call ov_hidden_at (nm, $call sub (d, 1))))
+$decl ov_hidden $func ($decl nm "") $call ov_hidden_at (nm, 1)
+// The name a renamed one stands for, at any level, or the name itself.
 $decl ov_plain $func ($decl nm "")
   $if ($call lt ($call len (nm), 3)) nm
-      ($if ($call eq_str ($call slice (nm, 0, 3), "$o:")) ($call slice (nm, 3, $call len (nm))) nm)
+      ($if ($call eq_str ($call slice (nm, 0, 3), "$o:"))
+           ($call ov_plain ($call slice (nm, 3, $call len (nm)))) nm)
 
 // A `$template`'s generics, bare or as `$decl`s carrying a bound (§4.9).
 $decl ov_generics $func ($decl n proto_node) $match n (
@@ -1109,28 +1116,32 @@ $decl ov_generics $func ($decl n proto_node) $match n (
 )
 
 $fwd ov_rename
-$decl ov_renames $func ($decl xs nodes.node, $decl ns pstrs.node, $decl acc nodes.node) $match xs (
+$decl ov_renames $func ($decl xs nodes.node, $decl ns pstrs.node, $decl acc nodes.node,
+                        $decl d 1) $match xs (
   $case {$prop tag "cons"}
-    $call ov_renames (xs.tail, ns, $call nodes.cons ($call ov_rename (xs.head, ns), acc)),
+    $call ov_renames (xs.tail, ns, $call nodes.cons ($call ov_rename (xs.head, ns, d), acc), d),
   $case xs ($call nodes.reverse (acc, nodes.nil))
 )
 // A form's operands after the first, which a binder names.
-$decl ov_rest $func ($decl xs nodes.node, $decl ns pstrs.node) $match xs (
-  $case {$prop tag "cons"} ($call nodes.cons (xs.head, $call ov_renames (xs.tail, ns, nodes.nil))),
+$decl ov_rest $func ($decl xs nodes.node, $decl ns pstrs.node, $decl d 1) $match xs (
+  $case {$prop tag "cons"}
+    ($call nodes.cons (xs.head, $call ov_renames (xs.tail, ns, nodes.nil, d))),
   $case xs xs
 )
-$decl ov_rename $func ($decl n proto_node, $decl ns pstrs.node) $match n (
+$decl ov_rename $func ($decl n proto_node, $decl ns pstrs.node, $decl d 1) $match n (
   $case {$prop tag "name"}
-    $if ($call mem_pstr (ns, n.text)) ($call n_name ($call ov_hidden (n.text), n.line, n.col)) n,
+    $if ($call mem_pstr (ns, n.text)) ($call n_name ($call ov_hidden_at (n.text, d), n.line, n.col))
+        n,
   $case {$prop tag "proj_name"}
-    $call n_projn ($call ov_rename (n.target, ns), n.field, n.line, n.col),
+    $call n_projn ($call ov_rename (n.target, ns, d), n.field, n.line, n.col),
   $case {$prop tag "proj_index"}
-    $call n_proji ($call ov_rename (n.target, ns), n.index, n.line, n.col),
-  $case {$prop tag "group"} ($call n_group ($call ov_renames (n.items, ns, nodes.nil), n.line,
+    $call n_proji ($call ov_rename (n.target, ns, d), n.index, n.line, n.col),
+  $case {$prop tag "group"} ($call n_group ($call ov_renames (n.items, ns, nodes.nil, d), n.line,
       n.col)),
   $case {$prop tag "block"}
     $call n_block ($call ov_renames (n.items,
-        $call pstrs_without (ns, $call block_binders (n.items, pstrs.nil), pstrs.nil), nodes.nil),
+        $call pstrs_without (ns, $call block_binders (n.items, pstrs.nil), pstrs.nil), nodes.nil,
+        d),
         n.line, n.col),
   $case {$prop tag "form"} {
     $decl k    n.keyword
@@ -1144,12 +1155,12 @@ $decl ov_rename $func ($decl n proto_node, $decl ns pstrs.node) $match n (
                          ns)
     $decl binds $if ($call eq_str (k, "decl")) true
                     ($if ($call eq_str (k, "prop")) true ($call eq_str (k, "fwd")))
-    $decl ret  $if binds ($call n_form (k, $call ov_rest (ops, ns), n.line, n.col))
+    $decl ret  $if binds ($call n_form (k, $call ov_rest (ops, ns, d), n.line, n.col))
         ($if ($call or ($call eq_str (k, "func"), $call eq_str (k, "template")))
-             ($call n_form (k, $call nodes.cons ($call ov_rename ($call operand (n, 0), ns),
-                 $call nodes.cons ($call ov_rename ($call operand (n, 1), inner), nodes.nil)),
+             ($call n_form (k, $call nodes.cons ($call ov_rename ($call operand (n, 0), ns, d),
+                 $call nodes.cons ($call ov_rename ($call operand (n, 1), inner, d), nodes.nil)),
                  n.line, n.col))
-             ($call n_form (k, $call ov_renames (ops, ns, nodes.nil), n.line, n.col)))
+             ($call n_form (k, $call ov_renames (ops, ns, nodes.nil, d), n.line, n.col)))
   }.ret,
   $case n n
 )
@@ -1189,9 +1200,38 @@ $decl ov_splice $func ($decl body nodes.node, $decl ov nodes.node, $decl acc nod
 // items are moved `ov_shift` lines down, past any line a file has, where nothing of the
 // override's can share a key with them; a diagnostic there is the base's file's, at the
 // line less the shift (`ov_far`, `ov_line`).
+//
+// An `$override` of such a template shifts again, so a line's *depth* — how many shifts it
+// took — says which file it was written in: 0 the overriding one, 1 the template it
+// overrode, and so on. A spliced template keeps those files, nearest first, as one string
+// (`ov_chain`), since it travels as one wherever a template's file does.
 $decl ov_shift 1000000
+$decl ov_depth $func ($decl line 0) $call div (line, ov_shift)
 $decl ov_far   $func ($decl line 0) $call lt ($call sub (ov_shift, 1), line)
-$decl ov_line  $func ($decl line 0) $if ($call ov_far (line)) ($call sub (line, ov_shift)) line
+$decl ov_line  $func ($decl line 0) $call sub (line, $call mul ($call ov_depth (line), ov_shift))
+$decl ov_sep   "\u{1}"
+$decl ov_sep_b $call byte (ov_sep, 0)
+// The chain of a template made by overriding one at `file` whose own chain is `chain`.
+$decl ov_chain $func ($decl file "", $decl chain "")
+  $if ($call eq_str (chain, "")) file ($call concat (file, $call concat (ov_sep, chain)))
+// How many files a chain holds, which is how many overrides made the template.
+$decl ov_count_at $func ($decl s "", $decl i 0, $decl acc 0)
+  $if ($call lt (i, $call len (s)))
+      ($call ov_count_at (s, $call add (i, 1),
+          $if ($call eq_int ($call byte (s, i), ov_sep_b)) ($call add (acc, 1)) acc))
+      acc
+$decl ov_levels $func ($decl chain "")
+  $if ($call eq_str (chain, "")) 0 ($call add (1, $call ov_count_at (chain, 0, 0)))
+// The `k`th file of a chain from `i` on, counting from 1.
+$decl ov_nth_at $func ($decl s "", $decl k 1, $decl i 0, $decl start 0)
+  $if ($call not ($call lt (i, $call len (s)))) ($call slice (s, start, i))
+      ($if ($call eq_int ($call byte (s, i), ov_sep_b))
+           ($if ($call eq_int (k, 1)) ($call slice (s, start, i))
+                ($call ov_nth_at (s, $call sub (k, 1), $call add (i, 1), $call add (i, 1))))
+           ($call ov_nth_at (s, k, $call add (i, 1), start)))
+// The file a line at `line` was written in: `own` at depth 0, the chain's otherwise.
+$decl ov_file $func ($decl chain "", $decl own "", $decl line 0)
+  $if ($call ov_far (line)) ($call ov_nth_at (chain, $call ov_depth (line), 0, 0)) own
 
 $fwd shift_node
 $decl shift_nodes $func ($decl xs nodes.node, $decl acc nodes.node) $match xs (
@@ -1220,10 +1260,11 @@ $decl shift_node $func ($decl n proto_node) {
 
 // The spliced body: the base's items shifted, with the renamed override's in place of the
 // props they name, under the base body's own span shifted with them.
-$decl ov_body $func ($decl body proto_node, $decl ov nodes.node, $decl ns pstrs.node) $match body (
+$decl ov_body $func ($decl body proto_node, $decl ov nodes.node, $decl ns pstrs.node,
+                     $decl d 1) $match body (
   $case {$prop tag "block"}
     $call n_block ($call ov_splice ($call shift_nodes (body.items, nodes.nil),
-        $call ov_renames (ov, ns, nodes.nil), nodes.nil), $call add (body.line, ov_shift),
+        $call ov_renames (ov, ns, nodes.nil, d), nodes.nil), $call add (body.line, ov_shift),
         body.col),
   $case body body
 )

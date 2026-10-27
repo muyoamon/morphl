@@ -405,7 +405,7 @@ $decl str_box $override box {
 // which needs a `same` member `Str` lacks, is never typed at `Str`
 ```
 
-A template made by `$override` cannot be overridden again yet.
+A template made by `$override` is overridden like any other: the second override's props are spliced into the first's spliced body, and each override's names resolve where that override is written, so two overrides naming a `helper` each reach their own.
 
 ### 4.13 `$traitsof e`
 

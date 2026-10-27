@@ -883,7 +883,7 @@ $decl path_of $func ($decl xs mods_list.node, $decl fl "") $match xs (
 // base, spliced (§4.12a): it is mapped back and named by `bfile`, as inference's `err`
 // does with `cx.bfile`.
 $decl err $func ($decl st proto_lst, $decl m "", $decl x P.proto_span) {
-  $decl fl    $if ($call Pa.ov_far (x.line)) ($call P.sval (st.bfile)) ($call P.sval (st.curfile))
+  $decl fl    $call Pa.ov_file ($call P.sval (st.bfile), $call P.sval (st.curfile), x.line)
   $decl pt    $if ($call eq_str (fl, "")) "" ($call path_of ($call mods_list.val (st.mods), fl))
   $decl noted $set st.errs ($call Pa.diags.cons ($call Pa.diag (m, $call Pa.ov_line (x.line),
                                                  x.col, pt), $call eval_diags (st.errs)))
@@ -4018,13 +4018,14 @@ $decl lov_items $func ($decl n Pa.proto_node) $match n (
   $case {$prop tag "block"} ($call Pa.nodes.val (n.items)),
   $case n Pa.nodes.nil
 )
-$decl hide_binds $func ($decl e benv.node, $decl ns Pa.pstrs.node, $decl acc benv.node) $match ns (
+$decl hide_binds $func ($decl e benv.node, $decl ns Pa.pstrs.node, $decl acc benv.node,
+                        $decl d 1) $match ns (
   $case {$prop tag "cons"} {
     $decl f   $call lookup (e, ns.head)
     $decl b   f.bnd
     $decl ret $call hide_binds (e, $call Pa.pstrs.val (ns.tail),
-                  $if f.hit ($call benv.cons ($call bind_ent6 ($call Pa.ov_hidden (ns.head), b.kind,
-                                b.slot, b.ty, b.mod, b.tmpl), acc)) acc)
+                  $if f.hit ($call benv.cons ($call bind_ent6 ($call Pa.ov_hidden_at (ns.head, d),
+                                b.kind, b.slot, b.ty, b.mod, b.tmpl), acc)) acc, d)
   }.ret,
   $case ns acc
 )
@@ -4036,15 +4037,17 @@ $decl lower_override $func ($decl st proto_lst, $decl e benv.node, $decl n proto
         $decl r    ts.head
         $decl ois  $call lov_items ($call op (n, 1))
         $decl bis  $call lov_items (r.body)
+        $decl d    $call add (1, $call Pa.ov_levels (r.bfile))
         $decl ns   $call Pa.ov_names (bis, ois)
-        $decl body $call Pa.ov_body (r.body, ois, ns)
+        $decl body $call Pa.ov_body (r.body, ois, ns, d)
         $decl sp   $call P.span_of (n)
         $decl tid  $call fresh_tmpl_b (st, r.generics, body,
-                       $call hide_binds (e, ns, $call benv.val (r.env)),
+                       $call hide_binds (e, ns, $call benv.val (r.env), d),
                        $call concat ($call P.sval (st.curmod),
                        $call concat ("_o", $call concat ($call int_to_str (sp.line),
                        $call concat ("_", $call int_to_str (sp.col))))),
-                       $call P.sval (st.curfile), $call P.sval (st.isctx), n, r.file)
+                       $call P.sval (st.curfile), $call P.sval (st.isctx), n,
+                       $call Pa.ov_chain (r.file, r.bfile))
         $decl ret2 $call lres4 ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit, -1, tid)
       }.ret2,
       $case ts {
