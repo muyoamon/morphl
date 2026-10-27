@@ -935,7 +935,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "std/fmt_test.mpl", .want = "27\n" },
         .{ .src = "std/io_test.mpl", .want = "29\n" },
         .{ .src = "std/mem_test.mpl", .want = "10\n" },
-        .{ .src = "std/result_test.mpl", .want = "12\n" },
+        .{ .src = "std/result_test.mpl", .want = "10\n" },
     }) |fx| {
         for ([_]bool{ false, true }) |asan| {
             const build_exe = std.Build.Step.Run.create(b, if (asan) "mplc std test (asan)" else "mplc std test");

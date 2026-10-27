@@ -455,11 +455,11 @@ gives `ires.ok (5)` and `ires.err ("why")`, each answering `is_ok`, `is_err`, `v
 `error_or`, `unwrap` and `unwrap_err` (the last two panic on the wrong side). It is the
 union `<{tag ok, v T}, {tag err, e E}>` under an `$impl`, so it is still `$match`ed and
 `$try`ed as that union, a narrowed arm keeps the methods, and `ires.wrap` puts them on a bare
-union. `map` and `map_err` change a type, so they are templates on the specialisation —
-`$call ires.map (r, f)` — rather than free functions: §4.9 infers a generic from a default
-that is exactly it or a `$func` literal, never from inside a union, so a free `map` could not
-learn `T` and `E` from `r`, while the specialisation already knows them and only `f`'s result
-is inferred. `std/core`'s `fail` stays the light form, a bare `{tag err, e E}` beside a plain
+union. `map` and `map_err` change a type, so they are free templates — `$call R.map (r, f)`
+— rather than methods (D9 item 4): §4.9 reads one level into a union, so `T` and `E` are
+inferred from `r`'s members and the new type from `f`'s result. They used to be templates on
+the specialisation, `ires.map`, while application could not yet read into a union.
+`std/core`'s `fail` stays the light form, a bare `{tag err, e E}` beside a plain
 value, for a function that does not want a result type.
 
 ## D8. Testing

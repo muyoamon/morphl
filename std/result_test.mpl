@@ -75,28 +75,14 @@ $decl t_same { $prop name "one type on both sides"
   $prop run $func ()
     $call C.and ($call eq ($call ($call sres.ok ("a")).unwrap (), "a"),
                  $call eq ($call ($call sres.err ("b")).error_or (""), "b")) }
-$decl t_map { $prop name "map changes the value and keeps a failure"
-  $prop run $func () {
-    $decl a   $call ires.map ($call parse ("21"), twice)
-    $decl b   $call ires.map ($call parse ("q"), twice)
-    $decl ret $call C.and ($call eq ($call a.value_or (""), "42"),
-                           $call eq ($call b.error_or (""), "q"))
-  }.ret }
-$decl t_merr { $prop name "map_err changes the failure and keeps a value"
-  $prop run $func () {
-    $decl a   $call ires.map_err ($call parse ("abcd"), length)
-    $decl b   $call ires.map_err ($call parse ("6"), length)
-    $decl ret $call C.and ($call eq ($call a.error_or (0), 4), $call eq ($call b.value_or (0), 6))
-  }.ret }
-
-$decl t_fmap { $prop name "the free map infers every generic from its arguments"
+$decl t_fmap { $prop name "map changes the value and keeps a failure, inferring every generic"
   $prop run $func () {
     $decl a   $call R.map ($call parse ("21"), twice)
     $decl b   $call R.map ($call parse ("q"), twice)
     $decl ret $call C.and ($call eq ($call a.value_or (""), "42"),
                            $call eq ($call b.error_or (""), "q"))
   }.ret }
-$decl t_fmerr { $prop name "...and so does the free map_err"
+$decl t_fmerr { $prop name "map_err changes the failure and keeps a value"
   $prop run $func () {
     $decl a   $call R.map_err ($call parse ("abcd"), length)
     $decl b   $call R.map_err ($call parse ("6"), length)
@@ -113,9 +99,7 @@ $decl main $func () {
   $decl a6  $call T.check (r, t_arm)
   $decl a7  $call T.check (r, t_wrap)
   $decl a8  $call T.check (r, t_same)
-  $decl a9  $call T.check (r, t_map)
-  $decl a10 $call T.check (r, t_merr)
-  $decl a11 $call T.check (r, t_fmap)
-  $decl a12 $call T.check (r, t_fmerr)
+  $decl a9  $call T.check (r, t_fmap)
+  $decl a10 $call T.check (r, t_fmerr)
   $decl ret $call T.finish (r)
 }.ret
