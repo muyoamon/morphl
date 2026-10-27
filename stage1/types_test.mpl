@@ -181,12 +181,26 @@ $decl t30      $call check ("a different tag value does not match", $call not ($
 $decl t31 $call check ("a block without the prop does not match",
   $call not ($call T.sub (just_a, circle)))
 
-// §5.1: groups are elementwise with the same arity.
+// §5.1: groups subtype by prefix, elementwise — and a group is a subtype of its first
+// element (§2.3) — while a function's parameter list stays exact.
 $decl t32 $call check ("groups elementwise", $call T.sub ($call T.t_group ($call two (tru, int)),
                                                           $call T.t_group ($call two (bool, int))))
-$decl t33 $call check ("arity must match",
+$decl t33 $call check ("a shorter group is not a longer one",
   $call not ($call T.sub ($call T.t_group ($call two (int, int)),
                           $call T.t_group ($call three (int, int, int)))))
+$decl t33a $call check ("a longer group is a shorter one",
+  $call T.sub ($call T.t_group ($call three (int, str, int)),
+              $call T.t_group ($call two (int, str))))
+$decl t33b $call check ("...elementwise",
+  $call not ($call T.sub ($call T.t_group ($call three (int, str, int)),
+                          $call T.t_group ($call two (int, int)))))
+$decl t33c $call check ("a group is its first element",
+  $call T.sub ($call T.t_group ($call two (int, str)), int))
+$decl t33d $call check ("...and not its second",
+  $call not ($call T.sub ($call T.t_group ($call two (int, str)), str)))
+$decl t33e $call check ("a function of fewer parameters is not one of more",
+  $call not ($call T.sub ($call T.t_func ($call two (int, int), int),
+                          $call T.t_func ($call three (int, int, int), int))))
 
 // §5.1: functions are contravariant in parameters, covariant in the result.
 $decl t34 $call check ("covariant in the result",

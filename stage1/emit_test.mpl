@@ -647,4 +647,11 @@ $decl t78 $call check ("...which passes the referent through to the member's shi
 $decl t79 $call check ("...and one that agrees keeps the shim and the plain name",
   $call not ($call has (tad0_c.code, "_a0(void *env")))
 
+// §5.1 lets a group stand for its first item and drop the rest; for now that is a note.
+$decl gn_c $call compile ("$decl f $func ($decl n 0) n  $decl main $func () { $decl t (4, \"x\")  $decl ret $call f (t) }.ret")
+$decl t80 $call check ("a group used as its first item is noted, not refused",
+  $if ($call eq_int (gn_c.nerrs, 0)) ($call eq_int (gn_c.nnotes, 1)) false)
+$decl t81 $call check ("...and reads the first item",
+  $call has (gn_c.code, ".f0;"))
+
 $decl done $call nl ("all C backend tests passed")

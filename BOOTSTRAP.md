@@ -73,6 +73,7 @@ Two defects had to go first, both the same shape and neither visible to stage 0'
 | `sendable`, threads | Not needed to compile a file |
 | Implicit `$specialize` via `$call` | Requires parameter-default shape matching (§4.9) — inference work, in stage 0 |
 | Template bounds | Requires subtype checking, which stage 0 does not have |
+| A group used as its first item | SPEC §5.1 makes `(T, …) <: T`, and the compiled C copies the first item out. Stage 0 coerces nothing, so the value stays a group and the next operation on it fails. Project it, `g.1`. (A group where a *shorter* group is expected needs no coercion at run time and works in both.) |
 
 ### 1.3 Pattern restriction (the important one)
 

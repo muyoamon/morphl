@@ -17,6 +17,15 @@ $decl P  $import "prelude"
 
 $decl nl $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
 
+// Emit's notes go to stderr (BOOTSTRAP §2's `eprint`), since stdout is the C and a note
+// does not make it wrong; an error does, and stays on stdout where it breaks the build.
+$decl show_notes $func ($decl xs Pa.diags.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call eprint ($call concat ("emit: note: ", $call concat (xs.head.msg, "\n"))))
+        ($call show_notes ($call Pa.diags.val (xs.tail))),
+  $case xs ()
+)
+
 $decl show_errs $func ($decl xs Pa.diags.node, $decl what "") $match xs (
   $case {$prop tag "cons"}
     $do ($call nl ($call concat (what, $call concat (": ", xs.head.msg))))
@@ -42,7 +51,6 @@ $decl out  $call C.emit (opt)
 $decl e0 $call show_errs ($call Pa.diags.val (ckd.diagnostics), "check")
 $decl e1 $call show_errs (bad0, "verify (before)")
 $decl e2 $call show_errs (bad1, "verify (after fold)")
-$decl e3 $call show_errs ($call Pa.diags.reverse ($call Pa.diags.reverse (
-                    $call Pa.diags.val (out.diagnostics), Pa.diags.nil),
-                    $call Pa.diags.val (out.notes)), "emit")
+$decl e3 $call show_errs ($call Pa.diags.val (out.diagnostics), "emit")
+$decl e3n $call show_notes ($call Pa.diags.val (out.notes))
 $decl e4 $call print ($call C.sole_text (out))

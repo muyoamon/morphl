@@ -2593,13 +2593,21 @@ $decl subs_any_left $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_a
 )
 
 // Elementwise, same arity (§5.1 for groups).
-$decl subs_zip $func ($decl xs tys.node, $decl ys tys.node, $decl st proto_actx) $match xs (
-  $case {$prop tag "cons"} $match ys (
+// §5.1's group rule: `ys` is a prefix of `xs`, elementwise.
+$decl subs_prefix $func ($decl xs tys.node, $decl ys tys.node, $decl st proto_actx) $match ys (
+  $case {$prop tag "cons"} $match xs (
       $case {$prop tag "cons"}
-        $if ($call sub_seen (xs.head, ys.head, st)) ($call subs_zip (xs.tail, ys.tail, st)) false,
-      $case ys false
+        $if ($call sub_seen (xs.head, ys.head, st)) ($call subs_prefix (xs.tail, ys.tail, st))
+            false,
+      $case xs false
     ),
-  $case xs ($call tys.is_nil (ys))
+  $case ys true
+)
+
+// §2.3 with §5.1: `(T, …) <: T`.
+$decl sub_first $func ($decl xs tys.node, $decl b proto_ty, $decl st proto_actx) $match xs (
+  $case {$prop tag "cons"} $call sub_seen (xs.head, b, st),
+  $case xs false
 )
 
 // Contravariant in parameters (§5.1 for functions): the *argument* side flips.
@@ -2828,9 +2836,13 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
                     ($call sub_props (a.props, b.props)) false,
               $case b false
             ),
+          // §5.1: groups subtype by prefix, as blocks do — `(S₁, …, Sₙ) <: (T₁, …, Tₘ)` when
+          // `m ≤ n` and each `Sᵢ <: Tᵢ` — and with §2.3's `(T)` being `T`, a group is a
+          // subtype of its first element. A parameter list is not a group value and stays
+          // exact: the `func` case below compares it with `subs_zip_flipped`.
           $case {$prop tag "group"} $match b (
-              $case {$prop tag "group"} $call subs_zip (a.items, b.items, st),
-              $case b false
+              $case {$prop tag "group"} $call subs_prefix (a.items, b.items, st),
+              $case b $call sub_first ($call tys.val (a.items), b, st)
             ),
           $case {$prop tag "func"} $match b (
               // §4.10: a function that needs a mutable receiver cannot stand where one that

@@ -483,6 +483,34 @@ $decl t44g6 $call check_str ("a join keeps a type beside `()`",
   $call field_ty ("$decl f $func ($decl c $union (false, true)) $if c 5 ()", "f"),
   "[<false,true>]-><(),Int>")
 
+// §5.1's group rule, and the line it stops at. A group is a subtype of a shorter group,
+// item by item, and of its first element; a function's parameter list is not a group
+// value, so a function of two parameters still does not stand for one of three, and a
+// call still takes exactly its parameters (§3.4).
+$decl t44g7 $call check_str ("a group stands for a shorter one",
+  $call errs_of ("$decl t (1, 2, 3)  $decl f $func ($decl g (0, 0)) g.2  $decl x $call f (t)"), "")
+$decl t44g8 $call check_str ("...and for its first element",
+  $call errs_of ("$decl t (1, \"a\")  $decl f $func ($decl n 0) n  $decl x $call f (t)"), "")
+$decl t44g9 $call check_str ("...but a parameter list is exact",
+  $call errs_of ("$decl ap $func ($decl f $func ($decl a 0, $decl b 0, $decl c 0) 0) $call f (1, 2, 3)  $decl g $func ($decl a 0, $decl b 0) a  $decl x $call ap (g)"),
+  "argument 1 is [Int,Int]->Int, expected [Int,Int,Int]->Int")
+$decl t44ga $call check_str ("...and so is a call",
+  $call errs_of ("$decl h $func ($decl a 0) a  $decl y $call h (1, 2)"), "too many arguments")
+
+// §4.9 with §5.1: a one-generic template takes the whole operand and a group is its first
+// item, so one written before a template of more generics claims the groups whose first
+// item its bound accepts. Reported where the bounds are comparable; not otherwise, and not
+// where a bound names a generic.
+$decl ar_pre "$decl one $template ($decl T 0) { $prop d 1 }  $decl two $template (A, B) { $prop d 2 }  "
+$decl t44gb $call check_str ("a one-generic template before a two-generic one is reported",
+  $call errs_of ($call concat (ar_pre, "$decl o $overload (one, two)")), "this candidate takes 2 generics, but a one-generic candidate before it takes a whole argument group whose first item it accepts (§4.9, §5.1), and §4.8 is first fit — write this one first")
+$decl t44gc $call check_str ("...and the other order is not",
+  $call errs_of ($call concat (ar_pre, "$decl o $overload (two, one)")), "")
+$decl t44gd $call check_str ("...nor bounds that cannot meet",
+  $call errs_of ("$decl one $template ($decl T 0) { $prop d 1 }  $decl two $template (($decl A \"\"), B) { $prop d 2 }  $decl o $overload (one, two)"), "")
+$decl t44ge $call check_str ("...and a nested overload is read through, once",
+  $call errs_of ($call concat (ar_pre, "$decl o $overload ($overload (one, two), one)")), "this candidate takes 2 generics, but a one-generic candidate before it takes a whole argument group whose first item it accepts (§4.9, §5.1), and §4.8 is first fit — write this one first")
+
 // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
 // error." Nothing enforced this. Such a program was rejected only *incidentally* —
 // the backend could not coerce the matched member into the thunk's result type —

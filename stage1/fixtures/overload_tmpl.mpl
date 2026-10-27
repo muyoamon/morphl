@@ -20,7 +20,10 @@ $decl by_named $template ($decl T $traitsof named_proto) { $prop d 2 }
 $decl by_any   $template T { $prop d 3 }
 $decl pair     $template (A, B) { $prop d 4 }
 $decl kind     $overload (by_int, by_named, by_any)
-$decl both     $overload ($overload (by_int, pair), by_any)
+// `pair` first: a one-generic candidate takes the whole operand (§4.9), and §5.1 makes
+// `(1, "y")` an `Int` by its first item, so `by_int` written first would claim it — which
+// inference reports.
+$decl both     $overload ($overload (pair, by_int), by_any)
 
 $decl str_len   $func ($decl s "") $call len (s)
 $decl uninfer   $template T $func ($decl x 0) 9

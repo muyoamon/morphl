@@ -2445,15 +2445,6 @@ $decl lint_cands $func ($decl cx proto_ctx, $decl ns Pa.nodes.node, $decl ts T.t
   $case ns ()
 )
 
-// §4.8: `$overload cands` is the group at run time, and its type marks it an overload set,
-// ordered as written.
-$decl infer_overload $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
-  $decl cs  $call group_items ($call op (n, 0))
-  $decl ts  $call arg_types (cx, e, cs, T.tys.nil)
-  $decl lnt $call lint_cands (cx, cs, ts, T.tys.nil)
-  $decl ret $call T.t_over (ts)
-}.ret
-
 $decl ts_rest $func ($decl xs T.tys.node) $match xs (
   $case {$prop tag "cons"} ($call T.tys.val (xs.tail)),
   $case xs xs
@@ -2939,6 +2930,102 @@ $decl find_tmpl $func ($decl xs tmpl_list.node, $decl i 0) $match xs (
     $if ($call eq_int (xs.head.id, i)) xs.head ($call find_tmpl (xs.tail, i)),
   $case xs ($call tmpl_rec (-1, strs.nil, Pa.proto_node, env.nil, ""))
 )
+
+// §4.9's other lint. A one-generic template takes the whole operand, and §5.1 makes a group a
+// subtype of its first item — so under first fit a one-generic candidate written before a
+// template of more generics claims every argument group whose first item its bound accepts,
+// and the later one is chosen only for the rest. Reported when that can happen at all: the
+// one bound and the other's first are comparable, an unbounded generic being `()`. A bound
+// this cannot type — it names a generic, the F-bounded form — is not judged, so this can
+// miss a case and never reports a wrong one. Nested overloads are read through, in order.
+$decl tmpl_cands $func ($decl cx proto_ctx, $decl ts T.tys.node, $decl acc T.tys.node) $match ts (
+  $case {$prop tag "cons"} {
+    $decl t   $call T.unroll ($call deref_ty ($call T.tval (ts.head)))
+    $decl a2  $match t (
+        $case {$prop tag "tmpl"} ($call T.tys.cons (t, acc)),
+        $case {$prop tag "over"} ($call tmpl_cands (cx, $call T.tys.val (t.cands), acc)),
+        $case t acc)
+    $decl ret $call tmpl_cands (cx, $call T.tys.val (ts.tail), a2)
+  }.ret,
+  $case ts acc
+)
+// The first generic's bound, as a type: `()` when it has none, ⊥ when it cannot be typed here.
+$decl first_bound_of $func ($decl cx proto_ctx, $decl r proto_tmpl, $decl bs Pa.nodes.node)
+  $match bs (
+    $case {$prop tag "cons"} $if ($call Pa.is_unit_node (bs.head)) T.t_unit {
+      $decl q0   $call bval (cx.quiet)
+      $decl e0   $call Pa.diags.val (cx.errs)
+      $decl hush $set cx.quiet true
+      $decl bt   $call deref_ty ($call infer (cx, r.env, bs.head))
+      $decl back $do ($set cx.quiet q0) ($set cx.errs e0)
+      $decl ret  $if ($call has_free_var (bt)) T.t_bot bt
+    }.ret,
+    $case bs T.t_unit
+  )
+$decl first_bound $func ($decl cx proto_ctx, $decl r proto_tmpl)
+  $call first_bound_of (cx, r, $call Pa.nodes.val (r.bounds))
+$decl rec_of $func ($decl cx proto_ctx, $decl t T.proto_ty)
+  $match t ($case {$prop tag "tmpl"} ($call find_tmpl (cx.tmpls, t.id)), $case t proto_tmpl)
+$decl arity_msg $func ($decl k 0)
+  $call concat ("this candidate takes ", $call concat ($call int_to_str (k),
+      " generics, but a one-generic candidate before it takes a whole argument group whose first item it accepts (§4.9, §5.1), and §4.8 is first fit — write this one first"))
+$decl lint_arity_one $func ($decl cx proto_ctx, $decl ones T.tys.node, $decl r proto_tmpl,
+                            $decl n Pa.proto_node) $match ones (
+  $case {$prop tag "cons"} {
+    $decl b1   $call first_bound (cx, $call rec_of (cx, $call T.tval (ones.head)))
+    $decl b2   $call first_bound (cx, r)
+    $decl kn   $call P.not ($call P.or ($call T.same (b1, T.t_bot), $call T.same (b2, T.t_bot)))
+    $decl hit  $if kn ($call P.or ($call T.sub (b1, b2), $call T.sub (b2, b1))) false
+    $decl ret  $if hit ($call err (cx, $call arity_msg ($call strs.length (r.generics, 0)), n))
+                   ($call lint_arity_one (cx, $call T.tys.val (ones.tail), r, n))
+  }.ret,
+  $case ones ()
+)
+// Each candidate in turn, against the one-generic templates of the candidates *before* it:
+// a nested overload's own pairs were reported when it was typed, so they are not again.
+$decl ones_of $func ($decl cx proto_ctx, $decl xs T.tys.node, $decl acc T.tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call ones_of (cx, $call T.tys.val (xs.tail),
+        $if ($call eq_int ($call strs.length (($call rec_of (cx, $call T.tval (xs.head))).generics,
+                 0), 1))
+            ($call T.tys.cons ($call T.tval (xs.head), acc)) acc),
+  $case xs acc
+)
+$decl lint_multis $func ($decl cx proto_ctx, $decl xs T.tys.node, $decl ones T.tys.node,
+                         $decl n Pa.proto_node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl r   $call rec_of (cx, $call T.tval (xs.head))
+    $decl chk $if ($call lt (1, $call strs.length (r.generics, 0)))
+                  ($call lint_arity_one (cx, ones, r, n)) ()
+    $decl ret $call lint_multis (cx, $call T.tys.val (xs.tail), ones, n)
+  }.ret,
+  $case xs ()
+)
+// Reported at the candidate as written — a nested overload, when the later one is inside it.
+$decl lint_arity $func ($decl cx proto_ctx, $decl ns Pa.nodes.node, $decl ts T.tys.node,
+                        $decl ones T.tys.node) $match ts (
+  $case {$prop tag "cons"} $match ns (
+      $case {$prop tag "cons"} {
+        $decl fl  $call T.tys.reverse ($call tmpl_cands (cx, $call T.tys.cons (ts.head, T.tys.nil),
+                      T.tys.nil), T.tys.nil)
+        $decl chk $call lint_multis (cx, fl, ones, ns.head)
+        $decl ret $call lint_arity (cx, $call Pa.nodes.val (ns.tail), $call T.tys.val (ts.tail),
+                      $call ones_of (cx, fl, ones))
+      }.ret,
+      $case ns ()),
+  $case ts ()
+)
+
+// §4.8: `$overload cands` is the group at run time, and its type marks it an overload set,
+// ordered as written.
+$decl infer_overload $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
+  $decl cs  $call group_items ($call op (n, 0))
+  $decl ts  $call arg_types (cx, e, cs, T.tys.nil)
+  $decl lnt $call lint_cands (cx, cs, ts, T.tys.nil)
+  $decl lna $call lint_arity (cx, cs, ts, T.tys.nil)
+  $decl ret $call T.t_over (ts)
+}.ret
+
 
 // The compile-time generics of the template a `$specialize`'s target names, by
 // position — the resolver `Pa.ct_generics` asks for. The target is typed quietly:

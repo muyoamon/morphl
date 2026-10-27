@@ -248,6 +248,10 @@ pub fn build(b: *std.Build) void {
         // member, a parameter defaulted to `()` takes any argument, and `$if c 5 ()` keeps
         // its `Int`. 654321.
         .{ .src = "stage1/fixtures/top.mpl", .want = "654321\n" },
+        // §5.1's group rule: a prefix, depth inside it, a group as its first element, a
+        // join of two lengths, a group answered at a shorter type. 35729. Compiled only:
+        // stage 0 coerces nothing, so a group passed as its first element stays a group.
+        .{ .src = "stage1/fixtures/group_prefix.mpl", .want = "35729\n", .stage0 = false },
         // §7.4 on a function value: a coercion whose C signatures differ goes through a
         // shim, for a `()` or prefix result, a union member, a parameter the other way, a
         // callback's callback, a join, a cell and a tail call. The old backend crashed.

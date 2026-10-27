@@ -1275,6 +1275,33 @@ $decl adapt_fn $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "", $d
                 $call concat (", ", $call concat (e, "}")))))
 }.ret
 
+// A type's interned index, or -1.
+$decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
+  $decl f   $call IR.find_ty (ts, t)
+  $decl ret $if f.hit f.id -1
+}.ret
+
+// §5.1's group rule as a coercion of a value: a group into a shorter group is a copy of
+// its first items, each coerced into the target's — depth as well as prefix, so not a
+// plain field copy — and a group into a non-group is its first item (§2.3), coerced.
+$decl group_items_of $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "group"} ($call T.tys.val (t.items)), $case t T.tys.nil)
+}.ret
+$decl group_is $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "group"} true, $case t false)
+}.ret
+$fwd emit_group_copy
+
+// §5.1 makes a group stand for its first item, and the rest is dropped without a word, so
+// for now it is noted wherever it happens — a warning from `mplc`, without a position,
+// since the typed tree carries none. Meant to go once programs have shown it is wanted.
+$decl group_note $func ($decl st proto_est, $decl ft T.proto_ty, $decl wt T.proto_ty)
+  $call enote (st, $call concat ("a group ", $call concat ($call T.show (ft),
+      $call concat (" is used as its first item, ", $call concat ($call T.show (wt),
+      ", and the rest is discarded (§5.1)")))))
+
 $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                          $decl src "", $decl from0 0, $decl want0 0) {
   $decl unw  $call is_with_at (ts, want0)
@@ -1312,8 +1339,18 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
   // left is a re-tag only when the target is a union too.
   $decl wf  $call block_fields (wt)
   $decl how $if ($call block_is (wt)) ($call prefix_thru (ft)) ""
+  $decl gg   $if ($call group_is (ft)) ($call group_is (wt)) false
+  $decl g1   $if ($call group_is (ft))
+                 ($if ($call group_is (wt)) false
+                      ($call T.tys.is_nil ($call union_members (wt))))
+                 false
   $decl ret $if free ($call assign (st, dest, src))
       ($if adp ($call adapt_fn (st, ts, dest, src, from, want))
+      ($if gg ($call emit_group_copy (st, ts, dest, src, $call group_items_of (ft),
+                   $call group_items_of (wt), 0))
+      ($if g1 ($do ($call group_note (st, ft, wt))
+                   ($call emit_inject (st, ts, dest, $call concat (src, ".f0"),
+                       $call ty_id (ts, $call T.tys.nth ($call group_items_of (ft), 0)), want)))
       ($if from_bot ()
       ($if to_unit ($do ($call say (st, $call concat ("  (void)", $call concat (src, ";\n"))))
                         ($call assign (st, dest, "0")))
@@ -1339,8 +1376,22 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  $call concat (".u.m", $call int_to_str (k))), src, from, wk.id))
             ($call assign (st, $call concat (dest,
                  $call concat (".u.m", $call int_to_str (k))), src))
-      }.ret2)))))))
+      }.ret2)))))))))
 }.ret
+
+$decl emit_group_copy $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "", $decl src "",
+                             $decl fs T.tys.node, $decl ws T.tys.node, $decl i 0) $match ws (
+  $case {$prop tag "cons"} $match fs (
+      $case {$prop tag "cons"} {
+        $decl f    $call concat (".f", $call int_to_str (i))
+        $decl d0   $call emit_inject (st, ts, $call concat (dest, f), $call concat (src, f),
+                       $call ty_id (ts, fs.head), $call ty_id (ts, ws.head))
+        $decl ret2 $call emit_group_copy (st, ts, dest, src, $call T.tys.val (fs.tail),
+                       $call T.tys.val (ws.tail), $call add (i, 1))
+      }.ret2,
+      $case fs ()),
+  $case ws ()
+)
 
 // Emit `e` into `dest`, injecting into a union first if `e` is a member of one
 // — which is where subsumption shows up, at an `$if` or `$match` arm.
@@ -3023,10 +3074,6 @@ $decl tbl_key $func ($decl st proto_est, $decl xs IR.ints.node, $decl acc "") $m
 $decl tbl_name $func ($decl st proto_est, $decl xs IR.ints.node)
   $call concat ("mpl_tbl", $call int_to_str ($call T.hash_str ($call tbl_key (st, xs, ""), 0, 0)))
 
-$decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
-  $decl f   $call IR.find_ty (ts, t)
-  $decl ret $if f.hit f.id -1
-}.ret
 
 $decl is_fn_ty $func ($decl t T.proto_ty) $match t ($case {$prop tag "func"} true, $case t false)
 
