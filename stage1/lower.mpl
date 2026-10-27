@@ -2212,8 +2212,21 @@ $decl members_of $func ($decl t0 T.proto_ty) $call T.match_members (t0)
 // of blocks shares its members' — each is its own object — so the prefix read below does
 // not apply, and the arms need not agree on where the field is. Inference joins the field
 // types (`proj_one`), as this does.
+// `ix` above 0 reads the `ix`th item of a group instead of a field by name: §5.1 projects a
+// union's common prefix for a position as for a name.
+$decl item_of $func ($decl pt T.proto_ty, $decl ix 0) $match pt (
+  $case {$prop tag "group"} {
+    $decl its  $call T.tys.val (pt.items)
+    $decl ret2 $if ($call not ($call lt ($call T.tys.length (its, 0), ix)))
+        ($call fld_found (true, $call isub (ix, 1), $call T.tval ($call T.tys.nth (its,
+             $call isub (ix, 1)))))
+        ($call fld_found (false, 0, T.t_bot))
+  }.ret2,
+  $case pt ($call fld_found (false, 0, T.t_bot))
+)
 $decl uproj_arms $func ($decl st proto_lst, $decl ms T.tys.node, $decl i 0, $decl nm "",
-                        $decl n Pa.proto_node, $decl acc IR.arms.node, $decl ty T.proto_ty)
+                        $decl n Pa.proto_node, $decl acc IR.arms.node, $decl ty T.proto_ty,
+                        $decl ix 0)
   $match ms (
     $case {$prop tag "cons"} {
       $decl m    $call T.unroll (ms.head)
@@ -2227,16 +2240,18 @@ $decl uproj_arms $func ($decl st proto_lst, $decl ms T.tys.node, $decl i 0, $dec
           $case m ($call lres (ld, ms.head))
         )
       $decl pt   $call T.unroll (rd.ty)
-      $decl f    $match pt (
+      $decl f    $if ($call lt (0, ix)) ($call item_of (pt, ix)) ($match pt (
           $case {$prop tag "block"} ($call find_fld ($call T.fields.val (pt.fields), nm, 0)),
           $case pt ($call fld_found (false, 0, T.t_bot))
-        )
+        ))
       $decl body $if f.hit ($call IR.e_field ($call intern (st, f.ty), rd.ir, f.idx))
-          ($call IR.e_unit ($call err (st, $call concat ("no field '",
-              $call concat (nm, "' in every member of this union (§5.1)")), n)))
+          ($call IR.e_unit ($call err (st, $if ($call lt (0, ix))
+              "group index is out of range for a member of this union (§5.1)"
+              ($call concat ("no field '",
+                  $call concat (nm, "' in every member of this union (§5.1)"))), n)))
       $decl ret  $call uproj_arms (st, $call T.tys.val (ms.tail), $call add (i, 1), nm, n,
           $call IR.arms.cons ($call IR.arm ($call IR.ints.cons (i, IR.ints.nil), sl, body), acc),
-          $if f.hit ($call T.join (ty, f.ty)) ty)
+          $if f.hit ($call T.join (ty, f.ty)) ty, ix)
     }.ret,
     $case ms ($call arms_res ($call IR.arms.reverse (acc, IR.arms.nil),
                   $call IR.e_unit ($call intern (st, T.t_unit)), ty))
@@ -2287,6 +2302,13 @@ $decl lower_uproj $func ($decl st proto_lst, $decl tgt proto_lres, $decl nm "",
                          $decl n Pa.proto_node) {
   $decl ms  $call members_of ($call canon_ty (st, tgt.ty))
   $decl a   $call uproj_arms (st, ms, 0, nm, n, IR.arms.nil, T.t_bot)
+  $decl ret $call lres ($call IR.e_switch ($call intern (st, a.ty), tgt.ir, a.arms, a.default),
+                a.ty)
+}.ret
+$decl lower_uiproj $func ($decl st proto_lst, $decl tgt proto_lres, $decl ix 0,
+                          $decl n Pa.proto_node) {
+  $decl ms  $call members_of ($call canon_ty (st, tgt.ty))
+  $decl a   $call uproj_arms (st, ms, 0, "", n, IR.arms.nil, T.t_bot, ix)
   $decl ret $call lres ($call IR.e_switch ($call intern (st, a.ty), tgt.ir, a.arms, a.default),
                 a.ty)
 }.ret
@@ -2443,6 +2465,8 @@ $decl lower_projidx $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.pro
             ($call lres ($call IR.e_unit ($call err (st, "overload index is out of range", n)),
                 T.t_bot))
       }.ret2,
+      // §5.1: every member's prefix — a group into a shorter one joins as two (§3.6).
+      $case {$prop tag "union"} ($call lower_uiproj (st, tgt, idx, n)),
       $case tt ($call lres ($call IR.e_unit ($call err (st,
           $call concat ("cannot index into ", $call T.show (tt)), n)), T.t_bot))
     )

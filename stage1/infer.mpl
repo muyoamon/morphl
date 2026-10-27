@@ -770,6 +770,26 @@ $decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto
       ($call proj_one (cx, t, n.field, n))
 }.ret
 
+// §5.1's common prefix by position: each member's item, joined — a group joined with a
+// shorter one keeps both (§3.6), and `.n` reads what both have.
+$fwd index_of
+$decl index_members $func ($decl cx proto_ctx, $decl ms T.tys.node, $decl n proto_proji,
+                           $decl acc T.proto_ty) $match ms (
+  $case {$prop tag "cons"}
+    $call index_members (cx, $call T.tys.val (ms.tail), n,
+        $call T.join (acc, $call index_of (cx, $call deref_ty ($call T.tval (ms.head)), n))),
+  $case ms acc
+)
+$decl index_of $func ($decl cx proto_ctx, $decl tt T.proto_ty, $decl n proto_proji) $match tt (
+  $case {$prop tag "group"}
+    $if ($call and ($call lt (0, n.index), $call not ($call lt ($call T.tys.length (tt.items,
+        0), n.index))))
+        ($call T.tys.nth (tt.items, $call sub (n.index, 1)))
+        ($call err (cx, "group index is out of range", n)),
+  $case {$prop tag "union"} ($call index_members (cx, $call T.tys.val (tt.members), n, T.t_bot)),
+  $case tt ($call err (cx, $call concat ("cannot index into ", $call T.show (tt)), n))
+)
+
 $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_proji) {
   $decl tt $call T.with_base ($call deref_ty ($call infer (cx, e, n.target)))
   $decl ret $match tt (
@@ -784,6 +804,7 @@ $decl infer_proj_index $func ($decl cx proto_ctx, $decl e env.node, $decl n prot
             0), n.index))))
             ($call T.tys.nth (tt.cands, $call sub (n.index, 1)))
             ($call err (cx, "overload index is out of range", n)),
+      $case {$prop tag "union"} ($call index_of (cx, tt, n)),
       $case tt ($call err (cx, $call concat ("cannot index into ", $call T.show (tt)), n))
     )
 }.ret
@@ -2450,6 +2471,34 @@ $decl ts_rest $func ($decl xs T.tys.node) $match xs (
   $case xs xs
 )
 
+// §3.6: a value enters a union as its most specific member, and one that is a subtype of
+// two members neither of which is below the other has none — refused here, at the argument,
+// rather than only by the backend, which has no position to give (`T.inject_slot`). A union
+// argument is re-tagged member by member, so each of its members is asked.
+$decl amb_members $func ($decl cx proto_ctx, $decl ms T.tys.node, $decl ws T.tys.node,
+                         $decl p T.proto_ty, $decl x Pa.proto_node) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call eq_int ($call T.inject_slot (ws, $call T.tval (ms.head)), -2))
+        ($do ($call err (cx, $call concat ("ambiguous: ", $call concat ($call T.show (ms.head),
+              $call concat (" is a subtype of two members of ", $call concat ($call T.show (p),
+              " and neither is below the other (§3.6)")))), x)) ())
+        ($call amb_members (cx, $call T.tys.val (ms.tail), ws, p, x)),
+  $case ms ()
+)
+$decl inject_check $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl p T.proto_ty,
+                          $decl x Pa.proto_node) {
+  $decl pu  $call T.unroll ($call deref_ty (p))
+  $decl au  $call T.unroll ($call deref_ty (a))
+  $decl ret $if ($if ($call has_free_var (a)) true ($call has_free_var (p))) () ($match pu (
+      $case {$prop tag "union"} $match au (
+          $case {$prop tag "union"}
+            $call amb_members (cx, $call T.tys.val (au.members), $call T.tys.val (pu.members),
+                p, x),
+          $case au $call amb_members (cx, $call T.tys.cons (au, T.tys.nil),
+                       $call T.tys.val (pu.members), p, x)),
+      $case pu ()))
+}.ret
+
 // One argument against its parameter: §6's coercion, §5.3a's escape, a deferred call
 // against a function still being typed, §4.8's overload resolution, and the subtype check
 // — or §5.5's deferral of it while a knot is open. False on an error.
@@ -2483,6 +2532,7 @@ $decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_
                                                         $call strs.val (cx.slotref))))
                 ($call strs.val (cx.slotref))
   $decl cw  $call coerce_why (x, raw, p)
+  $decl ia  $call inject_check (cx, at, p, x)
   $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1))) ($call arg_escapes (cx, x, raw, p, i)) raw
   // §5.3a's borrowing: an argument whose parameter the callee's result borrows lends what
   // it carries to the result — and for a callee still being typed, whose borrows are not

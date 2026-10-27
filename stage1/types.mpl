@@ -2936,17 +2936,172 @@ $decl is_base $func ($decl t proto_ty) $match t (
 // second arm's and let a trait object over this call's own `loc` be returned. A join is
 // frame-bound if either side is.
 //
-// A join absorbs a subtype into its supertype, except into a top (§2.3): `$if c 5 ()` is
-// `<Int, ()>`, not `()`, which would keep nothing of the `Int` (§3.6: unions do not
-// absorb). That a join absorbs at all is narrower than §3.6 asks, and is left for the
-// change that makes a union's injection pick its most specific member.
+// §3.6: a union does not absorb a member of another **layout**. A join keeps every type it
+// is given whose layout differs — `$if c 5 ()` is `<Int, ()>`, `$if c {a, b} {a}` is
+// `<{a, b}, {a}>`, `{tag ok}` and `{tag ok, v}` stay two — so each value keeps the layout it
+// was built with and its own discriminator (§7.5). What merges: the same type written
+// twice, a union inside a union, and a member that differs from another only in the types
+// of its fields or items and is a subtype of it — `{v: false}` into `{v: Bool}` — since
+// that coercion changes no stored data and so loses nothing a `$match` could recover. A `μ`
+// is read through its unrolling (§5.5), so a list's cons cell joined with the list is the
+// list, and a constructor's narrowed record joined with the declared type is that type.
+$decl join_set $func ($decl t proto_ty) {
+  $decl u   $match t ($case {$prop tag "rec"} ($call tval ($call unroll (t))), $case t t)
+  $decl ret $match u ($case {$prop tag "union"} ($call tys.val (u.members)),
+                      $case u ($call tys.cons (t, tys.nil)))
+}.ret
+
+// One type, up to §5.5: `same` compares terms, and a member written out — `{tag ref, inner
+// &^<…>}` — is the μ's own member spelt with its unrolling. Members are never unions (§3.6
+// flattens them), and for anything else mutual subtyping is equality (§5.1).
+$decl eq_up $func ($decl a proto_ty, $decl b proto_ty)
+  $if ($call same (a, b)) true ($if ($call sub (a, b)) ($call sub (b, a)) false)
+
+$decl names_eq $func ($decl xs fields.node, $decl ys fields.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (xs.head.name, ys.head.name))
+            ($call names_eq ($call fields.val (xs.tail), $call fields.val (ys.tail))) false,
+      $case ys false),
+  $case xs ($call fields.is_nil (ys))
+)
+// §3.6's layout, the outermost level only: what a value of the type occupies and how
+// `$match` tells it apart — field names and props for a block, the count for a group or a
+// function's parameters; a reference, a trait object or an array is one shape whatever it
+// refers to. Anything else is only itself.
+$decl same_layout $func ($decl a proto_ty, $decl b proto_ty) $match a (
+  $case {$prop tag "block"} $match b (
+      $case {$prop tag "block"}
+        $if ($call names_eq ($call fields.val (a.fields), $call fields.val (b.fields)))
+            ($call same_props ($call props.val (a.props), $call props.val (b.props))) false,
+      $case b false),
+  $case {$prop tag "group"} $match b (
+      $case {$prop tag "group"}
+        $call eq_int ($call tys.length ($call tys.val (a.items), 0),
+                      $call tys.length ($call tys.val (b.items), 0)),
+      $case b false),
+  $case {$prop tag "with"} $match b (
+      $case {$prop tag "with"}
+        $if ($call same_layout ($call tval (a.base), $call tval (b.base)))
+            ($call same_props ($call props.val (a.props), $call props.val (b.props))) false,
+      $case b false),
+  $case {$prop tag "ref"}   $match b ($case {$prop tag "ref"} true, $case b false),
+  $case {$prop tag "trait"} $match b ($case {$prop tag "trait"} true, $case b false),
+  $case {$prop tag "array"} $match b ($case {$prop tag "array"} true, $case b false),
+  $case {$prop tag "func"} $match b (
+      $case {$prop tag "func"}
+        $call eq_int ($call tys.length ($call tys.val (a.params), 0),
+                      $call tys.length ($call tys.val (b.params), 0)),
+      $case b false),
+  $case a ($call same (a, b))
+)
+
+// Whether member `t` adds nothing beside member `m`: it is `m`, or joins into it — reading a
+// `μ` member through the members of its unrolling. A union cannot be flattened through a `μ`
+// (§3.6), so a member may be a `μ` whose unrolling holds one unrolling back to the first;
+// `seen` is the `μ`s already entered, and meeting one again answers no.
+$fwd absorbed_in
+$decl absorbed_any_in $func ($decl t proto_ty, $decl ms tys.node, $decl seen tys.node) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call absorbed_in (t, ms.head, seen)) true
+        ($call absorbed_any_in (t, $call tys.val (ms.tail), seen)),
+  $case ms false
+)
+$decl absorbed_in $func ($decl t proto_ty, $decl m proto_ty, $decl seen tys.node)
+  $if ($call eq_up (t, m)) true
+      ($match m (
+          $case {$prop tag "rec"}
+            $if ($call mem_ty (seen, m)) false
+                ($call absorbed_any_in (t, $call join_set (m), $call tys.cons (m, seen))),
+          $case m ($if ($call same_layout (t, m)) ($call sub (t, m)) false)))
+$decl absorbed $func ($decl t proto_ty, $decl m proto_ty) $call absorbed_in (t, m, tys.nil)
+$decl absorbed_any $func ($decl t proto_ty, $decl ms tys.node)
+  $call absorbed_any_in (t, ms, tys.nil)
+
+// Member `t` into the members so far: dropped when one of them takes it; taking the place of
+// any it would take; otherwise added.
+$decl keep_unless $func ($decl h proto_ty, $decl t proto_ty, $decl acc tys.node) $match h (
+  $case {$prop tag "rec"} ($call tys.cons (h, acc)),
+  $case h ($if ($call absorbed (h, t)) acc ($call tys.cons (h, acc)))
+)
+$decl drop_absorbed $func ($decl xs tys.node, $decl t proto_ty, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call drop_absorbed ($call tys.val (xs.tail), t, $call keep_unless (xs.head, t, acc)),
+  $case xs acc
+)
+$decl join_add $func ($decl t proto_ty, $decl acc tys.node)
+  $match t (
+    $case {$prop tag "bottom"} acc,
+    $case t ($if ($call absorbed_any (t, acc)) acc
+                 ($call tys.cons (t, $call drop_absorbed (acc, t, tys.nil)))))
+$decl join_all $func ($decl xs tys.node, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"} $call join_all ($call tys.val (xs.tail), $call join_add (xs.head, acc)),
+  $case xs acc
+)
+// A `μ` stays whole as a member — its own members are only read, for what it takes in.
+$decl join_atoms $func ($decl t proto_ty) $match t (
+  $case {$prop tag "union"} ($call tys.val (t.members)),
+  $case t ($call tys.cons (t, tys.nil))
+)
+$decl all_into $func ($decl xs tys.node, $decl ms tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call absorbed_any (xs.head, ms)) ($call all_into ($call tys.val (xs.tail), ms)) false,
+  $case xs true
+)
+// Whether `a` adds nothing to `b` — most joins — answered without building one.
+$decl within $func ($decl a proto_ty, $decl b proto_ty)
+  $if ($call same (a, b)) true ($call all_into ($call join_atoms (a), $call join_atoms (b)))
 $decl join $func ($decl a proto_ty, $decl b proto_ty) {
-  $decl r   $if ($call same (a, b)) a
-                ($if ($call P.or ($call is_top (a), $call is_top (b))) ($call union2 (a, b))
-                ($if ($call sub (a, b)) b ($if ($call sub (b, a)) a ($call union2 (a, b)))))
+  $decl r   $if ($call within (a, b)) b ($if ($call within (b, a)) a
+                ($call t_union ($call join_all ($call join_atoms (b),
+                     $call join_all ($call join_atoms (a), tys.nil)))))
   $decl ret $if ($call frame_bound (r, 0)) r
                 ($if ($call P.or ($call frame_bound (a, 0), $call frame_bound (b, 0)))
                      ($call make_frame (r)) r)
+}.ret
+
+// §3.6: "A value enters a union as its most specific member" — the member whose type it
+// has, if there is one; otherwise the one member it is a subtype of that is itself a
+// subtype of every other it is a subtype of. Answers the member's position in `ms`, -1 when
+// the value is a subtype of none, and -2 when it is a subtype of several and none of them is
+// below the rest: ambiguous, and an error (`inject_why`).
+$decl slot_same $func ($decl ms tys.node, $decl t proto_ty, $decl i 0) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call same (ms.head, t)) i
+        ($call slot_same ($call tys.val (ms.tail), t, $call add (i, 1))),
+  $case ms -1
+)
+// The positions of the members `t` is a subtype of, last first.
+$decl slot_cands $func ($decl ms tys.node, $decl t proto_ty, $decl i 0, $decl acc cints.node)
+  $match ms (
+    $case {$prop tag "cons"}
+      $call slot_cands ($call tys.val (ms.tail), t, $call add (i, 1),
+          $if ($call sub (t, ms.head)) ($call cints.cons (i, acc)) acc),
+    $case ms acc
+  )
+$decl below_all $func ($decl ms tys.node, $decl c 0, $decl cs cints.node) $match cs (
+  $case {$prop tag "cons"}
+    $if ($call sub ($call tys.nth (ms, c), $call tys.nth (ms, cs.head)))
+        ($call below_all (ms, c, $call cints.val (cs.tail))) false,
+  $case cs true
+)
+$decl most_specific $func ($decl ms tys.node, $decl cs cints.node, $decl all cints.node) $match cs (
+  $case {$prop tag "cons"}
+    $if ($call below_all (ms, cs.head, all)) cs.head
+        ($call most_specific (ms, $call cints.val (cs.tail), all)),
+  $case cs -2
+)
+$decl inject_slot $func ($decl ms tys.node, $decl t proto_ty) {
+  $decl k   $call slot_same (ms, t, 0)
+  $decl ret $if ($call lt (-1, k)) k {
+    $decl cs   $call slot_cands (ms, t, 0, cints.nil)
+    $decl ret2 $match cs (
+        $case {$prop tag "cons"}
+          $if ($call cints.is_nil ($call cints.val (cs.tail))) cs.head
+              ($call most_specific (ms, cs, cs)),
+        $case cs -1
+      )
+  }.ret2
 }.ret
 
 // `T & ¬P`, as far as a union can express it: drop the members `P` covers.

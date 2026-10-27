@@ -252,6 +252,9 @@ pub fn build(b: *std.Build) void {
         // join of two lengths, a group answered at a shorter type. 35729. Compiled only:
         // stage 0 coerces nothing, so a group passed as its first element stays a group.
         .{ .src = "stage1/fixtures/group_prefix.mpl", .want = "35729\n", .stage0 = false },
+        // §3.6: a value enters a union as its most specific member, whatever the union's
+        // order; first fit by position put it in the shorter one. 121 (221 before).
+        .{ .src = "stage1/fixtures/inject.mpl", .want = "121\n" },
         // §7.4 on a function value: a coercion whose C signatures differ goes through a
         // shim, for a `()` or prefix result, a union member, a parameter the other way, a
         // callback's callback, a join, a cell and a tail call. The old backend crashed.

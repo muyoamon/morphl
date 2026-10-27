@@ -511,6 +511,15 @@ $decl t44gd $call check_str ("...nor bounds that cannot meet",
 $decl t44ge $call check_str ("...and a nested overload is read through, once",
   $call errs_of ($call concat (ar_pre, "$decl o $overload ($overload (one, two), one)")), "this candidate takes 2 generics, but a one-generic candidate before it takes a whole argument group whose first item it accepts (§4.9, §5.1), and §4.8 is first fit — write this one first")
 
+// §3.6: a value a subtype of two members neither of which is below the other has no member
+// to enter as, and is refused at the argument; one below the other is no question.
+$decl t44gf $call check_str ("an ambiguous injection is refused",
+  $call errs_of ("$decl p1 { $prop p 1 }  $decl p2 { $prop q 2 }  $decl f $func ($decl u $union (p1, p2)) 0  $decl x $call f ({ $prop p 1  $prop q 2 })"),
+  "ambiguous: {p=i1,q=i2,} is a subtype of two members of <{p=i1,},{q=i2,}> and neither is below the other (§3.6)")
+$decl t44gg $call check_str ("...and one with a most specific member is not",
+  $call errs_of ("$decl g { $prop t 1  $decl a 0 }  $decl s { $prop t 1  $decl a 0  $decl z 0 }  $decl f $func ($decl u $union (g, s)) 0  $decl x $call f ({ $prop t 1  $decl a 1  $decl z 2  $decl q 3 })"),
+  "")
+
 // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
 // error." Nothing enforced this. Such a program was rejected only *incidentally* —
 // the backend could not coerce the matched member into the thunk's result type —

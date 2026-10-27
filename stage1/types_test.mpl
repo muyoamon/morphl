@@ -143,6 +143,26 @@ $decl t22i $call check ("...and a join with {} keeps the block",
 $decl t22j $call check ("$case () narrows to the whole scrutinee",
   $call T.ty_eq ($call T.restrict (bool, T.t_unit), bool))
 
+// §3.6 (option (a)): a join keeps a member of another layout and merges one of the same
+// layout that is a subtype; and a value enters a union as its most specific member.
+$decl vf $call T.t_block ($call T.fields.cons ($call T.field ("v", fls), T.fields.nil), T.props.nil)
+$decl vb $call T.t_block ($call T.fields.cons ($call T.field ("v", bool), T.fields.nil), T.props.nil)
+$decl va $call T.t_block ($call T.fields.cons ($call T.field ("a", int), T.fields.nil), T.props.nil)
+$decl vaz $call T.t_block ($call T.fields.cons ($call T.field ("a", int),
+              $call T.fields.cons ($call T.field ("z", int), T.fields.nil)), T.props.nil)
+$decl t22k $call check ("a join merges a narrower field into the same layout",
+  $call T.ty_eq ($call T.join (vf, vb), vb))
+$decl t22l $call check ("...and keeps a longer block beside a shorter one",
+  $call T.ty_eq ($call T.join (vaz, va), $call T.union2 (vaz, va)))
+$decl t22m $call check ("a value enters the most specific member",
+  $call eq_int ($call T.inject_slot ($call T.tys.cons (va, $call T.tys.cons (vaz, T.tys.nil)),
+      $call T.t_block ($call T.fields.cons ($call T.field ("a", int),
+          $call T.fields.cons ($call T.field ("z", int),
+          $call T.fields.cons ($call T.field ("q", int), T.fields.nil))), T.props.nil)), 1))
+$decl t22n $call check ("...and an exact member is its own",
+  $call eq_int ($call T.inject_slot ($call T.tys.cons (va, $call T.tys.cons (vaz, T.tys.nil)), va),
+                0))
+
 // §5.1: blocks match by ordered prefix, with depth inside the prefix.
 $decl abc    $call T.t_block ($call T.fields.cons ($call T.field ("a", int), $call fld2 ("b", str,
     "c", flt)), T.props.nil)

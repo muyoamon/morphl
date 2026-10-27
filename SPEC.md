@@ -138,7 +138,9 @@ follows from which form created the storage.
 
 Types are combined by `|` (union) and `&` (intersection), and bounded by `()` (top, §2.3) and `⊥` (bottom, the type of `panic`). Unions arise from `$if`/`$match`, recursion, and the `$union` form (§4.8a); there is still no type syntax — `$union` takes example expressions.
 
-**A union is a set of member types, and it does not absorb.** A member that is a subtype of another member stays a member of its own: `$union ({$prop tag "ok"}, {$prop tag "ok" $decl v 0})` has two members, and §5.5's list is `{} | {head, tail}` rather than `{}`. Each member has its own discriminator (§7.5), so a value keeps its exact type through a union and `$match` recovers it; absorbing a subtype into its supertype would lose that at the first join. What merges is only the same type written twice, and a union inside a union, whose members join the outer set.
+**A union is a set of member types, and it does not absorb a member of another layout.** A member that is a subtype of another member of a different layout stays a member of its own: `$union ({$prop tag "ok"}, {$prop tag "ok" $decl v 0})` has two members, and §5.5's list is `{} | {head, tail}` rather than `{}`. Each member has its own discriminator (§7.5), so a value keeps the layout it was built with through a union and `$match` recovers it; absorbing a subtype of another layout into its supertype would lose that at the first join. What merges is the same type written twice; a union inside a union, whose members join the outer set; and **a member that differs from another only in the types of its fields or items and is a subtype of it** — `{v: false}` and `{v: Bool}` are one member, `{v: Bool}` — since that coercion changes no stored data, so nothing a `$match` could recover is lost.
+
+A type's **layout** is what its outermost level occupies and how a `$match` tells it apart: for a block, its field names in order and its props; for a group, its length; for a function, its number of parameters; a reference, a trait object and an array each have one layout whatever they refer to; any other type is its own layout. `()` and `{}` absorb nothing.
 
 **A value enters a union as its most specific member**: the member whose type it has, if there is one; otherwise the one member it is a subtype of that is itself a subtype of every other member it is a subtype of. A value that is not exactly a member is copied to that member's type, as any coercion to a supertype is (§7.4). If no member is most specific — the value is a subtype of two members unrelated to each other — the coercion is ambiguous and an error.
 
@@ -511,14 +513,14 @@ Prefix rather than unordered width, for three reasons. Subtyping on blocks stays
 - **Groups (prefix)**: `(S₁, …, Sₙ) <: (T₁, …, Tₘ)` when `m ≤ n` and `Sᵢ <: Tᵢ` for each `i ≤ m` — the blocks' prefix rule, by position. With §2.3's `(T)` being `T`, a group is a subtype of its first element, `(T, …) <: T`, and of the empty group.
 - **Top**: every type is a subtype of `()`, the empty prefix.
 - **Argument lists and functions are exact.** A parameter list is not a value, so the group rule does not reach it (§3.4): `(P₁, …, Pₙ) -> R <: (Q₁, …, Qₘ) -> S` when `n = m`, each `Qᵢ <: Pᵢ` (contravariant) and `R <: S` (covariant). A function of fewer parameters is not a subtype of one taking more; the C signatures differ (§7.3).
-- **Unions**: `S <: A | B` when `S <: A` or `S <: B`, and `A | B <: T` when `A <: T` and `B <: T`. A union does not absorb (§3.6), so mutual subtyping is not equality here: `A | B` with `B <: A` and `A` are subtypes of each other and are two types, and a coercion between them is a re-tag (§7.4).
+- **Unions**: `S <: A | B` when `S <: A` or `S <: B`, and `A | B <: T` when `A <: T` and `B <: T`. A union does not absorb a member of another layout (§3.6), so mutual subtyping is not equality here: `A | B` with `B <: A` of another layout and `A` are subtypes of each other and are two types, and a coercion between them is a re-tag (§7.4).
 - **Intersections** are dual to unions, and `⊥` is a subtype of everything.
 
 Implicit coercion by subtyping is the only implicit conversion in the language.
 
 ### 5.2 Inference
 
-Every expression has a principal type determined by its parts. Since there is no annotation syntax, inference is total. The design follows algebraic subtyping (Dolan; Parreaux's Simple-sub): unions, intersections, recursive types, and principal types with subtyping. It departs from it in one place: a union does not absorb a member that is a subtype of another (§3.6), so a join keeps every distinct type it is given. Widening never occurs; there are no singleton literal types to widen.
+Every expression has a principal type determined by its parts. Since there is no annotation syntax, inference is total. The design follows algebraic subtyping (Dolan; Parreaux's Simple-sub): unions, intersections, recursive types, and principal types with subtyping. It departs from it in one place: a union does not absorb a member of another layout that is a subtype of it (§3.6), so a join keeps every distinct layout it is given. Widening never occurs; there are no singleton literal types to widen.
 
 ### 5.3 References
 

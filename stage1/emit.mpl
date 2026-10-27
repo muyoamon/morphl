@@ -933,20 +933,10 @@ $decl member_index $func ($decl ms T.tys.node, $decl t T.proto_ty, $decl i 0) $m
   $case ms -1
 )
 
-// The member a value *belongs in* when no member is exactly its type. §7.4
-// coerces a value of type `S` into the member `S` is a subtype of — §5.1 makes
-// a block a subtype of a longer prefix of itself, so the two need not be
-// equal. First fit, in the union's own order (§4.7).
-$decl member_sub_index $func ($decl ms T.tys.node, $decl t T.proto_ty, $decl i 0) $match ms (
-  $case {$prop tag "cons"}
-    $if ($call T.sub (t, ms.head)) i ($call member_sub_index (ms.tail, t, $call add (i, 1))),
-  $case ms -1
-)
-
-$decl member_slot $func ($decl ms T.tys.node, $decl t T.proto_ty) {
-  $decl k   $call member_index (ms, t, 0)
-  $decl ret $if ($call lt (k, 0)) ($call member_sub_index (ms, t, 0)) k
-}.ret
+// The member a value *belongs in*: §3.6's most specific member (`T.inject_slot`) — its own
+// type if that is a member, otherwise the one member it is a subtype of that is below every
+// other it is a subtype of. -2 is the ambiguous case, which `emit_inject` reports.
+$decl member_slot $func ($decl ms T.tys.node, $decl t T.proto_ty) $call T.inject_slot (ms, t)
 
 $decl block_is $func ($decl t0 T.proto_ty) {
   $decl t   $call T.unroll (t0)
@@ -1019,6 +1009,12 @@ $decl fn_sig $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0) {
 // `boolish` is §3.2's exception. `Bool` is the union `true | false` but its
 // discriminator *is* its value, so there is no `.tag` to read and no payload
 // to move — its members are nullary tags, whose structs are empty.
+// §3.6: a value a subtype of two members unrelated to each other has no member to go in.
+$decl ambiguous_err $func ($decl st proto_est, $decl ft T.proto_ty, $decl wt T.proto_ty)
+  $call eerr (st, $call concat ("ambiguous: ", $call concat ($call T.show (ft),
+      $call concat (" is a subtype of two members of ", $call concat ($call T.show (wt),
+      " and neither is below the other (§3.6)")))))
+
 $fwd emit_inject
 
 $decl emit_retag_arms $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
@@ -1038,6 +1034,7 @@ $decl emit_retag_arms $func ($decl st proto_est, $decl ts T.tys.node, $decl dest
     $decl d1 $if whole
         ($call assign (st, dest,
              $call concat (src, $call concat (".u.m", $call int_to_str (i)))))
+    ($if ($call eq_int (k, -2)) ($call ambiguous_err (st, fs.head, wt))
     ($if ($call lt (k, 0))
         ($call eerr (st, $call concat ("no member of ", $call concat ($call T.show (wt),
              $call concat (" accepts ", $call T.show (fs.head)))))) {
@@ -1059,7 +1056,7 @@ $decl emit_retag_arms $func ($decl st proto_est, $decl ts T.tys.node, $decl dest
                        $call concat (".u.m", $call int_to_str (k))),
                        $call concat (src, $call concat (".u.m", $call int_to_str (i))))))
           $decl ret2 0
-        }.ret2)
+        }.ret2))
     $decl d2 $call say (st, "  break;\n")
     $decl ret  $call emit_retag_arms (st, ts, dest, src, $call T.tys.val (fs.tail), ws,
                  $call add (i, 1), boolish, wt)
@@ -1363,6 +1360,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
       ($if ($call same_layout_refs (ft, wt))
            ($call assign (st, dest, $call concat ("(", $call concat ($call c_type (st, ts, want),
                $call concat (")", src)))))
+      ($if ($call eq_int (k, -2)) ($call ambiguous_err (st, ft, wt))
       ($if ($call lt (k, 0)) ($call coerce_err (st, ft, wt)) {
         $decl a  $call assign (st, $call concat (dest, ".tag"), $call int_to_str (k))
         // The payload is not always a plain move. `member_slot` finds a
@@ -1376,7 +1374,7 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                  $call concat (".u.m", $call int_to_str (k))), src, from, wk.id))
             ($call assign (st, $call concat (dest,
                  $call concat (".u.m", $call int_to_str (k))), src))
-      }.ret2)))))))))
+      }.ret2))))))))))
 }.ret
 
 $decl emit_group_copy $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "", $decl src "",
