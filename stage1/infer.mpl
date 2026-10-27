@@ -3003,16 +3003,19 @@ $decl tmpl_cands $func ($decl cx proto_ctx, $decl ts T.tys.node, $decl acc T.tys
   $case ts acc
 )
 // The first generic's bound, as a type: `()` when it has none, ⊥ when it cannot be typed here.
+// One generic's bound as a type: `()` when it has none, ⊥ when it cannot be typed here.
+$decl bound_of $func ($decl cx proto_ctx, $decl r proto_tmpl, $decl b Pa.proto_node)
+  $if ($call Pa.is_unit_node (b)) T.t_unit {
+    $decl q0   $call bval (cx.quiet)
+    $decl e0   $call Pa.diags.val (cx.errs)
+    $decl hush $set cx.quiet true
+    $decl bt   $call deref_ty ($call infer (cx, r.env, b))
+    $decl back $do ($set cx.quiet q0) ($set cx.errs e0)
+    $decl ret  $if ($call has_free_var (bt)) T.t_bot bt
+  }.ret
 $decl first_bound_of $func ($decl cx proto_ctx, $decl r proto_tmpl, $decl bs Pa.nodes.node)
   $match bs (
-    $case {$prop tag "cons"} $if ($call Pa.is_unit_node (bs.head)) T.t_unit {
-      $decl q0   $call bval (cx.quiet)
-      $decl e0   $call Pa.diags.val (cx.errs)
-      $decl hush $set cx.quiet true
-      $decl bt   $call deref_ty ($call infer (cx, r.env, bs.head))
-      $decl back $do ($set cx.quiet q0) ($set cx.errs e0)
-      $decl ret  $if ($call has_free_var (bt)) T.t_bot bt
-    }.ret,
+    $case {$prop tag "cons"} $call bound_of (cx, r, bs.head),
     $case bs T.t_unit
   )
 $decl first_bound $func ($decl cx proto_ctx, $decl r proto_tmpl)
@@ -3069,6 +3072,69 @@ $decl lint_arity $func ($decl cx proto_ctx, $decl ns Pa.nodes.node, $decl ts T.t
   $case ts ()
 )
 
+// §4.8's lint for templates, beside `lint_cands`' for functions: a template candidate is
+// never chosen when an earlier one takes as many generics and each of its bounds is a
+// supertype of this one's — an unbounded generic is `()` — since every argument group this
+// one accepts the earlier one accepts first. A bound that cannot be typed (it names a
+// generic) is not judged. Compared across an overload's positions, nested ones read
+// through, as `lint_arity` is.
+//
+// Only a candidate reached by `$specialize` alone is judged: one whose body is not a
+// `$func`, or that has a compile-time generic, which application never infers (§4.9). A
+// `$func` template can also be chosen by `$call`, which skips an earlier candidate whose
+// generics it cannot infer — `overload_tmpl.mpl`'s `uninfer` before `twice_int` — so bounds
+// alone do not decide it.
+$decl spec_only $func ($decl r proto_tmpl)
+  $if ($call is_form (r.body, "func")) ($call not ($call Pa.ctgs.is_nil (r.ctg))) true
+$decl bounds_cover $func ($decl cx proto_ctx, $decl a proto_tmpl, $decl b proto_tmpl,
+                          $decl xs Pa.nodes.node, $decl ys Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"} $match ys (
+      $case {$prop tag "cons"} {
+        $decl ta   $call bound_of (cx, a, xs.head)
+        $decl tb   $call bound_of (cx, b, ys.head)
+        $decl ret2 $if ($call P.or ($call T.same (ta, T.t_bot), $call T.same (tb, T.t_bot))) false
+            ($if ($call T.sub (tb, ta))
+                 ($call bounds_cover (cx, a, b, $call Pa.nodes.val (xs.tail),
+                      $call Pa.nodes.val (ys.tail)))
+                 false)
+      }.ret2,
+      $case ys false),
+  $case xs ($call Pa.nodes.is_nil (ys))
+)
+$decl covered_by $func ($decl cx proto_ctx, $decl es T.tys.node, $decl r proto_tmpl) $match es (
+  $case {$prop tag "cons"} {
+    $decl e    $call rec_of (cx, $call T.tval (es.head))
+    $decl same $call eq_int ($call strs.length (e.generics, 0), $call strs.length (r.generics, 0))
+    $decl hit  $if same ($call bounds_cover (cx, e, r, $call Pa.nodes.val (e.bounds),
+                                             $call Pa.nodes.val (r.bounds))) false
+    $decl ret  $if hit true ($call covered_by (cx, $call T.tys.val (es.tail), r))
+  }.ret,
+  $case es false
+)
+$decl lint_shadow_in $func ($decl cx proto_ctx, $decl xs T.tys.node, $decl es T.tys.node,
+                            $decl n Pa.proto_node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($if ($if ($call spec_only ($call rec_of (cx, $call T.tval (xs.head))))
+                  ($call covered_by (cx, es, $call rec_of (cx, $call T.tval (xs.head)))) false)
+             ($call err (cx, "this candidate is never chosen: an earlier template takes as many generics and its bounds accept every argument this one's do, and §4.8 is first fit", n))
+             T.t_unit)
+        ($call lint_shadow_in (cx, $call T.tys.val (xs.tail), es, n)),
+  $case xs ()
+)
+$decl lint_shadow $func ($decl cx proto_ctx, $decl ns Pa.nodes.node, $decl ts T.tys.node,
+                         $decl es T.tys.node) $match ts (
+  $case {$prop tag "cons"} $match ns (
+      $case {$prop tag "cons"} {
+        $decl fl  $call T.tys.reverse ($call tmpl_cands (cx, $call T.tys.cons (ts.head, T.tys.nil),
+                      T.tys.nil), T.tys.nil)
+        $decl chk $call lint_shadow_in (cx, fl, es, ns.head)
+        $decl ret $call lint_shadow (cx, $call Pa.nodes.val (ns.tail), $call T.tys.val (ts.tail),
+                      $call T.tys.reverse ($call T.tys.reverse (es, T.tys.nil), fl))
+      }.ret,
+      $case ns ()),
+  $case ts ()
+)
+
 // §4.8: `$overload cands` is the group at run time, and its type marks it an overload set,
 // ordered as written.
 $decl infer_overload $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
@@ -3076,6 +3142,7 @@ $decl infer_overload $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
   $decl ts  $call arg_types (cx, e, cs, T.tys.nil)
   $decl lnt $call lint_cands (cx, cs, ts, T.tys.nil)
   $decl lna $call lint_arity (cx, cs, ts, T.tys.nil)
+  $decl lns $call lint_shadow (cx, cs, ts, T.tys.nil)
   $decl ret $call T.t_over (ts)
 }.ret
 

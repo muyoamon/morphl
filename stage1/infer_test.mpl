@@ -523,6 +523,19 @@ $decl t44gg $call check_str ("...and one with a most specific member is not",
   $call errs_of ("$decl g { $prop t 1  $decl a 0 }  $decl s { $prop t 1  $decl a 0  $decl z 0 }  $decl f $func ($decl u $union (g, s)) 0  $decl x $call f ({ $prop t 1  $decl a 1  $decl z 2  $decl q 3 })"),
   "")
 
+// §4.8 for templates: one reached by `$specialize` alone, after an earlier one with as many
+// generics whose bounds cover its own, is never chosen. Not reported when the bounds do not
+// cover, the other way round, or for a `$func` template, which `$call` may still choose.
+$decl sh_pre "$decl any $template T { $prop d 1 }  $decl int $template ($decl T 0) { $prop d 2 }  $decl str $template ($decl T \"\") { $prop d 3 }  "
+$decl t44gi $call check_str ("a template after one whose bounds cover it is reported",
+  $call errs_of ($call concat (sh_pre, "$decl o $overload (any, int)")), "this candidate is never chosen: an earlier template takes as many generics and its bounds accept every argument this one's do, and §4.8 is first fit")
+$decl t44gj $call check_str ("...not the other way round",
+  $call errs_of ($call concat (sh_pre, "$decl o $overload (int, any)")), "")
+$decl t44gk $call check_str ("...nor when the bounds do not meet",
+  $call errs_of ($call concat (sh_pre, "$decl o $overload (int, str)")), "")
+$decl t44gl $call check_str ("...nor for a $func template, which $call may still reach",
+  $call errs_of ("$decl u $template T $func ($decl x 0) 9  $decl t $template ($decl T 0) $func ($decl x T) x  $decl o $overload (u, t)"), "")
+
 // §4.15: "Outside a `$func` (file top level, prop initializer) it is a compile
 // error." Nothing enforced this. Such a program was rejected only *incidentally* —
 // the backend could not coerce the matched member into the thunk's result type —

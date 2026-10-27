@@ -8,5 +8,5 @@ $decl kind     $overload (by_int, by_named)
 $decl s        $specialize kind "x"
 
 $decl twice $template ($decl T 0) $func ($decl x T) $call mul (x, 2)
-$decl calls $overload (twice, by_int)
+$decl calls $overload (twice, by_named)
 $decl t     $call calls ("s")
