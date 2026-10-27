@@ -2666,9 +2666,67 @@ $decl proto_ref $call t_ref ("", proto_ty)
 $decl sub_kind $func ($decl a "", $decl b "")
   $if ($call is_alloc (b)) ($call is_alloc (a)) true
 
+// §5.3: `&const` is covariant only where the subtype's value *is* the supertype's — read
+// through the same pointer, every field at the same offset — since a coercion through a
+// reference changes nothing but the pointer's type (§7.4). So: the same type; `()` and `⊥`;
+// a block or group whose prefix does, field by field; `true` or `false` as `Bool`, whose
+// value is its discriminator; a `with` as its base; and a reference or an array, one pointer
+// whatever it reaches. A member is not its union (a union carries a tag the member lacks),
+// nor is a union a wider one (§7.5 numbers its members), nor a function or trait object of
+// another type — each of those is a conversion of the value, which a pointer cannot carry.
+$fwd repr_up
+$decl repr_fields $func ($decl xs fields.node, $decl ys fields.node, $decl d 0) $match ys (
+  $case {$prop tag "cons"} $match xs (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (xs.head.name, ys.head.name))
+            ($if ($call repr_up ($call tval (xs.head.ty), $call tval (ys.head.ty), d))
+                 ($call repr_fields ($call fields.val (xs.tail), $call fields.val (ys.tail), d))
+                 false)
+            false,
+      $case xs false),
+  $case ys true
+)
+$decl repr_items $func ($decl xs tys.node, $decl ys tys.node, $decl d 0) $match ys (
+  $case {$prop tag "cons"} $match xs (
+      $case {$prop tag "cons"}
+        $if ($call repr_up ($call tval (xs.head), $call tval (ys.head), d))
+            ($call repr_items ($call tys.val (xs.tail), $call tys.val (ys.tail), d)) false,
+      $case xs false),
+  $case ys true
+)
+$decl is_tag_bool $func ($decl t proto_ty)
+  $if ($call same (t, t_true)) true ($call same (t, t_false))
+$decl repr_up $func ($decl a proto_ty, $decl b proto_ty, $decl d 0)
+  $if ($call same (a, b)) true
+  ($if ($call lt (16, d)) false {
+    $decl au   $call tval ($call unroll (a))
+    $decl bu   $call tval ($call unroll (b))
+    $decl d2   $call add (d, 1)
+    $decl ret2 $match bu (
+        $case {$prop tag "unit"} true,
+        $case {$prop tag "with"} ($call repr_up (a, $call tval (bu.base), d2)),
+        $case bu $match au (
+            $case {$prop tag "bottom"} true,
+            $case {$prop tag "with"} ($call repr_up ($call tval (au.base), b, d2)),
+            $case {$prop tag "block"} $match bu (
+                $case {$prop tag "block"}
+                  ($call repr_fields ($call fields.val (au.fields),
+                                      $call fields.val (bu.fields), d2)),
+                $case bu false),
+            $case {$prop tag "group"} $match bu (
+                $case {$prop tag "group"}
+                  ($call repr_items ($call tys.val (au.items), $call tys.val (bu.items), d2)),
+                $case bu false),
+            $case {$prop tag "ref"} $match bu ($case {$prop tag "ref"} true, $case bu false),
+            $case {$prop tag "array"} $match bu ($case {$prop tag "array"} true, $case bu false),
+            $case au $if ($call same (bu, t_bool)) ($call is_tag_bool (au)) false))
+  }.ret2)
+
 $decl sub_ref $func ($decl a proto_ref, $decl b proto_ref, $decl st proto_actx)
   $if ($call not ($call sub_kind (a.kind, b.kind))) false
-  ($if ($call eq_str (b.qual, "const")) ($call sub_seen (a.inner, b.inner, st))
+  ($if ($call eq_str (b.qual, "const"))
+       ($if ($call sub_seen (a.inner, b.inner, st))
+            ($call repr_up ($call tval (a.inner), $call tval (b.inner), 0)) false)
   ($if ($call eq_str (b.qual, "mut"))
        ($call and ($call not ($call eq_str (a.qual, "const")), $call ty_eq (a.inner, b.inner)))
        ($call and ($call eq_str (a.qual, ""), $call ty_eq (a.inner, b.inner)))))

@@ -249,6 +249,21 @@ $decl t42 $call check ("&mut is invariant, so prefix subtyping is unavailable",
   $call not ($call T.sub ($call T.t_ref ("mut", abc), $call T.t_ref ("mut", just_a))))
 $decl t43 $call check ("...but &const is covariant, so it is available there — and free (§7.4)",
   $call T.sub ($call T.t_ref ("const", abc), $call T.t_ref ("const", just_a)))
+// ...and covariant only where the value is the same through the pointer (§5.3): a member is
+// not its union, which carries a tag; a union is not a wider one, which numbers its members.
+$decl t43a $call check ("&const true <: &const Bool: a boolean's value is its discriminator",
+  $call T.sub ($call T.t_ref ("const", tru), $call T.t_ref ("const", bool)))
+$decl t43b $call check ("&const of a member is not &const of its union",
+  $call not ($call T.sub ($call T.t_ref ("const", int),
+                          $call T.t_ref ("const", $call T.union2 (int, str)))))
+$decl t43c $call check ("...though the member is a subtype of the union by value",
+  $call T.sub (int, $call T.union2 (int, str)))
+$decl t43d $call check ("&const of a block holding a member is not &const of one holding the union",
+  $call not ($call T.sub ($call T.t_ref ("const", just_a),
+                          $call T.t_ref ("const", $call T.t_block (
+                            $call T.f1 ("a", $call T.union2 (int, str)), T.props.nil)))))
+$decl t43e $call check ("&const (&mut T) <: &const (&const T): a reference is one pointer",
+  $call T.sub ($call T.t_ref ("const", r_mut), $call T.t_ref ("const", r_const)))
 
 // §3.6 lattice rules for unions and intersections.
 $decl t44 $call check ("a union is a subtype when every member is",

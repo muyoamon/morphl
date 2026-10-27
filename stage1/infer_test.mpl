@@ -1401,4 +1401,13 @@ $decl bw05 $call check_str ("a join keeps the frame-bound side, whichever arm it
   $call errs_of ($call concat (bw_pre, "$decl bad $func ($decl c $union (false, true)) { $decl loc { $prop area $func () 5 }  $decl ret $if c ($traitsof loc) ($traitsof tri) }.ret")),
   "this function's result holds frame storage made in this call (a trait object referring to frame storage), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
 
+// §5.3: `&const` is covariant only where a pointer to the one reads as the other. A member
+// is not its union through one — the union has a tag the member's storage does not hold.
+$decl cr01 $call check_str ("&const of a member is not &const of its union",
+  $call errs_of ("$decl f $func ($decl r $const $new $union (1, \"s\")) 0  $decl x $call f ($const $new 5)"),
+  "argument 1 is &const Int, expected &const <Int,Str>")
+$decl cr02 $call check_str ("...while a block's prefix still is",
+  $call errs_of ("$decl g $func ($decl r $const $new { $decl a 1 }) 0  $decl y $call g ($const $new { $decl a 1  $decl b 2 })"),
+  "")
+
 $decl done19 $call nl ("all borrowing tests passed")
