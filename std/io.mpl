@@ -68,16 +68,12 @@ $decl arg_list $func () $call strs.from_array ($call args ())
 // `{tag ok, v <text>}`, at least one code point unless the stream has ended, where it is
 // `""`. `max` is in bytes and at least 4, so that one code point always fits (§3.1).
 
-// What `$extern` reaches, as C declares it (§4.16). Linux's errno is a thread's `int`, read
-// by copying its four bytes into the low end of an `Int` cell, which assumes little endian.
+// What `$extern` reaches, as C declares it (§4.16). The error code after one fails is the
+// root block's `errno ()` (BOOTSTRAP §2).
 $decl c_read     $extern "ssize_t read(int, void *, size_t)"
   $func ($decl fd 0, $decl p 0, $decl n 0) 0
 $decl c_memmove  $extern "void *memmove(void *, const void *, size_t)"
   $func ($decl d 0, $decl s 0, $decl n 0) 0
-$decl c_memcpy   $extern "void *memcpy(void *, const void *, size_t)"
-  $func ($decl d 0, $decl s 0, $decl n 0) 0
-$decl c_errno    $extern "int *__errno_location(void)"
-  $func () 0
 $decl c_strerror $extern "char *strerror(int)"
   $func ($decl e 0) 0
 $decl c_strlen   $extern "size_t strlen(const char *)"
@@ -100,12 +96,6 @@ $decl e_intr  4
 $decl e_ilseq 84
 $decl o_rdonly 0
 $decl mode_rw  420
-
-$decl errno $func () {
-  $decl cell $mut $alloc 0
-  $decl w    $call c_memcpy ($call box_ptr (cell), $call c_errno (), 4)
-  $decl ret  $call C.ival (cell)
-}.ret
 
 // The text of an error code, as `strerror` gives it.
 $decl describe $func ($decl e 0) {

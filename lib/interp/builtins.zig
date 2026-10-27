@@ -409,6 +409,16 @@ fn eprintFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return .unit;
 }
 
+/// `errno ()`: the platform's last error code, which a compiled program reads after an
+/// `$extern` call fails (BOOTSTRAP §2). Stage 0 has no `$extern` (§1.2), so nothing in it
+/// can have set one, and the answer is 0.
+fn errnoFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    _ = rt;
+    _ = args;
+    _ = span;
+    return .{ .int = 0 };
+}
+
 /// `read_file (path)` → `none | {$prop tag "some" $decl v Str}`.
 ///
 /// The UTF-8 check is not defensive coding, it is §3.1's invariant: `Str` is
@@ -548,6 +558,7 @@ const table = [_]value.Builtin{
     .{ .name = "write_file", .arity = 2, .func = writeFileFn },
     .{ .name = "args", .arity = 0, .func = argsFn },
     .{ .name = "run", .arity = 1, .func = runFn },
+    .{ .name = "errno", .arity = 0, .func = errnoFn },
     .{ .name = "str_ptr", .arity = 1, .func = ffiFn },
     .{ .name = "str_from_ptr", .arity = 2, .func = ffiFn },
     .{ .name = "raw_alloc", .arity = 1, .func = ffiFn },
@@ -577,7 +588,7 @@ test "the root block is complete per BOOTSTRAP 2" {
         "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.
         "err",        "none",       "print", "eprint", "read_file", "write_file", "args",
-        "run",        "str_ptr",    "str_from_ptr", "array_ptr", "box_ptr", "unbox",
+        "run",        "errno",      "str_ptr",    "str_from_ptr", "array_ptr", "box_ptr", "unbox",
         "raw_alloc",  "raw_free",   "allocator",
     }) |name| {
         if (scope.findLocalText(name) == null) {

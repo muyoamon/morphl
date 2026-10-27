@@ -631,6 +631,7 @@ $decl rdefer_t $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (
 // BOOTSTRAP §2's `run (argv)`: the process's exit status, or `none` when it could
 // not be started.
 $decl run_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), opt_int)
+$decl errno_t $call T.t_func (T.tys.nil, T.t_int)
 
 $decl root_env
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
@@ -638,7 +639,7 @@ $decl root_env
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind (
-  $call bind (
+  $call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
@@ -647,7 +648,7 @@ $decl root_env
     "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
     "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
     "str_ptr", s_i), "str_from_ptr", strf_t), "array_ptr", T.ffi_aptr), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
-    "run", run_t), "raw_alloc", ralloc_t), "raw_free", rfree_t), "allocator", T.ffi_alloc),
+    "run", run_t), "errno", errno_t), "raw_alloc", ralloc_t), "raw_free", rfree_t), "allocator", T.ffi_alloc),
     "add_wrap", ii_i), "sub_wrap", ii_i), "mul_wrap", ii_i),
     "add_sat", ii_i), "sub_sat", ii_i), "mul_sat", ii_i),
     "band", ii_i), "bor", ii_i), "bxor", ii_i), "shl", ii_i), "shr", ii_i),

@@ -116,7 +116,7 @@ Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(
 | Arrays | `array at alen` — as §8; `at` returns a base+index handle |
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
-| Platform | `print eprint read_file write_file args run` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
+| Platform | `print eprint read_file write_file args run errno` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
 | FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox raw_alloc raw_free` — as §8 in stage 1, which compiles them; stage 0 has the names and refuses them, since it has no `$extern` (§1.2) |
 | Storage | `allocator` — §7.6's root allocator, whose `alloc` and `free` are `raw_alloc` and `raw_free`; stage 0 never frees (§3), so its `$alloc` ignores it |
 
@@ -126,6 +126,7 @@ Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(
 - `read_file (path)` → `none | {$prop tag "some" $decl v Str}`. A missing file *and* non-UTF-8 contents both give `none`. That is not defensiveness: §3.1 makes `Str` always valid UTF-8, and §4.16 says bytes arriving from outside "become a `Str` only through a validating library function returning `option Str`".
 - `write_file (path, contents)` → `{$prop tag "ok"} | err` (SPEC §4.15's success shape), so a caller writes `$try ($call write_file (p, s)) err` and the error set is inferred (§4.15).
 - `run (argv)` → `none | {$prop tag "some" $decl v Int}`: runs the program `argv[0]` names with `argv` as its arguments — no shell, so no argument is ever quoted — inheriting the standard streams, which are flushed first. The status is the exit code, or 128 plus the signal that ended it, as a shell reports one; `none` when it cannot be started. It is what §9.1's `link` runs `cc` with, and like the rest of this group it stands in for library code over `$extern`.
+- `errno ()` → `Int`: the platform's last error code, for a program that has just had an `$extern` call fail. It is what `std/io` reports a failed stream operation with, and it replaced reading C's `int` by copying its four bytes into an `Int` cell, which held only on a little-endian machine. Stage 0 has no `$extern` (§1.2), so nothing in it can have set one, and it answers 0.
 - `args ()` → an array of `Str`: the arguments after the input file, i.e. the *program's* arguments rather than the compiler's. A zero-arity function, so a program that never asks pays nothing, and a fresh array per call since §8's arrays are `&mut [T]`.
 
 The evaluator holds these as an injected interface and never opens a file itself — the same arrangement as the `$import` resolver, and for the same reason: §4.16 puts the platform in a per-target root block, not in the language.
