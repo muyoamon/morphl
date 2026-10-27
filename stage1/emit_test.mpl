@@ -67,7 +67,8 @@ $decl join_ofiles $func ($decl fs IR.ofiles.node, $decl acc "") $match fs (
   $case fs acc
 )
 
-$decl result $func ($decl c "", $decl n 0) { $decl code c  $decl nerrs n }
+$decl result $func ($decl c "", $decl n 0, $decl k 0)
+  { $decl code c  $decl nerrs n  $decl nnotes k }
 
 $decl compile $func ($decl src "") {
   $decl r     $call I.check_source (src, "", "")
@@ -79,7 +80,8 @@ $decl compile $func ($decl src "") {
   // §9.1 makes `emit_program` answer a *list* of outputs, so the text these tests
   // search is all of them joined — which is valid to concatenate, declarations first.
   $decl c   $call join_ofiles ($call E.emit_program (est, prog), "")
-  $decl ret $call result (c, $call Pa.diags.length ($call E.emit_errs (est), 0))
+  $decl ret $call result (c, $call Pa.diags.length ($call E.emit_errs (est), 0),
+                $call Pa.diags.length ($call E.emit_notes (est), 0))
 }.ret
 
 // ---------------------------------------------------------------- the cases
@@ -150,12 +152,12 @@ $decl t8 $call check ("Float is a double and its mod the runtime's",
         ($if ($call has (r.code, "double s0")) ($call has (r.code, "mpl_fmod(")) false) false
   }.ret)
 
-// And a program with no `main` is refused, since the emitted file would not
-// link.
-$decl t9 $call check ("a program with no main is refused",
+// And a program with no `main` is noted, not refused: it is a library, whose C is right
+// and only does not link on its own. An error is what makes a driver stop.
+$decl t9 $call check ("a program with no main is a note, not an error",
   {
     $decl r   $call compile ("$decl f $func ($decl n 0) n ")
-    $decl ret $call lt (0, r.nerrs)
+    $decl ret $if ($call eq_int (r.nerrs, 0)) ($call lt (0, r.nnotes)) false
   }.ret)
 
 // ------------------------------------------------------------------ blocks

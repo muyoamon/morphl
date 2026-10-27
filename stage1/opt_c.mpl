@@ -42,5 +42,7 @@ $decl out  $call C.emit (opt)
 $decl e0 $call show_errs ($call Pa.diags.val (ckd.diagnostics), "check")
 $decl e1 $call show_errs (bad0, "verify (before)")
 $decl e2 $call show_errs (bad1, "verify (after fold)")
-$decl e3 $call show_errs ($call Pa.diags.val (out.diagnostics), "emit")
+$decl e3 $call show_errs ($call Pa.diags.reverse ($call Pa.diags.reverse (
+                    $call Pa.diags.val (out.diagnostics), Pa.diags.nil),
+                    $call Pa.diags.val (out.notes)), "emit")
 $decl e4 $call print ($call C.sole_text (out))

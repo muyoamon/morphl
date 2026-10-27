@@ -70,9 +70,11 @@ $decl first_msg $func ($decl ds Pa.diags.node, $decl what "", $decl n 0)
 // is the only route to stderr that is emitted (`mpl_panic_str` writes and
 // aborts), so that is what a check or verify failure takes.
 //
-// Emit diagnostics are deliberately *not* fatal: the three §6a groups are a
-// documented refusal and "no top-level `$decl` named `main`" is not an error for
-// a library, which is most of what this compiles.
+// So is an emit error: it means a construct was emitted wrongly or not at all — a
+// coercion with no C form, an intrinsic with no emission — and the C it came with would
+// compile into a program that is wrong, which is the same silent failure one step later.
+// Emit's *notes* are not fatal: "no top-level `$decl` named `main`" is not an error for
+// a library, which is most of what this compiles, so it is a warning on stderr.
 // One line per diagnostic, on stderr. The file comes off the diagnostic, as
 // `first_msg`'s does, and an emit diagnostic has no position (the typed tree carries
 // no spans), so it has none here either.
@@ -113,11 +115,14 @@ $decl main $func () {
   $decl nv  $call Pa.diags.length (bad, 0)
   $decl g2  $if ($call lt (0, nv)) ($call panic ($call first_msg (bad, "verify", nv))) ""
   $decl out $call C.emit (ckd.program)
-  // Emit's diagnostics are not fatal — "no top-level $decl named 'main'" is not an
-  // error for a library, which is most of what this compiles — and they used to be
-  // invisible here, because §8 gave a program stdout (the C) and `panic` (fatal)
-  // and nothing between. BOOTSTRAP §2's `eprint` is the between.
-  $decl w   $call warn_all ($call Pa.diags.val (out.diagnostics))
+  // Emit's notes are not fatal, and they used to be invisible here, because §8 gave a
+  // program stdout (the C) and `panic` (fatal) and nothing between. BOOTSTRAP §2's
+  // `eprint` is the between. Its errors are, after the notes, so a library that also
+  // fails says both. Raised newest first, so reversed for the first one.
+  $decl w   $call warn_all ($call Pa.diags.val (out.notes))
+  $decl ed  $call Pa.diags.reverse ($call Pa.diags.val (out.diagnostics), Pa.diags.nil)
+  $decl ne  $call Pa.diags.length (ed, 0)
+  $decl g4  $if ($call lt (0, ne)) ($call panic ($call first_msg (ed, "emit", ne))) ""
   $decl ret $if ($call eq_str (out_path, "")) ($call C.sole_text (out)) {
     // A link failure is fatal, like a check failure: there is no executable.
     $decl lk   $call C.link (out, out_path, extra)

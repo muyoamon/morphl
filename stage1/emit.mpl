@@ -127,6 +127,10 @@ $decl estate $func () {
   // `est` everywhere and the function table nowhere.
   $decl fnames $mut $alloc strs.node
   $decl errs   $mut $alloc Pa.diags.node
+  // What is worth saying but does not make the C wrong — a library having no `main`.
+  // Every `eerr` is the other kind: a construct emitted wrongly or not at all, which a
+  // driver must not turn into an executable.
+  $decl notes  $mut $alloc Pa.diags.node
   // The modules with an output, hence an `mpl_init_<mod>` an `$import` may call.
   $decl imods  $mut $alloc strs.node
   // §7.4's function adapters for the output being emitted: the module it is named
@@ -140,7 +144,8 @@ $decl proto_est $call estate ()
 
 $decl eval_diags $func ($decl x Pa.diags.node) x
 
-$decl emit_errs $func ($decl st proto_est) $call eval_diags (st.errs)
+$decl emit_errs  $func ($decl st proto_est) $call eval_diags (st.errs)
+$decl emit_notes $func ($decl st proto_est) $call eval_diags (st.notes)
 
 // Fold each adjacent pair of chunks into one, halving the list. The result
 // comes out reversed, which is why `join_step` reverses between passes —
@@ -201,6 +206,11 @@ $decl say $func ($decl st proto_est, $decl s "") {
 $decl eerr $func ($decl st proto_est, $decl m "") {
   $decl noted $set st.errs ($call Pa.diags.cons ($call Pa.diag (m, 0, 0, ""),
                                                  $call eval_diags (st.errs)))
+  $decl ret ()
+}.ret
+$decl enote $func ($decl st proto_est, $decl m "") {
+  $decl noted $set st.notes ($call Pa.diags.cons ($call Pa.diag (m, 0, 0, ""),
+                                                  $call eval_diags (st.notes)))
   $decl ret ()
 }.ret
 
@@ -4649,7 +4659,7 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
           ($call concat ("  mpl_print(", $call concat (val, ");\n")))
           ($call concat ("  printf(\"%lld\\n\", (long long)", $call concat (val, ");\n")))))
   $decl d2 $if ($call lt (mi, 0))
-      ($call eerr (st, "no top-level $decl named 'main'"))
+      ($call enote (st, "no top-level $decl named 'main'"))
       ($call say (st, $call concat ($call concat ("\n", $call concat (runtime_state,
            // §6a's pending block, when there is one: shared state, so defined once.
            $if ($call IR.ints.is_nil ($call IR.ints.val (st.tsigs))) ""

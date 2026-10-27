@@ -66,8 +66,11 @@ $decl proto_checked $call checked (IR.proto_program, Pa.diags.nil)
 // a list of one. Each entry carries the path it should be written to, for the same
 // reason `parse` takes one: the caller is not asked to invent names for the
 // compiler's own outputs.
-$decl emitted $func ($decl fs IR.ofiles.node, $decl d Pa.diags.node)
-  { $decl files fs  $decl diagnostics d }
+// `diagnostics` are errors: the C is wrong or incomplete, and a driver must not build it.
+// `notes` are not — a library has no `main` — and come after, so a reader of the first two
+// fields is unchanged (§5.1).
+$decl emitted $func ($decl fs IR.ofiles.node, $decl d Pa.diags.node, $decl n Pa.diags.node)
+  { $decl files fs  $decl diagnostics d  $decl notes n }
 
 $decl proto_emitted $call emitted (IR.ofiles.nil, Pa.diags.nil)
 
@@ -176,7 +179,7 @@ $decl verify V.verify
 $decl emit $func ($decl pr IR.proto_program) {
   $decl st  $call E.estate ()
   $decl c   $call E.emit_program (st, pr)
-  $decl ret $call emitted (c, $call E.emit_errs (st))
+  $decl ret $call emitted (c, $call E.emit_errs (st), $call E.emit_notes (st))
 }.ret
 
 // -------------------------------------------------------------------- link

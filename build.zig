@@ -983,6 +983,22 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&warn.step);
     }
 
+    // ...and an emit *error* is fatal, as a check error is: it means the C is wrong, and
+    // it used to be a warning too, so `mplc` wrote that C and exited 0. The note still
+    // comes out first.
+    {
+        const fail = std.Build.Step.Run.create(b, "mplc fails on an emit error");
+        fail.addFileArg(mplc_bin);
+        fail.addArg("stage1/fixtures/emit_err.mpl");
+        fail.setCwd(b.path("."));
+        fail.has_side_effects = true;
+        fail.addCheck(.{ .expect_stderr_match = "stage1/fixtures/emit_err.mpl: warning: no top-level $decl named 'main'\n" });
+        fail.addCheck(.{ .expect_stderr_match = "emit: 1 error(s), first at stage1/fixtures/emit_err.mpl: $extern \"long labs(long, long)\": the C prototype and the signature take different numbers of parameters (§4.16)" });
+        fail.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        s2_step.dependOn(&fail.step);
+        test_step.dependOn(&fail.step);
+    }
+
     // ---------------------------------------------------------------- paranoid
     //
     // `T.same` answers by interned class (INTERNING.md), and a class is only right while
