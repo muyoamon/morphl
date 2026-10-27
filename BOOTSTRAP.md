@@ -169,7 +169,7 @@ These exist because stage 0 does not check what stage 2 will. Violating one prod
 ## 5. Build order for stage 0
 
 1. Lexer. Fixed token set from §2.1: `Int`, `Float` (text), `Str` with `\n \t \\ \"` and `\u{…}`, name, `$name`, `(` `)` `{` `}` `,` `;`, `.name` / `.1`, `//` and non-nesting `/* */`. `;` is whitespace with no meaning. Identifiers may not start with `$`; nothing special-cases `add` or `print`.
-2. Parser. Table-driven off §2.2 — each `$kw` reads exactly its arity. Fold `(e)` to `e`, unify `()` and `{}` as unit, bind postfix projection tightest. No precedence machinery exists.
+2. Parser. Table-driven off §2.2 — each `$kw` reads exactly its arity. Fold `(e)` to `e`; `()` is unit and `{}` the empty block — two types (SPEC §2.3) — and bind postfix projection tightest. No precedence machinery exists.
 3. Evaluator, per §3.
 4. Root block, per §2.
 5. **Gate:** every §12 example inside the subset runs. `while`, the `$fwd` even/odd pair, tagged-block dispatch, and error propagation are the four that matter.

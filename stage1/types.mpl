@@ -2782,16 +2782,6 @@ $decl sub_trait $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) 
   $case b false
 )
 
-// §2.3's two tops: `()`, above every type, and `{}`, above every block. Neither absorbs
-// in a join (§3.6), which is why `join` asks.
-$decl is_top $func ($decl t proto_ty) $match t (
-  $case {$prop tag "unit"}  true,
-  $case {$prop tag "block"}
-    $if ($call fields.is_nil ($call fields.val (t.fields)))
-        ($call props.is_nil ($call props.val (t.props))) false,
-  $case t false
-)
-
 // §5.1: every type is a subtype of `()`, the empty prefix — asked first, since it holds
 // whatever `a` is. `{}` needs no case: the block rule's empty prefix gives it.
 $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $match b (

@@ -3695,8 +3695,8 @@ $decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n prot
 // §8's `read_file` answers an option, and **flattening it to a string loses the one
 // distinction that matters**: a file that could not be read and a file that is empty
 // both became `""`, so importing an empty module reported "cannot read" for a file that
-// was read perfectly well. §3.3 makes a file a block and §2.1 makes `{}` and `()` the
-// same value, so an empty file is a valid empty module — not an error.
+// was read perfectly well. §3.3 makes a file a block, so an empty file is the empty
+// block `{}` — a valid empty module, not an error.
 //
 // Kept for the callers that only want the text and have already established the file is
 // there; `load_module` matches the option itself.
