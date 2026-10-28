@@ -3096,7 +3096,13 @@ $decl tmpl_val $func ($decl r proto_tmpl) r
 
 $decl ctg_target_l $func ($decl st proto_lst, $decl en benv.node, $decl own 0, $decl gs strs.node,
                           $decl cur Pa.ctgs.node, $decl x Pa.proto_node) {
+  // Asked quietly, as inference's `ctg_target` is: the target may be one of the template's
+  // own generics, which `en` does not bind — `$prop kk ($specialize B 0).k` reported
+  // "unknown name 'B'" here, for a program inference accepted. Such a target is no template
+  // this scan can follow, the same answer inference gets from it.
+  $decl ea  $call eval_diags (st.errs)
   $decl v   $call type_only (st, en, x)
+  $decl re  $set st.errs ea
   $decl ret $if ($call eq_int (v.tmpl, own)) ($call Pa.ctg_mask (gs, cur, Pa.pstrs.nil))
       ($if ($call lt (v.tmpl, 0)) Pa.pstrs.nil {
         $decl hit $call find_tmpl ($call eval_tmpls (st.tmpls), v.tmpl)
