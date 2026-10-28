@@ -587,6 +587,16 @@ $decl rcv_ent $func ($decl m 0, $decl n "", $decl t T.proto_ty)
 $decl proto_rcv $call rcv_ent (0, "", T.t_bot)
 $decl rcv_list $specialize P.list proto_rcv
 
+// §4.9's template written in a frame reads that frame where it is *written*, and its
+// environment names that frame's slots — right where it was written, and wrong in a `$func`
+// nested there, or in a builder, which have frames of their own. A view is the environment
+// a template's body is lowered against from here: its frame's bindings rebound to the
+// `$func`'s captures, or to the builder's parameters (`frame_caps`). Also the shape of one
+// template's frame bindings, which is what `frame_caps` answers.
+$decl tview_ent $func ($decl i 0, $decl en benv.node) { $decl id i  $decl env en }
+$decl proto_tview $call tview_ent (0, benv.nil)
+$decl tviews $specialize P.list proto_tview
+
 $decl find_rcv $func ($decl xs rcv_list.node, $decl m 0) $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_int (xs.head.mid, m)) xs
@@ -727,6 +737,8 @@ $decl lstate $func () {
   // Whether the `$specialize` being lowered is in tail position (`lower_specialize`).
   $decl sptail   $mut $alloc $union (false, true)
   $decl sreach   $mut $alloc strs.node
+  // The templates whose body is lowered against a view here, innermost first (`tview_ent`).
+  $decl tview    $mut $alloc tviews.node
   // How many times a member has been *read* while its own type was still a
   // §5.5 placeholder. A body lowered across one of those has nodes carrying
   // the placeholder, and a node's type is an interned index, so they cannot
@@ -3218,14 +3230,96 @@ $decl key_tys $func ($decl st proto_lst, $decl ks IR.ints.node, $decl acc T.tys.
         $call T.tys.cons (($call key_bind (st, ks.head)).ty, acc)),
   $case ks ($call T.tys.reverse (acc, T.tys.nil))
 )
+// What a template's body reads from the frame it was written in: `caps` over the body's free
+// names less the generics, which an instance or a builder binds itself — looked up in the
+// template's view (`tview_ent`), so the bindings are this frame's whichever frame that is.
+$decl drop_names $func ($decl xs strs.node, $decl gs strs.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call drop_names ($call strs.val (xs.tail), gs,
+        $if ($call mem_str (gs, xs.head)) acc ($call strs.cons (xs.head, acc))),
+  $case xs acc
+)
+$decl find_tview $func ($decl xs tviews.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.id, i)) xs ($call find_tview (xs.tail, i)),
+  $case xs xs
+)
+// What a template's body is lowered against here: its view, or where it was written.
+$decl tmpl_env $func ($decl st proto_lst, $decl r proto_tmpl) {
+  $decl v   $call find_tview ($call tviews.val (st.tview), r.id)
+  $decl ret $match v ($case {$prop tag "cons"} v.head.env, $case v ($call benv.val (r.env)))
+}.ret
+$decl seen_tview $func ($decl xs tviews.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.id, i)) true ($call seen_tview (xs.tail, i)),
+  $case xs false
+)
+$decl tmpl_names $func ($decl r proto_tmpl)
+  $call drop_names ($call free_names (r.body, strs.nil), $call strs.val (r.generics), strs.nil)
+$fwd tmpl_reach
+// Every template the names `ns` reach, by naming it or naming one that names it, with the
+// frame bindings its body reads — taken from its view, never looked up by name where the
+// use stands, which a block between could shadow. `acc` is newest first and is also the
+// visited set, so a template naming itself ends; one reading no frame is walked and kept,
+// with nothing to bind.
+$decl frame_caps $func ($decl st proto_lst, $decl e benv.node, $decl ns strs.node,
+                        $decl acc tviews.node) $match ns (
+  $case {$prop tag "cons"} {
+    $decl f    $call lookup (e, ns.head)
+    $decl tid  $if f.hit f.bnd.tmpl -1
+    $decl hit  $if ($if ($call lt (-1, tid)) ($call not ($call seen_tview (acc, tid))) false)
+                   ($call find_tmpl ($call eval_tmpls (st.tmpls), tid)) tmpls_list.nil
+    $decl acc2 $match hit (
+        $case {$prop tag "cons"} ($call tmpl_reach (st, hit.head, acc)),
+        $case hit acc)
+    $decl ret  $call frame_caps (st, e, $call strs.val (ns.tail), acc2)
+  }.ret,
+  $case ns acc
+)
+$decl tmpl_reach $func ($decl st proto_lst, $decl r proto_tmpl, $decl acc tviews.node) {
+  $decl en  $call tmpl_env (st, r)
+  $decl nm  $call tmpl_names (r)
+  $decl ret $call frame_caps (st, en, nm,
+                $call tviews.cons ($call tview_ent (r.id, $call caps (nm, en, benv.nil)), acc))
+}.ret
+// The groups in a fixed order, oldest first, and their bindings end to end: what a builder
+// takes after its generics, and what a call to it passes.
+$decl tmpl_groups $func ($decl st proto_lst, $decl r proto_tmpl)
+  $call tviews.reverse ($call tmpl_reach (st, r, tviews.nil), tviews.nil)
+$decl flat_caps $func ($decl gs tviews.node, $decl acc benv.node) $match gs (
+  $case {$prop tag "cons"}
+    $call flat_caps (gs.tail, $call benv.reverse (gs.head.env, acc)),
+  $case gs ($call benv.reverse (acc, benv.nil))
+)
+$decl tmpl_cs $func ($decl st proto_lst, $decl r proto_tmpl)
+  $call flat_caps ($call tmpl_groups (st, r), benv.nil)
+// Inside a `$func` literal, each template's view is its frame bindings rebound to the
+// captures they became, numbered from `i` in `frame_caps`' order.
+$decl cap_views $func ($decl st proto_lst, $decl gs tviews.node, $decl i 0, $decl acc tviews.node)
+    $match gs (
+  $case {$prop tag "cons"} {
+    $decl r   $call find_tmpl ($call eval_tmpls (st.tmpls), gs.head.id)
+    $decl en  $match r ($case {$prop tag "cons"} ($call tmpl_env (st, r.head)), $case r benv.nil)
+    $decl ret $call cap_views (st, gs.tail, $call add (i, $call benv.length (gs.head.env, 0)),
+        $call tviews.cons ($call tview_ent (gs.head.id, $call cap_env (gs.head.env, i, en)), acc))
+  }.ret,
+  $case gs acc
+)
+$decl cap_tys_t $func ($decl cs benv.node, $decl acc T.tys.node) $match cs (
+  $case {$prop tag "cons"} $call cap_tys_t (cs.tail, $call T.tys.cons ($call cap_ty (cs.head), acc)),
+  $case cs ($call T.tys.reverse (acc, T.tys.nil))
+)
 // A call to the builder `sp.fn`, whose result is `sp.bty`; `m` is the instance's props module.
+// `cs` is `tmpl_groups`' bindings, flattened: read where the call stands, through the view.
 $decl spec_call $func ($decl st proto_lst, $decl e benv.node, $decl args Pa.nodes.node,
                        $decl keys IR.ints.node, $decl sp proto_spec, $decl m 0,
-                       $decl tail P.boolean) {
-  $decl fty $call T.t_func ($call key_tys (st, keys, T.tys.nil), sp.bty)
+                       $decl tail P.boolean, $decl cs benv.node, $decl n Pa.proto_node) {
+  $decl kt  $call key_tys (st, keys, T.tys.nil)
+  $decl fty $call T.t_func ($call T.tys.reverse ($call T.tys.reverse (kt, T.tys.nil),
+                $call cap_tys_t (cs, T.tys.nil)), sp.bty)
+  $decl av  $call spec_args_v (st, e, args, IR.exprs.nil)
   $decl ret $call lres3 ($call IR.e_call ($call intern (st, sp.bty),
                 $call IR.e_global ($call intern (st, fty), sp.fn),
-                $call spec_args_v (st, e, args, IR.exprs.nil), tail), sp.bty, m)
+                $call IR.exprs.reverse ($call IR.exprs.reverse (av, IR.exprs.nil),
+                    $call cap_exprs (st, cs, IR.exprs.nil)), tail), sp.bty, m)
 }.ret
 $decl spec_again $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                         $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl sp proto_spec,
@@ -3236,7 +3330,7 @@ $decl spec_again $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmp
     $decl nt  $set st.sreach ($call strs.cons (dk, $call strs.val (st.sreach)))
     $decl ret $call lres ($call IR.e_unit ($call intern (st, T.t_bot)), T.t_bot)
   }.ret
-      ($call spec_call (st, e, args, keys, sp, -1, tail))
+      ($call spec_call (st, e, args, keys, sp, -1, tail, $call tmpl_cs (st, r), n))
 
 $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl n Pa.proto_node) {
@@ -3258,7 +3352,8 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
                   ($if ($call lt (hit.head.mod, -1))
                        ($call spec_again (st, e, r, args, keys, hit.head, n, tail))
                        ($if ($call lt (-1, hit.head.fn))
-                            ($call spec_call (st, e, args, keys, hit.head, hit.head.mod, tail))
+                            ($call spec_call (st, e, args, keys, hit.head, hit.head.mod, tail,
+                                 $call tmpl_cs (st, r), n))
                             ($call spec_reuse_inst (st, e, r, args, keys, hit.head, n))))
                   ($call spec_reuse (st, hit.head)),
             $case hit
@@ -4363,7 +4458,13 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl clr  $set st.recname ""
       $decl fns  $call free_names (n, strs.nil)
       $decl self $if ($call eq_str (rnm, "")) "" ($if ($call mem_strs (fns, rnm)) rnm "")
-      $decl cs   $call caps (fns, e, benv.nil)
+      $decl cs0  $call caps (fns, e, benv.nil)
+      // A template the body names is lowered in it against its view, which must be the
+      // literal's captures: so its frame bindings are captured too, after the body's own,
+      // although the body never spells them (`frame_caps`).
+      $decl tg   $call tviews.reverse ($call frame_caps (st, e, fns, tviews.nil), tviews.nil)
+      $decl cs   $call benv.reverse ($call benv.reverse (cs0, benv.nil),
+                     $call flat_caps (tg, benv.nil))
       $decl vals $call cap_exprs (st, cs, IR.exprs.nil)
       // The captures are found the same way at every evaluation, so they come
       // out in the order the shared function's environment expects; only the
@@ -4381,7 +4482,10 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                  hit.head.ty)),
           $case hit {
             $decl ets   $call cap_tys (st, cs, IR.ints.nil)
-            $decl lw    $call lower_lambda (st, $call cap_env (cs, 0, e), n, ets, self)
+            $decl tv0   $call tviews.val (st.tview)
+            $decl tvs   $set st.tview ($call cap_views (st, tg, $call benv.length (cs0, 0), tv0))
+            $decl lw    $call lower_lambda (st, $call cap_env (cs0, 0, e), n, ets, self)
+            $decl tvr   $set st.tview tv0
             $decl idx   lw.idx
             $decl fty   lw.ty
             $decl memo $set st.fnmemo ($if ($call eq_str (fk, "")) ($call fnm_list.val (st.fnmemo))
@@ -6472,7 +6576,7 @@ $decl spec_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
   $decl items $call body_items (r.body)
   $decl dfs $call dfr_list.val (st.defers)
   $decl ga  $call bind_args (st, e, $call strs.val (r.generics), args,
-                $call gen_acc ($call benv.val (r.env), IR.bslots.nil, T.fields.nil))
+                $call gen_acc ($call tmpl_env (st, r), IR.bslots.nil, T.fields.nil))
   $decl a   $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
                 $call benv.val (ga.env), IR.exprs.nil), $call drop_props (items, Pa.nodes.nil))
   $decl prps $if fresh ($call inst_props (st, items, T.props.nil)) ($call props_of_ty (bty0))
@@ -6534,6 +6638,42 @@ $decl gen_params $func ($decl st proto_lst, $decl gs strs.node, $decl ks IR.ints
   $case gs ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))
 )
 
+
+// A builder's frame bindings (`tmpl_groups`), bound to parameter slots after the generics'.
+// A `$fwd` binding is its cell, as a closure captures it.
+$decl cap_params $func ($decl st proto_lst, $decl cs benv.node, $decl e benv.node,
+                        $decl acc IR.ints.node) $match cs (
+  $case {$prop tag "cons"} {
+    $decl ki  $call intern (st, $call cap_ty (cs.head))
+    $decl sl  $call fresh_slot (st, ki)
+    $decl ret $call cap_params (st, cs.tail,
+        $call benv.cons ($call bind_ent6 (cs.head.name,
+            $if ($call is_fwd_kind (cs.head.kind)) "fwdl" "local", sl, $call T.tval (cs.head.ty),
+            cs.head.mod, cs.head.tmpl), e),
+        $call IR.ints.cons (ki, acc))
+  }.ret,
+  $case cs ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))
+)
+
+// The builder's views: each group's bindings on parameter slots in `tmpl_groups`' order,
+// rebound onto that template's view — or for the builder's own template, onto `b0`, which
+// has the generics.
+$decl pviews $func ($decl v tviews.node, $decl ts IR.ints.node) { $decl views v  $decl tys ts }
+$decl param_views $func ($decl st proto_lst, $decl gs tviews.node, $decl b0 benv.node,
+                         $decl rid 0, $decl accv tviews.node, $decl acct IR.ints.node) $match gs (
+  $case {$prop tag "cons"} {
+    $decl r2   $call find_tmpl ($call eval_tmpls (st.tmpls), gs.head.id)
+    $decl base $if ($call eq_int (gs.head.id, rid)) b0
+                   ($match r2 ($case {$prop tag "cons"} ($call tmpl_env (st, r2.head)),
+                               $case r2 benv.nil))
+    $decl c    $call cap_params (st, gs.head.env, base, IR.ints.nil)
+    $decl ret  $call param_views (st, gs.tail, b0, rid,
+                   $call tviews.cons ($call tview_ent (gs.head.id, c.env), accv),
+                   $call IR.ints.reverse (c.tys, acct))
+  }.ret,
+  $case gs ($call pviews (accv, $call IR.ints.reverse (acct, IR.ints.nil)))
+)
+
 $decl knot_pass $func ($decl x IR.proto_expr, $decl t T.proto_ty, $decl m 0, $decl ps IR.ints.node,
                        $decl ss IR.ints.node)
   { $decl ir x  $decl ty t  $decl mod m  $decl params ps  $decl slots ss }
@@ -6548,10 +6688,17 @@ $decl spec_fn_body $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.
   $decl clr   $set st.defers dfr_list.nil
   $decl oad   $call P.ival (st.armdepth)
   $decl cad   $set st.armdepth 0
-  $decl b     $call gen_params (st, $call strs.val (r.generics), keys, $call benv.val (r.env),
+  $decl gs    $call tmpl_groups (st, r)
+  $decl b     $call gen_params (st, $call strs.val (r.generics), keys, $call tmpl_env (st, r),
                   IR.ints.nil)
+  // What the body reads of a frame is a parameter after the generics, and every template it
+  // reaches is lowered against those (`tmpl_groups`).
+  $decl c     $call param_views (st, gs, b.env, r.id, tviews.nil, IR.ints.nil)
+  $decl tv0   $call tviews.val (st.tview)
+  $decl tvs   $set st.tview ($call tviews.reverse ($call tviews.reverse (c.views, tviews.nil), tv0))
   $decl a     $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
-                  b.env, IR.exprs.nil), $call drop_props (items, Pa.nodes.nil))
+                  $call tmpl_env (st, r), IR.exprs.nil), $call drop_props (items, Pa.nodes.nil))
+  $decl tvr   $set st.tview tv0
   $decl prps  $call inst_props (st, items, T.props.nil)
   $decl ps    $call block_props (items, mprops.nil)
   $decl md    $if ($call mprops.is_nil (ps)) -1
@@ -6570,7 +6717,8 @@ $decl spec_fn_body $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.
   $decl rad   $set st.armdepth oad
   $decl ss    $call take_slots (st)
   $decl back  $call restore_slots (st, outer)
-  $decl ret   $call knot_pass (iir, ity, md, b.tys, ss)
+  $decl ret   $call knot_pass (iir, ity, md,
+                  $call IR.ints.reverse ($call IR.ints.reverse (b.tys, IR.ints.nil), c.tys), ss)
 }.ret
 
 // Lowered against `ty` until the body derives what it was lowered against — up to §5.5's
@@ -6610,12 +6758,10 @@ $decl spec_knot $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
   $decl re   $set st.errs er
   $decl rs   $set st.nslots ns
   $decl ry   $set st.sltys sy
-  // The body moves into a function of its own, so it may not read the frame it was in.
-  $decl cs   $call caps ($call free_names (r.body, strs.nil), $call benv.val (r.env), benv.nil)
-  $decl ret  $if ($call not ($call benv.is_nil (cs)))
-      ($call lres ($call IR.e_unit ($call err (st,
-           "$specialize: a specialisation that reaches itself is lowered as a function, and this template's body reads the enclosing frame", n)),
-           T.t_bot)) {
+  // The body moves into a function of its own, so what it reads of the frame it was in is
+  // passed (`tmpl_groups`).
+  $decl cs   $call tmpl_cs (st, r)
+  $decl ret  {
     $decl f    $call reserve_lifted (st)
     $decl sa   $call take_snap (st)
     $decl ea   $call eval_diags (st.errs)
@@ -6642,7 +6788,7 @@ $decl spec_knot $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
     // use, calls the builder. A reach only through a `$func` shares that `$func` instead.
     $decl fe   $call spec_ent_x (r.id, keys, pb.mod, $if dr kn.ty pb.ty, r.vk, 0, $if dr f -1)
     $decl a2   $call add_spec (st, fe)
-    $decl ret2 $if dr ($call spec_call (st, e, args, keys, fe, pb.mod, tail))
+    $decl ret2 $if dr ($call spec_call (st, e, args, keys, fe, pb.mod, tail, cs, n))
                    ($call spec_inst (st, e, r, args, -1, pb.mod, pb.ty, false, n))
   }.ret2
 }.ret
