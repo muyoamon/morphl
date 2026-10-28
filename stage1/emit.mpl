@@ -3089,6 +3089,17 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
       $decl ret2  $if ($call is_init_prim (pnm)) ($call emit_init_call (st, pnm, dest))
         ($if ($call eq_str (pnm, "alloc_in"))
           ($call emit_alloc_in (st, ts, as, dest, e.ty))
+        // A block's `$fwd` (lowering's `lower_fwd_item`): the cell its name is read through until
+        // the completing `$decl` writes it, and the zero its own slot holds until then.
+        ($if ($call eq_str (pnm, "fwd_cell")) {
+          $decl pid  $call pointee_of (st, ts, e.ty)
+          $decl vt   $if ($call lt (-1, pid)) ($call c_type (st, ts, pid)) "int64_t"
+          $decl ret3 $call assign (st, dest, $call concat ("(", $call concat (vt,
+                         $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (vt, "))")))))
+        }.ret3
+        ($if ($call eq_str (pnm, "fwd_hole"))
+          ($call assign (st, dest, $call concat ("(", $call concat ($call c_type (st, ts, e.ty),
+              "){0}"))))
         ($if ($call eq_str (pnm, "free_in"))
           ($call emit_free_in (st, ts, as, dest,
               ($call IR.exprs.nth ($call IR.exprs.val (e.args), 1)).ty))
@@ -3112,7 +3123,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
           ($call emit_res_prim (st, ts, rf, as, dest, e.ty))
         ($if ($call arr_prim (pnm))
           ($call emit_arr_prim (st, ts, pnm, as, dest, e.ty))
-          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm))))))))))))
+          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm))))))))))))))
     }.ret2
     $match cal (
       $case cal {

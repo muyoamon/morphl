@@ -25,6 +25,7 @@ $decl P  $import "prelude"
 $decl T  $import "types"
 $decl Pa $import "parser"
 $decl IR $import "ir"
+$decl Y  $import "tyio"
 
 $decl not P.not
 $decl and P.and
@@ -1913,6 +1914,15 @@ $decl self_closure $func ($decl st proto_lst) {
                 $call self_caps ($call IR.ints.val (st.scets), 0, IR.exprs.nil)), t)
 }.ret
 
+// A block's `$fwd` name (`lower_fwd_item`) until its `$decl` completes it: bound to the cell it is
+// read through, in this frame (`fwdl`) or captured (`fwdc`). Its `ty` is the value's; what
+// is held, and captured, is the cell — §7.3 copies a binding, and the cell is the binding
+// that does not change while the name is empty.
+$decl is_fwd_kind $func ($decl k "") $if ($call eq_str (k, "fwdl")) true ($call eq_str (k, "fwdc"))
+$decl fwd_cell_ty $func ($decl t T.proto_ty) $call T.t_ref_k ("", t, T.k_alloc)
+$decl cap_ty $func ($decl b proto_pbind)
+  $if ($call is_fwd_kind (b.kind)) ($call fwd_cell_ty ($call T.tval (b.ty))) ($call T.tval (b.ty))
+
 $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
   $decl nm $call name_of (n)
   $decl f  $call lookup (e, nm)
@@ -1922,6 +1932,13 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
            ($call self_closure (st))
            ($call lres ($call IR.e_unit ($call err (st, $call concat ("unknown name '",
                 $call concat (nm, "'")), n)), T.t_bot)))
+    ($if ($call is_fwd_kind (f.bnd.kind)) {
+        $decl bt   $call T.tval (f.bnd.ty)
+        $decl rid  $call intern (st, $call fwd_cell_ty (bt))
+        $decl cell $if ($call eq_str (f.bnd.kind, "fwdl")) ($call IR.e_local (rid, f.bnd.slot))
+                       ($call IR.e_capture (rid, f.bnd.slot))
+        $decl ret2 $call lres ($call IR.e_deref ($call intern (st, bt), cell), bt)
+      }.ret2
     ($if ($call eq_str (f.bnd.kind, "prop"))
       // §4.10: a prop is compile-time, so naming one is not reading a slot —
       // it is asking the module what that prop's value lowered to.
@@ -1937,7 +1954,7 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
                      ($call intern_cands (st, $call over_cands (bt), id)) id,
                      $call Pa.ov_plain (nm)))))
         $decl ret2  $call lres4 (ir, bt, f.bnd.mod, f.bnd.tmpl)
-      }.ret2)
+      }.ret2))
 }.ret
 
 // §4.6 as a layout position. The target is a value position, so a reference
@@ -2649,7 +2666,7 @@ $decl caps $func ($decl ns strs.node, $decl e benv.node, $decl acc benv.node) $m
     $decl f $call lookup (e, ns.head)
     $decl keep $if f.hit
         ($if ($call eq_str (f.bnd.kind, "local")) true
-             ($call eq_str (f.bnd.kind, "capture")))
+        ($if ($call eq_str (f.bnd.kind, "capture")) true ($call is_fwd_kind (f.bnd.kind))))
         false
     $decl ret $call caps (ns.tail, e,
                 $if keep ($call benv.cons ($call bind_ent6 (f.bnd.name, f.bnd.kind, f.bnd.slot,
@@ -2662,8 +2679,9 @@ $decl caps $func ($decl ns strs.node, $decl e benv.node, $decl acc benv.node) $m
 // happens where the literal stood.
 $decl cap_exprs $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.exprs.node) $match cs (
   $case {$prop tag "cons"} {
-    $decl id $call intern (st, cs.head.ty)
-    $decl ir $if ($call eq_str (cs.head.kind, "local"))
+    $decl id $call intern (st, $call cap_ty (cs.head))
+    $decl ir $if ($call P.or ($call eq_str (cs.head.kind, "local"),
+                              $call eq_str (cs.head.kind, "fwdl")))
                  ($call IR.e_local (id, cs.head.slot))
                  ($call IR.e_capture (id, cs.head.slot))
     $decl ret  $call cap_exprs (st, cs.tail, $call IR.exprs.cons (ir, acc))
@@ -2674,7 +2692,7 @@ $decl cap_exprs $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.expr
 $decl cap_tys $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.ints.node) $match cs (
   $case {$prop tag "cons"}
     $call cap_tys (st, cs.tail,
-        $call IR.ints.cons ($call intern (st, cs.head.ty), acc)),
+        $call IR.ints.cons ($call intern (st, $call cap_ty (cs.head)), acc)),
   $case cs ($call IR.ints.reverse (acc, IR.ints.nil))
 )
 
@@ -2682,7 +2700,8 @@ $decl cap_tys $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.ints.n
 $decl cap_env $func ($decl cs benv.node, $decl i 0, $decl acc benv.node) $match cs (
   $case {$prop tag "cons"}
     $call cap_env (cs.tail, $call add (i, 1),
-        $call benv.cons ($call bind_ent (cs.head.name, "capture", i,
+        $call benv.cons ($call bind_ent (cs.head.name,
+            $if ($call is_fwd_kind (cs.head.kind)) "fwdc" "capture", i,
             $call T.tval (cs.head.ty)), acc)),
   $case cs acc
 )
@@ -5387,8 +5406,81 @@ $decl lower_free $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
   $decl ret  $call lres (ir, T.t_unit)
 }.ret
 
+// §4.11 in a block (a file's and a module's top level are `lower_top`'s and `file_props`').
+// The name is empty until its completing `$decl` runs, and a `$func` written between reads
+// it — so §7.3's copy cannot be of the name itself. The `$fwd` makes a cell (`fwd_cell`)
+// and binds the name to it, so a closure built in between copies the cell, and reads it
+// when called; the completing `$decl` writes the cell, then the name's own slot, which the
+// `$fwd` reserved at its own position as §4.11 says and zero-filled (`fwd_hole`). After
+// that the name is the slot. The type is inference's: lowering derives types bottom-up and
+// this one is needed before the body that decides it (`note_fwds`).
+$decl fwd_key $func ($decl st proto_lst, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl ret $call concat ("f:", $call concat ($call P.sval (st.isctx), $call concat ("|",
+                $call concat ($call fshort (st, $call P.sval (st.curfile)), $call concat (":",
+                $call concat ($call int_to_str (sp.line), $call concat (":",
+                $call concat ($call int_to_str (sp.col), "="))))))))
+}.ret
+$decl fwd_slot_name $func ($decl nm "") $call concat ("$fwd:", nm)
+$decl lower_fwd_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node) {
+  $decl nm  $call name_of ($call op (it, 0))
+  $decl ts  $call choice_in ($call strs.val (st.ualloc), $call fwd_key (st, it))
+  $decl ret $if ($call eq_str (ts, "")) {
+    $decl e    $call err (st, "no type was recorded for this $fwd: lower through compiler.check", it)
+    $decl ret2 a
+  }.ret2 {
+    $decl t    $call T.tval (($call Y.read_ty (ts, 0)).val)
+    $decl id   $call intern (st, t)
+    $decl rt   $call fwd_cell_ty (t)
+    $decl rid  $call intern (st, rt)
+    $decl sc   $call fresh_slot (st, rid)
+    $decl sl   $call fresh_slot (st, id)
+    $decl cell $call IR.e_call (rid, $call IR.e_prim ($call intern (st,
+                   $call T.t_func (T.tys.nil, rt)), "fwd_cell"), IR.exprs.nil, false)
+    $decl mk   $call IR.e_set (rid, $call IR.e_addr ($call intern (st, $call T.t_ref ("", rt)),
+                   $call IR.e_local (rid, sc)), cell)
+    $decl hole $call IR.e_call (id, $call IR.e_prim ($call intern (st,
+                   $call T.t_func (T.tys.nil, t)), "fwd_hole"), IR.exprs.nil, false)
+    $decl ir   $call with_pending ($call IR.exprs.cons (mk, $call IR.exprs.val (a.pend)), hole, id)
+    $decl ret2 $call blk_acc (
+        $call IR.bslots.cons ($call IR.bslot (sl, ir), $call IR.bslots.val (a.slots)),
+        $call T.fields.cons ($call T.field (nm, t), $call T.fields.val (a.flds)),
+        $call T.props.val (a.prps),
+        $call benv.cons ($call bind_ent (nm, "fwdl", sc, t),
+            $call benv.cons ($call bind_ent ($call fwd_slot_name (nm), "local", sl, t),
+                $call benv.val (a.env))),
+        IR.exprs.nil)
+  }.ret2
+}.ret
+$decl fwd_open $func ($decl e benv.node, $decl nm "") {
+  $decl f   $call lookup (e, nm)
+  $decl ret $if f.hit ($call eq_str (f.bnd.kind, "fwdl")) false
+}.ret
+// The completing `$decl`: it takes no field of its own — the `$fwd`'s is the name's.
+$decl lower_fwd_done $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node) {
+  $decl nm  $call name_of ($call op (it, 0))
+  $decl fc  $call lookup (a.env, nm)
+  $decl fs  $call lookup (a.env, $call fwd_slot_name (nm))
+  $decl t   $call T.tval (fc.bnd.ty)
+  $decl rn0 $set st.recname ($if ($call is_form ($call op (it, 1), "func")) nm "")
+  $decl v   $call lval ($call lower (st, a.env, $call op (it, 1), false))
+  $decl rn1 $set st.recname ""
+  $decl vid $call intern (st, v.ty)
+  $decl wc  $call IR.e_set (vid, $call IR.e_local ($call intern (st, $call fwd_cell_ty (t)),
+                fc.bnd.slot), v.ir)
+  $decl ws  $call IR.e_set (vid, $call IR.e_addr ($call intern (st, $call T.t_ref ("", t)),
+                $call IR.e_local ($call intern (st, t), fs.bnd.slot)), wc)
+  $decl ret $call blk_acc ($call IR.bslots.val (a.slots), $call T.fields.val (a.flds),
+      $call T.props.val (a.prps),
+      $call benv.cons ($call bind_ent6 (nm, "local", fs.bnd.slot, t, v.mod, v.tmpl),
+          $call benv.val (a.env)),
+      $call IR.exprs.cons (ws, $call IR.exprs.val (a.pend)))
+}.ret
+
 $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.proto_node)
-  $if ($call is_form (it, "decl")) {
+  $if ($call is_form (it, "decl"))
+  ($if ($call fwd_open (a.env, $call name_of ($call op (it, 0))))
+       ($call lower_fwd_done (st, a, it)) {
     $decl nm  $call name_of ($call op (it, 0))
     $decl rs  $call recv_enter (st, nm, $call op (it, 1))
     $decl rn0 $set st.recname ($if ($call is_form ($call op (it, 1), "func")) nm "")
@@ -5407,7 +5499,7 @@ $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
         $call benv.cons ($call bind_ent6 (nm, "local", sl, v.ty, v.mod, v.tmpl),
             $call benv.val (a.env)),
         IR.exprs.nil)
-  }.ret
+  }.ret)
   ($if ($call is_form (it, "prop")) {
     // Erased from the layout, kept in the type (§4.10).
     $decl nm $call name_of ($call op (it, 0))
@@ -5416,10 +5508,7 @@ $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
         $call T.props.cons ($call T.prop_entry (nm, cv), $call T.props.val (a.prps)),
         $call benv.val (a.env), $call IR.exprs.val (a.pend))
   }.ret
-  ($if ($call is_form (it, "fwd")) {
-    $decl e   $call err (st, "$fwd is not lowered yet", it)
-    $decl ret a
-  }.ret
+  ($if ($call is_form (it, "fwd")) ($call lower_fwd_item (st, a, it))
   // §4.15a: registered where it stands, lowered where it runs (`with_defers`, `$try`).
   ($if ($call is_form (it, "defer")) {
     $decl p   $set st.defers ($call dfr_list.cons ($call dfr_ent ($call op (it, 0),

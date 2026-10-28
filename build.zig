@@ -172,6 +172,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/arrays_any.mpl", .want = "5012\n" },
         .{ .src = "stage1/fixtures/write.mpl", .want = "161\n" },
         .{ .src = "stage1/fixtures/fwd_init.mpl", .want = "126\n" },
+        .{ .src = "stage1/fixtures/fwd_local.mpl", .want = "1048\n" },
         .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n" },
         .{ .src = "stage1/fixtures/prop_param.mpl", .want = "98\n" },
         .{ .src = "stage1/fixtures/defaults.mpl", .want = "247\n" },

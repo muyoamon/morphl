@@ -4621,6 +4621,29 @@ $decl recv_props $func ($decl cx proto_ctx, $decl pe env.node, $decl items Pa.no
   $case items acc
 )
 
+// §4.11 in a block, for lowering (`lower_fwd_item`): the type each `$fwd`'s name ends up
+// with, solved, keyed like an overload choice — lowering needs it at the `$fwd`, before
+// the body that decides it. Newest first, so a block typed again answers with its last.
+// A file's top level lowers from `check_file`'s type instead, so it records nothing.
+$decl fwd_key $func ($decl cx proto_ctx, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl ret $call concat ("f:", $call concat ($call sval (cx.sctx), $call concat ("|",
+                $call concat ($call short_of ($call sval (cx.file)), $call concat (":",
+                $call concat ($call int_to_str (sp.line), $call concat (":",
+                $call concat ($call int_to_str (sp.col), "="))))))))
+}.ret
+$decl note_fwds $func ($decl cx proto_ctx, $decl items Pa.nodes.node, $decl flds T.fields.node,
+                       $decl acc strs.node) $match items (
+  $case {$prop tag "cons"}
+    $call note_fwds (cx, $call Pa.nodes.val (items.tail), flds,
+        $if ($call is_form (items.head, "fwd"))
+            ($call strs.cons ($call concat ($call fwd_key (cx, items.head),
+                 $call Y.show_ty ($call T.tval (($call T.find_field (flds,
+                     $call name_of ($call op (items.head, 0)))).ty))), acc))
+            acc),
+  $case items acc
+)
+
 $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.nodes.node,
                          $decl x P.proto_span) {
   // §5.3a's fixed point (see the end): what a second typing of a file starts from.
@@ -4680,6 +4703,9 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil),
                                        $call compose_res (solved), T.fields.nil)
   $decl late $call recheck_defers (cx, solved)
+  $decl fwt  $set cx.ualloc ($if ($if ($call bval (cx.atfile)) false ($call has_fwd (items)))
+                 ($call note_fwds (cx, items, flds, $call strs.val (cx.ualloc)))
+                 ($call strs.val (cx.ualloc)))
   // The members that name the receiver, typed for real: the block's type exists now,
   // and the receiver is a reference to it at the declaration's qualifier (§4.10). A
   // prop's `ty` is outside the block's identity (§5.1), so replacing it moves nothing.
