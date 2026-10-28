@@ -188,6 +188,7 @@ pub fn build(b: *std.Build) void {
         // §4.9's self-specialisation, in the entry file and in a module member, and a
         // prop whose value is its own specialisation. 21.
         .{ .src = "stage1/fixtures/selfspec.mpl", .want = "21\n" },
+        .{ .src = "stage1/fixtures/spec_self.mpl", .want = "684173\n" },
         // §4.9's compile-time generics: a value in the type, and tags made by a
         // template. 61.
         .{ .src = "stage1/fixtures/ctgen.mpl", .want = "61\n" },

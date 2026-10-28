@@ -393,9 +393,16 @@ $decl tmpls_list $specialize P.list proto_tmpl
 // emit its own `cons`. The key is the interned index of each argument's type,
 // which is exact: interning is by `T.same`, and de Bruijn binders make
 // alpha-equivalent types identical (§5.5).
+//
+// `mod` -2 is a first build in progress and -3 a self-reaching one's builder being lowered
+// (`spec_knot`): `depth` is how many `$func` literals enclosed the build, and `fn` the
+// builder's index.
+$decl spec_ent_x $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty,
+    $decl v "", $decl d 0, $decl f 0)
+  { $decl tmpl t  $decl keys ks  $decl mod m  $decl bty bt  $decl vk v  $decl depth d  $decl fn f }
 $decl spec_ent_v $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty,
     $decl v "")
-  { $decl tmpl t  $decl keys ks  $decl mod m  $decl bty bt  $decl vk v }
+  $call spec_ent_x (t, ks, m, bt, v, 0, -1)
 $decl spec_ent $func ($decl t 0, $decl ks IR.ints.node, $decl m 0, $decl bt T.proto_ty)
   $call spec_ent_v (t, ks, m, bt, "")
 $decl proto_spec $call spec_ent (0, IR.ints.nil, 0, T.t_bot)
@@ -706,6 +713,12 @@ $decl lstate $func () {
   // so lowering needs none — except for a specialised template, whose types
   // it derives itself (§4.9), and a prop's value may reach its own type.
   $decl nvars  $mut $alloc 0
+  // How many `$func` literals enclose what is being lowered, and the specialisations whose
+  // first build reached itself from inside one (`spec_args`, `spec_knot`).
+  $decl lamdepth $mut $alloc 0
+  // Whether the `$specialize` being lowered is in tail position (`lower_specialize`).
+  $decl sptail   $mut $alloc $union (false, true)
+  $decl sreach   $mut $alloc strs.node
   // How many times a member has been *read* while its own type was still a
   // §5.5 placeholder. A body lowered across one of those has nodes carrying
   // the placeholder, and a node's type is an interned index, so they cannot
@@ -3011,6 +3024,7 @@ $decl bind_args $func ($decl st proto_lst, $decl site benv.node, $decl gs strs.n
 
 
 $fwd spec_inst
+$fwd spec_knot
 
 // A later use. Entered exactly as the first was, so what its items lift is named and
 // placed with the template (§4.9 makes an instantiation the template's code).
@@ -3031,10 +3045,19 @@ $decl spec_build_inst $func ($decl st proto_lst, $decl e benv.node, $decl r prot
   $decl gm $call fresh_mod_gen (st, $call gen_props (r.generics, args, mprops.nil), e,
                sk, r.file)
   // In progress: a use reached while the body's own items are being lowered is the
-  // body reaching itself, which §4.9 makes evaluate without bound.
-  $decl pg  $call add_spec (st, $call spec_ent_v (r.id, keys, -2, T.t_bot, r.vk))
+  // body reaching itself, which §4.9 makes evaluate without bound — unless a `$func`
+  // literal stands between, which defers it to a call (`spec_args`, `spec_knot`).
+  $decl d0  $call P.ival (st.lamdepth)
+  $decl pg  $call add_spec (st, $call spec_ent_x (r.id, keys, -2, T.t_bot, r.vk, d0, -1))
   $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys), r.bfile)
-  $decl v   $call lval ($call spec_inst (st, e, r, args, gm, -1, T.t_bot, true, n))
+  $decl sn  $call take_snap (st)
+  $decl er  $call eval_diags (st.errs)
+  $decl ns  $call P.ival (st.nslots)
+  $decl sy  $call IR.ints.val (st.sltys)
+  $decl v1  $call lval ($call spec_inst (st, e, r, args, gm, -1, T.t_bot, true, n))
+  $decl v   $if ($call mem_str ($call strs.val (st.sreach), sk))
+                ($call lval ($call spec_knot (st, e, r, args, keys, n, gm, sn, er, d0, ns, sy)))
+                v1
   $decl mr  $call leave_mod (st, ms)
   $decl sp  $call add_spec (st, $call spec_ent_v (r.id, keys, v.mod, v.ty, r.vk))
   $decl ret v
@@ -3135,8 +3158,46 @@ $decl fn_wrap $func ($decl b Pa.proto_node) {
                 sp.line, sp.col)
 }.ret
 
+// A use reached while its own specialisation is being built. Directly among the body's
+// items it is §4.9's unbounded evaluation, and refused. Inside a `$func` literal it is a
+// value made when that function is called: on the first build it is only noted, and the
+// build starts again as a builder function (`spec_knot`); while that builder is lowered it
+// is a call to it, typed with §5.5's placeholder and then with the closed type.
+$decl spec_args_v $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
+                         $decl acc IR.exprs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call spec_args_v (st, e, $call Pa.nodes.val (xs.tail),
+        $call IR.exprs.cons (($call as_value (st, $call lower (st, e, xs.head, false))).ir, acc)),
+  $case xs ($call IR.exprs.reverse (acc, IR.exprs.nil))
+)
+$decl key_tys $func ($decl st proto_lst, $decl ks IR.ints.node, $decl acc T.tys.node) $match ks (
+  $case {$prop tag "cons"}
+    $call key_tys (st, $call IR.ints.val (ks.tail), $call T.tys.cons ($call ty_at (st, ks.head),
+        acc)),
+  $case ks ($call T.tys.reverse (acc, T.tys.nil))
+)
+$decl spec_again $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                        $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl sp proto_spec,
+                        $decl n Pa.proto_node, $decl tail P.boolean)
+  $if ($call not ($call lt (sp.depth, $call P.ival (st.lamdepth))))
+      ($call lres ($call IR.e_unit ($call err (st,
+           "$specialize: this specialisation's own $decls reach it again, which §4.9 makes evaluate without bound; a $func literal between would defer it", n)),
+           T.t_bot))
+      ($if ($call eq_int (sp.mod, -2)) {
+        $decl nt  $set st.sreach ($call strs.cons ($call spec_key (st, r, keys),
+                      $call strs.val (st.sreach)))
+        $decl ret $call lres ($call IR.e_unit ($call intern (st, T.t_bot)), T.t_bot)
+      }.ret {
+        $decl fty  $call T.t_func ($call key_tys (st, keys, T.tys.nil), sp.bty)
+        $decl ret2 $call lres ($call IR.e_call ($call intern (st, sp.bty),
+                       $call IR.e_global ($call intern (st, fty), sp.fn),
+                       $call spec_args_v (st, e, args, IR.exprs.nil), tail), sp.bty)
+      }.ret2)
+
 $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl n Pa.proto_node) {
+  $decl tail $call P.bval (st.sptail)
+  $decl tc   $set st.sptail false
   $decl ret {
         $decl keys $call arg_keys (st, e, args, IR.ints.nil)
         $decl r0   $call tmpl_ctg (st, r)
@@ -3150,10 +3211,8 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
         $decl ret2 $match hit (
             $case {$prop tag "cons"}
               $if inst
-                  ($if ($call eq_int (hit.head.mod, -2))
-                       ($call lres ($call IR.e_unit ($call err (st,
-                            "$specialize: this specialisation's own $decls reach it again; §4.9 makes that evaluate without bound, and lowering it through a $func is not done yet", n)),
-                            T.t_bot))
+                  ($if ($call lt (hit.head.mod, -1))
+                       ($call spec_again (st, e, r, args, keys, hit.head, n, tail))
                        ($call spec_reuse_inst (st, e, r, args, keys, hit.head, n)))
                   ($call spec_reuse (st, hit.head)),
             $case hit
@@ -3673,8 +3732,11 @@ $decl over_resolve $func ($decl st proto_lst, $decl r proto_tmpl, $decl path "")
     )
 }.ret
 
-$decl lower_specialize $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form) {
+$decl lower_specialize $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
+                             $decl tail P.boolean) {
   $decl f  $call lval ($call lower (st, e, $call op (n, 0), false))
+  // Read by `spec_args` before it lowers anything else: a builder call is a tail call.
+  $decl tl $set st.sptail tail
   $decl t0 $if ($call lt (f.tmpl, 0)) tmpls_list.nil
                ($call find_tmpl (st.tmpls, f.tmpl))
   $decl ts $match t0 (
@@ -3969,7 +4031,9 @@ $decl lower_lam_pass $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.p
   $decl s1    $set st.scidx idx
   $decl s2    $set st.scty sty
   $decl s3    $set st.scets ets
+  $decl ld0   $set st.lamdepth ($call add ($call P.ival (st.lamdepth), 1))
   $decl lf    $call lower_func (st, ce, "lambda", n, T.t_bot, ets)
+  $decl ld1   $set st.lamdepth ($call isub ($call P.ival (st.lamdepth), 1))
   $decl back  $call restore_slots (st, outer)
   $decl put   $call put_lifted (st, idx, lf)
   $decl ret   $call lam_res (idx, $call fn_ty (st, lf))
@@ -4298,7 +4362,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl ret2   $call lres4 ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit,
                     -1, tid)
     }.ret2
-    ($if ($call eq_str (k, "specialize")) ($call lower_specialize (st, e, n))
+    ($if ($call eq_str (k, "specialize")) ($call lower_specialize (st, e, n, tail))
     ($if ($call eq_str (k, "import")) ($call lower_import (st, n))
     // §4.16. The signature is a **type-only position** (§5.7): it is never
     // evaluated, so it is lowered for its type and the tree thrown away — and
@@ -6392,6 +6456,137 @@ $decl spec_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
                 $call IR.bslots.cons ($call IR.bslot (isl, iir), $call IR.bslots.val (ga.slots)),
                 IR.bslots.nil))
   $decl ret $call lres3 ($call IR.e_field (iid, oir, ng), ity, md)
+}.ret
+
+// §4.9's self-reaching instance: a body whose `$func` member specialises the template it is
+// in, at the same argument types — `counter T { $decl n T  $decl next $func () $specialize
+// counter ($call add (n, 1)) }`. Each use builds the instance inline, and `next`'s body is
+// one more such use, so lowering it inline lowers `next` again, without end. So the
+// instance is lowered once more as a **builder**, a lifted function whose parameters are the
+// generics and whose body is the instance block; a use inside a `$func` literal while it is
+// lowered is a call to it (`spec_again`). The builder's result type is §5.5's knot, tied as
+// a recursive member's is: a first pass against a placeholder `R` derives `B(R)`, the
+// result is `μR. B(R)`, and a second pass is lowered against that. The site itself, and
+// every later use, still builds the instance inline, sharing `next` through `fnmemo`.
+$decl gen_params $func ($decl st proto_lst, $decl gs strs.node, $decl ks IR.ints.node,
+                        $decl e benv.node, $decl acc IR.ints.node) $match gs (
+  $case {$prop tag "cons"} $match ks (
+    $case {$prop tag "cons"} {
+      $decl sl  $call fresh_slot (st, ks.head)
+      $decl ret $call gen_params (st, $call strs.val (gs.tail), $call IR.ints.val (ks.tail),
+          $call benv.cons ($call bind_ent (gs.head, "local", sl, $call ty_at (st, ks.head)), e),
+          $call IR.ints.cons (ks.head, acc))
+    }.ret,
+    $case ks ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))),
+  $case gs ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))
+)
+
+$decl knot_pass $func ($decl x IR.proto_expr, $decl t T.proto_ty, $decl m 0, $decl ps IR.ints.node,
+                       $decl ss IR.ints.node)
+  { $decl ir x  $decl ty t  $decl mod m  $decl params ps  $decl slots ss }
+
+$decl proto_knot $call knot_pass (IR.proto_expr, T.t_bot, -1, IR.ints.nil, IR.ints.nil)
+
+$decl spec_fn_body $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.ints.node,
+                          $decl gm 0) {
+  $decl items $call body_items (r.body)
+  $decl outer $call take_slots (st)
+  $decl odf   $call dfr_list.val (st.defers)
+  $decl clr   $set st.defers dfr_list.nil
+  $decl oad   $call P.ival (st.armdepth)
+  $decl cad   $set st.armdepth 0
+  $decl b     $call gen_params (st, $call strs.val (r.generics), keys, $call benv.val (r.env),
+                  IR.ints.nil)
+  $decl a     $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
+                  b.env, IR.exprs.nil), $call drop_props (items, Pa.nodes.nil))
+  $decl prps  $call inst_props (st, items, T.props.nil)
+  $decl ps    $call block_props (items, mprops.nil)
+  $decl md    $if ($call mprops.is_nil (ps)) -1
+                  ($call fresh_mod_in (st, ps, $call with_gens (r.env, $call strs.val (r.generics),
+                       gm), "", $call blk_key (st, ps), $call P.sval (st.curfile)))
+  $decl reg   $if ($call lt (-1, md)) ($call note_opaqs (st, md, ps)) 0
+  $decl ity   $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil),
+                  prps)
+  $decl iid   $call intern (st, ity)
+  $decl iir0  $call with_trail (st, $call IR.exprs.val (a.pend),
+                  $call IR.e_block (iid,
+                      $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)),
+                  iid, ity)
+  $decl iir   $call with_defers (st, dfr_list.nil, iir0, iid, ity, false)
+  $decl rdf   $set st.defers odf
+  $decl rad   $set st.armdepth oad
+  $decl ss    $call take_slots (st)
+  $decl back  $call restore_slots (st, outer)
+  $decl ret   $call knot_pass (iir, ity, md, b.tys, ss)
+}.ret
+
+// Lowered against `ty` until the body derives what it was lowered against — up to §5.5's
+// unrolling, which is what a `μ` derives. A use projected inside the `$func` is the case
+// that needs more than one round: against the placeholder the projection fails and the
+// member types as ⊥, and only the next round sees the field.
+$decl settled $func ($decl p proto_knot, $decl t T.proto_ty) { $decl pass p  $decl ty t }
+$decl knot_settle $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.ints.node,
+                         $decl gm 0, $decl sa proto_lsnap, $decl d0 0, $decl f 0,
+                         $decl ty T.proto_ty, $decl k 0, $decl n Pa.proto_node) {
+  $decl a0  $call add_spec (st, $call spec_ent_x (r.id, keys, -3, ty, r.vk, d0, f))
+  $decl ea  $call eval_diags (st.errs)
+  $decl pb  $call spec_fn_body (st, r, keys, gm)
+  $decl ok  $call T.same ($call T.unroll (ty), pb.ty)
+  $decl ret $if ok ($call settled (pb, ty))
+      ($if ($call lt (0, k)) {
+        $decl rb   $call put_snap (st, sa)
+        $decl re   $set st.errs ea
+        $decl ret2 $call knot_settle (st, r, keys, gm, sa, d0, f, pb.ty, $call isub (k, 1), n)
+      }.ret2 {
+        $decl e0   $call err (st, $call concat (
+            "this specialisation reaches itself through a $func and its type does not settle: lowered against ",
+            $call concat ($call T.show (ty), $call concat (", it derives ", $call T.show (pb.ty)))),
+            n)
+        $decl ret3 $call settled (pb, ty)
+      }.ret3)
+}.ret
+
+$decl spec_knot $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                       $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl n Pa.proto_node,
+                       $decl gm 0, $decl sn proto_lsnap, $decl er Pa.diags.node, $decl d0 0,
+                       $decl ns 0, $decl sy IR.ints.node) {
+  // The first build is discarded with its diagnostics — what it lowered at the use was a
+  // placeholder, and projecting from one fails — and with the slots it took in this frame.
+  $decl rb   $call put_snap (st, sn)
+  $decl re   $set st.errs er
+  $decl rs   $set st.nslots ns
+  $decl ry   $set st.sltys sy
+  // The body moves into a function of its own, so it may not read the frame it was in.
+  $decl cs   $call caps ($call free_names (r.body, strs.nil), $call benv.val (r.env), benv.nil)
+  $decl ret  $if ($call not ($call benv.is_nil (cs)))
+      ($call lres ($call IR.e_unit ($call err (st,
+           "$specialize: a specialisation reaching itself through a $func is lowered as a function, and this template's body reads the enclosing frame", n)),
+           T.t_bot)) {
+    $decl f    $call reserve_lifted (st)
+    $decl sa   $call take_snap (st)
+    $decl ea   $call eval_diags (st.errs)
+    $decl pv   $call fresh_var (st)
+    $decl a0   $call add_spec (st, $call spec_ent_x (r.id, keys, -3, $call T.t_var (pv), r.vk,
+                   d0, f))
+    $decl pa   $call spec_fn_body (st, r, keys, gm)
+    $decl rba  $call put_snap (st, sa)
+    $decl rea  $set st.errs ea
+    $decl ty   $if ($call T.occurs (pa.ty, pv)) ($call T.close_var (pa.ty, pv))
+                   ($call T.tval (pa.ty))
+    $decl gd   $if ($call T.unguarded_rec (ty))
+        ($call err (st, $call concat (
+            "this specialisation reaches itself through a value, not storage, so it has no layout (§5.5). Derived ",
+            $call T.show (ty)), n))
+        0
+    $decl kn   $call knot_settle (st, r, keys, gm, sa, d0, f, ty, 3, n)
+    $decl pb   kn.pass
+    $decl fn   $call IR.fn_p ("spec", pb.params, $call intern (st, kn.ty), pb.slots, pb.ir, false,
+                   false, IR.ints.nil, $call P.sval (st.curfile), $call next_rank (st), false,
+                   $call P.sval (st.curmod))
+    $decl put  $call put_lifted (st, f, fn)
+    $decl a2   $call add_spec (st, $call spec_ent_v (r.id, keys, pb.mod, pb.ty, r.vk))
+    $decl ret2 $call spec_inst (st, e, r, args, -1, pb.mod, pb.ty, false, n)
+  }.ret2
 }.ret
 
 // ----------------------------------------------------------------- the file
