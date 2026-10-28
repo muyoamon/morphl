@@ -7094,6 +7094,27 @@ $decl fns_acc $func ($decl fs IR.fns.node, $decl n 0) { $decl funcs fs  $decl co
 $decl topfn $func ($decl f IR.proto_fn, $decl m 0, $decl tm 0)
   { $decl fn f  $decl mod m  $decl tmpl tm }
 
+// §4.10 in the entry file: a `$decl`'s initializer is evaluated in source order and sees
+// what precedes it — but `e` binds every global up front, so a name a *later* field binds
+// was visible to it. The one way that changes a meaning is §2.1's shadowable intrinsic,
+// whose idiom is exactly this: `$decl isub sub` above the file's own `sub` keeps the root
+// one, and stage 0 and the checker both resolve it there. Lowering bound it to the file's
+// subtyping `sub` instead — `cc` refused that only because the types differed, and
+// `$decl ln len` above a `$decl len` returning 99 compiled to 99 where stage 0 says 3.
+// Any other forward name is an unknown name to the checker. So a thunk's initializer sees
+// the root binding again for every later field that shadows one; a `$func`'s body still
+// resolves against the finished file. Modules have had this all along (`with_scope`).
+$decl later_roots $func ($decl st proto_lst, $decl fs T.fields.node, $decl e benv.node)
+    $match fs (
+  $case {$prop tag "cons"} {
+    $decl f   $call lookup ($call benv.val (st.rootenv), fs.head.name)
+    $decl e2  $if f.hit ($call benv.cons ($call bind_ent6 (f.bnd.name, f.bnd.kind, f.bnd.slot,
+                  f.bnd.ty, f.bnd.mod, f.bnd.tmpl), e)) e
+    $decl ret $call later_roots (st, $call T.fields.val (fs.tail), e2)
+  }.ret,
+  $case fs e
+)
+
 $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nodes.node,
                        $decl fts  T.fields.node, $decl acc IR.fns.node,
                        $decl effi eff_items.node, $decl k 0)
@@ -7116,9 +7137,11 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
           // whatever slots the initializer needed).
           $decl reset $call take_slots (st)
           $decl rs    $call recv_enter (st, nm, init)
+          $decl et    $call later_roots (st, $call T.fields.val (fts.tail), e)
           // DEFER.md example 12: storage with deferrals, owned at the program's scope.
-          $decl v     $if ($call Pa.storage_defers (init)) ($call lval ($call top_item (st, e, it)))
-                          ($call lval ($call lower (st, e, init, true)))
+          $decl v     $if ($call Pa.storage_defers (init))
+                          ($call lval ($call top_item (st, et, it)))
+                          ($call lval ($call lower (st, et, init, true)))
           $decl rb    $call recv_put (st, rs)
           $decl vty   $call intern (st, v.ty)
           $decl ret2     $call topfn ($call IR.fn_p (nm, IR.ints.nil, vty, $call take_slots (st),

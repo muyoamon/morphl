@@ -195,6 +195,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/spec_frame.mpl", .want = "1169533939\n" },
         .{ .src = "stage1/fixtures/frames.mpl", .want = "1111111111\n" },
         .{ .src = "stage1/fixtures/short_local.mpl", .want = "1111111\n" },
+        .{ .src = "stage1/fixtures/shadow_root.mpl", .want = "70599\n" },
         .{ .src = "stage1/fixtures/field_depth.mpl", .want = "916\n" },
         // §4.9's compile-time generics: a value in the type, and tags made by a
         // template. 61.
