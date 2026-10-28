@@ -3040,13 +3040,12 @@ $decl spec_reuse_inst $func ($decl st proto_lst, $decl e benv.node, $decl r prot
 
 $decl spec_build_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                              $decl args Pa.nodes.node, $decl keys IR.ints.node,
-                             $decl n    Pa.proto_node) {
+                             $decl n    Pa.proto_node, $decl tail P.boolean) {
   $decl sk $call spec_key (st, r, keys)
   $decl gm $call fresh_mod_gen (st, $call gen_props (r.generics, args, mprops.nil), e,
                sk, r.file)
   // In progress: a use reached while the body's own items are being lowered is the
-  // body reaching itself, which §4.9 makes evaluate without bound — unless a `$func`
-  // literal stands between, which defers it to a call (`spec_args`, `spec_knot`).
+  // body reaching itself (`spec_again`, `spec_knot`).
   $decl d0  $call P.ival (st.lamdepth)
   $decl pg  $call add_spec (st, $call spec_ent_x (r.id, keys, -2, T.t_bot, r.vk, d0, -1))
   $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys), r.bfile)
@@ -3055,11 +3054,15 @@ $decl spec_build_inst $func ($decl st proto_lst, $decl e benv.node, $decl r prot
   $decl ns  $call P.ival (st.nslots)
   $decl sy  $call IR.ints.val (st.sltys)
   $decl v1  $call lval ($call spec_inst (st, e, r, args, gm, -1, T.t_bot, true, n))
-  $decl v   $if ($call mem_str ($call strs.val (st.sreach), sk))
-                ($call lval ($call spec_knot (st, e, r, args, keys, n, gm, sn, er, d0, ns, sy)))
+  $decl rs  $call strs.val (st.sreach)
+  $decl dr  $call mem_str (rs, $call concat ("!", sk))
+  $decl kn  $call P.or (dr, $call mem_str (rs, sk))
+  $decl v   $if kn
+                ($call lval ($call spec_knot (st, e, r, args, keys, n, gm, sn, er, d0, ns, sy,
+                     dr, tail)))
                 v1
   $decl mr  $call leave_mod (st, ms)
-  $decl sp  $call add_spec (st, $call spec_ent_v (r.id, keys, v.mod, v.ty, r.vk))
+  $decl sp  $if dr 0 ($call add_spec (st, $call spec_ent_v (r.id, keys, v.mod, v.ty, r.vk)))
   $decl ret v
 }.ret
 
@@ -3158,9 +3161,10 @@ $decl fn_wrap $func ($decl b Pa.proto_node) {
                 sp.line, sp.col)
 }.ret
 
-// A use reached while its own specialisation is being built. Directly among the body's
-// items it is §4.9's unbounded evaluation, and refused. Inside a `$func` literal it is a
-// value made when that function is called: on the first build it is only noted, and the
+// A use reached while its own specialisation is being built, which §4.9 makes evaluate the
+// instance in turn — like any recursion, it ends if a branch stops it, and inside a `$func`
+// literal it waits for the call. Either way building it inline would not end. On the first
+// build it is only noted — `"!"` before the key when no `$func` stands between — and the
 // build starts again as a builder function (`spec_knot`); while that builder is lowered it
 // is a call to it, typed with §5.5's placeholder and then with the closed type.
 $decl spec_args_v $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
@@ -3176,23 +3180,25 @@ $decl key_tys $func ($decl st proto_lst, $decl ks IR.ints.node, $decl acc T.tys.
         acc)),
   $case ks ($call T.tys.reverse (acc, T.tys.nil))
 )
+// A call to the builder `sp.fn`, whose result is `sp.bty`; `m` is the instance's props module.
+$decl spec_call $func ($decl st proto_lst, $decl e benv.node, $decl args Pa.nodes.node,
+                       $decl keys IR.ints.node, $decl sp proto_spec, $decl m 0,
+                       $decl tail P.boolean) {
+  $decl fty $call T.t_func ($call key_tys (st, keys, T.tys.nil), sp.bty)
+  $decl ret $call lres3 ($call IR.e_call ($call intern (st, sp.bty),
+                $call IR.e_global ($call intern (st, fty), sp.fn),
+                $call spec_args_v (st, e, args, IR.exprs.nil), tail), sp.bty, m)
+}.ret
 $decl spec_again $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                         $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl sp proto_spec,
                         $decl n Pa.proto_node, $decl tail P.boolean)
-  $if ($call not ($call lt (sp.depth, $call P.ival (st.lamdepth))))
-      ($call lres ($call IR.e_unit ($call err (st,
-           "$specialize: this specialisation's own $decls reach it again, which §4.9 makes evaluate without bound; a $func literal between would defer it", n)),
-           T.t_bot))
-      ($if ($call eq_int (sp.mod, -2)) {
-        $decl nt  $set st.sreach ($call strs.cons ($call spec_key (st, r, keys),
-                      $call strs.val (st.sreach)))
-        $decl ret $call lres ($call IR.e_unit ($call intern (st, T.t_bot)), T.t_bot)
-      }.ret {
-        $decl fty  $call T.t_func ($call key_tys (st, keys, T.tys.nil), sp.bty)
-        $decl ret2 $call lres ($call IR.e_call ($call intern (st, sp.bty),
-                       $call IR.e_global ($call intern (st, fty), sp.fn),
-                       $call spec_args_v (st, e, args, IR.exprs.nil), tail), sp.bty)
-      }.ret2)
+  $if ($call eq_int (sp.mod, -2)) {
+    $decl sk  $call spec_key (st, r, keys)
+    $decl dk  $if ($call lt (sp.depth, $call P.ival (st.lamdepth))) sk ($call concat ("!", sk))
+    $decl nt  $set st.sreach ($call strs.cons (dk, $call strs.val (st.sreach)))
+    $decl ret $call lres ($call IR.e_unit ($call intern (st, T.t_bot)), T.t_bot)
+  }.ret
+      ($call spec_call (st, e, args, keys, sp, -1, tail))
 
 $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl n Pa.proto_node) {
@@ -3213,10 +3219,12 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
               $if inst
                   ($if ($call lt (hit.head.mod, -1))
                        ($call spec_again (st, e, r, args, keys, hit.head, n, tail))
-                       ($call spec_reuse_inst (st, e, r, args, keys, hit.head, n)))
+                       ($if ($call lt (-1, hit.head.fn))
+                            ($call spec_call (st, e, args, keys, hit.head, hit.head.mod, tail))
+                            ($call spec_reuse_inst (st, e, r, args, keys, hit.head, n))))
                   ($call spec_reuse (st, hit.head)),
             $case hit
-              $if inst ($call spec_build_inst (st, e, r, args, keys, n))
+              $if inst ($call spec_build_inst (st, e, r, args, keys, n, tail))
                   ($call spec_build_props (st, e, r, args, keys, n))
           )
         $decl ret3 $if ($if isfn ($call lt (-1, ret2.mod)) false)
@@ -6468,6 +6476,11 @@ $decl spec_inst $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
 // a recursive member's is: a first pass against a placeholder `R` derives `B(R)`, the
 // result is `μR. B(R)`, and a second pass is lowered against that. The site itself, and
 // every later use, still builds the instance inline, sharing `next` through `fnmemo`.
+//
+// A use directly among the items — `$decl m $if c ($specialize t ($call add (n, 1))).m n`
+// — is the same recursion with nothing to defer it, which a branch may still end (§4.9:
+// "like any unconditional recursion"). Its builder calls itself there, and since an inline
+// build would unfold the use again, the site and every later use call the builder too.
 $decl gen_params $func ($decl st proto_lst, $decl gs strs.node, $decl ks IR.ints.node,
                         $decl e benv.node, $decl acc IR.ints.node) $match gs (
   $case {$prop tag "cons"} $match ks (
@@ -6539,7 +6552,7 @@ $decl knot_settle $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.i
         $decl ret2 $call knot_settle (st, r, keys, gm, sa, d0, f, pb.ty, $call isub (k, 1), n)
       }.ret2 {
         $decl e0   $call err (st, $call concat (
-            "this specialisation reaches itself through a $func and its type does not settle: lowered against ",
+            "this specialisation reaches itself and its type does not settle: lowered against ",
             $call concat ($call T.show (ty), $call concat (", it derives ", $call T.show (pb.ty)))),
             n)
         $decl ret3 $call settled (pb, ty)
@@ -6549,7 +6562,8 @@ $decl knot_settle $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.i
 $decl spec_knot $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl n Pa.proto_node,
                        $decl gm 0, $decl sn proto_lsnap, $decl er Pa.diags.node, $decl d0 0,
-                       $decl ns 0, $decl sy IR.ints.node) {
+                       $decl ns 0, $decl sy IR.ints.node, $decl dr P.boolean,
+                       $decl tail P.boolean) {
   // The first build is discarded with its diagnostics — what it lowered at the use was a
   // placeholder, and projecting from one fails — and with the slots it took in this frame.
   $decl rb   $call put_snap (st, sn)
@@ -6560,7 +6574,7 @@ $decl spec_knot $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
   $decl cs   $call caps ($call free_names (r.body, strs.nil), $call benv.val (r.env), benv.nil)
   $decl ret  $if ($call not ($call benv.is_nil (cs)))
       ($call lres ($call IR.e_unit ($call err (st,
-           "$specialize: a specialisation reaching itself through a $func is lowered as a function, and this template's body reads the enclosing frame", n)),
+           "$specialize: a specialisation that reaches itself is lowered as a function, and this template's body reads the enclosing frame", n)),
            T.t_bot)) {
     $decl f    $call reserve_lifted (st)
     $decl sa   $call take_snap (st)
@@ -6584,8 +6598,12 @@ $decl spec_knot $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
                    false, IR.ints.nil, $call P.sval (st.curfile), $call next_rank (st), false,
                    $call P.sval (st.curmod))
     $decl put  $call put_lifted (st, f, fn)
-    $decl a2   $call add_spec (st, $call spec_ent_v (r.id, keys, pb.mod, pb.ty, r.vk))
-    $decl ret2 $call spec_inst (st, e, r, args, -1, pb.mod, pb.ty, false, n)
+    // Built inline, the site would reach its own direct use again; so it, and every later
+    // use, calls the builder. A reach only through a `$func` shares that `$func` instead.
+    $decl fe   $call spec_ent_x (r.id, keys, pb.mod, $if dr kn.ty pb.ty, r.vk, 0, $if dr f -1)
+    $decl a2   $call add_spec (st, fe)
+    $decl ret2 $if dr ($call spec_call (st, e, args, keys, fe, pb.mod, tail))
+                   ($call spec_inst (st, e, r, args, -1, pb.mod, pb.ty, false, n))
   }.ret2
 }.ret
 
