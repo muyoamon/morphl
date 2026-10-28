@@ -2632,16 +2632,88 @@ $decl tail_sigs $func ($decl st proto_est, $decl e IR.proto_expr, $decl acc IR.i
     $case e acc
   )
 
-$decl reporter_ids $func ($decl st proto_est, $decl fs IR.fns.node, $decl gs IR.groups.node,
-                          $decl i 0, $decl acc IR.ints.node) $match fs (
+// Whether a direct tail call to `k` from a function answering `res` may hand the chain
+// `k` leaves pending up to that function's own caller rather than drive it here: `k`
+// reports and its result needs no coercion into ours, so the value is the caller's to
+// wait for exactly as `k`'s is. The call site and the reporter set below ask this one
+// question, so a function reports exactly when one of its calls passes a chain up.
+$decl passes_up $func ($decl st proto_est, $decl ts T.tys.node, $decl reps IR.ints.node,
+                       $decl k 0, $decl ty 0, $decl res 0)
+  $if ($call mem_int (reps, k)) ($call comp_free (st, ts, ty, res, 0)) false
+
+// The function a direct callee names, or -1: an alias resolved, a closure literal's own.
+$decl direct_fn $func ($decl st proto_est, $decl c IR.proto_expr) $match c (
+  $case {$prop tag "global"} $if ($call is_global (st, c)) ($call res_fn (st, c.fn)) -1,
+  $case {$prop tag "closure"} c.fn,
+  $case c -1
+)
+
+$fwd up_tails
+
+$decl up_tails_arms $func ($decl st proto_est, $decl ts T.tys.node, $decl reps IR.ints.node,
+                           $decl self 0, $decl res 0, $decl xs IR.arms.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call up_tails (st, ts, reps, self, res, xs.head.body)) true
+        ($call up_tails_arms (st, ts, reps, self, res, xs.tail)),
+  $case xs false
+)
+
+// Whether some direct tail call in `e` passes a chain up (`passes_up`). A call to the
+// function itself is §6a's loop, not a call, and is not counted.
+$decl up_tails $func ($decl st proto_est, $decl ts T.tys.node, $decl reps IR.ints.node,
+                      $decl self 0, $decl res 0, $decl e IR.proto_expr) $match e (
+  $case {$prop tag "call"}
+    $if e.tail {
+      $decl k   $call direct_fn (st, $call IR.eval (e.callee))
+      $decl ret $if ($call lt (k, 0)) false
+          ($if ($call eq_int (k, self)) false ($call passes_up (st, ts, reps, k, e.ty, res)))
+    }.ret false,
+  $case {$prop tag "if"}
+    $if ($call up_tails (st, ts, reps, self, res, e.then)) true
+        ($call up_tails (st, ts, reps, self, res, e.els)),
+  $case {$prop tag "do"} ($call up_tails (st, ts, reps, self, res, e.then)),
+  $case {$prop tag "switch"}
+    $if ($call up_tails_arms (st, ts, reps, self, res, $call IR.arms.val (e.arms))) true
+        ($call up_tails (st, ts, reps, self, res, e.default)),
+  $case e false
+)
+
+// The functions `mpl_init` calls: a thunk (its static's initializer) and a §3.3 effect.
+// Nothing drives after them, and nothing else calls them, so a chain one starts is never
+// part of a longer one — they drive in place, as a contified group's member does.
+$decl effect_fns $func ($decl xs IR.effects.node, $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call effect_fns ($call IR.effects.val (xs.tail), $call IR.ints.cons (xs.head.fn, acc)),
+  $case xs acc
+)
+
+$decl reporter_step $func ($decl st proto_est, $decl ts T.tys.node, $decl fs IR.fns.node,
+                           $decl gs IR.groups.node, $decl efs IR.ints.node,
+                           $decl reps IR.ints.node, $decl i 0, $decl acc IR.ints.node)
+    $match fs (
   $case {$prop tag "cons"} {
-    $decl rep $if ($call in_a_group (gs, i)) false
-                  ($call indirect_tails (st, fs.head.body))
-    $decl ret $call reporter_ids (st, $call IR.fns.val (fs.tail), gs, $call add (i, 1),
-                $if rep ($call IR.ints.cons (i, acc)) acc)
+    $decl own $if ($call in_a_group (gs, i)) false
+                  ($if fs.head.thunk false ($call not ($call mem_int (efs, i))))
+    $decl rep $if own
+                  ($if ($call indirect_tails (st, fs.head.body)) true
+                       ($call up_tails (st, ts, reps, i, fs.head.result, fs.head.body)))
+                  false
+    $decl ret $call reporter_step (st, ts, $call IR.fns.val (fs.tail), gs, efs, reps,
+                $call add (i, 1), $if rep ($call IR.ints.cons (i, acc)) acc)
   }.ret,
   $case fs acc
 )
+
+// Who reports: a function with an indirect tail call, and — to a fixed point — one whose
+// direct tail call passes a chain up. Each step's set contains the last's, so the sizes
+// settle; without the second half `go` → value → `f` → `go` nests a frame per hop in `f`.
+$decl reporter_ids $func ($decl st proto_est, $decl ts T.tys.node, $decl fs IR.fns.node,
+                          $decl gs IR.groups.node, $decl efs IR.ints.node,
+                          $decl reps IR.ints.node) {
+  $decl nx  $call reporter_step (st, ts, fs, gs, efs, reps, 0, IR.ints.nil)
+  $decl ret $if ($call eq_int ($call IR.ints.length (nx, 0), $call IR.ints.length (reps, 0)))
+      nx ($call reporter_ids (st, ts, fs, gs, efs, nx))
+}.ret
 
 $decl all_tail_sigs $func ($decl st proto_est, $decl fs IR.fns.node, $decl acc IR.ints.node)
   $match fs (
@@ -2667,6 +2739,18 @@ $decl callee_reports $func ($decl st proto_est, $decl c IR.proto_expr) $match c 
   $case {$prop tag "closure"} ($call reports (st, c.fn)),
   $case c false
 )
+
+// Whether a direct call drives afterwards: its callee reports, and the call is not a tail
+// call of a reporting function handing the chain up (`passes_up`) — the same question the
+// reporter set was built from, so a function reports exactly when it skips a drive here.
+$decl drives_after $func ($decl st proto_est, $decl ts T.tys.node, $decl c IR.proto_expr,
+                          $decl tail P.boolean, $decl ty 0)
+  $if ($call callee_reports (st, c))
+      ($if ($if tail ($call P.bval (st.inrep)) false)
+           ($call not ($call passes_up (st, ts, st.reps, $call direct_fn (st, c), ty,
+                $call P.ival (st.fnres))))
+           true)
+      false
 
 $decl is_closure_node $func ($decl c IR.proto_expr) $match c (
   $case {$prop tag "closure"} true,
@@ -3137,7 +3221,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
             // call: the value it handed back is a zero and the real answer
             // is at the end of the chain it left pending (§6a).
             $decl d0 $call assign (st, dest, $call call_expr ($call callee_name (st, cal), as))
-            $decl ret3  $if ($call callee_reports (st, cal))
+            $decl ret3  $if ($call drives_after (st, ts, cal, e.tail, e.ty))
                 ($call say (st, $call concat ("  mpl_tcdrive(&", $call concat (dest, ");\n"))))
                 ()
           }.ret3
@@ -3152,7 +3236,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
                            $call concat ($call fn_name (st, $call closure_fn (cal)),
                            $call concat ("(", $call concat (fv, $call concat (".env",
                            $call concat ($call join_args (as, "", false), ")"))))))
-            $decl ret4 $if ($call callee_reports (st, cal))
+            $decl ret4 $if ($call drives_after (st, ts, cal, e.tail, e.ty))
                 ($call say (st, $call concat ("  mpl_tcdrive(&", $call concat (dest, ");\n")))) ()
           }.ret4 {
             // §7.3: through the pair. The signature comes from the static
@@ -4921,7 +5005,8 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   // §6a's indirect case, both halves of it, before any body is emitted: a call
   // site has to know whether its callee reports, and the driver's switch has to
   // know every signature it may be handed.
-  $decl rp $set st.reps ($call reporter_ids (st, fs, gs, 0, IR.ints.nil))
+  $decl rp $set st.reps ($call reporter_ids (st, ts, fs, gs,
+                $call effect_fns ($call IR.effects.val (p.effs), IR.ints.nil), IR.ints.nil))
   $decl sg $set st.tsigs ($call all_tail_sigs (st, fs, IR.ints.nil))
   // Reported in the artifact: how much of the program needs external linkage under
   // the local rule. It is a whole-program figure and lives in the shared header,
