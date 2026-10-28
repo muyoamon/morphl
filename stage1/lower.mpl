@@ -5195,10 +5195,50 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
 // template there is no answer to read, because §4.9 made this body new. So the
 // rule is applied here: the name takes a placeholder `R`, the body derives as
 // `B(R)`, and the result is `μR. B(R)` — or simply `B`, when `R` did not occur.
+// The `$func` literals a prop's value evaluates — inference's `prop_val_cap` walk: an
+// `$overload`'s candidates, a `$union`'s first member, an `$impl`'s or `$override`'s base and
+// override. Each is held to `no_caps` as a lone `$func` value is: this value is lowered afresh
+// at every projection against the block's environment, so a capture would be read out of the
+// projection's frame, which from a nested `$func` is the wrong one. The checker refuses these
+// first; this is for what its scope-blind walk misses.
+$fwd prop_val_fns
+$decl prop_vals_fns $func ($decl xs Pa.nodes.node, $decl acc Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $call prop_vals_fns ($call Pa.nodes.val (xs.tail), $call prop_val_fns (xs.head, acc)),
+  $case xs acc
+)
+$decl prop_val_fns $func ($decl n Pa.proto_node, $decl acc Pa.nodes.node) $match n (
+  $case {$prop tag "form"} {
+    $decl k   n.keyword
+    $decl ret $if ($call eq_str (k, "func")) ($call Pa.nodes.cons (n, acc))
+      ($if ($call eq_str (k, "overload"))
+           ($call prop_vals_fns ($call Pa.group_list ($call op (n, 0)), acc))
+      ($if ($call eq_str (k, "union"))
+           ($call prop_val_fns ($call Pa.nodes.nth ($call Pa.group_list ($call op (n, 0)), 0),
+                acc))
+      ($if ($call eq_str (k, "impl"))
+           ($call prop_vals_fns ($call Pa.nodes.cons ($call op (n, 0),
+               $call Pa.nodes.cons ($call op (n, 2), Pa.nodes.nil)), acc))
+      ($if ($call eq_str (k, "override"))
+           ($call prop_vals_fns ($call Pa.nodes.cons ($call op (n, 0),
+               $call Pa.nodes.cons ($call op (n, 1), Pa.nodes.nil)), acc))
+           acc))))
+  }.ret,
+  $case n acc
+)
+$decl no_caps_all $func ($decl st proto_lst, $decl pe benv.node, $decl xs Pa.nodes.node)
+  $match xs (
+  $case {$prop tag "cons"}
+    $do ($call no_caps (st, pe, xs.head))
+        ($call no_caps_all (st, pe, $call Pa.nodes.val (xs.tail))),
+  $case xs ()
+)
+
 $decl lower_prop_value $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
   $decl pe    $call benv.val (m.penv)
+  $decl chk   $call no_caps_all (st, pe, $call prop_val_fns (pn, Pa.nodes.nil))
   $decl self  $call mem_str ($call free_names (pn, strs.nil), nm)
   $decl pv    $call fresh_var (st)
   $decl p0    $call note_prop (st, m.id, $call mdone (nm, "pend", pv, T.t_bot, -1, -1))

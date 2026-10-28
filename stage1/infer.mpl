@@ -4389,6 +4389,41 @@ $decl prop_fn_cap $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto
   $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
   $decl ret  $call prop_cap_name (cx, pe, free, shad, rn, strs.nil, "")
 }.ret
+// The `$func` literals a constant expression evaluates, as `ct_form_why` walks it: an
+// `$overload`'s every candidate, a `$union`'s first member alone (§4.8a; the rest are
+// type-only, §5.7), an `$impl`'s base and override and an `$override`'s. A `$func` in one
+// of those is the prop's value as much as one written alone — and lowering lowers such a
+// value afresh at each projection against the block's environment, so a capture there was
+// read out of whatever frame the projection stood in: from a nested `$func`, the wrong one.
+$fwd prop_val_cap
+$decl prop_vals_cap $func ($decl cx proto_ctx, $decl pe env.node, $decl xs Pa.nodes.node,
+                           $decl rn "") $match xs (
+  $case {$prop tag "cons"} {
+    $decl c   $call prop_val_cap (cx, pe, xs.head, rn)
+    $decl ret $if ($call eq_str (c, "")) ($call prop_vals_cap (cx, pe, xs.tail, rn)) c
+  }.ret,
+  $case xs ""
+)
+$decl prop_val_cap $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node,
+                          $decl rn "") $match n (
+  $case {$prop tag "form"} {
+    $decl k   n.keyword
+    $decl ret $if ($call eq_str (k, "func")) ($call prop_fn_cap (cx, pe, n, rn))
+      ($if ($call eq_str (k, "overload"))
+           ($call prop_vals_cap (cx, pe, $call Pa.group_list ($call op (n, 0)), rn))
+      ($if ($call eq_str (k, "union"))
+           ($call prop_val_cap (cx, pe,
+               $call Pa.nodes.nth ($call Pa.group_list ($call op (n, 0)), 0), rn))
+      ($if ($call eq_str (k, "impl"))
+           ($call prop_vals_cap (cx, pe, $call Pa.nodes.cons ($call op (n, 0),
+               $call Pa.nodes.cons ($call op (n, 2), Pa.nodes.nil)), rn))
+      ($if ($call eq_str (k, "override"))
+           ($call prop_vals_cap (cx, pe, $call Pa.nodes.cons ($call op (n, 0),
+               $call Pa.nodes.cons ($call op (n, 1), Pa.nodes.nil)), rn))
+           ""))))
+  }.ret,
+  $case n ""
+)
 
 // The type of one prop. §4.10: the initializer sees other props and enclosing
 // scopes, but *not* ordered siblings — hence the prop-only environment.
@@ -4402,8 +4437,7 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
   $decl ct   $if ($call eq_str (why, "")) T.t_bot
       ($call err (cx, $call concat ("a $prop must be a constant expression (§4.10), and ",
           $call concat (why, " is not")), it))
-  $decl cap  $if ($if ($call eq_str (why, "")) ($call is_form (init, "func")) false)
-                 ($call prop_fn_cap (cx, pe, init, rn)) ""
+  $decl cap  $if ($call eq_str (why, "")) ($call prop_val_cap (cx, pe, init, rn)) ""
   $decl cr   $if ($call eq_str (cap, "")) T.t_bot
       ($call err (cx, $call concat ("a $prop's $func may not capture ", $call concat (cap,
           ": a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value")),

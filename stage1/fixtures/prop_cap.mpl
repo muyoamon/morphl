@@ -21,9 +21,19 @@ $decl make $func ($decl base 0) {
       $decl ret $call add ($call add (y, k), ($specialize q T).v)
     }.ret
   }
+  // Refused: a `$func` the value evaluates — an `$overload`'s candidate, a `$union`'s first
+  // member. Lowered at each projection, so from a nested `$func` it read the wrong frame.
+  $decl o { $prop f $overload ($func ($decl x 0) $call add (x, base), $func ($decl s "") s) }
+  $decl u { $prop f $union ($func ($decl x 0) $call add (x, base), $func ($decl x 0) x) }
+  // Legal: a `$union`'s later members are type-only (§5.7), and candidates that capture
+  // nothing.
+  $decl l { $prop f $union ($func ($decl x 0) x, $func ($decl x 0) $call add (x, base)) }
+  $decl m { $prop f $overload ($func ($decl x 0) $call twice (x), $func ($decl s "") s) }
   $decl ra  $call ($specialize a 0).f (1)
   $decl rb  $call ($specialize b 0).f (1)
-  $decl ret $call add ($call ($specialize c 1).g (2), $call add (ra, rb))
+  $decl ro  $call add ($call add ($call o.f (1), $call u.f (1)),
+                $call add ($call l.f (1), $call m.f (1)))
+  $decl ret $call add ($call ($specialize c 1).g (2), $call add (ra, $call add (rb, ro)))
 }.ret
 $decl counter {
   $decl n 1

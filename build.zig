@@ -669,15 +669,18 @@ pub fn build(b: *std.Build) void {
             .stage0 = "$override is outside the bootstrap subset",
             .driver = "stage1/lower_dump.mpl",
         },
-        // §4.10: a `$func` prop may not capture, directly or through a template it names.
+        // §4.10: a `$func` prop may not capture, directly, through a template it names, or as
+        // a candidate or member the value evaluates.
         // Which names are runtime is a question stage 0 cannot ask, and it runs the file.
         .{
             .src = "stage1/fixtures/prop_cap.mpl",
             .stage1 = &.{
                 "prop_cap.mpl:10:25: a $prop's $func may not capture 'base': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
                 "prop_cap.mpl:13:25: a $prop's $func may not capture 'base', read by template 'w': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
+                "prop_cap.mpl:26:13: a $prop's $func may not capture 'base': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
+                "prop_cap.mpl:27:13: a $prop's $func may not capture 'base': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
             },
-            .count = "errors: 2\n",
+            .count = "errors: 4\n",
             .stage0 = null,
         },
         .{
