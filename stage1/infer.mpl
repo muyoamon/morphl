@@ -4126,6 +4126,11 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   // A `$fwd` for this name already bound it to `[params] -> R` (§5.5), so the
   // body is typed against that placeholder and its resolution recorded as one
   // equation of the group's system.
+  // A top-level name is a global from inside its own initializer too — a `$func` naming
+  // itself, or a prop's `$func` in a block it builds (`prop_fn_cap`) — so it is one of
+  // §4.16 rule 2's `topnames` before the initializer is typed, not after.
+  $decl tn $set cx.topnames ($if ($call eq_int ($call ival (cx.fdepth), 0))
+      ($call strs.cons (nm, cx.topnames)) ($call strs.val (cx.topnames)))
   $decl fe $call find_fwd (s.fwds, nm)
   $decl ty $if ($call lt (-1, fe.id))
       ($call infer_fwd_body (cx, s.env, init, fe.id))
@@ -4171,8 +4176,6 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   $decl cf $set cx.cffns ($if ($call is_form (init, "func"))
       ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))
       ($call fnlit_list.val (cx.cffns)))
-  $decl tn $set cx.topnames ($if ($call eq_int ($call ival (cx.fdepth), 0))
-      ($call strs.cons (nm, cx.topnames)) ($call strs.val (cx.topnames)))
   $decl bound $set s.env ($call bind (s.env, nm, ty))
   // A `$fwd` already reserved this slot at its own position (§4.11), so
   // complete that one rather than appending a second.
@@ -4332,6 +4335,61 @@ $decl ct_args_check $func ($decl cx proto_ctx, $decl e env.node, $decl gs strs.n
   $case gs 0
 )
 
+// §4.10 on a `$func` that is a prop's value. The literal is constant and its body is not
+// evaluated here — but what it captures is, each time the block is, so a capture would be a
+// runtime value in what §4.10 makes part of the block's type: `{ $prop f $func () base }`
+// over a parameter would be one type behaving differently per call. A free name of the
+// body is no capture when the literal binds it, it is global (`first_cap`'s rule), it is
+// compile-time (`ctnames`), it is the receiver, or it names a template — whose body is then
+// read the same way, in the environment it was written in, since a `$specialize` of it
+// evaluates that body where the member runs. Lowering refused all of these already, at the
+// prop ("a $prop's value may not capture"), after the checker had accepted them. Scope-blind
+// like `lit_caps`, so it can miss a capture, which lowering still refuses, and never invent
+// one. The answer is "" or what to name: `'base'`, or `'base', read by template 'w'`.
+$fwd prop_caps_in
+$decl prop_cap_name $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
+                           $decl skip Pa.pstrs.node, $decl rn "", $decl seen strs.node,
+                           $decl via "") $match ns (
+  $case {$prop tag "cons"} {
+    $decl nm   ns.head
+    // An `$override`'s hidden name is the plain name where the text matters (`Pa.ov_plain`).
+    $decl gl   $call lookup (root_env, $call Pa.ov_plain (nm))
+    $decl kept $if ($call Pa.mem_pstr (skip, nm)) true
+               ($if ($call in_strs ($call strs.val (cx.topnames), nm)) true
+               ($if ($call in_strs ($call strs.val (cx.ctnames), nm)) true
+               ($if ($call eq_str (nm, rn)) true gl.ok)))
+    $decl f    $call lookup (e, nm)
+    $decl t    $if ($if kept false f.ok) ($call deref_ty (f.ty)) T.t_unit
+    $decl here $if ($if kept true ($call not (f.ok))) "" $match t (
+        $case {$prop tag "tmpl"}
+          $if ($call in_strs (seen, $call int_to_str (t.id))) ""
+              ($call prop_caps_in (cx, $call find_tmpl ($call tmpl_list.val (cx.tmpls), t.id), rn,
+                   $call strs.cons ($call int_to_str (t.id), seen), nm)),
+        $case t ($if ($call eq_str (via, "")) ($call concat ("'", $call concat (nm, "'")))
+                     ($call concat ("'", $call concat (nm, $call concat ("', read by template '",
+                         $call concat (via, "'")))))))
+    $decl ret  $if ($call eq_str (here, ""))
+                   ($call prop_cap_name (cx, e, $call Pa.pstrs.val (ns.tail), skip, rn, seen, via))
+                   here
+  }.ret,
+  $case ns ""
+)
+$decl prop_caps_in $func ($decl cx proto_ctx, $decl r proto_tmpl, $decl rn "",
+                          $decl seen strs.node, $decl via "") {
+  // `strs` and `Pa.pstrs` are one specialisation of `P.list`, so one type (§4.9).
+  $decl gs   $call strs.val (r.generics)
+  $decl free $call Pa.free_names (r.body, Pa.pstrs.nil)
+  $decl ret  $call prop_cap_name (cx, $call env.val (r.env), free,
+                 $call Pa.bound_names (r.body, gs), rn, seen, via)
+}.ret
+$decl prop_fn_cap $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node,
+                         $decl rn "") {
+  $decl ps   $call group_items ($call op (n, 0))
+  $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
+  $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
+  $decl ret  $call prop_cap_name (cx, pe, free, shad, rn, strs.nil, "")
+}.ret
+
 // The type of one prop. §4.10: the initializer sees other props and enclosing
 // scopes, but *not* ordered siblings — hence the prop-only environment.
 $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl it Pa.proto_node,
@@ -4344,6 +4402,12 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
   $decl ct   $if ($call eq_str (why, "")) T.t_bot
       ($call err (cx, $call concat ("a $prop must be a constant expression (§4.10), and ",
           $call concat (why, " is not")), it))
+  $decl cap  $if ($if ($call eq_str (why, "")) ($call is_form (init, "func")) false)
+                 ($call prop_fn_cap (cx, pe, init, rn)) ""
+  $decl cr   $if ($call eq_str (cap, "")) T.t_bot
+      ($call err (cx, $call concat ("a $prop's $func may not capture ", $call concat (cap,
+          ": a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value")),
+          it))
   $decl id   $call var_id ($call lookup (pe, nm)).ty
   // A member that names its receiver is typed here only for a provisional type, and
   // quietly: the receiver's block is not typed yet. `infer_block` types it for real
