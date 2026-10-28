@@ -597,6 +597,18 @@ $decl tview_ent $func ($decl i 0, $decl en benv.node) { $decl id i  $decl env en
 $decl proto_tview $call tview_ent (0, benv.nil)
 $decl tviews $specialize P.list proto_tview
 
+// §3.4's defaults of a `$func` a block's `$decl` binds — a *local* function, which has no
+// definition context of the `fdef_ent` kind, since it is a closure and no wrapper could hold
+// its captures. A short call lowers the omitted defaults where it stands, in the callee's
+// scope: so like a template's body they are source lowered at each use, and they reach
+// through views the same way (`frame_caps`). Identified by `id`, -2 and below, which the
+// binding carries where a template's id would go: every test of that field asks for a
+// template as `lt (-1, tmpl)`, so a negative one is no template to any of them.
+$decl ldef_ent $func ($decl i 0, $decl ps Pa.nodes.node, $decl en benv.node)
+  { $decl id i  $decl params ps  $decl env en }
+$decl proto_ldef $call ldef_ent (0, Pa.nodes.nil, benv.nil)
+$decl ldef_list $specialize P.list proto_ldef
+
 $decl find_rcv $func ($decl xs rcv_list.node, $decl m 0) $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_int (xs.head.mid, m)) xs
@@ -739,6 +751,9 @@ $decl lstate $func () {
   $decl sreach   $mut $alloc strs.node
   // The templates whose body is lowered against a view here, innermost first (`tview_ent`).
   $decl tview    $mut $alloc tviews.node
+  // Local functions' defaults (`ldef_ent`), newest first, and how many there have been.
+  $decl ldefs    $mut $alloc ldef_list.node
+  $decl nldef    $mut $alloc 0
   // How many times a member has been *read* while its own type was still a
   // §5.5 placeholder. A body lowered across one of those has nodes carrying
   // the placeholder, and a node's type is an interned index, so they cannot
@@ -3248,6 +3263,26 @@ $decl tmpl_env $func ($decl st proto_lst, $decl r proto_tmpl) {
   $decl v   $call find_tview ($call tviews.val (st.tview), r.id)
   $decl ret $match v ($case {$prop tag "cons"} v.head.env, $case v ($call benv.val (r.env)))
 }.ret
+$decl find_ldef $func ($decl xs ldef_list.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.id, i)) xs ($call find_ldef (xs.tail, i)),
+  $case xs xs
+)
+// A source's environment here, by its identity: a template's (`tmpl_env`), or a local
+// function's defaults' — its view, or where the `$func` was written.
+$decl src_env $func ($decl st proto_lst, $decl i 0) {
+  $decl v   $call find_tview ($call tviews.val (st.tview), i)
+  $decl ret $match v (
+      $case {$prop tag "cons"} v.head.env,
+      $case v ($if ($call lt (i, 0)) {
+        $decl d    $call find_ldef ($call ldef_list.val (st.ldefs), i)
+        $decl ret2 $match d ($case {$prop tag "cons"} ($call benv.val (d.head.env)),
+                             $case d benv.nil)
+      }.ret2 {
+        $decl r    $call find_tmpl ($call eval_tmpls (st.tmpls), i)
+        $decl ret3 $match r ($case {$prop tag "cons"} ($call benv.val (r.head.env)),
+                             $case r benv.nil)
+      }.ret3))
+}.ret
 $decl seen_tview $func ($decl xs tviews.node, $decl i 0) $match xs (
   $case {$prop tag "cons"} $if ($call eq_int (xs.head.id, i)) true ($call seen_tview (xs.tail, i)),
   $case xs false
@@ -3255,6 +3290,7 @@ $decl seen_tview $func ($decl xs tviews.node, $decl i 0) $match xs (
 $decl tmpl_names $func ($decl r proto_tmpl)
   $call drop_names ($call free_names (r.body, strs.nil), $call strs.val (r.generics), strs.nil)
 $fwd tmpl_reach
+$fwd ldef_reach
 // Every template the names `ns` reach, by naming it or naming one that names it, with the
 // frame bindings its body reads — taken from its view, never looked up by name where the
 // use stands, which a block between could shadow. `acc` is newest first and is also the
@@ -3265,11 +3301,16 @@ $decl frame_caps $func ($decl st proto_lst, $decl e benv.node, $decl ns strs.nod
   $case {$prop tag "cons"} {
     $decl f    $call lookup (e, ns.head)
     $decl tid  $if f.hit f.bnd.tmpl -1
-    $decl hit  $if ($if ($call lt (-1, tid)) ($call not ($call seen_tview (acc, tid))) false)
+    $decl new  $if ($call eq_int (tid, -1)) false ($call not ($call seen_tview (acc, tid)))
+    $decl hit  $if ($if new ($call lt (-1, tid)) false)
                    ($call find_tmpl ($call eval_tmpls (st.tmpls), tid)) tmpls_list.nil
+    $decl dh   $if ($if new ($call lt (tid, -1)) false)
+                   ($call find_ldef ($call ldef_list.val (st.ldefs), tid)) ldef_list.nil
     $decl acc2 $match hit (
         $case {$prop tag "cons"} ($call tmpl_reach (st, hit.head, acc)),
-        $case hit acc)
+        $case hit $match dh (
+            $case {$prop tag "cons"} ($call ldef_reach (st, dh.head, acc)),
+            $case dh acc))
     $decl ret  $call frame_caps (st, e, $call strs.val (ns.tail), acc2)
   }.ret,
   $case ns acc
@@ -3279,6 +3320,23 @@ $decl tmpl_reach $func ($decl st proto_lst, $decl r proto_tmpl, $decl acc tviews
   $decl nm  $call tmpl_names (r)
   $decl ret $call frame_caps (st, en, nm,
                 $call tviews.cons ($call tview_ent (r.id, $call caps (nm, en, benv.nil)), acc))
+}.ret
+$decl param_names $func ($decl ps Pa.nodes.node, $decl acc strs.node) $match ps (
+  $case {$prop tag "cons"}
+    $call param_names ($call Pa.nodes.val (ps.tail),
+        $if ($call is_form (ps.head, "decl"))
+            ($call strs.cons ($call name_of ($call op (ps.head, 0)), acc)) acc),
+  $case ps acc
+)
+// A local function's defaults read what they name in the scope the `$func` was written in,
+// with no parameter bound — so the parameters' names are not theirs to read.
+$decl ldef_reach $func ($decl st proto_lst, $decl d proto_ldef, $decl acc tviews.node) {
+  $decl en  $call src_env (st, d.id)
+  $decl ps  $call Pa.nodes.val (d.params)
+  $decl nm  $call drop_names ($call free_names_list (ps, strs.nil),
+                $call param_names (ps, strs.nil), strs.nil)
+  $decl ret $call frame_caps (st, en, nm,
+                $call tviews.cons ($call tview_ent (d.id, $call caps (nm, en, benv.nil)), acc))
 }.ret
 // The groups in a fixed order, oldest first, and their bindings end to end: what a builder
 // takes after its generics, and what a call to it passes.
@@ -3296,8 +3354,7 @@ $decl tmpl_cs $func ($decl st proto_lst, $decl r proto_tmpl)
 $decl cap_views $func ($decl st proto_lst, $decl gs tviews.node, $decl i 0, $decl acc tviews.node)
     $match gs (
   $case {$prop tag "cons"} {
-    $decl r   $call find_tmpl ($call eval_tmpls (st.tmpls), gs.head.id)
-    $decl en  $match r ($case {$prop tag "cons"} ($call tmpl_env (st, r.head)), $case r benv.nil)
+    $decl en  $call src_env (st, gs.head.id)
     $decl ret $call cap_views (st, gs.tail, $call add (i, $call benv.length (gs.head.env, 0)),
         $call tviews.cons ($call tview_ent (gs.head.id, $call cap_env (gs.head.env, i, en)), acc))
   }.ret,
@@ -4101,8 +4158,22 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                     ($call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps))
   $decl ty   $call result_of (f.ty)
   $decl fck  $call check_freed (st, e, f.ty, xs, 0)
-  $decl cf   $call short_callee (st, f, $call IR.exprs.length (as.irs, 0), n)
-  $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
+  $decl na   $call IR.exprs.length (as.irs, 0)
+  // A short call to a local function lowers the omitted defaults here, in the callee's
+  // scope as this frame sees it (`ldef_ent`, `src_env`), and passes every argument.
+  $decl np   $call T.tys.length (ps, 0)
+  $decl dh   $if ($if ($call lt (na, np)) ($call lt (f.tmpl, -1)) false)
+                 ($call find_ldef ($call ldef_list.val (st.ldefs), f.tmpl)) ldef_list.nil
+  $decl dv   $match dh (
+      $case {$prop tag "cons"}
+        ($call wrap_defaults (st, $call src_env (st, f.tmpl),
+            $call nodes_drop ($call Pa.nodes.val (dh.head.params), na), $call ts_drop (ps, na),
+            IR.exprs.nil)),
+      $case dh IR.exprs.nil)
+  $decl loc  $match dh ($case {$prop tag "cons"} true, $case dh false)
+  $decl cf   $if loc f.ir ($call short_callee (st, f, na, n))
+  $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf,
+                 $call append_exprs (as.irs, dv), tail), ty)
 }.ret
 
 // §8's `box_ptr` and `unbox`, and its arrays, bound at marker types (`T.ffi_box`)
@@ -4476,10 +4547,19 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                       $call concat ($call int_to_str (sp.line), $call concat (":",
                       $call int_to_str (sp.col))))))))
       $decl hit  $if ($call eq_str (fk, "")) fnm_list.nil ($call find_fnm (st.fnmemo, fk))
+      // Bound by a block's `$decl`: its defaults are what a short call to it lowers
+      // (`ldef_ent`), so they are kept, with the scope they are read in.
+      $decl lid  $if ($call eq_str (rnm, "")) -1
+                     ($call isub (-2, $call P.ival (st.nldef)))
+      $decl ldn  $set st.nldef ($if ($call eq_str (rnm, "")) ($call P.ival (st.nldef))
+                     ($call add ($call P.ival (st.nldef), 1)))
+      $decl ldr  $set st.ldefs ($if ($call eq_str (rnm, "")) ($call ldef_list.val (st.ldefs))
+                     ($call ldef_list.cons ($call ldef_ent (lid,
+                         $call group_items ($call op (n, 0)), e), st.ldefs)))
       $decl ret2    $match hit (
           $case {$prop tag "cons"}
-            ($call lres ($call IR.e_closure ($call intern (st, hit.head.ty), hit.head.idx, vals),
-                 hit.head.ty)),
+            ($call lres4 ($call IR.e_closure ($call intern (st, hit.head.ty), hit.head.idx,
+                 vals), hit.head.ty, -1, lid)),
           $case hit {
             $decl ets   $call cap_tys (st, cs, IR.ints.nil)
             $decl tv0   $call tviews.val (st.tview)
@@ -4490,7 +4570,8 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
             $decl fty   lw.ty
             $decl memo $set st.fnmemo ($if ($call eq_str (fk, "")) ($call fnm_list.val (st.fnmemo))
                            ($call fnm_list.cons ($call fnm_ent (fk, idx, fty), st.fnmemo)))
-            $decl ret3    $call lres ($call IR.e_closure ($call intern (st, fty), idx, vals), fty)
+            $decl ret3    $call lres4 ($call IR.e_closure ($call intern (st, fty), idx, vals), fty,
+                              -1, lid)
           }.ret3
         )
     }.ret2
@@ -4817,13 +4898,6 @@ $decl param_defaults $func ($decl ps Pa.nodes.node, $decl bound strs.node, $decl
     $call param_defaults ($call Pa.nodes.val (ps.tail), bound,
         $if ($call is_form (ps.head, "decl")) ($call free_sc ($call op (ps.head, 1), bound, acc))
             acc),
-  $case ps acc
-)
-$decl param_names $func ($decl ps Pa.nodes.node, $decl acc strs.node) $match ps (
-  $case {$prop tag "cons"}
-    $call param_names ($call Pa.nodes.val (ps.tail),
-        $if ($call is_form (ps.head, "decl"))
-            ($call strs.cons ($call name_of ($call op (ps.head, 0)), acc)) acc),
   $case ps acc
 )
 
@@ -6702,10 +6776,7 @@ $decl pviews $func ($decl v tviews.node, $decl ts IR.ints.node) { $decl views v 
 $decl param_views $func ($decl st proto_lst, $decl gs tviews.node, $decl b0 benv.node,
                          $decl rid 0, $decl accv tviews.node, $decl acct IR.ints.node) $match gs (
   $case {$prop tag "cons"} {
-    $decl r2   $call find_tmpl ($call eval_tmpls (st.tmpls), gs.head.id)
-    $decl base $if ($call eq_int (gs.head.id, rid)) b0
-                   ($match r2 ($case {$prop tag "cons"} ($call tmpl_env (st, r2.head)),
-                               $case r2 benv.nil))
+    $decl base $if ($call eq_int (gs.head.id, rid)) b0 ($call src_env (st, gs.head.id))
     $decl c    $call cap_params (st, gs.head.env, base, IR.ints.nil)
     $decl ret  $call param_views (st, gs.tail, b0, rid,
                    $call tviews.cons ($call tview_ent (gs.head.id, c.env), accv),
