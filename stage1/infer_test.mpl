@@ -1415,6 +1415,10 @@ $decl cr03 $call check_str ("...and says where, when the reference is in a field
   $call errs_of ("$decl f $func ($decl b { $decl k 0  $decl r $const $new $union (1, \"s\") }) 0  $decl x $call f ({ $decl k 1  $decl r $const $new 5 })"),
   $call concat ("argument 1 is {k:Int,r:&const Int,}, expected {k:Int,r:&const <Int,Str>,}; in 'r', ",
     "the value would be a subtype, but a pointer to one is not a pointer to the other: pass the value (§5.3)"))
+$decl cr05 $call check_str ("...and in a group's item, named by its position",
+  $call errs_of ("$decl g $func ($decl p (0, { $decl r $const $new $union (1, \"s\") })) 0  $decl gv (2, { $decl r $const $new 5 })  $decl y $call g (gv)"),
+  $call concat ("argument 1 is (Int,{r:&const Int,}), expected (Int,{r:&const <Int,Str>,}); in '1.r', ",
+    "the value would be a subtype, but a pointer to one is not a pointer to the other: pass the value (§5.3)"))
 $decl cr04 $call check_str ("...and an ordinary mismatch in a field gets no hint",
   $call errs_of ("$decl h $func ($decl b { $decl k 0 }) 0  $decl z $call h ({ $decl k \"no\" })"),
   "argument 1 is {k:Str,}, expected {k:Int,}")
