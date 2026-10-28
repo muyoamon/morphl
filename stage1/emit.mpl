@@ -1089,6 +1089,12 @@ $decl emit_retag $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
   $decl ret ()
 }.ret
 
+// A type's interned index, or -1.
+$decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
+  $decl f   $call IR.find_ty (ts, t)
+  $decl ret $if f.hit f.id -1
+}.ret
+
 // §5.1 again: a block's fields are an ordered prefix, so `S <: T` when `T`'s
 // fields are `S`'s first fields — and §7.4 makes coercing a *value* that way a
 // **copy**, field by field, because the target struct is shorter and nothing
@@ -1099,13 +1105,40 @@ $decl emit_retag $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
 // prefix has it in common (§5.1), and C guarantees a common initial sequence
 // is readable through any member of a union of structs — so the first member
 // serves, exactly as it does for a projection.
-$decl emit_prefix_copy $func ($decl st proto_est, $decl dest "", $decl src "",
-                              $decl thru "", $decl n 0, $decl i 0)
-  $if ($call not ($call lt (i, n))) ()
-      $do ($call assign (st, $call concat (dest, $call concat (".f", $call int_to_str (i))),
-               $call concat (src, $call concat (thru,
-                   $call concat (".f", $call int_to_str (i))))))
-          ($call emit_prefix_copy (st, dest, src, thru, n, $call add (i, 1)))
+//
+// Each field is coerced into the target's (`emit_inject`), not assigned: §5.1's block rule
+// is depth as well as prefix, so `{ty a, m}` joined with `{ty w, m}`, `a` a member of the
+// union `w`, copies `ty` as an injection — a plain assignment there is two C structs. A
+// field whose type the table does not hold is assigned, as every field once was.
+$decl emit_prefix_copy $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
+                              $decl src "", $decl thru "", $decl fs T.fields.node,
+                              $decl ws T.fields.node, $decl i 0) $match ws (
+  $case {$prop tag "cons"} {
+    $decl f    $call concat (".f", $call int_to_str (i))
+    $decl d    $call concat (dest, f)
+    $decl s    $call concat (src, $call concat (thru, f))
+    $decl wi   $call ty_id (ts, ws.head.ty)
+    $decl fi   $match fs (
+                   $case {$prop tag "cons"} ($call ty_id (ts, fs.head.ty)),
+                   $case fs -1)
+    $decl d0   $if ($call P.or ($call lt (wi, 0), $call lt (fi, 0))) ($call assign (st, d, s))
+                   ($call emit_inject (st, ts, d, s, fi, wi))
+    $decl rest $match fs ($case {$prop tag "cons"} ($call T.fields.val (fs.tail)),
+                   $case fs T.fields.nil)
+    $decl ret2 $call emit_prefix_copy (st, ts, dest, src, thru, rest,
+                   $call T.fields.val (ws.tail), $call add (i, 1))
+  }.ret2,
+  $case ws ()
+)
+
+// The fields a prefix copy reads from a source reached `thru`: its own, or its first
+// member's (§5.1's common prefix).
+$decl prefix_src_fields $func ($decl t0 T.proto_ty, $decl thru "") {
+  $decl ms  $call union_members (t0)
+  $decl ret $if ($call eq_str (thru, "")) ($call block_fields (t0))
+                ($if ($call T.tys.is_nil (ms)) T.fields.nil
+                     ($call block_fields ($call T.tys.nth (ms, 0))))
+}.ret
 
 // How to reach a block's fields from a value of this type: directly when it is
 // a block, through the first member when it is a union of blocks sharing the
@@ -1377,12 +1410,6 @@ $decl adapt_fn $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "", $d
                 $call concat (", ", $call concat (e, "}")))))
 }.ret
 
-// A type's interned index, or -1.
-$decl ty_id $func ($decl ts T.tys.node, $decl t T.proto_ty) {
-  $decl f   $call IR.find_ty (ts, t)
-  $decl ret $if f.hit f.id -1
-}.ret
-
 // The target trait's table built from the source object's: entry `j` is the source's entry
 // for the member of that name. Allocated per coercion, like a closure's environment, since
 // the object may outlive this frame. A member whose signature differs between the two —
@@ -1606,8 +1633,9 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
       ($if to_unit ($do ($call say (st, $call concat ("  (void)", $call concat (src, ";\n"))))
                         ($call assign (st, dest, "0")))
       ($if ($call not ($call eq_str (how, "")))
-           ($call emit_prefix_copy (st, dest, src, $if ($call eq_str (how, "u")) ".u.m0" "",
-                $call T.fields.length (wf, 0), 0))
+           { $decl thru $if ($call eq_str (how, "u")) ".u.m0" ""
+             $decl ret2 $call emit_prefix_copy (st, ts, dest, src, thru,
+                            $call prefix_src_fields (ft, thru), wf, 0) }.ret2
       ($if ($call not ($call T.tys.is_nil (fs)))
            ($if ($call T.tys.is_nil (ws)) ($call coerce_err (st, ft, wt))
                 ($call emit_retag (st, ts, dest, src, ft, fs, ws, wt)))
