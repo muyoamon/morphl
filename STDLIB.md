@@ -1,10 +1,13 @@
 # The standard library: design note
 
-Status: **draft for decision.** Nothing here is implemented.
+Status: **implemented.** The decisions below were taken as recommended, and every module in D1's
+table exists under `std/` with a test run by `zig build test-std`; what is still open is marked
+where it arises (D3a's per-element-type candidates, D4's generated `eq`/`show`, a byte-buffer
+builder for D6).
 
 SPEC §8 draws the line: the root block holds what the language cannot express — intrinsics
 and the platform's door — and "everything else — `not`, `and`, `or`, `max`, lists, maps,
-formatting — is library code". §11 lists the library as deferred. This note says what it
+formatting — is library code". §11 listed the library as deferred. This note says what it
 should contain, what has to change in the compiler before it can be written well, and asks
 for the decisions that shape it.
 
@@ -634,8 +637,8 @@ So a list stays a value — `push` answers a new list — and a container that c
    `less`, since the root block orders numbers only. Keys ordered by their own `lt` pass
    `$func ($decl a k, $decl b k) $call C.less (a, b)`.
 5. **P7, P8**, then the per-element-type candidates of D3a where a representation earns one.
-6. **Docs** — SPEC §8 points to `std/`, §11 drops the library, and BOOTSTRAP notes the arrays
-   generalised beyond its §2; SPEC gains §4.8's template resolution and `$override`.
+6. **Docs** — **done**: SPEC §8 points to `std/`, §11 drops the library, and BOOTSTRAP notes the
+   arrays generalised beyond its §2; SPEC gained §4.8's template resolution and §4.12a's `$override`.
 
 ## Decisions requested
 

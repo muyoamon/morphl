@@ -848,7 +848,7 @@ Every program is wrapped in an implicit **root block**, assembled by the build p
 
 **Platform** — library code over `$extern`, present per target: `print`, `read`, files, sockets, `spawn`/`join`/`channel`/`mutex`/`atomic`, `malloc`-backed allocators. The root block defines `option` and `result` before any of these so failing operations return them — an operation with nothing to answer but success answers `ok | err` (§4.15), as writing a file does; `Int` arithmetic (overflow, `div` by zero) and `slice` out of range panic. `Float` arithmetic does not: its failures are values (§3.1), and the program meets them where a `Float` becomes an `Int`, since `to_int` answers `none` for NaN and out-of-range values.
 
-Everything else — `not`, `and`, `or`, `max`, lists, maps, formatting — is library code. Sanity check that the core suffices:
+Everything else — `not`, `and`, `or`, `max`, lists, maps, formatting — is library code. That library is `std/`: ordinary modules imported by name like any other (`$decl L $import "std/list"`), found through the build's search roots (§4.14) — `std/core` (`not`/`and`/`or`, `max`/`min`, `equal`/`less` and the `option` helpers), `std/list`, `std/vec` (a growable vector over `array`), `std/map`, `std/str`, `std/fmt`, `std/io`, `std/seq`, `std/mem`, `std/result` and `std/test`. None of it is in the root block, so a program pays only for what it imports. Sanity check that the core suffices:
 
 ```
 $decl not $func ($decl b $union (true, false)) $match b ($case true false, $case false true)
@@ -1022,13 +1022,12 @@ These follow from stated rules and are accepted by design:
 
 - Whether the pass-facing compiler functions should be `$template`s bounded by the node type (§9.3), so that a pass's own annotations survive a call into the compiler instead of being prefix-copied away (§7.4). It is the difference between passes carrying analysis beside the tree and inside it.
 - Whether a *library* allocator can be made safe rather than unsafe by declaration — some form of scoped allocator whose references cannot outlive it, which would be §5.3a's rule generalised from the frame to any allocator. Deliberately not attempted: it is the step from two kinds to arbitrarily many, and that is a lifetime system.
-- Growable vector over `array` (library).
 - Variadic templates (abstraction over group arity).
 - Whether `&mut S` may widen to a prefix supertype `&mut T`. Under prefix layout a write through the narrowed view leaves `S`'s tail intact, so width (not depth) coercion looks sound; §5.3 keeps `&mut` invariant for now.
 - `$fwd (name, example)` — optional type operand, must be a group.
 - `static` — per-type mutable storage, deliberately distinct from `$prop`.
 - Specializing with an overload argument producing an overloaded result (currently an error).
-- Standard library: `list`, `map`, structural `eq`, `and`/`or`, formatting.
+- Structural `eq` and `show` derived for a block. Today a type writes its own members, conforming to `std/core`'s `eq_proto`/`ord_proto` or `std/fmt`'s `show_proto`; generating them — at build time (§9), since there is no in-language reflection — is open.
 
 ---
 

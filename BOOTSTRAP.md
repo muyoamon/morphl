@@ -113,7 +113,7 @@ Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(
 | Strings | `concat len slice byte` — byte units, as §8 |
 | Conversion | `int_to_str` , `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works; `to_str` (from `Int`) and `to_int` (from `Str`) are the same at stage 0, and `to_float` refuses |
 | Characters | `from_code (cp)` → `none \| some Str`. **An addition to §8, not an implementation of it** — see §7 |
-| Arrays | `array at alen` — as §8; `at` returns a base+index handle |
+| Arrays | `array at alen` — as §8, over any element type (the example fixes it); `at` returns a reference into the elements. `args` and `run` keep `[Str]` |
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
 | Platform | `print eprint read_file write_file args run errno` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
