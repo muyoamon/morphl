@@ -7,7 +7,8 @@
 // self-reaching one ("reads the enclosing frame"), and an ordinary one specialised inside a
 // nested `$func` read the template's slot out of the wrong frame (5).
 //
-// The digits: 116 (two `make`s), 9, 5, 3 ticks, 3, and 9 where the shadowing `lim` gives 25.
+// The digits: 116 (two `make`s), 9, 5, 3 ticks, 3, 9 where the shadowing `lim`
+// gives 25, and 39.
 
 // 1. Through a `$func` member: `next` reaches the template; `tot` reads `base`.
 $decl make $func ($decl base 0) {
@@ -72,6 +73,20 @@ $decl shadow $func ($decl lim 0) {
   $decl ret { $decl lim 5  $decl r ($specialize t 1).m }.r
 }.ret
 
+// 7. A deferral in a builder's body, naming another template of the frame: lowered at the
+// builder's exit, which has to be inside its view still. 11 + 12 + 13, plus `c.n`.
+$decl defers $func ($decl base 0) {
+  $decl hits $mut $alloc 0
+  $decl w $template T { $decl v $call add (T, base) }
+  $decl ctr $template T {
+    $decl n    T
+    $defer $set hits ($call add (hits, ($specialize w n).v))
+    $decl next $func () $specialize ctr ($call add (n, 1))
+  }
+  $decl c   $call ($call ($specialize ctr 1).next ()).next ()
+  $decl ret $call add ($call ival (hits), c.n)
+}.ret
+
 $decl main $func () {
   $decl d1  $call add ($call make (10), $call make (100))
   $decl d2  $call down (3)
@@ -79,7 +94,8 @@ $decl main $func () {
   $decl d4  $call count ()
   $decl d5  $call plain (1)
   $decl d6  $call shadow (3)
-  $decl ret $call add ($call mul (d1, 100000), $call add ($call mul (d2, 10000),
-                $call add ($call mul (d3, 1000), $call add ($call mul (d4, 100),
-                $call add ($call mul (d5, 10), d6)))))
+  $decl d7  $call defers (10)
+  $decl ret $call add ($call mul (d1, 10000000), $call add ($call mul (d2, 1000000),
+                $call add ($call mul (d3, 100000), $call add ($call mul (d4, 10000),
+                $call add ($call mul (d5, 1000), $call add ($call mul (d6, 100), d7))))))
 }.ret

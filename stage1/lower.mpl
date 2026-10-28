@@ -6698,7 +6698,6 @@ $decl spec_fn_body $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.
   $decl tvs   $set st.tview ($call tviews.reverse ($call tviews.reverse (c.views, tviews.nil), tv0))
   $decl a     $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
                   $call tmpl_env (st, r), IR.exprs.nil), $call drop_props (items, Pa.nodes.nil))
-  $decl tvr   $set st.tview tv0
   $decl prps  $call inst_props (st, items, T.props.nil)
   $decl ps    $call block_props (items, mprops.nil)
   $decl md    $if ($call mprops.is_nil (ps)) -1
@@ -6712,7 +6711,10 @@ $decl spec_fn_body $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.
                   $call IR.e_block (iid,
                       $call IR.bslots.reverse ($call IR.bslots.val (a.slots), IR.bslots.nil)),
                   iid, ity)
+  // A deferral is lowered here, at the frame's exit, and may name a template too — so the
+  // views stay until it has been.
   $decl iir   $call with_defers (st, dfr_list.nil, iir0, iid, ity, false)
+  $decl tvr   $set st.tview tv0
   $decl rdf   $set st.defers odf
   $decl rad   $set st.armdepth oad
   $decl ss    $call take_slots (st)
