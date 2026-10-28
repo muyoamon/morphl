@@ -4478,6 +4478,11 @@ $decl ad_args $func ($decl st proto_est, $decl ts T.tys.node, $decl ws T.tys.nod
   $case ws acc
 )
 
+// Whether a shim drives a chain its call starts, rather than leaving it to its caller:
+// only when there is a chain at all and the result is coerced on the way out.
+$decl ad_drives $func ($decl st proto_est, $decl ts T.tys.node, $decl rf 0, $decl rw 0)
+  $if ($call any_reports (st)) ($call not ($call comp_free (st, ts, rf, rw, 0))) false
+
 $decl emit_ad $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent) {
   $decl a   $call T.unroll ($call type_at (ts, e.from))
   $decl b   $call T.unroll ($call type_at (ts, e.want))
@@ -4500,9 +4505,13 @@ $decl emit_ad $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_aden
                           " r;\n")))
             $decl c1  $call assign (st, "r", $call indirect_call ($call fn_sig (st, ts, e.from), "f",
                           $call strs.reverse (bs, strs.nil)))
-            // §6a: the call is not in tail position here — its result is coerced — so a
-            // chain it starts is driven to its end before that.
-            $decl c2  $if ($call any_reports (st)) ($call say (st, "  mpl_tcdrive(&r);\n")) ()
+            // §6a: where the result needs coercing the call is not in tail position, so a
+            // chain it starts is driven to its end first. Where it does not, the call *is*
+            // the shim's tail call: a pending block it leaves goes back to the shim's
+            // caller, an indirect call site and so a driver, and the chain does not nest a
+            // shim's frame per hop (§7.7). `emit_shim` has always done this.
+            $decl c2  $if ($call ad_drives (st, ts, rf, rw))
+                          ($call say (st, "  mpl_tcdrive(&r);\n")) ()
             $decl c3  $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, rw),
                           " ret;\n  memset(&ret, 0, sizeof ret);\n")))
             $decl c4  $call emit_inject (st, ts, "ret", "r", rf, rw)
@@ -4816,7 +4825,8 @@ $decl emit_tad $func ($decl st proto_est, $decl ts T.tys.node, $decl nm "", $dec
                        " r;\n")))
         $decl c1   $call assign (st, "r", $call concat ($call tsh_name (st, k),
                        $call concat ("(env", $call concat (as, ")"))))
-        $decl c2   $if ($call any_reports (st)) ($call say (st, "  mpl_tcdrive(&r);\n")) ()
+        $decl c2   $if ($call ad_drives (st, ts, f.result, rw))
+                       ($call say (st, "  mpl_tcdrive(&r);\n")) ()
         $decl c3   $call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, rw),
                        " ret;\n  memset(&ret, 0, sizeof ret);\n")))
         $decl c4   $call emit_inject (st, ts, "ret", "r", f.result, rw)
