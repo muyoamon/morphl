@@ -190,6 +190,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/selfspec.mpl", .want = "21\n" },
         .{ .src = "stage1/fixtures/spec_self.mpl", .want = "684173\n" },
         .{ .src = "stage1/fixtures/spec_direct.mpl", .want = "351742\n" },
+        .{ .src = "stage1/fixtures/spec_tmpl_gen.mpl", .want = "56873\n" },
         // §4.9's compile-time generics: a value in the type, and tags made by a
         // template. 61.
         .{ .src = "stage1/fixtures/ctgen.mpl", .want = "61\n" },

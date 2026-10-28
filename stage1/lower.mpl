@@ -428,6 +428,14 @@ $decl find_tmpl $func ($decl xs tmpls_list.node, $decl i 0) $match xs (
   $case xs tmpls_list.nil
 )
 
+// By inference's identity (`iid`), which a template argument's memo key carries.
+$decl find_tmpl_iid $func ($decl xs tmpls_list.node, $decl ii 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.iid, ii)) xs
+        ($call find_tmpl_iid (xs.tail, ii)),
+  $case xs tmpls_list.nil
+)
+
 $decl find_spec $func ($decl xs specs_list.node, $decl i 0, $decl ks IR.ints.node,
     $decl v "") $match xs (
   $case {$prop tag "cons"}
@@ -2709,13 +2717,15 @@ $decl cap_tys $func ($decl st proto_lst, $decl cs benv.node, $decl acc IR.ints.n
   $case cs ($call IR.ints.reverse (acc, IR.ints.nil))
 )
 
-// Inside the lifted body the same names are captures, numbered in order.
+// Inside the lifted body the same names are captures, numbered in order. A capture is
+// still the module or template its binding named: a template's value is unit, so without
+// `tmpl` a `$specialize` of a captured generic inside a `$func` found no template.
 $decl cap_env $func ($decl cs benv.node, $decl i 0, $decl acc benv.node) $match cs (
   $case {$prop tag "cons"}
     $call cap_env (cs.tail, $call add (i, 1),
-        $call benv.cons ($call bind_ent (cs.head.name,
+        $call benv.cons ($call bind_ent6 (cs.head.name,
             $if ($call is_fwd_kind (cs.head.kind)) "fwdc" "capture", i,
-            $call T.tval (cs.head.ty)), acc)),
+            $call T.tval (cs.head.ty), cs.head.mod, cs.head.tmpl), acc)),
   $case cs acc
 )
 
@@ -2855,12 +2865,21 @@ $decl with_gens $func ($decl e benv.node, $decl gs strs.node, $decl mid 0) $matc
 // how its type is known (§5.7 never evaluates it, but lowering has to derive
 // it), and the node that produces is discarded — §9.3 lets indices be skipped,
 // only not repeated.
+//
+// A template argument's value is unit, which says nothing about which template it is, so
+// its key is the template type at inference's identity — what inference's `memo_key`
+// renders, and what `key_bind` reads back. Keyed by its unit, `t (box, 5)` and
+// `t (box2, 5)` were one specialisation.
 $decl arg_keys $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
                       $decl acc IR.ints.node) $match xs (
   $case {$prop tag "cons"} {
-    $decl a $call type_only (st, e, xs.head)
-    $decl ret $call arg_keys (st, e, $call Pa.nodes.val (xs.tail),
-                $call IR.ints.cons ($call intern (st, a.ty), acc))
+    $decl a   $call type_only (st, e, xs.head)
+    $decl hit $if ($call lt (a.tmpl, 0)) tmpls_list.nil
+                  ($call find_tmpl ($call eval_tmpls (st.tmpls), a.tmpl))
+    $decl k   $match hit (
+        $case {$prop tag "cons"} $call intern (st, $call T.t_tmpl (hit.head.iid)),
+        $case hit $call intern (st, a.ty))
+    $decl ret $call arg_keys (st, e, $call Pa.nodes.val (xs.tail), $call IR.ints.cons (k, acc))
   }.ret,
   $case xs ($call IR.ints.reverse (acc, IR.ints.nil))
 )
@@ -3174,10 +3193,23 @@ $decl spec_args_v $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
         $call IR.exprs.cons (($call as_value (st, $call lower (st, e, xs.head, false))).ir, acc)),
   $case xs ($call IR.exprs.reverse (acc, IR.exprs.nil))
 )
+// What a key binds its generic to in a builder: the value's type and, for a template
+// argument (`arg_keys`), unit and the template.
+$decl key_ent $func ($decl t T.proto_ty, $decl m 0) { $decl ty t  $decl tmpl m }
+$decl key_bind $func ($decl st proto_lst, $decl k 0) {
+  $decl t   $call ty_at (st, k)
+  $decl ret $match t (
+      $case {$prop tag "tmpl"} {
+        $decl hit  $call find_tmpl_iid ($call eval_tmpls (st.tmpls), t.id)
+        $decl ret2 $call key_ent (T.t_unit,
+                       $match hit ($case {$prop tag "cons"} hit.head.id, $case hit -1))
+      }.ret2,
+      $case t ($call key_ent (t, -1)))
+}.ret
 $decl key_tys $func ($decl st proto_lst, $decl ks IR.ints.node, $decl acc T.tys.node) $match ks (
   $case {$prop tag "cons"}
-    $call key_tys (st, $call IR.ints.val (ks.tail), $call T.tys.cons ($call ty_at (st, ks.head),
-        acc)),
+    $call key_tys (st, $call IR.ints.val (ks.tail),
+        $call T.tys.cons (($call key_bind (st, ks.head)).ty, acc)),
   $case ks ($call T.tys.reverse (acc, T.tys.nil))
 )
 // A call to the builder `sp.fn`, whose result is `sp.bty`; `m` is the instance's props module.
@@ -6485,10 +6517,12 @@ $decl gen_params $func ($decl st proto_lst, $decl gs strs.node, $decl ks IR.ints
                         $decl e benv.node, $decl acc IR.ints.node) $match gs (
   $case {$prop tag "cons"} $match ks (
     $case {$prop tag "cons"} {
-      $decl sl  $call fresh_slot (st, ks.head)
+      $decl kb  $call key_bind (st, ks.head)
+      $decl ki  $call intern (st, kb.ty)
+      $decl sl  $call fresh_slot (st, ki)
       $decl ret $call gen_params (st, $call strs.val (gs.tail), $call IR.ints.val (ks.tail),
-          $call benv.cons ($call bind_ent (gs.head, "local", sl, $call ty_at (st, ks.head)), e),
-          $call IR.ints.cons (ks.head, acc))
+          $call benv.cons ($call bind_ent6 (gs.head, "local", sl, kb.ty, -1, kb.tmpl), e),
+          $call IR.ints.cons (ki, acc))
     }.ret,
     $case ks ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))),
   $case gs ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))
