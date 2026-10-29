@@ -31,8 +31,19 @@ $decl outer $func ($decl k 0) {
     $decl ret   $match q4 ($case {$prop tag "none"} 4, $case 0 q4)
   }.ret
   $decl d4 $call add ($call wrap (7), 0)
-  $decl ret $call add ($call mul (d1, 1000), $call add ($call mul (d2, 100),
-              $call add ($call mul (d3, 10), d4)))
+  // 5. A `$try` leaving through a `$defer` (§4.15a), which runs on either exit: this was
+  // the shape the sweep's lifted `defer.mpl` hit, emitted as a read of a field `none`
+  // does not have.
+  $decl log  $mut $alloc 0
+  $decl five $func ($decl n 0) {
+    $defer    $set log ($call add (log, 1))
+    $decl h   $try ($call half (n)) none
+    $decl ret h
+  }.ret
+  $decl q5 $call five ($call div (k, 2))
+  $decl d5 $call add ($match q5 ($case {$prop tag "none"} 5, $case 0 3), log)
+  $decl ret $call add ($call mul (d1, 10000), $call add ($call mul (d2, 1000),
+              $call add ($call mul (d3, 100), $call add ($call mul (d4, 10), d5))))
 }.ret
 
 $decl main $func () $call add ($call mul ($call outer (20), 10), $call outer (6))

@@ -1131,6 +1131,17 @@ $decl emit_prefix_copy $func ($decl st proto_est, $decl ts T.tys.node, $decl des
   $case ws ()
 )
 
+// Whether `ws`'s names are the first of `fs`'s, in order (§5.1's prefix).
+$decl names_prefix $func ($decl fs T.fields.node, $decl ws T.fields.node) $match ws (
+  $case {$prop tag "cons"} $match fs (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (fs.head.name, ws.head.name))
+            ($call names_prefix ($call T.fields.val (fs.tail), $call T.fields.val (ws.tail)))
+            false,
+      $case fs false),
+  $case ws true
+)
+
 // The fields a prefix copy reads from a source reached `thru`: its own, or its first
 // member's (§5.1's common prefix).
 $decl prefix_src_fields $func ($decl t0 T.proto_ty, $decl thru "") {
@@ -1634,8 +1645,14 @@ $decl emit_inject $func ($decl st proto_est, $decl ts T.tys.node, $decl dest "",
                         ($call assign (st, dest, "0")))
       ($if ($call not ($call eq_str (how, "")))
            { $decl thru $if ($call eq_str (how, "u")) ".u.m0" ""
-             $decl ret2 $call emit_prefix_copy (st, ts, dest, src, thru,
-                            $call prefix_src_fields (ft, thru), wf, 0) }.ret2
+             $decl sf   $call prefix_src_fields (ft, thru)
+             // §5.1: the target's fields are the source's first, by name. A source that
+             // lacks one is no subtype, and copying would read a field it does not have —
+             // `none` into a block result read `.f0` off a struct with none, which `cc`
+             // caught only because no member of that name existed.
+             $decl ret2 $if ($call names_prefix (sf, wf))
+                            ($call emit_prefix_copy (st, ts, dest, src, thru, sf, wf, 0))
+                            ($call coerce_err (st, ft, wt)) }.ret2
       ($if ($call not ($call T.tys.is_nil (fs)))
            ($if ($call T.tys.is_nil (ws)) ($call coerce_err (st, ft, wt))
                 ($call emit_retag (st, ts, dest, src, ft, fs, ws, wt)))

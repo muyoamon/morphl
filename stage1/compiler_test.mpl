@@ -201,4 +201,19 @@ $decl t18 $call check_str ("verify follows a lifted thunk's calls to an entry-fi
 $decl t19 $call check ("...and is quiet when the function it calls reads none",
   $call Pa.diags.is_nil ($call C.verify ($call ord_prog ($call IR.e_int (0, 1)))))
 
+// §7.4's prefix copy is a subtype's: the target's fields are the source's first. A tree
+// that asks for one from a block lacking them — `{}` into `{a}`, as a `$try`'s `none` into
+// a result lowering derived without it — is refused rather than emitted as a read of a
+// field the source does not have.
+$decl tys3 $call T.tys.cons (T.t_int, $call T.tys.cons ($call T.t_block (T.fields.nil, T.props.nil),
+    $call T.tys.cons ($call T.t_block ($call T.f1 ("a", T.t_int), T.props.nil), T.tys.nil)))
+$decl short_prog $call IR.program (tys3,
+    $call IR.fns.cons ($call IR.fn ("f", IR.ints.nil, 2, IR.ints.nil,
+        $call IR.e_block (1, IR.bslots.nil), false, false, IR.ints.nil), IR.fns.nil),
+    IR.groups.nil, 0, IR.effects.nil, 1)
+
+$decl t20 $call check_str ("emit refuses a prefix copy from a block without the fields",
+  $call first_msg ($call Pa.diags.val (($call C.emit (short_prog)).diagnostics)),
+  "cannot coerce {} to {a:Int,}")
+
 $decl done $call nl ("all pipeline tests passed")

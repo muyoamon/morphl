@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/match_storage.mpl", .want = "2122121\n" },
         .{ .src = "stage1/fixtures/closures.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/try.mpl", .want = "5\n" },
-        .{ .src = "stage1/fixtures/local_try.mpl", .want = "56374\n" },
+        .{ .src = "stage1/fixtures/local_try.mpl", .want = "563786\n" },
         .{ .src = "stage1/fixtures/mutual.mpl", .want = "1\n" },
         .{ .src = "stage1/fixtures/mutual_sig.mpl", .want = "9\n" },
         .{ .src = "stage1/fixtures/unions.mpl", .want = "91\n" },
