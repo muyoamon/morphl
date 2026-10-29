@@ -695,6 +695,10 @@ $decl lstate $func () {
   // How many `$if`/`$match` arms of the current function enclose what is being lowered: a
   // `$new` literal kept with deferrals there takes a flag (`dfr_ent`, example 10).
   $decl armdepth $mut $alloc 0
+  // §4.15: what each `$try` in the current function returns. A function inference typed
+  // has the widened result already; a lifted literal's is derived from its body, which
+  // does not know about the exits inside it, so they are joined in (`lower_func`).
+  $decl tryx $mut $alloc T.tys.node
   // DEFER.md example 7: where each `$new` literal kept with deferrals saved its address,
   // "key|slot|type": a call may hand that place back, and the item decides at run time.
   $decl newptrs $mut $alloc strs.node
@@ -4510,6 +4514,8 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
           $case {$prop tag "cons"}
             $do ($call intern (st, $call T.tys.nth ($call members_of ($call canon_ty (st, v.ty)),
                      ds.head)))
+            $do ($set st.tryx ($call T.tys.cons ($call T.tys.nth ($call members_of
+                     ($call canon_ty (st, v.ty)), ds.head), st.tryx)))
             ($call lres ($call IR.e_try ($call intern (st, rest), v.ir, ds.head,
                 $call lower_dfrs (st, $call dfr_list.val (st.defers),
                     $call dfr_list.length ($call dfr_list.val (st.defers), 0), IR.exprs.nil)),
@@ -4761,6 +4767,11 @@ $decl bind_params $func ($decl st proto_lst, $decl e benv.node, $decl ps Pa.node
   $case ps ($call binding_done (e, $call IR.ints.reverse (acc, IR.ints.nil)))
 )
 
+$decl join_exits $func ($decl t T.proto_ty, $decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"} $call join_exits ($call T.join (t, xs.head), $call T.tys.val (xs.tail)),
+  $case xs t
+)
+
 // Lower one `$func` whose type inference already solved. `fty` is that type, so
 // the parameter types come from it rather than from re-reading the defaults.
 $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
@@ -4777,6 +4788,8 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl oad   $call P.ival (st.armdepth)
   $decl cad   $set st.armdepth 0
   $decl oap   $call strs.val (st.aprov)
+  $decl otx   $call T.tys.val (st.tryx)
+  $decl ctx   $set st.tryx T.tys.nil
   // DEFER.md: a parameter the function's type says it frees (`128 + i`) came from the root,
   // which every caller checks — so `$free` of it here routes there.
   $decl cla   $set st.aprov ($call mfree_provs ($call strs.val (st.mfree), $call alloc_ident (e),
@@ -4788,10 +4801,14 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl rdf   $set st.defers odf
   $decl rad   $set st.armdepth oad
   $decl rap   $set st.aprov oap
+  $decl exits $call T.tys.val (st.tryx)
+  $decl rtx   $set st.tryx otx
   // §4.15 widens the *inferred* result to include what `$try` can return, so
   // the declared type is the one to believe — not the body's own, which does
-  // not know about the non-local exits inside it.
-  $decl rty0 $match fty ($case {$prop tag "func"} ($call T.tval (fty.result)), $case fty body.ty)
+  // not know about the non-local exits inside it. A lifted literal has no declared
+  // type, so the exits its `$try`s recorded are joined into the body's.
+  $decl rty0 $match fty ($case {$prop tag "func"} ($call T.tval (fty.result)),
+                 $case fty ($call join_exits (body.ty, exits)))
   $decl rty  $call intern (st, rty0)
   $decl ret   $call IR.fn_p (nm, b.tys, rty, $call take_slots (st), body.ir, false, false,
                   ev, $call P.sval (st.curfile), $call next_rank (st), false,
