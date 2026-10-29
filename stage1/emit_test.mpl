@@ -654,4 +654,12 @@ $decl t80 $call check ("a group used as its first item is noted, not refused",
 $decl t81 $call check ("...and reads the first item",
   $call has (gn_c.code, ".f0;"))
 
+// A trait-to-trait adapter spells its member's signature from the parts of the member's
+// type, and compiled alone nothing else interned `make`'s result: the adapter called it as
+// answering `int64_t` and answered a zeroed `{a}`. The emit now reports a part it cannot
+// spell, so the error count is the check, and the copy of `a` the proof of the fix.
+$decl twu_c $call compile ("$decl wide_proto { $prop make $func ($decl n 0) { $decl a 0  $decl b 0 } }  $decl thin_proto { $prop make $func ($decl n 0) { $decl a 0 } }  $decl thin_a $func ($decl t $traitsof thin_proto) { $decl r $call t.make (8)  $decl ret r.a }.ret  $decl via $func ($decl w $traitsof wide_proto) $call thin_a (w)")
+$decl t82 $call check ("an adapter's member result is interned, so its signature is spelt",
+  $if ($call eq_int (twu_c.nerrs, 0)) ($call has (twu_c.code, "ret.f0 = r.f0;")) false)
+
 $decl done $call nl ("all C backend tests passed")

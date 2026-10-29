@@ -1053,6 +1053,14 @@ $decl seal_rec $func ($decl st proto_lst, $decl t T.proto_ty) {
     )
 }.ret
 
+// A function type's parameters and result, which `intern` does not reach.
+$decl seal_fn $func ($decl st proto_lst, $decl t T.proto_ty) $match t (
+  $case {$prop tag "func"}
+    $do ($call seal_tys (st, $call T.tys.val (t.params)))
+        ($call intern (st, $call T.tval (t.result))),
+  $case t 0
+)
+
 $decl is_rec $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "rec"} true,
   $case t false
@@ -1086,6 +1094,10 @@ $decl intern_msigs $func ($decl st proto_lst, $decl t T.proto_ty, $decl ms T.fie
     $decl mt   $call T.trait_member (t, ms.head.name, t)
     $decl ft   $if ($call fn_shaped ($call T.unroll (mt))) mt ($call T.t_func (T.tys.nil, mt))
     $decl k    $if ($call T.same (mt, T.t_bot)) 0 ($call intern (st, ft))
+    // Its parts too: an adapter spells both sides' signatures from them, and a member's
+    // result need not be interned otherwise — `trait_wrap_util.mpl` compiled alone called
+    // `make`, which answers `{a, b}`, as returning `int64_t`, and answered a zero.
+    $decl kp   $if ($call T.same (mt, T.t_bot)) 0 ($call seal_fn (st, ft))
     $decl ret2 $call intern_msigs (st, t, $call T.fields.val (ms.tail))
   }.ret2,
   $case ms 0
@@ -5797,6 +5809,12 @@ $decl lower_fwd_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.p
   }.ret2 {
     $decl t    $call T.tval (($call Y.read_ty (ts, 0)).val)
     $decl id   $call intern (st, t)
+    // A call through the name before its `$decl` is typed by this, and §6a's trampoline
+    // spells such a call's signature from its parts — which nothing else need have
+    // interned: inference closes a block whose prop names it into a μ where lowering
+    // does not (`T.show_key`), so a parameter of that block is lowering's type only once
+    // the μ is interned and aliased to it. Missing, it was spelled `int64_t`.
+    $decl prt  $call seal_fn (st, t)
     $decl rt   $call fwd_cell_ty (t)
     $decl rid  $call intern (st, rt)
     $decl sc   $call fresh_slot (st, rid)

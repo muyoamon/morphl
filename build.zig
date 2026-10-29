@@ -211,6 +211,7 @@ pub fn build(b: *std.Build) void {
         // reached through the parameter's type before the block is built — in the entry
         // file, a module member and a `$fwd`'d function. 3294.
         .{ .src = "stage1/fixtures/recv_param.mpl", .want = "3294\n" },
+        .{ .src = "stage1/fixtures/recv_fwd.mpl", .want = "6\n" },
         // A block built inside its own recursive constructor, with a member taking another
         // of its type: the constructor's result closes twice, and `unroll`'s memo must not
         // keep a mid-knot unrolling. At the top level and in a template. 6205.
