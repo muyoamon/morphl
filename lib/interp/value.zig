@@ -273,6 +273,11 @@ pub const Func = struct {
     /// recursive function reads its own name through the very slot that its
     /// `$decl` fills after the closure is built.
     scope: *Scope,
+    /// How many of `scope`'s slots existed when the literal was evaluated — its own `$decl`'s
+    /// included, which §4.1 reserves first. A call's scope sees only those (`Scope.parent_len`).
+    scope_len: usize = std.math.maxInt(usize),
+    /// An empty scope seeing `scope` as the body does, for §3.4's defaults; made on first use.
+    dflt_env: ?*Scope = null,
     /// Whether this body can create a closure at all — a `$func`, `$template`
     /// or `$prop` anywhere inside it. When it cannot, nothing can capture the
     /// call's scope, so the scope is provably dead at return and its allocation
@@ -307,6 +312,8 @@ pub const Template = struct {
     generics: [][]const u8,
     body: *const Node,
     scope: *Scope,
+    /// As `Func.scope_len`.
+    scope_len: usize = std.math.maxInt(usize),
 };
 
 /// A lexical scope: the thing a block *is* (§3.3, §10.1 "a block's value is
@@ -323,6 +330,14 @@ pub const Template = struct {
 ///     which is what makes order-independence work without a hoisting pass.
 pub const Scope = struct {
     parent: ?*Scope,
+    /// How many of `parent`'s slots this scope can see: §4.1 makes a name "visible from this
+    /// point onward", so a scope sees what its parent held when it was made. That is
+    /// everything while the parent is still running, which is why it matters only for what
+    /// outlives that moment — a closure called after its block has bound more, which records
+    /// its own count (`Func.scope_len`) for the scope its call makes. A later `$decl` that
+    /// shadows an outer name is therefore not what an earlier `$func` body reads; a `$fwd`
+    /// reserves its slot early, which is how a body names something written below it.
+    parent_len: usize = std.math.maxInt(usize),
     decls: std.ArrayList(Slot) = .empty,
     props: []PropSlot = &.{},
     arena: Allocator,
@@ -382,7 +397,7 @@ pub const Scope = struct {
     /// Every call allocates a scope, and a type checker makes millions.
     pub fn initCapacity(arena: Allocator, parent: ?*Scope, slots: usize) Allocator.Error!*Scope {
         const s = try arena.create(Scope);
-        s.* = .{ .parent = parent, .arena = arena };
+        s.* = .{ .parent = parent, .arena = arena, .parent_len = visibleLen(parent) };
         if (slots != 0) try s.decls.ensureTotalCapacityPrecise(arena, slots);
         return s;
     }
@@ -401,13 +416,23 @@ pub const Scope = struct {
         return a.ptr == b.ptr and a.len == b.len;
     }
 
+    pub fn visibleLen(parent: ?*Scope) usize {
+        return if (parent) |p| p.decls.items.len else std.math.maxInt(usize);
+    }
+
     pub fn findLocal(self: *Scope, name: []const u8) ?Entry {
+        return self.findLocalUpTo(name, self.decls.items.len);
+    }
+
+    /// `findLocal` over the first `limit` slots, which is what a child scope sees of this one
+    /// (`parent_len`). Props are visible throughout their block regardless (§4.10).
+    pub fn findLocalUpTo(self: *Scope, name: []const u8, limit: usize) ?Entry {
         // Later slots shadow earlier ones, so walk backwards. A linear scan is
         // deliberate: a hash index over `decls` was measured and lost in the
         // noise — scopes are small, so the scan is short. What the index did
         // not address, and `perf` later showed to be 80% of the interpreter,
         // is the cost of *each* comparison: see `nameEql`.
-        var i = self.decls.items.len;
+        var i = @min(self.decls.items.len, limit);
         while (i > 0) {
             i -= 1;
             const slot = self.decls.items[i];

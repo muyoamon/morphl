@@ -574,6 +574,7 @@ pub const Interp = struct {
         defer self.unbkt(b);
         if (self.scope_pool.pop()) |s| {
             s.parent = parent;
+            s.parent_len = Scope.visibleLen(parent);
             s.props = &.{};
             s.captured = false;
             s.decls.clearRetainingCapacity();
@@ -654,8 +655,10 @@ pub const Interp = struct {
 
     fn find(scope: *Scope, name: []const u8) ?Found {
         var cur: ?*Scope = scope;
+        var limit: usize = std.math.maxInt(usize);
         while (cur) |s| {
-            if (s.findLocal(name)) |e| return .{ .entry = e, .owner = s };
+            if (s.findLocalUpTo(name, limit)) |e| return .{ .entry = e, .owner = s };
+            limit = s.parent_len;
             cur = s.parent;
         }
         return null;
@@ -1532,6 +1535,7 @@ pub const Interp = struct {
             .params = params,
             .body = &ops[1],
             .scope = scope,
+            .scope_len = scope.decls.items.len,
             .may_capture = mayCapture(&ops[1]),
             .file = self.rt.diags.current_file,
         };
@@ -1633,14 +1637,7 @@ pub const Interp = struct {
     fn notePrim(self: *Interp, callee: *const Node, v: Value, scope: *Scope) void {
         if (callee.data != .name or v != .builtin) return;
         const name = callee.data.name;
-        var s: ?*Scope = scope;
-        const holder: *Scope = while (s) |sc| : (s = sc.parent) {
-            if (sc.findLocal(name) != null) break sc;
-            for (sc.props) |p| {
-                if (Scope.nameEql(p.name, name)) break;
-            } else continue;
-            break sc;
-        } else return;
+        const holder = (find(scope, name) orelse return).owner;
         if (holder != self.root and holder.parent != self.root) return;
         self.prim_cache.put(self.arena, callee, v.builtin) catch {};
     }
@@ -1839,7 +1836,7 @@ pub const Interp = struct {
                         if (a != .ref) return false;
                         continue;
                     }
-                    const d = (try self.eval(p.default, f.scope)).deref();
+                    const d = (try self.eval(p.default, try self.defaultEnv(f))).deref();
                     const v = a.deref();
                     // A `Bool` parameter's default is `$union (true, false)`, whose value
                     // is its first member (4.8a): the example says "a boolean", not "true".
@@ -1860,6 +1857,16 @@ pub const Interp = struct {
         }
     }
 
+    /// §3.4's defaults are evaluated in the function's lexical scope, which §4.1 limits to
+    /// what preceded the literal — the same view its body has.
+    fn defaultEnv(self: *Interp, f: *Func) Error!*Scope {
+        if (f.dflt_env) |e| return e;
+        const e = try Scope.init(self.arena, f.scope);
+        e.parent_len = f.scope_len;
+        f.dflt_env = e;
+        return e;
+    }
+
     fn bindParams(self: *Interp, f: *Func, args: []Value, span: Span) Error!*Scope {
         if (args.len > f.params.len) {
             return self.rt.fail(span, "function takes {d} parameter{s}, found {d} argument{s}", .{
@@ -1868,13 +1875,14 @@ pub const Interp = struct {
             });
         }
         const scope = try self.acquireScope(f.scope, f.params.len);
+        scope.parent_len = f.scope_len;
         for (f.params, 0..) |p, i| {
             var v: Value = if (i < args.len)
                 args[i]
             else
                 // §3.4: "Defaults are evaluated at call time when the argument
                 // is omitted" — in the function's own lexical scope.
-                try self.eval(p.default, f.scope);
+                try self.eval(p.default, try self.defaultEnv(f));
 
             if (p.wants_storage) {
                 if (v != .ref) {
@@ -2185,7 +2193,7 @@ pub const Interp = struct {
         const tb = self.bkt(.template);
         defer self.unbkt(tb);
         const t = try self.arena.create(Template);
-        t.* = .{ .generics = generics, .body = &ops[1], .scope = scope };
+        t.* = .{ .generics = generics, .body = &ops[1], .scope = scope, .scope_len = scope.decls.items.len };
         return .{ .template = t };
     }
 
@@ -2225,6 +2233,7 @@ pub const Interp = struct {
         defer self.specialize_depth -= 1;
 
         const inner = try Scope.init(self.arena, t.scope);
+        inner.parent_len = t.scope_len;
         for (t.generics, arg_nodes) |name, *arg| {
             const v = try self.eval(arg, scope);
             const idx = try inner.reserve(name, arg.span);

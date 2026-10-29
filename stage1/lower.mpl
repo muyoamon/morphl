@@ -31,9 +31,7 @@ $decl not P.not
 $decl and P.and
 
 // Integer subtraction, captured before anything in this file could shadow it
-// — a `$decl sub` anywhere below would take every `$call sub` with it,
-// including the ones written above it (§4.10: a name resolves against the
-// finished block).
+// — a `$decl sub` below would take every `$call sub` written after it (§4.1).
 $decl isub sub
 
 $decl strs $specialize P.list ""
@@ -4846,8 +4844,9 @@ $decl fn_ty $func ($decl st proto_lst, $decl f IR.proto_fn) {
 // A `$prop` is different: it is visible throughout its block regardless of
 // order, so props are bound wherever they stand.
 //
-// A `$func` member's *body* is not this: it resolves against the finished
-// block, which is what `with_props` gives it.
+// A `$func` member's body is resolved against `with_props`, the finished block, which
+// holds every member as a prop — and §4.1's source order (SPEC: "visible from this point
+// onward") is put back by `later_members`, the only names it changes being the root's.
 $decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $decl nm "",
                         $decl seen P.boolean) $match xs (
   $case {$prop tag "cons"} {
@@ -4867,6 +4866,27 @@ $decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $d
   $case xs e
 )
 
+
+// §4.1 for a `$func` member: a member after `nm` is not in scope in its body, so where
+// one shadows a root name the body reads the root's — `with_props` would hand it the
+// later member. Any other later name is unknown to the checker, and a prop is visible
+// throughout its block (§4.10), so only later `$decl`s that the root also binds change.
+$decl later_members $func ($decl st proto_lst, $decl xs mprops.node, $decl nm "",
+                           $decl seen P.boolean, $decl e benv.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl k    xs.head.kind
+    $decl live $if seen ($if ($call eq_str (k, "prop")) false
+                   ($if ($call eq_str (k, "effect")) false true)) false
+    $decl e2   $if live {
+                 $decl f    $call lookup ($call benv.val (st.rootenv), xs.head.name)
+                 $decl ret2 $if f.hit ($call benv.cons ($call bind_ent6 (f.bnd.name,
+                                f.bnd.kind, f.bnd.slot, f.bnd.ty, f.bnd.mod, f.bnd.tmpl), e)) e
+               }.ret2 e
+    $decl sn   $if seen true ($call eq_str (xs.head.name, nm))
+    $decl ret  $call later_members (st, $call mprops.val (xs.tail), nm, sn, e2)
+  }.ret,
+  $case xs e
+)
 
 // The names `n` reads from outside itself, by scope — unlike `free_names`, which is for a
 // closure's capture list, where a name the body rebinds costs only a copied word. Here it
@@ -5181,7 +5201,8 @@ $decl member_key $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
-  $decl pe0   $call benv.val (m.penv)
+  $decl pe0   $call later_members (st, $call mprops.val (m.props), nm, false,
+                  $call benv.val (m.penv))
   $decl chk   $call no_caps (st, pe0, pn)
   // §4.10: a member that names its receiver captures it — capture 0, at the type the
   // module recorded — and a projection onto it is a closure over the target (`recv_wrap`).
@@ -7118,9 +7139,12 @@ $decl topfn $func ($decl f IR.proto_fn, $decl m 0, $decl tm 0)
 // one, and stage 0 and the checker both resolve it there. Lowering bound it to the file's
 // subtyping `sub` instead — `cc` refused that only because the types differed, and
 // `$decl ln len` above a `$decl len` returning 99 compiled to 99 where stage 0 says 3.
-// Any other forward name is an unknown name to the checker. So a thunk's initializer sees
-// the root binding again for every later field that shadows one; a `$func`'s body still
-// resolves against the finished file. Modules have had this all along (`with_scope`).
+// Any other forward name is an unknown name to the checker. So an initializer sees the
+// root binding again for every later field that shadows one — a thunk's and, since SPEC
+// §4.1 says "visible from this point onward" of a `$func` too, a `$func`'s body and
+// defaults: `diff` calling `sub` above the file's own `sub` calls the intrinsic, as the
+// checker typed it. A body that wants the later one `$fwd`s it (§4.11). Module members
+// get the same from `with_scope` and `later_members`.
 $decl later_roots $func ($decl st proto_lst, $decl fs T.fields.node, $decl e benv.node)
     $match fs (
   $case {$prop tag "cons"} {
@@ -7144,17 +7168,17 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
     $decl fty  fts.head.ty
     $decl it   $call find_completing (items, nm)
     $decl init $call op (it, 1)
+    $decl et   $call later_roots (st, $call T.fields.val (fts.tail), e)
     // §3.4: an entry-file function's defaults are evaluated in the file's scope.
     $decl fd   $if ($call is_form (init, "func"))
         ($call note_fdef (st, $call fdef_ent ($call IR.fns.length (acc, 0),
-             $call group_items ($call op (init, 0)), e, "", "", "", nm, ""))) 0
+             $call group_items ($call op (init, 0)), et, "", "", "", nm, ""))) 0
     $decl fm   $if ($call is_form (init, "func"))
-        ($call topfn ($call lower_func (st, e, nm, init, fty, IR.ints.nil), -1, -1)) {
+        ($call topfn ($call lower_func (st, et, nm, init, fty, IR.ints.nil), -1, -1)) {
           // A thunk: no parameters, the value as its body (§7.2's frame is
           // whatever slots the initializer needed).
           $decl reset $call take_slots (st)
           $decl rs    $call recv_enter (st, nm, init)
-          $decl et    $call later_roots (st, $call T.fields.val (fts.tail), e)
           // DEFER.md example 12: storage with deferrals, owned at the program's scope.
           $decl v     $if ($call Pa.storage_defers (init))
                           ($call lval ($call top_item (st, et, it)))

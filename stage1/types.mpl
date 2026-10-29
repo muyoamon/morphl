@@ -32,14 +32,13 @@ $decl strs $specialize P.list ""
 // Integer subtraction, captured *now*.
 //
 // §2.1 makes an intrinsic an ordinary shadowable name, and `$decl sub` below
-// shadows it for the whole file — not from its own line onward, because a name
-// in a `$func` body resolves against the finished block, not against the
-// prefix that existed when the body was written. So `$call sub (n, 1)` in any
-// function here is a subtype check between two Ints, returning a Bool.
+// shadows it from its own line onward (§4.1): `$call sub (n, 1)` in any function
+// written after it is a subtype check between two Ints, returning a Bool. (Stage
+// 0 and lowering once resolved a `$func` body against the finished block, so it
+// took the functions written above it too.)
 //
-// This `$decl` is different: it runs at *this* point in source order (§4.10,
-// no hoisting), when the block has no `sub` slot yet, so it resolves to the
-// root block's intrinsic and keeps it.
+// This `$decl` sees only what precedes it, when the block has no `sub` slot yet,
+// so it resolves to the root block's intrinsic and keeps it.
 $decl isub sub
 
 // ------------------------------------------------------------------ tracing
