@@ -11,8 +11,9 @@
 //
 // The digits: one direct hop per cycle (5), two, which only a second round of the fixed
 // point finds (3), both 2,000,000 cycles at -O0; a thunk (6, was 0); an effect (9, was 0);
-// and a direct tail call whose result is re-tagged, which must still drive (2, or 0 if the
-// chain is handed up anyway). 53692.
+// a direct tail call whose result is re-tagged, which must still drive (2, or 0 if the
+// chain is handed up anyway); and the same through a function value, an *indirect* tail
+// call, which reported regardless and answered 0 (2). 536922.
 
 // 1. `go` reports its call through `cell`; `f`, stored there, tail-calls `go` directly.
 $decl cell $mut $alloc $func ($decl n 0) 0
@@ -53,6 +54,15 @@ $decl b_of  $func ($decl n 0) {
   $decl ret $match r ($case { $prop tag "b" } r.v, $case r 0)
 }.ret
 
+// 6. The same through a value: `wider`'s indirect tail call is re-tagged too, so it may
+// not report — the driver above would write `<b, c>` into `<a, b, c>` untagged.
+$decl wider  $func ($decl n 0, $decl k go5)
+    $if ($call lt (n, 0)) { $prop tag "a" } ($call k (n))
+$decl b_of_v $func ($decl n 0) {
+  $decl r   $call wider (n, go5)
+  $decl ret $match r ($case { $prop tag "b" } r.v, $case r 0)
+}.ret
+
 $decl d $func ($decl acc 0, $decl x 0) $call add ($call mul (acc, 10), x)
 
 $decl main $func () {
@@ -62,5 +72,6 @@ $decl main $func () {
   $decl b   $call h (2000000)
   $decl c   x
   $decl g5  $call b_of (1000)
-  $decl ret $call d ($call d ($call d ($call d (a, b), c), e), g5)
+  $decl g6  $call b_of_v (1000)
+  $decl ret $call d ($call d ($call d ($call d ($call d (a, b), c), e), g5), g6)
 }.ret

@@ -3283,7 +3283,17 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
             // a non-tail call, or a tail call in a function that is not
             // a reporter (a contified group's member, which drives
             // locally rather than reporting out through its wrapper).
-            $decl rep $if e.tail ($call P.bval (st.inrep)) false
+            //
+            // And only when the chain's answer *is* this function's: a call whose
+            // value is coerced into the result — re-tagged into a wider union by the
+            // `$if` arm it ends — must drive here, so the coercion has the value. A
+            // reporter returns a zero and its caller's driver writes the chain's end
+            // straight into the result, so `wide`'s `<b, c>` landed in its `<a, b, c>`
+            // untagged and read as `a`. `passes_up` asks the same for a direct call.
+            $decl rep $if e.tail
+                          ($if ($call P.bval (st.inrep))
+                               ($call comp_free (st, ts, e.ty, $call P.ival (st.fnres), 0)) false)
+                          false
             $decl ret3  $if rep
                 ($call emit_report (st, ts, fv, as, dest, cal.ty, e.ty)) {
                   $decl d0 $call assign (st, dest,

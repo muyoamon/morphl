@@ -165,7 +165,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/alias.mpl", .want = "42\n" },
         .{ .src = "stage1/fixtures/tramp.mpl", .want = "21\n" },
         .{ .src = "stage1/fixtures/tramp_shim.mpl", .want = "7864\n" },
-        .{ .src = "stage1/fixtures/tramp_up.mpl", .want = "53692\n" },
+        .{ .src = "stage1/fixtures/tramp_up.mpl", .want = "536922\n" },
         .{ .src = "stage1/fixtures/extern.mpl", .want = "185\n",
            .host = "stage1/fixtures/extern_host.c" },
         .{ .src = "stage1/fixtures/arrays.mpl", .want = "12\n" },
