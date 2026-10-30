@@ -4986,12 +4986,32 @@ $decl free_sc $func ($decl n Pa.proto_node, $decl bound strs.node, $decl acc str
 // prop has no position at which a capture could be evaluated, because it has
 // no position at all. Worth its own message: without the check, a captured
 // local would silently become a read of the *lifted* function's own frame.
+//
+// A template is not a capture (§4.9: it has no runtime value) — its identity is on the
+// binding (`tmpl`, 0 and up), and `drop_srcs` removes it. A local `$func` carries an
+// identity too (-2 and below, `ldef_ent`) and *is* a runtime value, a closure, so it stays.
+// What a template reads from the frame is a capture wherever it is used: `frame_caps`
+// follows each name through the templates and definitions it reaches, as a `$func` literal
+// does to build its captures, and any frame binding found there is one this prop would have
+// to capture. The checker's `prop_cap_name` follows a template the same way.
+$decl drop_srcs $func ($decl xs benv.node, $decl acc benv.node) $match xs (
+  $case {$prop tag "cons"}
+    $call drop_srcs ($call benv.val (xs.tail),
+        $if ($call lt (xs.head.tmpl, 0)) ($call benv.cons ($call bind_ent6 (xs.head.name,
+                xs.head.kind, xs.head.slot, xs.head.ty, xs.head.mod, xs.head.tmpl), acc)) acc),
+  $case xs ($call benv.reverse (acc, benv.nil))
+)
 $decl no_caps $func ($decl st proto_lst, $decl pe benv.node, $decl n Pa.proto_node) {
-  $decl cs $call caps ($call free_sc (n, strs.nil, strs.nil), pe, benv.nil)
+  $decl fns $call free_sc (n, strs.nil, strs.nil)
+  // `frame_caps` keeps a template's own slot among what its body reads, when the body names
+  // it (§4.9's self-specialisation), so its answer is filtered too.
+  $decl cs  $call benv.reverse ($call drop_srcs ($call caps (fns, pe, benv.nil), benv.nil),
+                $call drop_srcs ($call flat_caps ($call frame_caps (st, pe, fns, tviews.nil),
+                    benv.nil), benv.nil))
   $decl ret $match cs (
       $case {$prop tag "cons"}
         ($call err (st, $call concat ("a $prop's value may not capture '",
-            $call concat (cs.head.name,
+            $call concat ($call Pa.ov_plain (cs.head.name),
             "': a prop is compile-time (§4.10), so there is nowhere to evaluate the capture")), n)),
       $case cs 0
     )

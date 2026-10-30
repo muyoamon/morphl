@@ -510,4 +510,21 @@ $decl t37f $call check_str ("...nor a member's result without the root's guarant
       "$decl M $import \"open_util\"  $decl main $func () { $decl a $call M.other ()  $decl w $free a  $decl ret 0 }.ret ")),
   "$free needs a name this function bound from an $alloc: where else it came from, its allocator is not known here (DEFER.md)")
 
+// §4.10 for a `$func` prop naming a local template: the template is no capture, since it
+// has no runtime value, but what its body reads from the frame is, and lowering refuses that
+// behind the checker — which refuses it first, so this lowers without it.
+$decl t37g $call check_str ("a prop's $func may name a local template",
+  $call first_err ($call lower_errs (
+      "$decl main $func () { $decl box $template T { $prop mk $func ($decl v T) { $decl val v }  $prop again $func ($decl v T) $call ($specialize box T).mk (v) }  $decl b $specialize box 0  $decl x $call b.again (5)  $decl ret x.val }.ret ")),
+  "")
+$decl t37h $call check_str ("...but not one whose body reads the frame",
+  $call first_err ($call lower_errs (
+      "$decl main $func ($decl k 0) { $decl gen $template T { $decl v k }  $decl h { $prop f $func () ($specialize gen 0).v }  $decl ret $call h.f () }.ret ")),
+  "a $prop's value may not capture 'k': a prop is compile-time (§4.10), so there is nowhere to evaluate the capture")
+
+$decl t37i $call check_str ("...nor one naming a local $func, which is a closure",
+  $call first_err ($call lower_errs (
+      "$decl main $func () { $decl helper $func () 7  $decl h { $prop f $func () $call helper () }  $decl ret $call h.f () }.ret ")),
+  "a $prop's value may not capture 'helper': a prop is compile-time (§4.10), so there is nowhere to evaluate the capture")
+
 $decl done $call nl ("all lowering tests passed")
