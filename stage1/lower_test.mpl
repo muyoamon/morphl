@@ -534,4 +534,11 @@ $decl t37j $call check_str ("a block's items name its props, in a function too",
       "$decl main $func () { $prop k 11  $prop twice $func ($decl x 0) $call add (x, k)  $decl f $func () $call twice (k)  $decl ret $call f () }.ret ")),
   "")
 
+// A local `$func`'s defaults reach a short call to it through its own name in its body and
+// through a `$fwd` before its `$decl`, which used to be refused as calls through a value.
+$decl t37k $call check_str ("a short call to a local $func by its own name or its $fwd",
+  $call first_err ($call lower_errs_ua (
+      "$decl main $func ($decl k 0) { $decl cnt $func ($decl n 0, $decl acc k) $if ($call eq_int (n, 0)) acc ($call cnt ($call sub (n, 1)))  $fwd h  $decl early $func () $call h (1)  $decl h $func ($decl a 0, $decl b k) $call add (a, b)  $decl ret $call add ($call cnt (3), $call early ()) }.ret ")),
+  "")
+
 $decl done $call nl ("all lowering tests passed")

@@ -639,6 +639,10 @@ $decl lstate $func () {
   $decl scidx   $mut $alloc -1
   $decl scty    $mut $alloc T.proto_ty
   $decl scets   $mut $alloc IR.ints.node
+  // Its defaults' identity (`ldef_ent`), so a short call to itself in its body takes them.
+  $decl sclid   $mut $alloc -1
+  // The items after the one being lowered: a `$fwd` reads its completing `$decl` there.
+  $decl fwdrest $mut $alloc Pa.nodes.node
   // The type of each slot allocated so far, newest first (§7.2).
   $decl sltys  $mut $alloc IR.ints.node
   // Identities for opaque prop values; §4.10 makes two distinct
@@ -1972,8 +1976,9 @@ $decl self_caps $func ($decl xs IR.ints.node, $decl i 0, $decl acc IR.exprs.node
 )
 $decl self_closure $func ($decl st proto_lst) {
   $decl t   $call T.tval (st.scty)
-  $decl ret $call lres ($call IR.e_closure ($call intern (st, t), $call P.ival (st.scidx),
-                $call self_caps ($call IR.ints.val (st.scets), 0, IR.exprs.nil)), t)
+  $decl ret $call lres4 ($call IR.e_closure ($call intern (st, t), $call P.ival (st.scidx),
+                $call self_caps ($call IR.ints.val (st.scets), 0, IR.exprs.nil)), t, -1,
+                $call P.ival (st.sclid))
 }.ret
 
 // A block's `$fwd` name (`lower_fwd_item`) until its `$decl` completes it: bound to the cell it is
@@ -1999,7 +2004,8 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
         $decl rid  $call intern (st, $call fwd_cell_ty (bt))
         $decl cell $if ($call eq_str (f.bnd.kind, "fwdl")) ($call IR.e_local (rid, f.bnd.slot))
                        ($call IR.e_capture (rid, f.bnd.slot))
-        $decl ret2 $call lres ($call IR.e_deref ($call intern (st, bt), cell), bt)
+        $decl ret2 $call lres4 ($call IR.e_deref ($call intern (st, bt), cell), bt, -1,
+                       f.bnd.tmpl)
       }.ret2
     ($if ($call eq_str (f.bnd.kind, "prop"))
       // §4.10: a prop is compile-time, so naming one is not reading a slot —
@@ -4250,10 +4256,12 @@ $decl lower_ffi $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form
 $decl lam_res $func ($decl i 0, $decl t T.proto_ty) { $decl idx i  $decl ty t }
 
 $decl lower_lam_pass $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.proto_node,
-                            $decl ets IR.ints.node, $decl self "", $decl sty T.proto_ty) {
+                            $decl ets IR.ints.node, $decl self "", $decl sty T.proto_ty,
+                            $decl lid -1) {
   $decl outer $call take_slots (st)
   $decl idx   $call reserve_lifted (st)
   $decl s0    $set st.scname self
+  $decl s4    $set st.sclid lid
   $decl s1    $set st.scidx idx
   $decl s2    $set st.scty sty
   $decl s3    $set st.scets ets
@@ -4266,21 +4274,23 @@ $decl lower_lam_pass $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.p
 }.ret
 
 $decl lower_lambda $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.proto_node,
-                          $decl ets IR.ints.node, $decl self "") {
+                          $decl ets IR.ints.node, $decl self "", $decl lid -1) {
   $decl o_n $call P.sval (st.scname)
+  $decl o_l $call P.ival (st.sclid)
   $decl o_i $call P.ival (st.scidx)
   $decl o_t $call T.tval (st.scty)
   $decl o_e $call IR.ints.val (st.scets)
   $decl ret $if ($call eq_str (self, "")) ($call lower_lam_pass (st, ce, n, ets, "", T.t_bot)) {
     $decl sn   $call take_snap (st)
-    $decl p1   $call lower_lam_pass (st, ce, n, ets, self, T.t_bot)
+    $decl p1   $call lower_lam_pass (st, ce, n, ets, self, T.t_bot, lid)
     $decl rb   $call put_snap (st, sn)
-    $decl ret2 $call lower_lam_pass (st, ce, n, ets, self, p1.ty)
+    $decl ret2 $call lower_lam_pass (st, ce, n, ets, self, p1.ty, lid)
   }.ret2
   $decl r0  $set st.scname o_n
   $decl r1  $set st.scidx o_i
   $decl r2  $set st.scty o_t
   $decl r3  $set st.scets o_e
+  $decl r4  $set st.sclid o_l
 }.ret
 
 $decl int_node $func ($decl n Pa.proto_node) $match n (
@@ -4546,10 +4556,22 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl fns  $call free_names (n, strs.nil)
       $decl self $if ($call eq_str (rnm, "")) "" ($if ($call mem_strs (fns, rnm)) rnm "")
       $decl cs0  $call caps (fns, e, benv.nil)
+      // Bound by a block's `$decl`: its defaults are what a short call to it lowers
+      // (`ldef_ent`), so they are kept, with the scope they are read in.
+      $decl lid  $if ($call eq_str (rnm, "")) -1
+                     ($call isub (-2, $call P.ival (st.nldef)))
+      $decl ldn  $set st.nldef ($if ($call eq_str (rnm, "")) ($call P.ival (st.nldef))
+                     ($call add ($call P.ival (st.nldef), 1)))
+      $decl ldr  $set st.ldefs ($if ($call eq_str (rnm, "")) ($call ldef_list.val (st.ldefs))
+                     ($call ldef_list.cons ($call ldef_ent (lid,
+                         $call group_items ($call op (n, 0)), e), st.ldefs)))
       // A template the body names is lowered in it against its view, which must be the
       // literal's captures: so its frame bindings are captured too, after the body's own,
-      // although the body never spells them (`frame_caps`).
-      $decl tg   $call tviews.reverse ($call frame_caps (st, e, fns, tviews.nil), tviews.nil)
+      // although the body never spells them (`frame_caps`). A body naming itself is followed
+      // to its own defaults the same way, for a short call to itself (`self_closure`).
+      $decl se   $if ($call eq_str (self, "")) e
+                     ($call benv.cons ($call bind_ent6 (self, "local", 0, T.t_bot, -1, lid), e))
+      $decl tg   $call tviews.reverse ($call frame_caps (st, se, fns, tviews.nil), tviews.nil)
       $decl cs   $call benv.reverse ($call benv.reverse (cs0, benv.nil),
                      $call flat_caps (tg, benv.nil))
       $decl vals $call cap_exprs (st, cs, IR.exprs.nil)
@@ -4563,15 +4585,6 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                       $call concat ($call int_to_str (sp.line), $call concat (":",
                       $call int_to_str (sp.col))))))))
       $decl hit  $if ($call eq_str (fk, "")) fnm_list.nil ($call find_fnm (st.fnmemo, fk))
-      // Bound by a block's `$decl`: its defaults are what a short call to it lowers
-      // (`ldef_ent`), so they are kept, with the scope they are read in.
-      $decl lid  $if ($call eq_str (rnm, "")) -1
-                     ($call isub (-2, $call P.ival (st.nldef)))
-      $decl ldn  $set st.nldef ($if ($call eq_str (rnm, "")) ($call P.ival (st.nldef))
-                     ($call add ($call P.ival (st.nldef), 1)))
-      $decl ldr  $set st.ldefs ($if ($call eq_str (rnm, "")) ($call ldef_list.val (st.ldefs))
-                     ($call ldef_list.cons ($call ldef_ent (lid,
-                         $call group_items ($call op (n, 0)), e), st.ldefs)))
       $decl ret2    $match hit (
           $case {$prop tag "cons"}
             ($call lres4 ($call IR.e_closure ($call intern (st, hit.head.ty), hit.head.idx,
@@ -4580,7 +4593,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
             $decl ets   $call cap_tys (st, cs, IR.ints.nil)
             $decl tv0   $call tviews.val (st.tview)
             $decl tvs   $set st.tview ($call cap_views (st, tg, $call benv.length (cs0, 0), tv0))
-            $decl lw    $call lower_lambda (st, $call cap_env (cs0, 0, e), n, ets, self)
+            $decl lw    $call lower_lambda (st, $call cap_env (cs0, 0, e), n, ets, self, lid)
             $decl tvr   $set st.tview tv0
             $decl idx   lw.idx
             $decl fty   lw.ty
@@ -5846,11 +5859,21 @@ $decl lower_fwd_item $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.p
     $decl hole $call IR.e_call (id, $call IR.e_prim ($call intern (st,
                    $call T.t_func (T.tys.nil, t)), "fwd_hole"), IR.exprs.nil, false)
     $decl ir   $call with_pending ($call IR.exprs.cons (mk, $call IR.exprs.val (a.pend)), hole, id)
+    // A short call reached before the completing `$decl` takes the defaults from it, read
+    // here: §4.11 types the signature where the `$fwd` stands, so they name nothing later.
+    $decl cd   $call find_completing ($call Pa.nodes.val (st.fwdrest), nm)
+    $decl fn   $if ($call is_form (cd, "decl")) ($call is_form ($call op (cd, 1), "func")) false
+    $decl lid  $if fn ($call isub (-2, $call P.ival (st.nldef))) -1
+    $decl ldn  $set st.nldef ($if fn ($call add ($call P.ival (st.nldef), 1))
+                   ($call P.ival (st.nldef)))
+    $decl ldr  $set st.ldefs ($if fn ($call ldef_list.cons ($call ldef_ent (lid,
+                   $call group_items ($call op ($call op (cd, 1), 0)), $call benv.val (a.env)),
+                   st.ldefs)) ($call ldef_list.val (st.ldefs)))
     $decl ret2 $call blk_acc (
         $call IR.bslots.cons ($call IR.bslot (sl, ir), $call IR.bslots.val (a.slots)),
         $call T.fields.cons ($call T.field (nm, t), $call T.fields.val (a.flds)),
         $call T.props.val (a.prps),
-        $call benv.cons ($call bind_ent (nm, "fwdl", sc, t),
+        $call benv.cons ($call bind_ent6 (nm, "fwdl", sc, t, -1, lid),
             $call benv.cons ($call bind_ent ($call fwd_slot_name (nm), "local", sl, t),
                 $call benv.val (a.env))),
         IR.exprs.nil)
@@ -5932,6 +5955,8 @@ $fwd lower_item
 
 $decl lower_items $func ($decl st proto_lst, $decl a proto_blk, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"} {
+    $decl fr  $if ($call is_form (xs.head, "fwd")) ($set st.fwdrest $call Pa.nodes.val (xs.tail))
+                  Pa.nodes.nil
     $decl a2  $call lower_item (st, a, xs.head)
     $decl ret $call lower_items (st, a2, $call Pa.nodes.val (xs.tail))
   }.ret,
