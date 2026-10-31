@@ -527,4 +527,11 @@ $decl t37i $call check_str ("...nor one naming a local $func, which is a closure
       "$decl main $func () { $decl helper $func () 7  $decl h { $prop f $func () $call helper () }  $decl ret $call h.f () }.ret ")),
   "a $prop's value may not capture 'helper': a prop is compile-time (§4.10), so there is nowhere to evaluate the capture")
 
+// §4.10 inside a function: a block's items name its props, which used to be bound only for
+// projections onto the block, so `k` and `twice` here were unknown names.
+$decl t37j $call check_str ("a block's items name its props, in a function too",
+  $call first_err ($call lower_errs (
+      "$decl main $func () { $prop k 11  $prop twice $func ($decl x 0) $call add (x, k)  $decl f $func () $call twice (k)  $decl ret $call f () }.ret ")),
+  "")
+
 $decl done $call nl ("all lowering tests passed")

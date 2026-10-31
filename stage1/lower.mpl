@@ -6709,8 +6709,17 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
   $decl kc   $if kept ($set st.keepat "") ($call P.sval (st.keepat))
   $decl isc  $call P.bval (st.nextscope)
   $decl ns0  $set st.nextscope false
+  // The props are registered before the items, which name them (§4.10: a prop is visible
+  // throughout its block) — through the module, as a file's top-level props are. They see
+  // the enclosing scope and each other, never an ordered sibling, which is inference's
+  // environment for them too.
+  $decl ps $call block_props (xs, mprops.nil)
+  $decl md $if ($call mprops.is_nil (ps)) -1
+               ($call fresh_mod_in (st, ps, e, "", $call blk_key (st, ps),
+                   $call P.sval (st.curfile)))
+  $decl reg $if ($call lt (md, 0)) 0 ($call note_opaqs (st, md, ps))
   $decl a  $call lower_items (st, $call blk_acc (IR.bslots.nil, T.fields.nil, T.props.nil,
-                                                 e, IR.exprs.nil), xs)
+                 $if ($call lt (md, 0)) e ($call with_props (e, ps, md)), IR.exprs.nil), xs)
   $decl ty $call T.t_block ($call T.fields.reverse ($call T.fields.val (a.flds), T.fields.nil),
                             $call T.props.val (a.prps))
   $decl id $call intern (st, ty)
@@ -6727,11 +6736,6 @@ $decl lower_block $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.node
                 $call keep_key (x.line, x.col), fl, dfs)))
            ($call with_flag (st, fl, true, ir0, id, ty)))
       ($call with_defers (st, dfs, ir0, id, ty, isc))
-  $decl ps $call block_props (xs, mprops.nil)
-  $decl md $if ($call mprops.is_nil (ps)) -1
-               ($call fresh_mod_in (st, ps, a.env, "", $call blk_key (st, ps),
-                   $call P.sval (st.curfile)))
-  $decl reg $if ($call lt (md, 0)) 0 ($call note_opaqs (st, md, ps))
   // Captured as a reference (§4.10: "the receiver is a reference with the qualifier of
   // what the block was declared as") — read-only for a value, mutable for `$mut` storage —
   // to the block, or for an `$impl`'s override to the `$impl`'s result, which is what the
