@@ -84,6 +84,15 @@ $decl def_named $func ($decl e env.node, $decl n "", $decl k "") $match e (
         ($if ($call eq_str (e.head.name, n)) false ($call def_named (e.tail, n, k))),
   $case e false
 )
+// A file's own top-level binding is a global (§7.3): reading one from a `$func` is no capture.
+// Marked the same way, `$g:<name>` after the name, so the answer follows scope where `topnames`
+// is only a set of names — one module's top-level `helper` made every `helper` read as global,
+// a function's local included, and a `$prop`'s `$func` reading that local was accepted here and
+// refused by lowering (`prop_cap_name`). Bound only while `atfile`: what lowering lifts.
+$decl glob_mark $func ($decl nm "") $call concat ("$g:", nm)
+$decl bind_glob $func ($decl e env.node, $decl n "", $decl g P.boolean)
+  $if g ($call bind (e, $call glob_mark (n), T.t_unit)) e
+$decl is_glob $func ($decl e env.node, $decl n "") $call def_named (e, n, $call glob_mark (n))
 
 // ------------------------------------------------------------------ templates
 //
@@ -373,6 +382,8 @@ $decl ctx $func () {
   // which §5.3a's scope-blind `Pa.bound_names` already accepts as the right
   // direction. `extnames` too large is the one that could reject a valid
   // program, and takes a call to an unrelated name spelled like an extern.
+  // §4.10's prop rule asks the environment instead (`is_glob`), since lowering
+  // refuses what a too-large `topnames` lets through there.
   $decl extnames $mut $alloc strs.node
   $decl cffns    $mut $alloc fnlit_list.node
   $decl topnames $mut $alloc strs.node
@@ -2350,7 +2361,7 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
   $decl r        $call infer_params (cx, penv, ps, T.tys.nil, e)
   $decl mr       $call mark_params (cx, ps, r.tys, r.env, 0, 0, n)
   $decl self     $call T.t_func (r.tys, $call T.t_var (id))
-  $decl benv     $call bind_def (mr.env, nm, self)
+  $decl benv     $call bind_glob ($call bind_def (mr.env, nm, self), nm, $call bval (cx.atfile))
   $decl going    $set cx.inprog ($call hint_list.cons ($call hint_ent (nm, id), cx.inprog))
   $decl saved    $call tval (cx.tryset)
   $decl cleared  $set cx.tryset T.t_bot
@@ -3364,8 +3375,9 @@ $decl hide_names $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
     $decl tn  $call strs.val (cx.topnames)
     $decl tp  $set cx.topnames ($if ($call in_strs (tn, nm)) ($call strs.cons (hn, tn)) tn)
     $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail),
-                  $if f.ok ($call bind_if (acc, hn, f.ty,
-                      $call def_named (e, nm, $call def_mark (nm)))) acc, d)
+                  $if f.ok ($call bind_glob ($call bind_if (acc, hn, f.ty,
+                      $call def_named (e, nm, $call def_mark (nm))), hn, $call is_glob (e, nm)))
+                      acc, d)
   }.ret,
   $case ns acc
 )
@@ -4212,7 +4224,8 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
       ($if ($call is_form (init, "template"))
           ($call infer (cx, $call self_tmpl_env (cx, s.env, nm, init), init)) {
             $decl id  $call fresh (cx)
-            $decl e1  $call bind (s.env, nm, $call T.t_var (id))
+            $decl e1  $call bind_glob ($call bind (s.env, nm, $call T.t_var (id)), nm,
+                          $call bval (cx.atfile))
             // §4.10: if the initializer is a block, its members' receiver is `nm`.
             $decl old $call recv_save ($call sval (cx.rname), $call sval (cx.rqual),
                           $call ival (cx.rline), $call ival (cx.rcol))
@@ -4252,7 +4265,8 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   // §3.4: a `$func`, a module, or another name for a definition (`names_def`).
   $decl isd $if ($call is_form (init, "func")) true
                 ($if ($call is_form (init, "import")) true ($call names_def (s.env, init)))
-  $decl bound $set s.env ($call bind_if (s.env, nm, ty, isd))
+  $decl bound $set s.env ($call bind_glob ($call bind_if (s.env, nm, ty, isd), nm,
+                 $call bval (cx.atfile)))
   // A `$fwd` already reserved this slot at its own position (§4.11), so
   // complete that one rather than appending a second.
   $decl added $set s.flds ($call put_field (s.flds, nm, ty))
@@ -4429,9 +4443,10 @@ $decl prop_cap_name $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pst
   $case {$prop tag "cons"} {
     $decl nm   ns.head
     // An `$override`'s hidden name is the plain name where the text matters (`Pa.ov_plain`).
-    $decl gl   $call lookup (root_env, $call Pa.ov_plain (nm))
+    $decl pn   $call Pa.ov_plain (nm)
+    $decl gl   $call lookup (root_env, pn)
     $decl kept $if ($call Pa.mem_pstr (skip, nm)) true
-               ($if ($call in_strs ($call strs.val (cx.topnames), nm)) true
+               ($if ($call is_glob (e, nm)) true
                ($if ($call in_strs ($call strs.val (cx.ctnames), nm)) true
                ($if ($call eq_str (nm, rn)) true gl.ok)))
     $decl f    $call lookup (e, nm)
@@ -4441,8 +4456,8 @@ $decl prop_cap_name $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pst
           $if ($call in_strs (seen, $call int_to_str (t.id))) ""
               ($call prop_caps_in (cx, $call find_tmpl ($call tmpl_list.val (cx.tmpls), t.id), rn,
                    $call strs.cons ($call int_to_str (t.id), seen), nm)),
-        $case t ($if ($call eq_str (via, "")) ($call concat ("'", $call concat (nm, "'")))
-                     ($call concat ("'", $call concat (nm, $call concat ("', read by template '",
+        $case t ($if ($call eq_str (via, "")) ($call concat ("'", $call concat (pn, "'")))
+                     ($call concat ("'", $call concat (pn, $call concat ("', read by template '",
                          $call concat (via, "'")))))))
     $decl ret  $if ($call eq_str (here, ""))
                    ($call prop_cap_name (cx, e, $call Pa.pstrs.val (ns.tail), skip, rn, seen, via))
@@ -4611,7 +4626,8 @@ $decl prebind_one $func ($decl cx proto_ctx, $decl s proto_bst,
       ($call T.t_var (id))
   // §3.4: what the completing `$decl` will say, for a short call before it (`bind_def`).
   $decl isd $if ($call is_form (init, "func")) true ($call names_def (pe, init))
-  $decl bound $set s.env ($call bind_if (s.env, nm, ty, isd))
+  $decl bound $set s.env ($call bind_glob ($call bind_if (s.env, nm, ty, isd), nm,
+                 $call bval (cx.atfile)))
   $decl noted $set s.fwds ($call fwd_list.cons ($call fwd_ent (nm, id), $call eval_fwds (s.fwds)))
   $decl going $set cx.inprog ($if ($call is_form (init, "func"))
                   ($call hint_list.cons ($call hint_ent (nm, id), cx.inprog))

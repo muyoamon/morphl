@@ -706,6 +706,18 @@ pub fn build(b: *std.Build) void {
             .count = "errors: 4\n",
             .stage0 = null,
         },
+        // A top-level name is a global only where it is in scope: another module's, an
+        // `$override`'s hidden one, and a top-level block's `$decl` are not.
+        .{
+            .src = "stage1/fixtures/prop_cap_scope.mpl",
+            .stage1 = &.{
+                "prop_cap_scope.mpl:12:15: a $prop's $func may not capture 'helper': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
+                "prop_cap_scope.mpl:13:32: a $prop's $func may not capture 'helper': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
+                "prop_cap_scope.mpl:19:13: a $prop's $func may not capture 'y': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
+            },
+            .count = "errors: 3\n",
+            .stage0 = null,
+        },
         .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
