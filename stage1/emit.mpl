@@ -54,8 +54,10 @@ $decl fnals      $specialize P.list proto_fnal
 // `slot` is -1 for that adapter, whose environment is the original pair; 0 or more for a
 // re-table thunk (`emit_retable`), whose environment is the original trait object and whose
 // callee is that object's table entry `slot`.
-$decl adent $func ($decl f 0, $decl w 0, $decl n "", $decl s -1)
-  { $decl from f  $decl want w  $decl name n  $decl slot s }
+// `slot` -2 is an intrinsic's wrapper rather than an adapter (`prim_value`): `prim` names it,
+// and `from` and `want` are both its function type.
+$decl adent $func ($decl f 0, $decl w 0, $decl n "", $decl s -1, $decl p "")
+  { $decl from f  $decl want w  $decl name n  $decl slot s  $decl prim p }
 $decl proto_adent $call adent (0, 0, "", -1)
 $decl adents      $specialize P.list proto_adent
 // A re-tabled object's table: the target trait's, made of thunks over the source object's.
@@ -1389,20 +1391,22 @@ $decl comp_free $func ($decl st proto_est, $decl ts T.tys.node, $decl a 0, $decl
            ($call eq_str ($call c_type (st, ts, a), $call c_type (st, ts, b)))))
 
 // The shim for `from` → `want` in this output, named on first use and queued to be written.
-$decl ad_find $func ($decl xs adents.node, $decl f 0, $decl w 0, $decl sl -1) $match xs (
+$decl ad_find $func ($decl xs adents.node, $decl f 0, $decl w 0, $decl sl -1, $decl pn "")
+    $match xs (
   $case {$prop tag "cons"}
     $if ($if ($call and ($call eq_int (xs.head.from, f), $call eq_int (xs.head.want, w)))
-             ($call eq_int (xs.head.slot, sl)) false) xs.head.name
-        ($call ad_find ($call adents.val (xs.tail), f, w, sl)),
+             ($call and ($call eq_int (xs.head.slot, sl), $call eq_str (xs.head.prim, pn)))
+             false) xs.head.name
+        ($call ad_find ($call adents.val (xs.tail), f, w, sl, pn)),
   $case xs ""
 )
-$decl ad_name $func ($decl st proto_est, $decl f 0, $decl w 0, $decl sl -1) {
-  $decl seen $call ad_find ($call adents.val (st.ads), f, w, sl)
+$decl ad_name $func ($decl st proto_est, $decl f 0, $decl w 0, $decl sl -1, $decl pn "") {
+  $decl seen $call ad_find ($call adents.val (st.ads), f, w, sl, pn)
   $decl ret  $if ($call not ($call eq_str (seen, ""))) seen {
     $decl ads  $call adents.val (st.ads)
     $decl nm   $call concat ("mpl_ad_", $call concat ($call P.sval (st.admod),
                    $call concat ("_", $call int_to_str ($call adents.length (ads, 0)))))
-    $decl e    $call adent (f, w, nm, sl)
+    $decl e    $call adent (f, w, nm, sl, pn)
     $decl a1   $set st.ads ($call adents.cons (e, ads))
     $decl a2   $set st.adq ($call adents.cons (e, $call adents.val (st.adq)))
     $decl ret2 nm
@@ -3558,13 +3562,17 @@ $decl addr_of $func ($decl st proto_est, $decl fi 0, $decl x IR.proto_expr) $mat
   $case x ($do ($call eerr (st, "an address of something that is not a name")) "0")
 )
 
-$decl prim_pairs $func ($decl st proto_est, $decl n "", $decl cs T.tys.node,
+// A candidate with no wrapper of its own gets a generated one (`emit_pw`), at the candidate's
+// type, which lowering interned for this (`intern_cands`).
+$decl prim_pairs $func ($decl st proto_est, $decl ts T.tys.node, $decl n "", $decl cs T.tys.node,
                         $decl acc strs.node) $match cs (
   $case {$prop tag "cons"} {
-    $decl w    $call prim_wrap (n, $call prim_kind ($call T.tval (cs.head)))
+    $decl w0   $call prim_wrap (n, $call prim_kind ($call T.tval (cs.head)))
+    $decl ci   $if ($call eq_str (w0, "")) ($call ty_id (ts, $call T.tval (cs.head))) -1
+    $decl w    $if ($call lt (-1, ci)) ($call ad_name (st, ci, ci, -2, n)) w0
     $decl e    $if ($call eq_str (w, ""))
                    ($call eerr (st, $call concat ("cannot emit the intrinsic ", n))) ()
-    $decl ret  $call prim_pairs (st, n, $call T.tys.val (cs.tail), $call strs.cons (
+    $decl ret  $call prim_pairs (st, ts, n, $call T.tys.val (cs.tail), $call strs.cons (
                    $call concat ("(mpl_fun){(void *)", $call concat ($if ($call eq_str (w, ""))
                        "0" w, ", NULL}")), acc))
   }.ret,
@@ -3744,7 +3752,9 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
         // function. §8's arithmetic is emitted infix when it is *called*, so
         // the pair points at a wrapper that exists only to have an address.
         $case {$prop tag "func"} {
-          $decl w    $call prim_wrap (e.name, $call prim_kind (t))
+          $decl w0   $call prim_wrap (e.name, $call prim_kind (t))
+          // One with no hand-written wrapper gets a generated one (`emit_pw`).
+          $decl w    $if ($call eq_str (w0, "")) ($call ad_name (st, e.ty, e.ty, -2, e.name)) w0
           $decl ret2 $if ($call eq_str (w, ""))
               ($call eerr (st, $call concat ("cannot emit the intrinsic ", e.name)))
               ($do ($call assign (st, $call concat (dest, ".code"), $call concat ("(void *)", w)))
@@ -3753,7 +3763,7 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
         // §4.8: an overloaded intrinsic as a value is the group of its candidates,
         // each a pair at its wrapper.
         $case {$prop tag "over"} {
-          $decl ws   $call prim_pairs (st, e.name, $call T.tys.val (t.cands), strs.nil)
+          $decl ws   $call prim_pairs (st, ts, e.name, $call T.tys.val (t.cands), strs.nil)
           $decl ret2 $call assign (st, dest, $call concat ("(", $call concat (
               $call c_type (st, ts, e.ty), $call concat ("){", $call concat (
               $call join_args (ws, "", true), "}")))))
@@ -4624,7 +4634,45 @@ $decl ad_args $func ($decl st proto_est, $decl ts T.tys.node, $decl ws T.tys.nod
 $decl ad_drives $func ($decl st proto_est, $decl ts T.tys.node, $decl rf 0, $decl rw 0)
   $if ($call any_reports (st)) ($call not ($call comp_free (st, ts, rf, rw, 0))) false
 
-$decl emit_ad $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent) {
+// An intrinsic named as a value with no wrapper of its own in the runtime (`prim_wrap`): §7.3
+// makes the value a pair, so it needs a function to point at, and that function's body is
+// a call to the intrinsic emitted as any call to it is — through `emit_expr`, so an option's
+// discriminators, an array and a checked operator come out as they do at a call site.
+$decl pw_args $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node, $decl i 0,
+                     $decl acc IR.exprs.node) $match ps (
+  $case {$prop tag "cons"} {
+    $decl pi   $call ty_id (ts, ps.head)
+    $decl d0   $if ($call lt (pi, 0))
+                   ($call eerr (st, "an intrinsic's wrapper has a parameter type the program never interned"))
+                   ($call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, pi),
+                       $call concat (" ", $call concat ($call slot_name (i), $call concat (" = a",
+                       $call concat ($call int_to_str (i), ";\n"))))))))
+    $decl ret2 $call pw_args (st, ts, $call T.tys.val (ps.tail), $call add (i, 1),
+                   $call IR.exprs.cons ($call IR.e_local (pi, i), acc))
+  }.ret2,
+  $case ps ($call IR.exprs.reverse (acc, IR.exprs.nil))
+)
+$decl emit_pw $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent) {
+  $decl t   $call T.unroll ($call type_at (ts, e.from))
+  $decl ret $match t (
+      $case {$prop tag "func"} {
+        $decl rid  $call ty_id (ts, t.result)
+        $decl h    $call say (st, $call concat ("\n", $call concat ($call ad_head (st, ts, e),
+                       " {\n  (void)env;\n")))
+        $decl as   $call pw_args (st, ts, $call T.tys.val (t.params), 0, IR.exprs.nil)
+        $decl r0   $if ($call lt (rid, 0))
+                       ($call eerr (st, "an intrinsic's wrapper has a result type the program never interned"))
+                       ($call say (st, $call concat ("  ", $call concat ($call c_type (st, ts, rid),
+                           " r;\n"))))
+        $decl c    $call IR.e_call (rid, $call IR.e_prim (e.from, e.prim), as, false)
+        $decl r1   $call emit_expr (st, -1, c, "r", ts)
+        $decl ret2 $call say (st, "  return r;\n}\n")
+      }.ret2,
+      $case t ()
+    )
+}.ret
+
+$decl emit_adapter $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent) {
   $decl a   $call T.unroll ($call type_at (ts, e.from))
   $decl b   $call T.unroll ($call type_at (ts, e.want))
   $decl z0  $set st.ntmp 0
@@ -4662,6 +4710,10 @@ $decl emit_ad $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_aden
       $case a ()
     )
 }.ret
+
+$decl emit_ad $func ($decl st proto_est, $decl ts T.tys.node, $decl e proto_adent)
+  $if ($call eq_int (e.slot, -2)) ($do ($set st.ntmp 0) ($call emit_pw (st, ts, e)))
+      ($call emit_adapter (st, ts, e))
 
 $decl emit_ad_list $func ($decl st proto_est, $decl ts T.tys.node, $decl xs adents.node)
   $match xs (

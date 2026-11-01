@@ -1962,7 +1962,8 @@ $decl is_block_ast $func ($decl n Pa.proto_node) $match n ($case {$prop tag "blo
 $decl intern_cands $func ($decl st proto_lst, $decl cs T.tys.node, $decl id 0) $match cs (
   $case {$prop tag "cons"}
     $do ($call intern (st, $call T.tval (cs.head)))
-        ($call intern_cands (st, $call T.tys.val (cs.tail), id)),
+        ($do ($call seal_fn (st, $call T.tval (cs.head)))
+             ($call intern_cands (st, $call T.tys.val (cs.tail), id))),
   $case cs id
 )
 
@@ -2018,8 +2019,12 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
         $decl ir $if ($call eq_str (f.bnd.kind, "local"))   ($call IR.e_local (id, f.bnd.slot))
             ($if ($call eq_str (f.bnd.kind, "capture")) ($call IR.e_capture (id, f.bnd.slot))
             ($if ($call eq_str (f.bnd.kind, "global"))  ($call IR.e_global (id, f.bnd.slot))
+                 // Named as a value, an intrinsic with no wrapper in the runtime gets one
+                 // spelled from its parameters and result (emit's `emit_pw`), which need
+                 // not occur anywhere else in the program.
                  ($call IR.e_prim ($if ($call is_over_l (bt))
-                     ($call intern_cands (st, $call over_cands (bt), id)) id,
+                     ($call intern_cands (st, $call over_cands (bt), id))
+                     ($do ($call seal_fn (st, bt)) id),
                      $call Pa.ov_plain (nm)))))
         $decl ret2  $call lres4 (ir, bt, f.bnd.mod, f.bnd.tmpl)
       }.ret2))
