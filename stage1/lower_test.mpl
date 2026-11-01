@@ -541,4 +541,11 @@ $decl t37k $call check_str ("a short call to a local $func by its own name or it
       "$decl main $func ($decl k 0) { $decl cnt $func ($decl n 0, $decl acc k) $if ($call eq_int (n, 0)) acc ($call cnt ($call sub (n, 1)))  $fwd h  $decl early $func () $call h (1)  $decl h $func ($decl a 0, $decl b k) $call add (a, b)  $decl ret $call add ($call cnt (3), $call early ()) }.ret ")),
   "")
 
+// A `$func` prop's default may name a local for its type (§5.7) — not a capture — but a
+// short call evaluates it in a wrapper, which has no frame to read the local from.
+$decl t37l $call check_str ("a short call evaluating a prop default that reads the frame",
+  $call first_err ($call lower_errs (
+      "$decl main $func () { $decl p { $prop k 3 }  $decl b { $prop g $func ($decl s p) s.k }  $decl ret $call add ($call b.g (p), $call b.g ()) }.ret ")),
+  "an omitted argument's default reads 'p', a binding of the frame its function is written in, and a short call evaluates it in a wrapper of its own, which has no such frame (§3.4): pass every argument")
+
 $decl done $call nl ("all lowering tests passed")

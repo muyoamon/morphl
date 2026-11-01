@@ -193,6 +193,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/local_prop.mpl", .want = "217646\n" },
         .{ .src = "stage1/fixtures/short_self.mpl", .want = "43607\n" },
         .{ .src = "stage1/fixtures/prim_value.mpl", .want = "2555862\n" },
+        .{ .src = "stage1/fixtures/prop_dflt_local.mpl", .want = "34685\n" },
         .{ .src = "stage1/fixtures/spec_self.mpl", .want = "684173\n" },
         .{ .src = "stage1/fixtures/spec_direct.mpl", .want = "351742\n" },
         .{ .src = "stage1/fixtures/spec_tmpl_gen.mpl", .want = "56873\n" },
