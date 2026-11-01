@@ -194,6 +194,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/short_self.mpl", .want = "43607\n" },
         .{ .src = "stage1/fixtures/prim_value.mpl", .want = "2555862\n" },
         .{ .src = "stage1/fixtures/prop_dflt_local.mpl", .want = "34685\n" },
+        .{ .src = "stage1/fixtures/short_alias.mpl", .want = "436\n" },
         .{ .src = "stage1/fixtures/spec_self.mpl", .want = "684173\n" },
         .{ .src = "stage1/fixtures/spec_direct.mpl", .want = "351742\n" },
         .{ .src = "stage1/fixtures/spec_tmpl_gen.mpl", .want = "56873\n" },
@@ -636,6 +637,18 @@ pub fn build(b: *std.Build) void {
             .stage0 = "$defer is a block item: it belongs directly in a block's items",
         },
         .{
+            .src = "stage1/fixtures/short_value.mpl",
+            .stage1 = &.{
+                "short_value.mpl:10:39: an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument",
+                "short_value.mpl:11:63: an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument",
+                "short_value.mpl:13:30: an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument",
+                "short_value.mpl:15:33: an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument",
+                "short_value.mpl:16:31: an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument",
+            },
+            .count = "errors: 5\n",
+            .stage0 = null,
+        },
+        .{
             .src = "stage1/fixtures/dead_arm.mpl",
             .stage1 = &.{
                 "dead_arm.mpl:10:3: this arm's pattern, {tag=s\"conz\",}, is no member of the scrutinee's type, so the arm can never run",
@@ -661,8 +674,8 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/override_diag.mpl",
             .stage1 = &.{
-                "override_diag_util.mpl:5:61: an omitted argument needs its default",
-                "override_diag_util.mpl:7:60: an omitted argument needs its default",
+                "override_diag_util.mpl:8:39: $free needs a name this function bound from an $alloc",
+                "override_diag_util.mpl:13:13: an omitted argument's default reads 'p'",
             },
             .count = "check errors: 2\n",
             .stage0 = "$override is outside the bootstrap subset",
@@ -672,8 +685,8 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/override2_diag.mpl",
             .stage1 = &.{
-                "override_diag_util.mpl:5:61: an omitted argument needs its default",
-                "override2_dmid.mpl:5:61: an omitted argument needs its default",
+                "override_diag_util.mpl:8:39: $free needs a name this function bound from an $alloc",
+                "override2_dmid.mpl:5:39: $free needs a name this function bound from an $alloc",
             },
             .count = "check errors: 3\n",
             .stage0 = "$override is outside the bootstrap subset",

@@ -4185,7 +4185,7 @@ $decl drop_srcs $func ($decl xs benv.node, $decl acc benv.node) $match xs (
 )
 // A `$func` value's own defaults are not among them: a default is type-only where it is
 // written (§5.7), so `$prop use $func ($decl s $traitsof proto) …` over a local `proto` reads
-// nothing here. A short call that would evaluate one is refused there (`frame_dflt`).
+// nothing here. A short call that would evaluate one is refused there (`build_wrap`).
 $decl val_sc $func ($decl n Pa.proto_node) $if ($call is_form (n, "func"))
   ($call free_sc ($call op (n, 1), $call param_names ($call group_items ($call op (n, 0)),
       strs.nil), strs.nil))
@@ -5957,11 +5957,18 @@ $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
     $decl sl  $call fresh_slot (st, id)
     $decl apv $call note_prov (st, a.env, $call op (it, 1), sl)
     $decl slf $if ($call lt (-1, v.tmpl)) ($call tmpl_self (st, v.tmpl, nm, "local", sl, v.ty)) 0
+    // Another name for a global — `$decl h f`, `f` a top-level function — names it, not
+    // the slot it is copied into: a short call through `h` takes `f`'s defaults (§3.4),
+    // as one through a top-level alias does, and a `$func` naming `h` captures nothing.
+    $decl gx  $if ($call and ($call eq_int (v.mod, -1), $call eq_int (v.tmpl, -1)))
+                  ($call global_of (v.ir)) -1
     $decl ret   $call blk_acc (
         $call IR.bslots.cons ($call IR.bslot (sl, ir), $call IR.bslots.val (a.slots)),
         $call T.fields.cons ($call T.field (nm, v.ty), $call T.fields.val (a.flds)),
         $call T.props.val (a.prps),
-        $call benv.cons ($call bind_ent6 (nm, "local", sl, v.ty, v.mod, v.tmpl),
+        $call benv.cons ($if ($call lt (gx, 0))
+                ($call bind_ent6 (nm, "local", sl, v.ty, v.mod, v.tmpl))
+                ($call bind_ent6 (nm, "global", gx, v.ty, v.mod, v.tmpl)),
             $call benv.val (a.env)),
         IR.exprs.nil)
   }.ret)

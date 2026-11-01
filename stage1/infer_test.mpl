@@ -1423,4 +1423,30 @@ $decl cr04 $call check_str ("...and an ordinary mismatch in a field gets no hint
   $call errs_of ("$decl h $func ($decl b { $decl k 0 }) 0  $decl z $call h ({ $decl k \"no\" })"),
   "argument 1 is {k:Str,}, expected {k:Int,}")
 
+// §3.4: a short call takes the omitted defaults from the callee's definition, so the
+// callee must name one. A function value has none (§7.3's pair carries no defaults).
+$decl sd_f "$decl f $func ($decl a 0, $decl b 3) $call add (a, b)  "
+$decl sd01 $call check_str ("a short call through a parameter is refused",
+  $call errs_of ($call concat (sd_f, "$decl ap $func ($decl g f) $call g (1)")),
+  "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument")
+$decl sd02 $call check_str ("...and through a parameter that shadows a function's name",
+  $call errs_of ($call concat (sd_f, "$decl ap $func ($decl f $func ($decl a 0, $decl b 3) a) $call f (1)")),
+  "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument")
+$decl sd03 $call check_str ("...through a field",
+  $call errs_of ($call concat (sd_f, "$decl r { $decl g f }  $decl x $call r.g (1)")), "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument")
+$decl sd03b $call check_str ("...through storage",
+  $call errs_of ($call concat (sd_f, "$decl c $mut $alloc f  $decl y $call c (1)")), "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument")
+$decl sd03c $call check_str ("...through a call's result",
+  $call errs_of ($call concat (sd_f, "$decl mk $func () f  $decl z $call ($call mk ()) (1)")),
+  "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument")
+$decl sd04 $call check_str ("...and through an overload, whose candidates are values (§4.8)",
+  $call errs_of ($call concat (sd_f, "$decl g $func ($decl a \"\", $decl b 4) b  $decl o $overload (f, g)  $decl x $call o (1)")),
+  "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument")
+$decl sd05 $call check_str ("a function, an alias of one, local or not, a $fwd and a prop are definitions",
+  $call errs_of ($call concat (sd_f, "$fwd w  $decl h f  $decl b { $prop p $func ($decl a 0, $decl b 3) a }  $decl u $func () { $decl k h  $decl l $func ($decl a 0, $decl b 3) a  $decl m l  $decl ret $call add ($call add ($call f (1), $call h (1)), $call add ($call add ($call k (1), $call m (1)), $call add ($call w (1), $call b.p (1)))) }.ret  $decl w $func ($decl a 0, $decl b 3) a")),
+  "")
+$decl sd06 $call check_str ("...as is a prop read off a parameter's type (§4.10)",
+  $call errs_of ("$decl pr { $prop p $func ($decl a 0, $decl b 3) a }  $decl u $func ($decl q pr) $call q.p (1)"),
+  "")
+
 $decl done19 $call nl ("all borrowing tests passed")

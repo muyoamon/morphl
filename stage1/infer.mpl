@@ -67,6 +67,24 @@ $decl lookup $func ($decl e env.node, $decl n "") $match e (
 $decl bind $func ($decl e env.node, $decl n "", $decl t T.proto_ty)
   $call env.cons ($call binding (n, t), e)
 
+// §3.4: a short call takes its omitted defaults from the callee's definition, so it needs
+// a callee that names one (`names_def`). A binding that does — a `$func` literal's name,
+// a prop, a `$fwd`, an `$import`, an alias of one of these — is followed by a hidden
+// `$k:<name>` entry (no identifier starts with `$`), and the first of the two a walk meets
+// answers: a parameter or any other value binding the same name later hides the mark,
+// as it hides the name. `binding` stays `T.field`'s shape (see `prims_from`).
+$decl def_mark $func ($decl nm "") $call concat ("$k:", nm)
+$decl bind_def $func ($decl e env.node, $decl n "", $decl t T.proto_ty)
+  $call bind ($call bind (e, n, t), $call def_mark (n), T.t_unit)
+$decl bind_if $func ($decl e env.node, $decl n "", $decl t T.proto_ty, $decl d P.boolean)
+  $if d ($call bind_def (e, n, t)) ($call bind (e, n, t))
+$decl def_named $func ($decl e env.node, $decl n "", $decl k "") $match e (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (e.head.name, k)) true
+        ($if ($call eq_str (e.head.name, n)) false ($call def_named (e.tail, n, k))),
+  $case e false
+)
+
 // ------------------------------------------------------------------ templates
 //
 // §4.9: "`body` is **not** type-checked at declaration." A template's type is
@@ -1400,6 +1418,37 @@ $decl own_params $func ($decl xs Pa.pstrs.node, $decl acc owns.node) $match xs (
 
 $decl node_val $func ($decl x Pa.proto_node) x
 
+// Whether a type carries prop `fld`: §4.10 puts a prop's value in the type, so a projection
+// onto one names its definition wherever the value came from — a parameter included.
+$decl has_prop_t $func ($decl t T.proto_ty, $decl fld "") $match t (
+  $case {$prop tag "block"}
+    $call not ($call eq_str (($call T.find_prop (t.props, fld)).name, "")),
+  $case {$prop tag "with"}
+    $if ($call not ($call eq_str (($call T.find_prop ($call T.props.val (t.props), fld)).name,
+        ""))) true ($call has_prop_t ($call T.tval (t.base), fld)),
+  $case {$prop tag "rec"} $call has_prop_t ($call T.unroll (t), fld),
+  $case {$prop tag "ref"} $call has_prop_t ($call deref_ty (t), fld),
+  $case t false
+)
+
+// §3.4: whether a callee names a definition, which a short call takes its omitted defaults
+// from (`bind_def`): a name so bound, or a projection onto a prop or off such a name — a
+// module's member. A function *value* — a parameter, a field, storage, a call's result —
+// has none, since §7.3's pair carries no defaults. A projection's target is read by name
+// only, so typing it again costs nothing and reports nothing.
+$decl names_def $func ($decl e env.node, $decl n Pa.proto_node) $match n (
+  $case {$prop tag "name"} $call def_named (e, n.text, $call def_mark (n.text)),
+  $case {$prop tag "proj_name"} {
+    $decl tg  $call node_val (n.target)
+    $decl ret $if ($call names_def (e, tg)) true
+        ($match tg (
+            $case {$prop tag "name"}
+              ($call has_prop_t (($call lookup (e, tg.text)).ty, n.field)),
+            $case tg false))
+  }.ret,
+  $case n false
+)
+
 $fwd owns_x
 
 $decl owns_any $func ($decl cx proto_ctx, $decl e owns.node, $decl xs Pa.nodes.node) $match xs (
@@ -2301,7 +2350,7 @@ $decl infer_rec_func $func ($decl cx proto_ctx, $decl e env.node, $decl nm "",
   $decl r        $call infer_params (cx, penv, ps, T.tys.nil, e)
   $decl mr       $call mark_params (cx, ps, r.tys, r.env, 0, 0, n)
   $decl self     $call T.t_func (r.tys, $call T.t_var (id))
-  $decl benv     $call bind (mr.env, nm, self)
+  $decl benv     $call bind_def (mr.env, nm, self)
   $decl going    $set cx.inprog ($call hint_list.cons ($call hint_ent (nm, id), cx.inprog))
   $decl saved    $call tval (cx.tryset)
   $decl cleared  $set cx.tryset T.t_bot
@@ -2597,6 +2646,20 @@ $decl check_typed $func ($decl cx proto_ctx, $decl ps T.tys.node, $decl as Pa.no
   $case as true
 )
 
+// §3.4: a call leaving off trailing arguments takes their defaults from the callee's
+// definition, so its callee must name one (`names_def`); through a function value the
+// arguments are all passed. Stage 0 carries a function's defaults with its value and runs
+// such a call, so this is the compiler's rule: lowering has no definition to read them
+// from, and a §7.3 pair has no room for them.
+$decl short_ok $func ($decl cx proto_ctx, $decl e env.node, $decl f Pa.proto_node,
+                      $decl ps T.tys.node, $decl as Pa.nodes.node, $decl n Pa.proto_node)
+  $if ($call lt ($call Pa.nodes.length (as, 0), $call T.tys.length (ps, 0)))
+      ($if ($call names_def (e, f)) true
+           ($do ($call err (cx,
+                    "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument",
+                    n)) false))
+      true
+
 // Below `specialize_with`, which it needs.
 $fwd infer_apply
 
@@ -2625,6 +2688,7 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
                        $call callee_name ($call op (n, 0)), rv.id)) rv.id -1,
             $case rv -1)
         $decl ok $call check_args (cx, e, ft.params, args, n, 1, $call T.cints.val (ft.esc), pd)
+        $decl sh $call short_ok (cx, e, $call op (n, 0), $call T.tys.val (ft.params), args, n)
         // DEFER.md: a callee still being typed has no answer yet, which counts as "may".
         $decl nr0 $call T.ci_mem ($call T.cints.val (ft.esc), 1000)
         $decl nr $if ($if nr0 true ($call lt (-1, pd)))
@@ -2648,6 +2712,12 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
             $case {$prop tag "func"} {
               $decl ok   $call check_typed (cx, $call T.tys.val (c.params), args, rs, n, 1,
                              $call T.cints.val (c.esc))
+              // §3.4: an overload's candidates are values (§4.8), so no definition is
+              // named — the empty environment says so. A template candidate is
+              // specialised, and its instance is a definition.
+              $decl sh   $if pk.tmpl true
+                  ($call short_ok (cx, env.nil, $call op (n, 0), $call T.tys.val (c.params),
+                      args, n))
               $decl ret3 $if ok ($call T.tval (c.result)) T.t_bot
             }.ret3,
             $case c ($call err (cx, $call concat ("no candidate of ", $call concat ($call T.show (ft),
@@ -3294,7 +3364,8 @@ $decl hide_names $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
     $decl tn  $call strs.val (cx.topnames)
     $decl tp  $set cx.topnames ($if ($call in_strs (tn, nm)) ($call strs.cons (hn, tn)) tn)
     $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail),
-                  $if f.ok ($call bind (acc, hn, f.ty)) acc, d)
+                  $if f.ok ($call bind_if (acc, hn, f.ty,
+                      $call def_named (e, nm, $call def_mark (nm)))) acc, d)
   }.ret,
   $case ns acc
 )
@@ -3362,7 +3433,9 @@ $decl memo_key $func ($decl i 0, $decl ats T.tys.node, $decl acc "") $match ats 
 $decl bind_generics $func ($decl e env.node, $decl gs strs.node, $decl ats T.tys.node) $match gs (
   $case {$prop tag "cons"} $match ats (
       $case {$prop tag "cons"}
-        $call bind_generics ($call bind (e, gs.head, ats.head), gs.tail, ats.tail),
+        // §3.4: a generic is bound at each use to what was passed, so a short call
+        // through one is left to lowering, which knows when that is a definition.
+        $call bind_generics ($call bind_def (e, gs.head, ats.head), gs.tail, ats.tail),
       $case ats e
     ),
   $case gs e
@@ -4060,7 +4133,7 @@ $decl prebind_props $func ($decl cx proto_ctx, $decl items Pa.nodes.node,
     $decl ct $if ($call is_form (it, "prop"))
         ($set cx.ctnames ($call strs.cons (nm, cx.ctnames))) ()
     $decl e2 $if ($call is_form (it, "prop"))
-        ($call bind (acc, nm, $call T.t_var ($call fresh (cx))))
+        ($call bind_def (acc, nm, $call T.t_var ($call fresh (cx))))
         acc
     $decl ret $call prebind_props (cx, items.tail, e2)
   }.ret,
@@ -4176,7 +4249,10 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   $decl cf $set cx.cffns ($if ($call is_form (init, "func"))
       ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))
       ($call fnlit_list.val (cx.cffns)))
-  $decl bound $set s.env ($call bind (s.env, nm, ty))
+  // §3.4: a `$func`, a module, or another name for a definition (`names_def`).
+  $decl isd $if ($call is_form (init, "func")) true
+                ($if ($call is_form (init, "import")) true ($call names_def (s.env, init)))
+  $decl bound $set s.env ($call bind_if (s.env, nm, ty, isd))
   // A `$fwd` already reserved this slot at its own position (§4.11), so
   // complete that one rather than appending a second.
   $decl added $set s.flds ($call put_field (s.flds, nm, ty))
@@ -4471,8 +4547,9 @@ $decl prop_pass $func ($decl cx proto_ctx, $decl pe0 env.node, $decl items Pa.no
     $decl it items.head
     $decl nm $call name_of ($call op (it, 0))
     $decl e2 $if ($call is_form (it, "prop"))
-        ($call bind (acc, nm,
-            $call prop_ty (cx, $call bind (acc, nm, ($call lookup (pe0, nm)).ty), nm, it, rn)))
+        ($call bind_def (acc, nm,
+            $call prop_ty (cx, $call bind_def (acc, nm, ($call lookup (pe0, nm)).ty), nm, it,
+                rn)))
         acc
     $decl ret $call prop_pass (cx, pe0, items.tail, e2, rn)
   }.ret,
@@ -4488,7 +4565,7 @@ $decl infer_prop_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env
   $decl cv $call const_of (cx, $call op (it, 1))
   $decl added $set s.prps ($call T.props.cons ($call T.prop_typed (nm, cv, f.ty),
       $call eval_prps (s.prps)))
-  $decl bound $set s.env ($call bind (s.env, nm, f.ty))
+  $decl bound $set s.env ($call bind_def (s.env, nm, f.ty))
 }
 
 // §4.11: reserves an ordered slot *at this position*. The type was decided by
@@ -4532,7 +4609,9 @@ $decl prebind_one $func ($decl cx proto_ctx, $decl s proto_bst,
                                             T.tys.nil, pe)).tys,
                        $call T.t_var (id)))
       ($call T.t_var (id))
-  $decl bound $set s.env ($call bind (s.env, nm, ty))
+  // §3.4: what the completing `$decl` will say, for a short call before it (`bind_def`).
+  $decl isd $if ($call is_form (init, "func")) true ($call names_def (pe, init))
+  $decl bound $set s.env ($call bind_if (s.env, nm, ty, isd))
   $decl noted $set s.fwds ($call fwd_list.cons ($call fwd_ent (nm, id), $call eval_fwds (s.fwds)))
   $decl going $set cx.inprog ($if ($call is_form (init, "func"))
                   ($call hint_list.cons ($call hint_ent (nm, id), cx.inprog))

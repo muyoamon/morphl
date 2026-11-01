@@ -115,6 +115,8 @@ Blocks are also records, modules and namespaces. A source file is a block.
 
 A parameter list is matched **exactly**, not as a group (§5.1): a call passes one argument per parameter, position by position, and may leave off trailing parameters that have defaults, but never passes more. `$call f (a, b)` to a one-parameter `f` is an error, not `(a, b)` coerced to its prefix `a`.
 
+An omitted argument's default is the callee's **definition**'s, evaluated in the scope it was written in, so a call that leaves arguments off must name a definition: a name bound to a `$func` literal — by `$decl`, `$fwd` or `$prop` — or to another such name, a prop (§4.10, wherever the value carrying it came from), or a module's member. A function reached any other way is a **value** — a parameter, a field, storage, a call's result, an `$if`, an `$overload`'s candidate — and a value carries no defaults (§7.3: two words whatever the signature), so a call through one passes every argument; leaving one off is a compile error.
+
 A function's type is `params -> result`, where `result` is the type of `body`.
 
 ### 3.5 References
