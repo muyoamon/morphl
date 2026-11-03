@@ -93,6 +93,28 @@ $decl glob_mark $func ($decl nm "") $call concat ("$g:", nm)
 $decl bind_glob $func ($decl e env.node, $decl n "", $decl g P.boolean)
   $if g ($call bind (e, $call glob_mark (n), T.t_unit)) e
 $decl is_glob $func ($decl e env.node, $decl n "") $call def_named (e, n, $call glob_mark (n))
+// A `$func` prop's identity beside its name, for `short_ok` (`dfr_ent`): -1 when the first of
+// the two a walk meets is the name.
+$decl dfr_mark $func ($decl nm "") $call concat ("$d:", nm)
+$decl bind_dfr $func ($decl e env.node, $decl n "", $decl f P.boolean, $decl i 0)
+  $if f
+      ($call bind (e, $call dfr_mark (n), $call T.t_block (T.fields.nil,
+          $call T.props.cons ($call T.prop_entry ("id", $call T.cv_opaque (i)), T.props.nil))))
+      e
+$decl opaque_id $func ($decl c T.proto_cv) $match c (
+  $case {$prop tag "copaque"} c.id,
+  $case c -1
+)
+$decl mark_id $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "block"} ($call opaque_id (($call T.find_prop (t.props, "id")).value)),
+  $case t -1
+)
+$decl dfr_named $func ($decl e env.node, $decl n "", $decl k "") $match e (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (e.head.name, k)) ($call mark_id ($call T.tval (e.head.ty)))
+        ($if ($call eq_str (e.head.name, n)) -1 ($call dfr_named (e.tail, n, k))),
+  $case e -1
+)
 
 // ------------------------------------------------------------------ templates
 //
@@ -176,6 +198,23 @@ $decl find_fnlit $func ($decl xs fnlit_list.node, $decl nm "") $match xs (
     $if ($call eq_str (xs.head.name, nm)) xs.head
         ($call find_fnlit ($call fnlit_list.val (xs.tail), nm)),
   $case xs ($call fnlit_ent ("", Pa.proto_node))
+)
+
+// §3.4 meets lowering's `build_wrap`: a short call to a `$func` prop evaluates the omitted
+// defaults in a wrapper, a function of its own, so a default that reads a binding of the
+// frame the prop is written in — a local named for its type (§5.7) — has nothing to read
+// there. `need` is how many arguments such a call must pass, one past the last parameter
+// whose default reads one, and `name` what it reads. Kept by the prop's identity
+// (`const_of`), which a projection finds in its target's type; a bare name finds it through
+// a hidden `$d:<name>` entry whose type carries the identity (`bind_dfr`).
+$decl dfr_ent   $func ($decl i 0, $decl k 0, $decl n "") { $decl id i  $decl need k  $decl name n }
+$decl proto_dfr $call dfr_ent (0, 0, "")
+$decl dfr_list  $specialize P.list proto_dfr
+
+$decl find_dfr $func ($decl xs dfr_list.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.id, i)) xs.head ($call find_dfr ($call dfr_list.val (xs.tail), i)),
+  $case xs proto_dfr
 )
 
 $decl find_fwd $func ($decl xs fwd_list.node, $decl nm "") $match xs (
@@ -387,6 +426,8 @@ $decl ctx $func () {
   $decl extnames $mut $alloc strs.node
   $decl cffns    $mut $alloc fnlit_list.node
   $decl topnames $mut $alloc strs.node
+  // §3.4's short calls to a `$func` prop that must pass some arguments (`dfr_ent`).
+  $decl dfrs     $mut $alloc dfr_list.node
   // §5.3a's provenance (`owns_x`): the positions — file, line and column — of call results
   // and arguments whose type contains a place. It is the one type fact the provenance walk
   // needs. Grows and never shrinks: a position typed more than once (a specialised body)
@@ -2662,14 +2703,51 @@ $decl check_typed $func ($decl cx proto_ctx, $decl ps T.tys.node, $decl as Pa.no
 // arguments are all passed. Stage 0 carries a function's defaults with its value and runs
 // such a call, so this is the compiler's rule: lowering has no definition to read them
 // from, and a §7.3 pair has no room for them.
+// A prop's value in a type, where `has_prop_t` finds it.
+$decl prop_cv_t $func ($decl t T.proto_ty, $decl fld "") $match t (
+  $case {$prop tag "block"} ($call T.find_prop (t.props, fld)).value,
+  $case {$prop tag "with"} {
+    $decl p   $call T.find_prop ($call T.props.val (t.props), fld)
+    $decl ret $if ($call eq_str (p.name, "")) ($call prop_cv_t ($call T.tval (t.base), fld)) p.value
+  }.ret,
+  $case {$prop tag "rec"} $call prop_cv_t ($call T.unroll (t), fld),
+  $case {$prop tag "ref"} $call prop_cv_t ($call deref_ty (t), fld),
+  $case t ($call T.cv_opaque (-1))
+)
+// The `$func` prop a callee names, as `dfr_ent`: through its name's mark, or off a named
+// target's type. Anything else is not one, or not one `prop_ty` recorded.
+$decl callee_dfr $func ($decl cx proto_ctx, $decl e env.node, $decl f Pa.proto_node) {
+  $decl id $match f (
+      $case {$prop tag "name"} ($call dfr_named (e, f.text, $call dfr_mark (f.text))),
+      $case {$prop tag "proj_name"} {
+        $decl tg   $call node_val (f.target)
+        $decl ret2 $match tg (
+            $case {$prop tag "name"}
+              ($call opaque_id ($call prop_cv_t (($call lookup (e, tg.text)).ty, f.field))),
+            $case tg -1)
+      }.ret2,
+      $case f -1)
+  $decl ret $if ($call lt (id, 0)) proto_dfr ($call find_dfr ($call dfr_list.val (cx.dfrs), id))
+}.ret
 $decl short_ok $func ($decl cx proto_ctx, $decl e env.node, $decl f Pa.proto_node,
-                      $decl ps T.tys.node, $decl as Pa.nodes.node, $decl n Pa.proto_node)
-  $if ($call lt ($call Pa.nodes.length (as, 0), $call T.tys.length (ps, 0)))
-      ($if ($call names_def (e, f)) true
+                      $decl ps T.tys.node, $decl as Pa.nodes.node, $decl n Pa.proto_node) {
+  $decl k   $call Pa.nodes.length (as, 0)
+  $decl ret $if ($call lt (k, $call T.tys.length (ps, 0)))
+      ($if ($call names_def (e, f)) {
+           // Lowering's `build_wrap`: the omitted defaults are evaluated in a wrapper.
+           $decl d    $call callee_dfr (cx, e, f)
+           $decl ret2 $if ($call lt (k, d.need))
+               ($do ($call err (cx, $call concat ("an omitted argument's default reads ",
+                        $call concat (d.name,
+                            ", a binding of the frame its function is written in, and a short call evaluates it in a wrapper of its own, which has no such frame (§3.4): pass every argument")),
+                        n)) false)
+               true
+         }.ret2
            ($do ($call err (cx,
                     "an omitted argument needs its default, and this callee is a function value whose definition is not known here (§3.4): pass every argument",
                     n)) false))
       true
+}.ret
 
 // Below `specialize_with`, which it needs.
 $fwd infer_apply
@@ -4473,6 +4551,22 @@ $decl prop_caps_in $func ($decl cx proto_ctx, $decl r proto_tmpl, $decl rn "",
   $decl ret  $call prop_cap_name (cx, $call env.val (r.env), free,
                  $call Pa.bound_names (r.body, gs), rn, seen, via)
 }.ret
+// The parameters whose default reads a binding of the frame (`dfr_ent`): a frame read is what
+// would be a capture, so `prop_cap_name` answers. A default sees no parameter (§3.4), so none
+// is skipped.
+$decl dfr_need $func ($decl cx proto_ctx, $decl pe env.node, $decl ps Pa.nodes.node, $decl i 0,
+                      $decl acc proto_dfr) $match ps (
+  $case {$prop tag "cons"} {
+    $decl p   ps.head
+    $decl c   $if ($call is_form (p, "decl"))
+                  ($call prop_cap_name (cx, pe, $call Pa.free_names ($call op (p, 1), Pa.pstrs.nil),
+                       Pa.pstrs.nil, "", strs.nil, ""))
+                  ""
+    $decl ret $call dfr_need (cx, pe, $call Pa.nodes.val (ps.tail), $call add (i, 1),
+                  $if ($call eq_str (c, "")) acc ($call dfr_ent (acc.id, $call add (i, 1), c)))
+  }.ret,
+  $case ps acc
+)
 $decl prop_fn_cap $func ($decl cx proto_ctx, $decl pe env.node, $decl n Pa.proto_node,
                          $decl rn "") {
   $decl ps   $call group_items ($call op (n, 0))
@@ -4533,6 +4627,12 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
       ($call err (cx, $call concat ("a $prop's $func may not capture ", $call concat (cap,
           ": a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value")),
           it))
+  $decl dfr  $if ($call is_form (init, "func"))
+                 ($call dfr_need (cx, pe, $call group_items ($call op (init, 0)), 0,
+                     $call dfr_ent ($call ct_id (cx, 3, init), 0, "")))
+                 proto_dfr
+  $decl dfa  $set cx.dfrs ($if ($call lt (0, dfr.need)) ($call dfr_list.cons (dfr, cx.dfrs))
+                 ($call dfr_list.val (cx.dfrs)))
   $decl id   $call var_id ($call lookup (pe, nm)).ty
   // A member that names its receiver is typed here only for a provisional type, and
   // quietly: the receiver's block is not typed yet. `infer_block` types it for real
@@ -4562,9 +4662,10 @@ $decl prop_pass $func ($decl cx proto_ctx, $decl pe0 env.node, $decl items Pa.no
     $decl it items.head
     $decl nm $call name_of ($call op (it, 0))
     $decl e2 $if ($call is_form (it, "prop"))
-        ($call bind_def (acc, nm,
+        ($call bind_dfr ($call bind_def (acc, nm,
             $call prop_ty (cx, $call bind_def (acc, nm, ($call lookup (pe0, nm)).ty), nm, it,
-                rn)))
+                rn)), nm, $call is_form ($call op (it, 1), "func"),
+            $call ct_id (cx, 3, $call op (it, 1))))
         acc
     $decl ret $call prop_pass (cx, pe0, items.tail, e2, rn)
   }.ret,
@@ -4580,7 +4681,8 @@ $decl infer_prop_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env
   $decl cv $call const_of (cx, $call op (it, 1))
   $decl added $set s.prps ($call T.props.cons ($call T.prop_typed (nm, cv, f.ty),
       $call eval_prps (s.prps)))
-  $decl bound $set s.env ($call bind_def (s.env, nm, f.ty))
+  $decl bound $set s.env ($call bind_dfr ($call bind_def (s.env, nm, f.ty), nm,
+                 $call is_form ($call op (it, 1), "func"), $call ct_id (cx, 3, $call op (it, 1))))
 }
 
 // §4.11: reserves an ordered slot *at this position*. The type was decided by

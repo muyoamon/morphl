@@ -648,6 +648,18 @@ pub fn build(b: *std.Build) void {
             .count = "errors: 5\n",
             .stage0 = null,
         },
+        // A short call to a `$func` prop whose omitted default reads its frame (§3.4).
+        .{
+            .src = "stage1/fixtures/short_frame.mpl",
+            .stage1 = &.{
+                "short_frame.mpl:13:13: an omitted argument's default reads 'p', a binding of the frame its function is written in, and a short call evaluates it in a wrapper of its own, which has no such frame (§3.4): pass every argument",
+                "short_frame.mpl:15:11: an omitted argument's default reads 'p', a binding of the frame its function is written in, and a short call evaluates it in a wrapper of its own, which has no such frame (§3.4): pass every argument",
+                "short_frame.mpl:16:11: an omitted argument's default reads 'p', a binding of the frame its function is written in, and a short call evaluates it in a wrapper of its own, which has no such frame (§3.4): pass every argument",
+                "short_frame.mpl:25:11: an omitted argument's default reads 'p', a binding of the frame its function is written in, and a short call evaluates it in a wrapper of its own, which has no such frame (§3.4): pass every argument",
+            },
+            .count = "errors: 4\n",
+            .stage0 = null,
+        },
         .{
             .src = "stage1/fixtures/dead_arm.mpl",
             .stage1 = &.{
@@ -674,8 +686,8 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/override_diag.mpl",
             .stage1 = &.{
-                "override_diag_util.mpl:8:39: $free needs a name this function bound from an $alloc",
-                "override_diag_util.mpl:13:13: an omitted argument's default reads 'p'",
+                "override_diag_util.mpl:9:39: $free needs a name this function bound from an $alloc",
+                "override_diag_util.mpl:17:3: this storage came from another allocator than the one in scope here",
             },
             .count = "check errors: 2\n",
             .stage0 = "$override is outside the bootstrap subset",
@@ -685,7 +697,7 @@ pub fn build(b: *std.Build) void {
         .{
             .src = "stage1/fixtures/override2_diag.mpl",
             .stage1 = &.{
-                "override_diag_util.mpl:8:39: $free needs a name this function bound from an $alloc",
+                "override_diag_util.mpl:9:39: $free needs a name this function bound from an $alloc",
                 "override2_dmid.mpl:5:39: $free needs a name this function bound from an $alloc",
             },
             .count = "check errors: 3\n",
