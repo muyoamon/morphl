@@ -674,8 +674,23 @@ pub fn build(b: *std.Build) void {
                 "free_bad.mpl:18:13: $free needs allocated storage it may end, found &Int",
                 "free_bad.mpl:23:13: $free needs allocated storage it may end, found &^const Int",
                 "free_bad.mpl:29:13: the allocator in scope cannot serve $free: its free is [Int]->(), which must take an address and a size",
-                "free_bad.mpl:32:13: this function frees its parameter 'r' through an allocator other than the root's",
+                "free_bad.mpl:34:13: this storage came from another allocator than the one in scope here",
                 "free_bad.mpl:39:33: an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals",
+            },
+            .count = "errors: 5\n",
+            .stage0 = null,
+        },
+        // DEFER.md step 4's routing, which only lowering used to check: a `$free` of storage
+        // whose allocator is unknown or another, and a freeing callee given storage that is
+        // not known to be the root's.
+        .{
+            .src = "stage1/fixtures/free_route.mpl",
+            .stage1 = &.{
+                "free_route.mpl:14:22: $free needs a name this function bound from an $alloc",
+                "free_route.mpl:17:20: $free needs a name this function bound from an $alloc",
+                "free_route.mpl:20:47: this storage came from another allocator than the one in scope here",
+                "free_route.mpl:25:26: the callee frees this argument through the root allocator, but it came from another",
+                "free_route.mpl:28:70: the callee frees this argument, so where it came from must be known here",
             },
             .count = "errors: 5\n",
             .stage0 = null,
@@ -687,7 +702,7 @@ pub fn build(b: *std.Build) void {
             .src = "stage1/fixtures/override_diag.mpl",
             .stage1 = &.{
                 "override_diag_util.mpl:9:39: $free needs a name this function bound from an $alloc",
-                "override_diag_util.mpl:17:3: this storage came from another allocator than the one in scope here",
+                "override_diag_util.mpl:13:13: $specialize: this template's body is not a block with props or $decls",
             },
             .count = "check errors: 2\n",
             .stage0 = "$override is outside the bootstrap subset",

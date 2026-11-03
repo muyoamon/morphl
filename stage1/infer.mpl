@@ -115,6 +115,44 @@ $decl dfr_named $func ($decl e env.node, $decl n "", $decl k "") $match e (
         ($if ($call eq_str (e.head.name, n)) -1 ($call dfr_named (e.tail, n, k))),
   $case e -1
 )
+// DEFER.md step 4: which `allocator` binding storage came from, so `$free` and a call to a
+// function freeing its argument can insist on the right one, as lowering does with slots
+// (`alloc_ident`). A binding is named by where it sits, counted from the environment's far
+// end — distinct for any two a walk can meet, since one function's environments all extend
+// the one it was entered with — and the root's (`T.ffi_alloc`) is -1. -2 is unknown.
+$decl alloc_at $func ($decl e env.node) $match e (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (e.head.name, "allocator"))
+        ($if ($call T.same ($call T.tval (e.head.ty), T.ffi_alloc)) -1 ($call env.length (e, 0)))
+        ($call alloc_at (e.tail)),
+  $case e -1
+)
+// A local's provenance rides on a hidden `$a:<name>` entry after it, with the depth of the
+// `$func` body that bound it: read from another body it is a capture, which lowering has
+// no provenance for. The first of the name and the mark a walk meets answers.
+$decl prov_mark $func ($decl nm "") $call concat ("$a:", nm)
+$decl bind_prov $func ($decl e env.node, $decl n "", $decl pv 0, $decl d 0)
+  $if ($call eq_int (pv, -2)) e
+      ($call bind (e, $call prov_mark (n), $call T.t_block (T.fields.nil,
+          $call T.props.cons ($call T.prop_entry ("id", $call T.cv_opaque (pv)),
+              $call T.props.cons ($call T.prop_entry ("fd", $call T.cv_opaque (d)),
+                  T.props.nil)))))
+$decl mark_fd $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "block"} ($call opaque_id (($call T.find_prop (t.props, "fd")).value)),
+  $case t -1
+)
+$decl prov_named $func ($decl e env.node, $decl n "", $decl d 0) $match e (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (e.head.name, $call prov_mark (n)))
+        ($if ($call eq_int ($call mark_fd ($call T.tval (e.head.ty)), d))
+             ($call mark_id ($call T.tval (e.head.ty))) -2)
+        ($if ($call eq_str (e.head.name, n)) -2 ($call prov_named (e.tail, n, d))),
+  $case e -2
+)
+$decl alloc_ref $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.tval (t0)
+  $decl ret $match t ($case {$prop tag "ref"} ($call T.is_alloc (t.kind)), $case t false)
+}.ret
 
 // ------------------------------------------------------------------ templates
 //
@@ -1712,7 +1750,7 @@ $decl tail_check $func ($decl cx proto_ctx, $decl ie env.node, $decl e owns.node
 // recorded at its depth — which it takes, so a sibling at the same depth starts clean. Only
 // through the root: which allocator is not in the type, and a caller must be able to check
 // its argument came from the same one. A name that is not a parameter was this function's
-// own storage, whose routing lowering checks.
+// own storage, whose routing `infer_free` checked.
 $decl freed_idx $func ($decl ps Pa.pstrs.node, $decl nm "", $decl i 0) $match ps (
   $case {$prop tag "cons"}
     $if ($call eq_str (ps.head, nm)) i
@@ -2005,6 +2043,23 @@ $decl storage_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_f
       ($call alloc_defer (cx, e, n, d)) ()
 }.ret
 
+// Where storage `x` (of type `t`) came from, as `alloc_at` names it: an `$alloc` (or a view
+// of one) from the allocator in scope; a call, from the root when its callee guarantees it
+// (not in `nonroot`); a local, from its mark. Lowering is narrower about calls (`call_root`).
+$decl is_alloc_init $func ($decl n Pa.proto_node)
+  $if ($call is_form (n, "alloc")) true
+      ($if ($call P.or ($call is_form (n, "mut"), $call is_form (n, "const")))
+           ($call is_form ($call op (n, 0), "alloc")) false)
+$decl prov_of $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+                     $decl t T.proto_ty)
+  $if ($call is_alloc_init (x)) ($call alloc_at (e))
+  ($if ($call not ($call alloc_ref (t))) -2
+  ($if ($call is_form (x, "call"))
+       ($if ($call in_strs ($call strs.val (cx.nonroot), $call fn_key_of (cx, x))) -2 -1)
+  ($match x (
+      $case {$prop tag "name"} ($call prov_named (e, x.text, $call ival (cx.fdepth))),
+      $case x -2
+    ))))
 // A name freed here, for `func_close` to find among this function's parameters.
 $decl note_freed $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl root P.boolean)
   $match x (
@@ -2015,6 +2070,17 @@ $decl note_freed $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl root P.
           (),
     $case x ()
   )
+
+// A callee frees this argument, through the root (DEFER.md): it must be known to be the
+// root's — and this function frees it too, when it is a parameter.
+$decl free_arg $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+                      $decl t T.proto_ty) {
+  $decl pv  $call prov_of (cx, e, x, t)
+  $decl ret $if ($call eq_int (pv, -2))
+      ($do ($call err (cx, "the callee frees this argument, so where it came from must be known here: pass a name bound from an $alloc, or an $alloc (DEFER.md)", x)) ())
+      ($if ($call eq_int (pv, -1)) ($call note_freed (cx, x, true))
+           ($do ($call err (cx, "the callee frees this argument through the root allocator, but it came from another (DEFER.md)", x)) ()))
+}.ret
 
 // What a borrowed argument lends the call's result: its marks, and whether it is
 // frame-bound — directly, or as the trait object §6's coercion makes over frame storage.
@@ -2364,8 +2430,12 @@ $decl infer_params_go $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.n
     $decl nm $if ok ($call name_of ($call op (d, 0))) ""
     $decl ty $if ok ($call infer (cx, e, $call op (d, 1)))
                     ($call err (cx, "$func parameters must each be a $decl", d))
+    // DEFER.md: allocated storage passed in is the allocator's in scope where the function is
+    // written — the root's, when its type says it frees it (`freed_take`).
+    $decl pv $if ($call alloc_ref (ty)) ($call alloc_at (e)) -2
     $decl ret $call infer_params_go (cx, e, ps.tail,
-                  $call T.tys.cons (ty, acc), $call bind (inner, nm, ty))
+                  $call T.tys.cons (ty, acc), $call bind_prov ($call bind (inner, nm, ty), nm, pv,
+                      $call add ($call ival (cx.fdepth), 1)))
   }.ret,
   $case ps ($call pres ($call T.tys.reverse (acc, T.tys.nil), inner))
 )
@@ -2606,8 +2676,9 @@ $decl inject_check $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl p T.prot
 // One argument against its parameter: §6's coercion, §5.3a's escape, a deferred call
 // against a function still being typed, §4.8's overload resolution, and the subtype check
 // — or §5.5's deferral of it while a knot is open. False on an error.
-$decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_node,
-                       $decl raw T.proto_ty, $decl i 0, $decl es T.cints.node, $decl pd -1) {
+$decl check_one $func ($decl cx proto_ctx, $decl e env.node, $decl p T.proto_ty,
+                       $decl x Pa.proto_node, $decl raw T.proto_ty, $decl i 0,
+                       $decl es T.cints.node, $decl pd -1) {
   $decl at0 $call arg_as (p, raw)
   // §4.8: an overload passed where one type is expected resolves to the first
   // candidate the parameter accepts; passed to an overload parameter it stays one.
@@ -2646,7 +2717,7 @@ $decl check_one $func ($decl cx proto_ctx, $decl p T.proto_ty, $decl x Pa.proto_
                 ($call note_barg (cx, x, raw, p)) ()
   // DEFER.md: the callee frees this parameter (through the root), so a name passed here
   // is freed by this function too.
-  $decl fr  $if ($call T.ci_mem (es, $call add (127, i))) ($call note_freed (cx, x, true)) ()
+  $decl fr  $if ($call T.ci_mem (es, $call add (127, i))) ($call free_arg (cx, e, x, raw)) ()
   // A callee still being typed: its escaping parameters come later (`func_close`).
   // Only an argument that could be refused or could carry a mark is worth keeping,
   // and nearly none is — keeping every one made each closing function rescan them.
@@ -2675,7 +2746,7 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
                         $decl es T.cints.node, $decl pd -1) $match as (
   $case {$prop tag "cons"} $match ps (
       $case {$prop tag "cons"}
-        $if ($call check_one (cx, ps.head, as.head, $call infer (cx, e, as.head), i, es, pd))
+        $if ($call check_one (cx, e, ps.head, as.head, $call infer (cx, e, as.head), i, es, pd))
             ($call check_args (cx, e, ps.tail, as.tail, n, $call add (i, 1), es, pd)) false,
       $case ps ($do ($call err (cx, "too many arguments", n)) false)
     ),
@@ -2685,13 +2756,13 @@ $decl check_args $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.nod
 
 // The same, against types already inferred — an overloaded call types its arguments
 // once, to choose a candidate (§4.8), and checks them against it without typing again.
-$decl check_typed $func ($decl cx proto_ctx, $decl ps T.tys.node, $decl as Pa.nodes.node,
-                         $decl rs T.tys.node, $decl n Pa.proto_node, $decl i 1,
-                         $decl es T.cints.node) $match as (
+$decl check_typed $func ($decl cx proto_ctx, $decl e env.node, $decl ps T.tys.node,
+                         $decl as Pa.nodes.node, $decl rs T.tys.node, $decl n Pa.proto_node,
+                         $decl i 1, $decl es T.cints.node) $match as (
   $case {$prop tag "cons"} $match ps (
       $case {$prop tag "cons"}
-        $if ($call check_one (cx, ps.head, as.head, $call T.tys.nth (rs, 0), i, es, -1))
-            ($call check_typed (cx, ps.tail, as.tail, $call ts_rest (rs), n, $call add (i, 1),
+        $if ($call check_one (cx, e, ps.head, as.head, $call T.tys.nth (rs, 0), i, es, -1))
+            ($call check_typed (cx, e, ps.tail, as.tail, $call ts_rest (rs), n, $call add (i, 1),
                 es)) false,
       $case ps ($do ($call err (cx, "too many arguments", n)) false)
     ),
@@ -2799,7 +2870,7 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
         $decl c    $call T.tval (pk.ty)
         $decl ret2 $match c (
             $case {$prop tag "func"} {
-              $decl ok   $call check_typed (cx, $call T.tys.val (c.params), args, rs, n, 1,
+              $decl ok   $call check_typed (cx, e, $call T.tys.val (c.params), args, rs, n, 1,
                              $call T.cints.val (c.esc))
               // §3.4: an overload's candidates are values (§4.8), so no definition is
               // named — the empty environment says so. A template candidate is
@@ -3778,7 +3849,7 @@ $decl infer_apply $func ($decl cx proto_ctx, $decl e env.node, $decl id 0,
                        ($call deref_ty ($call specialize_at (cx, e, id, Pa.nodes.nil, ats, n)))
         $decl ret2 $match ft (
             $case {$prop tag "func"} {
-              $decl ok   $call check_typed (cx, $call T.tys.val (ft.params), args, rs, n, 1,
+              $decl ok   $call check_typed (cx, e, $call T.tys.val (ft.params), args, rs, n, 1,
                              $call T.cints.val (ft.esc))
               $decl ret3 $if ok ($call T.tval (ft.result)) T.t_bot
             }.ret3,
@@ -4343,8 +4414,10 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   // §3.4: a `$func`, a module, or another name for a definition (`names_def`).
   $decl isd $if ($call is_form (init, "func")) true
                 ($if ($call is_form (init, "import")) true ($call names_def (s.env, init)))
-  $decl bound $set s.env ($call bind_glob ($call bind_if (s.env, nm, ty, isd), nm,
-                 $call bval (cx.atfile)))
+  // DEFER.md: where a local's storage came from, for `$free` (`prov_of`).
+  $decl pv    $if ($call bval (cx.atfile)) -2 ($call prov_of (cx, s.env, init, ty))
+  $decl bound $set s.env ($call bind_prov ($call bind_glob ($call bind_if (s.env, nm, ty, isd),
+                 nm, $call bval (cx.atfile)), nm, pv, $call ival (cx.fdepth)))
   // A `$fwd` already reserved this slot at its own position (§4.11), so
   // complete that one rather than appending a second.
   $decl added $set s.flds ($call put_field (s.flds, nm, ty))
@@ -5070,8 +5143,9 @@ $decl infer_extern $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_fo
 // DEFER.md step 4: `$free r` releases allocated storage through the allocator in scope —
 // `free (addr, size)`, the root's `raw_free (addr)` — which runs any deferrals registered
 // for it first. Frame storage is released with its frame, and a `&const` view cannot end
-// what it only reads. Which allocator made `r` is checked by lowering, which can tell
-// bindings apart. `unit`.
+// what it only reads. `r` must be a name this function bound from storage whose allocator
+// is known (`prov_of`), and `allocator` here that one — lowering's rule (`lower_free`),
+// which used to be the only one to say so. `unit`.
 $decl infer_free $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl t   $call T.tval ($call infer (cx, e, $call op (n, 0)))
   $decl ok  $match t (
@@ -5084,7 +5158,17 @@ $decl infer_free $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
            $call concat ($call T.show (t), ": frame storage is released with its frame, and a $const view only reads (DEFER.md)")), n)) ())
   $decl f   $call lookup (e, "allocator")
   $decl root $if f.ok ($call T.same (f.ty, T.ffi_alloc)) true
-  $decl rec $call note_freed (cx, $call op (n, 0), root)
+  $decl x   $call op (n, 0)
+  $decl pv  $match x (
+      $case {$prop tag "name"} ($call prov_named (e, x.text, $call ival (cx.fdepth))),
+      $case x -2
+    )
+  $decl rt  $if ($call not (ok)) false
+      ($if ($call eq_int (pv, -2))
+           ($do ($call err (cx, "$free needs a name this function bound from an $alloc: where else it came from, its allocator is not known here (DEFER.md)", n)) false)
+      ($if ($call eq_int (pv, $call alloc_at (e))) true
+           ($do ($call err (cx, "this storage came from another allocator than the one in scope here: $free it where the allocator that made it is (DEFER.md)", n)) false)))
+  $decl rec $if rt ($call note_freed (cx, x, root)) ()
   $decl e2  $if root () {
     $decl sp   $call P.span_of (n)
     $decl m    $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "free",

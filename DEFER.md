@@ -452,7 +452,7 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
    - **`$free r`** (§2.2, §7.6), both parsers; stage 0 refuses to run it, as it refuses the
      FFI, since it has no allocators. Inference types it: allocated storage, not a `$const`
      view, and an allocator whose `free` takes an address and a size (the root's is
-     `raw_free`). Lowering checks the routing, since only it can tell bindings apart: each
+     `raw_free`). Lowering checks the routing (and the checker now does too, below): each
      slot bound from an `$alloc` records the `allocator` binding it was drawn from
      (`aprov`, per function, carried through aliases), and `$free` insists on the same one;
      storage of unknown provenance is refused. It emits a call of the allocator's `free`
@@ -500,6 +500,17 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      through another allocator than the root's, and storage whose provenance is unknown —
      a capture, a non-root result.
      `stage1/fixtures/free_bad.mpl` in `test-reject`.
+   - **The checker refuses the routing too**, where it used to accept whatever lowering
+     then refused. Inference has no slots, so an `allocator` binding is named by where it
+     sits in the environment, counted from the far end (`alloc_at`; -1 for the root's) —
+     distinct for any two one function can see, since its environments all extend the one
+     it was entered with. A local bound from storage, and a parameter typed as allocated
+     storage, carry it on a hidden `$a:<name>` entry with the depth of the body that bound
+     it (`bind_prov`), which a capture or a rebinding hides. `$free` and a freeing callee's
+     argument (`free_arg`) ask it with lowering's messages. A call is taken as root storage
+     whenever its callee guarantees it, where lowering asks that only of a global or a
+     member (`call_root`), so the checker is the more permissive there.
+     `stage1/fixtures/free_route.mpl` in `test-reject`.
 
 ## Open questions
 
