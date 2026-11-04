@@ -340,6 +340,7 @@ pub fn build(b: *std.Build) void {
         // TRAITS.md, design point 7: a trait naming itself, by its block's name and through
         // a specialisation of its template, tied by §5.5. 116.
         .{ .src = "stage1/fixtures/self_trait.mpl", .want = "116\n" },
+        .{ .src = "stage1/fixtures/self_trait_adapt.mpl", .want = "501\n" },
         // §4.9's bounds in TRAITS.md's syntax — an F-bound, a trait bound, and a plain generic
         // beside a bounded one — checked at specialisation. 55.
         .{ .src = "stage1/fixtures/bounds.mpl", .want = "55\n" },

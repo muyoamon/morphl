@@ -599,6 +599,12 @@ $decl tviews $specialize P.list proto_tview
 $decl sx_ent   $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty t }
 $decl proto_sx $call sx_ent ("", T.t_bot)
 $decl sxs      $specialize P.list proto_sx
+// A member in progress whose trait its own body takes (`ltrait_of`), with the placeholder
+// that trait is on the first pass.
+$decl ts_ent   $func ($decl i 0, $decl v 0, $decl b T.proto_ty, $decl q "")
+  { $decl idx i  $decl var v  $decl blk b  $decl qual q }
+$decl proto_ts $call ts_ent (0, 0, T.t_bot, "")
+$decl tsl      $specialize P.list proto_ts
 
 // §3.4's defaults of a `$func` a block's `$decl` binds — a *local* function, which has no
 // definition context of the `fdef_ent` kind, since it is a closure and no wrapper could hold
@@ -783,6 +789,9 @@ $decl lstate $func () {
   // ancestor's retry rolls it back and lowers it afresh, so its own would be wasted — and
   // with nesting every wasted retry doubles what is under it (PERF.md, "Retries nested").
   $decl lpstack $mut $alloc strs.node
+  // `ltrait_of`'s placeholders, by member; outside the snapshot, since the retry reads the
+  // first pass's.
+  $decl tself   $mut $alloc tsl.node
   $decl minread $mut $alloc 1000000000
   // Reads of unsettled members that are not in progress: the reader answers for those.
   $decl nunk    $mut $alloc 0
@@ -2187,6 +2196,14 @@ $decl cv_lower $func ($decl st proto_lst, $decl c T.proto_cv, $decl nm "",
 // The props, not the type: §4.7 narrows by the scrutinee's name and narrowing
 // does not cross a call, so the caller — which is inside the `$match` that
 // proved this is a block — passes the list out.
+// The depth of member `k` among those in progress (0 the outermost), or a depth no member
+// has when it is not one — a read the reader must answer for itself.
+$decl lp_find $func ($decl xs strs.node, $decl k "", $decl n 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head, k)) ($call isub ($call strs.length (xs, 0), 1))
+        ($call lp_find ($call strs.val (xs.tail), k, n)),
+  $case xs n
+)
 $decl prop_from_ty $func ($decl st proto_lst, $decl ps T.props.node, $decl nm "",
                           $decl n Pa.proto_node) {
   $decl f $call find_prop (ps, nm)
@@ -2269,18 +2286,71 @@ $decl typed_props $func ($decl st proto_lst, $decl ps T.props.node, $decl all T.
   $case ps acc
 )
 
+// A trait taken inside one of the block's own members — `$traitsof s2` in a prop of `s2` — is
+// recursive: `μR. trait{bigger: (R) -> Bool}`, which inference ties as §5.5's knot. Lowering
+// derives the member's type while lowering it, so on the first pass that member is ⊥, and
+// the trait came out `trait{bigger: !}`; the retry was lowered against it, every caller saw
+// it, and an implementation needing an adapter for that member was refused ("cannot coerce
+// … to !"). So the first pass takes the trait as a placeholder, the member derives `B(R)`,
+// and the retry closes it: `μR. trait{…B(R)…}`.
+$decl self_member $func ($decl st proto_lst, $decl all T.props.node, $decl ps T.props.node,
+    $decl n Pa.proto_node) $match ps (
+  $case {$prop tag "cons"} {
+    $decl r   $call lval ($call prop_from_ty (st, all, ps.head.name, n))
+    // A member naming its receiver comes back a closure over it (`recv_wrap`).
+    $decl x   r.ir
+    $decl g   $match x ($case {$prop tag "global"} x.fn, $case {$prop tag "closure"} x.fn,
+                        $case x -1)
+    $decl on  $if ($call lt (g, 0)) false
+                  ($call lt ($call lp_find ($call strs.val (st.lpstack), $call int_to_str (g),
+                      1000000000), 1000000000))
+    $decl ret $if on ($call lres3 (r.ir, r.ty, g))
+                  ($call self_member (st, all, $call T.props.val (ps.tail), n))
+  }.ret,
+  $case ps ($call lres3 ($call IR.e_unit (0), T.t_bot, -1))
+)
+$decl find_ts $func ($decl xs tsl.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"} $if ($call eq_int (xs.head.idx, i)) xs ($call find_ts (xs.tail, i)),
+  $case xs xs
+)
+// The block and qualifier are kept so `lower_prop_func` can take the trait again, closed,
+// before its second pass: that pass reads its parameter types off the first pass's result.
+$decl ts_var $func ($decl st proto_lst, $decl i 0, $decl b T.proto_ty, $decl q "") {
+  $decl hit $call find_ts ($call tsl.val (st.tself), i)
+  $decl ret $match hit (
+      $case {$prop tag "cons"} hit.head.var,
+      $case hit {
+        $decl v    $call fresh_var (st)
+        $decl put  $set st.tself ($call tsl.cons ($call ts_ent (i, v, b, q), st.tself))
+        $decl ret2 v
+      }.ret2)
+}.ret
+$decl self_knot $func ($decl st proto_lst, $decl ps T.props.node, $decl tr T.proto_ty,
+    $decl b T.proto_ty, $decl q "", $decl n Pa.proto_node) {
+  $decl sm  $call self_member (st, ps, ps, n)
+  $decl ret $if ($call lt (sm.mod, 0)) tr {
+    $decl v    $call ts_var (st, sm.mod, b, q)
+    // A read of the member unsettled, as `note_read` records one, so it is lowered again.
+    $decl dp   $call lp_find ($call strs.val (st.lpstack), $call int_to_str (sm.mod), 1000000000)
+    $decl rd   $if ($call lt (dp, $call P.ival (st.minread))) ($do ($set st.minread dp) 0) 0
+    $decl ret2 $if ($call T.same ($call T.tval (sm.ty), T.t_bot)) ($call T.t_var (v))
+                   ($if ($call T.occurs (tr, v)) ($call T.close_var (tr, v)) tr)
+  }.ret2
+}.ret
 $decl ltrait_of $func ($decl st proto_lst, $decl v0 T.proto_ty, $decl q "", $decl n Pa.proto_node) {
   $decl v   $call T.unroll (v0)
   $decl ret $match v (
       $case {$prop tag "block"} {
         $decl ps   $call T.props.val (v.props)
-        $decl ret2 $call T.trait_of ($call T.t_block ($call T.fields.val (v.fields),
-                       $call typed_props (st, ps, ps, n, T.props.nil)), false, q)
+        $decl ret2 $call self_knot (st, ps, $call T.trait_of ($call T.t_block (
+                       $call T.fields.val (v.fields), $call typed_props (st, ps, ps, n,
+                       T.props.nil)), false, q), v0, q, n)
       }.ret2,
       $case {$prop tag "with"} {
         $decl ps   $call T.props.val (v.props)
-        $decl ret2 $call T.trait_of ($call T.t_with ($call T.tval (v.base),
-                       $call typed_props (st, ps, ps, n, T.props.nil)), false, q)
+        $decl ret2 $call self_knot (st, ps, $call T.trait_of ($call T.t_with (
+                       $call T.tval (v.base), $call typed_props (st, ps, ps, n, T.props.nil)),
+                       false, q), v0, q, n)
       }.ret2,
       $case v ($call T.trait_of (v, false, q))
     )
@@ -2297,8 +2367,10 @@ $decl tobj_of $func ($decl st proto_lst, $decl raw proto_lres, $decl x Pa.proto_
     $decl rir  $if ($call is_ref_ty ($call T.unroll (raw.ty))) raw.ir
                    ($if ($call is_name_node (x)) ($call IR.e_addr ($call intern (st, rft), raw.ir))
                         ($call IR.e_new ($call intern (st, rft), raw.ir)))
-    $decl ms   $match want ($case {$prop tag "trait"} ($call T.fields.val (want.members)),
-                            $case want T.fields.nil)
+    // Through a `μ`: a trait taken inside its own block is one (`self_knot`).
+    $decl wu   $call T.unroll (want)
+    $decl ms   $match wu ($case {$prop tag "trait"} ($call T.fields.val (wu.members)),
+                          $case wu T.fields.nil)
     $decl fs   $call tobj_fns (st, $call own_props (v), ms, n, IR.ints.nil)
     $decl ret2 $call lres ($call IR.e_tobj ($call intern (st, want), rir, fs), want)
   }.ret2
@@ -5240,14 +5312,6 @@ $decl bump_place $func ($decl st proto_lst) {
 
 $decl places $func ($decl st proto_lst) $call P.ival (st.nplace)
 
-// The depth of member `k` among those in progress (0 the outermost), or a depth no member
-// has when it is not one — a read the reader must answer for itself.
-$decl lp_find $func ($decl xs strs.node, $decl k "", $decl n 0) $match xs (
-  $case {$prop tag "cons"}
-    $if ($call eq_str (xs.head, k)) ($call isub ($call strs.length (xs, 0), 1))
-        ($call lp_find ($call strs.val (xs.tail), k, n)),
-  $case xs n
-)
 $decl lp_pop $func ($decl xs strs.node) $match xs (
   $case {$prop tag "cons"} ($call strs.val (xs.tail)),
   $case xs xs
@@ -5474,6 +5538,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   $decl mkey  $call concat ($call mod_short (m.path), $call concat (":", nm))
   $decl mfr   $call member_freed (st, mkey)
   $decl sn    $call take_snap (st)
+  $decl er0   $call eval_diags (st.errs)
   $decl q0    $call places (st)
   $decl mf0   $set st.mfree mfr
   // In progress at depth `dx`; a read of an ancestor (a depth below it) defers the retry.
@@ -5502,20 +5567,34 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // whatever it needs. The other two rollback sites need no such care: they
   // read `v0.ty` / `b0.val.ty`, which are already structural.
   $decl fty $call with_facts (st, $call fn_ty (st, lf0), mkey)
-  $decl und $if again ($call put_snap (st, sn)) 0
+  // A retry drops the first pass's diagnostics with its tree: the second reports what is
+  // wrong, and a self-taken trait (`self_knot`) is a placeholder the first cannot project.
+  $decl und $if again ($do ($call put_snap (st, sn)) ($do ($set st.errs er0) 0)) 0
   // Completed now that the body has given up its result type. The new entry
   // goes in front of the placeholder, which `find_mdone` therefore stops at.
   $decl p1  $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
+  // A self-taken trait (`self_knot`): its placeholder in `fty` becomes the trait taken again,
+  // which this member's now-known type lets `self_knot` close — `μR. trait{…}` — and the
+  // second pass is lowered against that.
+  $decl tv  $call find_ts ($call tsl.val (st.tself), idx)
+  $decl fty1 $match tv (
+      $case {$prop tag "cons"}
+        $if ($if again ($call T.occurs (fty, tv.head.var)) false)
+            ($call T.subst (fty, tv.head.var, $call ltrait_of (st, tv.head.blk, tv.head.qual, pn)))
+            fty,
+      $case tv fty)
+  $decl p1b $if ($call T.same (fty1, fty)) 0
+                ($call note_prop (st, m.id, $call mdone (nm, "global", idx, fty1, -1, -1)))
   $decl mf1 $set st.mfree mfr
   $decl lf  $if again
-      ($call lower_prop_body (st, pe, nm, pn, fty, $call prop_rank (m.props, nm, 0), ets, dpe))
+      ($call lower_prop_body (st, pe, nm, pn, fty1, $call prop_rank (m.props, nm, 0), ets, dpe))
       lf0
   $decl mf2 $set st.mfree strs.nil
   $decl mr2 $call P.ival (st.minread)
   $decl mrs $set st.minread ($if ($call lt (mr2, om)) mr2 om)
   $decl lpo $set st.lpstack ($call lp_pop ($call strs.val (st.lpstack)))
   $decl put $call put_lifted (st, idx, lf)
-  $decl ret $call lres ($call IR.e_global ($call intern (st, fty), idx), fty)
+  $decl ret $call lres ($call IR.e_global ($call intern (st, fty1), idx), fty1)
   // Restored after the result is computed, not before: a nested `$import` inside
   // this member has already moved `curmod` on, and everything this member lowers
   // must still be attributed to it.
