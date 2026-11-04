@@ -2175,7 +2175,7 @@ $decl cv_lower $func ($decl st proto_lst, $decl c T.proto_cv, $decl nm "",
   $case {$prop tag "cint"}  ($call lres ($call IR.e_int ($call intern (st, T.t_int), c.v), T.t_int)),
   $case {$prop tag "cstr"}  ($call lres ($call IR.e_str ($call intern (st, T.t_str), c.v), T.t_str)),
   $case {$prop tag "cbool"}
-    ($call lres ($call IR.e_bool ($call intern (st, T.t_bool), c.v),
+    ($call lres ($call IR.e_bool ($call intern (st, $if c.v T.t_true T.t_false), c.v),
                  $if c.v T.t_true T.t_false)),
   $case {$prop tag "cunit"} ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit)),
   $case {$prop tag "copaque"} {
@@ -5058,8 +5058,10 @@ $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
       T.t_str)),
   $case {$prop tag "float"} ($call lres ($call IR.e_float ($call intern (st, T.t_float), n.text),
       T.t_float)),
+  // At its own type, `true` or `false` (§3.2), as the result says: interned at `Bool`, the
+  // node disagreed with it, and `$if c 5 true` — `<Int, true>` — was asked to take a `Bool`.
   $case {$prop tag "bool"}
-    ($call lres ($call IR.e_bool ($call intern (st, T.t_bool), n.value),
+    ($call lres ($call IR.e_bool ($call intern (st, $if n.value T.t_true T.t_false), n.value),
                  $if n.value T.t_true T.t_false)),
   $case {$prop tag "unit"}  ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit)),
   $case {$prop tag "name"}  ($call lower_name (st, e, n)),

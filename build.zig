@@ -199,6 +199,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/tmpl_frame_fn.mpl", .want = "3442440001222220\n", .stage0 = false },
         .{ .src = "stage1/fixtures/tmpl_value.mpl", .want = "43532\n" },
         .{ .src = "stage1/fixtures/self_shadow.mpl", .want = "32426\n" },
+        .{ .src = "stage1/fixtures/main_union.mpl", .want = "5\n" },
+        .{ .src = "stage1/fixtures/bool_lit.mpl", .want = "1\n" },
         .{ .src = "stage1/fixtures/spec_self.mpl", .want = "684173\n" },
         .{ .src = "stage1/fixtures/spec_direct.mpl", .want = "351742\n" },
         .{ .src = "stage1/fixtures/spec_tmpl_gen.mpl", .want = "56873\n" },

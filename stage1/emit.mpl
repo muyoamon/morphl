@@ -5093,6 +5093,70 @@ $decl has_trait $func ($decl ts T.tys.node) $match ts (
   $case ts false
 )
 
+// What the entry point prints, as stage 0's `printAnswer` does by value: a `Str` as its
+// bytes, an `Int`, a boolean or unit as a number. A union of those — `$if c 5 "x"` — is
+// held once and printed by its tag, each member as stage 0 would print that value; a
+// `true`, `false` or unit member is its constant, since its payload carries nothing, and a
+// member stage 0 cannot print either is reported on stderr when it arrives, as stage 0
+// reports it. Any other answer is refused here: it used to be cast to `long long`, which
+// `cc` rejected after `mplc` had reported success.
+// ⊥ is a `main` that panics: the call never returns, so how it would print does not matter.
+$decl main_num $func ($decl t T.proto_ty) $match t (
+  $case {$prop tag "int"} true, $case {$prop tag "true"} true, $case {$prop tag "false"} true,
+  $case {$prop tag "unit"} true, $case {$prop tag "bottom"} true,
+  $case t ($call T.same (t, T.t_bool))
+)
+$decl main_leaf $func ($decl t T.proto_ty, $decl v "") $match t (
+  $case {$prop tag "str"}   $call concat ("mpl_print(", $call concat (v, ");")),
+  $case {$prop tag "int"}   $call concat ("printf(\"%lld\\n\", (long long)", $call concat (v, ");")),
+  $case {$prop tag "true"}  "printf(\"1\\n\");",
+  $case {$prop tag "false"} "printf(\"0\\n\");",
+  $case {$prop tag "unit"}  "printf(\"0\\n\");",
+  $case t ""
+)
+$decl main_any $func ($decl ms T.tys.node) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call eq_str ($call main_leaf ($call T.tval (ms.head), "v"), ""))
+        ($call main_any ($call T.tys.val (ms.tail))) true,
+  $case ms false
+)
+$decl main_arms $func ($decl ms T.tys.node, $decl i 0, $decl acc "") $match ms (
+  $case {$prop tag "cons"} {
+    $decl a0  $call main_leaf ($call T.tval (ms.head),
+                  $call concat ("mpl_m.u.m", $call int_to_str (i)))
+    $decl a   $if ($call eq_str (a0, ""))
+                  "fputs(\"main answered a value a compiled program cannot print\\n\", stderr);" a0
+    $decl ret $call main_arms ($call T.tys.val (ms.tail), $call add (i, 1),
+        $call concat (acc, $call concat ("    case ", $call concat ($call int_to_str (i),
+            $call concat (": ", $call concat (a, " break;\n"))))))
+  }.ret,
+  $case ms acc
+)
+// Stage 0 prints through a reference (`deref`), so storage holding a scalar prints its value.
+$decl main_out $func ($decl st proto_est, $decl mt T.proto_ty, $decl ct "", $decl v0 "") {
+  $decl t0   $call T.unroll (mt)
+  $decl isr  $match t0 ($case {$prop tag "ref"} true, $case t0 false)
+  $decl inr  $match t0 ($case {$prop tag "ref"} ($call T.unroll ($call T.tval (t0.inner))),
+                        $case t0 t0)
+  $decl rok  $if isr ($if ($call T.same (inr, T.t_str)) true ($call main_num (inr))) false
+  $decl t    $if rok inr t0
+  $decl val  $if rok ($call concat ("(*", $call concat (v0, ")"))) v0
+  $decl arms $match t (
+      $case {$prop tag "union"}
+        $if ($call main_any ($call T.tys.val (t.members)))
+            ($call main_arms ($call T.tys.val (t.members), 0, "")) "",
+      $case t "")
+  $decl ret  $if ($call T.same (t, T.t_str)) ($call concat ("  mpl_print(", $call concat (val, ");\n")))
+      ($if ($call main_num (t))
+           ($call concat ("  printf(\"%lld\\n\", (long long)", $call concat (val, ");\n")))
+      ($if ($call not ($call eq_str (arms, "")))
+           ($call concat ("  ", $call concat (ct, $call concat (" mpl_m = ", $call concat (val,
+               $call concat (";\n  switch (mpl_m.tag) {\n", $call concat (arms, "  }\n")))))))
+           ($do ($call eerr (st, $call concat ("main answers ", $call concat ($call T.show (mt),
+                    ", which a compiled program cannot print: the entry point prints an Int, a Str, a boolean or a union of them (stage 0 refuses the rest too)"))))
+                "")))
+}.ret
+
 $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   $decl ts $call T.tys.val (p.types)
   $decl fs $call IR.fns.val (p.funcs)
@@ -5196,16 +5260,13 @@ $decl emit_program $func ($decl st proto_est, $decl p IR.proto_program) {
   // drives the pending call afterwards. The entry point has to as well, or the program
   // prints the placeholder.
   $decl drv  $if ($call lt (mi, 0)) false ($call reports (st, mi))
-  $decl ct   $if ($call T.same (mt, T.t_str)) "mpl_str" "int64_t"
+  $decl ct   $if ($call lt (mi, 0)) "int64_t" ($call c_type (st, ts, mfn.result))
   $decl call $if ($call lt (mi, 0)) "" ($call concat ($call fn_name (st, mi), "(NULL)"))
   $decl val  $if drv "mpl_r" call
   $decl pre  $if drv
       ($call concat ("  ", $call concat (ct, $call concat (" mpl_r = ", $call concat (call,
           ";\n  mpl_tcdrive(&mpl_r);\n"))))) ""
-  $decl body $if ($call lt (mi, 0)) ""
-      ($call concat (pre, $if ($call T.same (mt, T.t_str))
-          ($call concat ("  mpl_print(", $call concat (val, ");\n")))
-          ($call concat ("  printf(\"%lld\\n\", (long long)", $call concat (val, ");\n")))))
+  $decl body $if ($call lt (mi, 0)) "" ($call concat (pre, $call main_out (st, mt, ct, val)))
   $decl d2 $if ($call lt (mi, 0))
       ($call enote (st, "no top-level $decl named 'main'"))
       ($call say (st, $call concat ($call concat ("\n", $call concat (runtime_state,
