@@ -635,6 +635,9 @@ $decl lstate $func () {
   // its lifted index, its type, and its captures' types — so naming it inside its own
   // body is a closure over itself (STDLIB.md, P10).
   $decl recname $mut $alloc ""
+  // `spec_fn_frame`'s literal, by its specialisation (`$tf:<key>`): lowered with itself as
+  // `self`, so a use of that specialisation directly in its body is the closure itself.
+  $decl tfself  $mut $alloc ""
   $decl scname  $mut $alloc ""
   $decl scidx   $mut $alloc -1
   $decl scty    $mut $alloc T.proto_ty
@@ -3420,6 +3423,28 @@ $decl spec_again $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmp
   }.ret
       ($call spec_call (st, e, args, keys, sp, -1, tail, $call tmpl_cs (st, r), n))
 
+// A `$func` body that reads the frame its template was written in (`tmpl_cs`) cannot be a
+// prop function, which has nowhere to keep a capture: it was refused as a prop's capture,
+// or — reached through an `$overload` — read the frame's slot out of the lifted function's
+// own frame. So it is lowered where the use stands, against the template's view of this
+// frame with the generics bound as `spec_build_props` binds them — type-only, so a generic
+// inferred by application needs no value — and the literal is a closure over this frame,
+// lifted once per specialisation all the same (`fnmemo` keys on the context entered here).
+$decl tf_self $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.ints.node)
+  $call concat ("$tf:", $call spec_key (st, r, keys))
+$decl spec_fn_frame $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                           $decl args Pa.nodes.node, $decl keys IR.ints.node) {
+  $decl sk  $call spec_key (st, r, keys)
+  $decl gm  $call fresh_mod_gen (st, $call gen_props (r.generics, args, mprops.nil), e,
+                sk, r.file)
+  $decl be  $call with_gens ($call tmpl_env (st, r), $call strs.val (r.generics), gm)
+  $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys), r.bfile)
+  $decl ts  $set st.tfself ($call tf_self (st, r, keys))
+  $decl v   $call lval ($call lower (st, be, r.body, false))
+  $decl mr  $call leave_mod (st, ms)
+  $decl ret v
+}.ret
+
 $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl n Pa.proto_node) {
   $decl tail $call P.bval (st.sptail)
@@ -3429,12 +3454,18 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
         $decl r0   $call tmpl_ctg (st, r)
         $decl b0   $call subst_ct_l (r0.body, r0.generics, args, r0.ctg)
         $decl isfn $call is_form (b0, "func")
-        $decl r    $call tmpl_rec_x (r0.id, r0.generics, $if isfn ($call fn_wrap (b0)) b0,
+        $decl fr   $if isfn ($call not ($call benv.is_nil ($call tmpl_cs (st, r0)))) false
+        $decl wr   $if fr false isfn
+        $decl r    $call tmpl_rec_x (r0.id, r0.generics, $if wr ($call fn_wrap (b0)) b0,
                        r0.env, r0.key, r0.file, r0.iid, r0.ctg, true,
                        $call spec_vals (st, r0.generics, args, r0.ctg, ""), r0.bfile)
         $decl hit  $call find_spec (st.specs, r.id, keys, r.vk)
         $decl inst $call inst_body (r.body)
-        $decl ret2 $match hit (
+        // Directly in its own body: the closure being lowered (`self_closure`).
+        $decl me   $if fr ($call eq_str ($call P.sval (st.scname), $call tf_self (st, r, keys)))
+                       false
+        $decl ret2 $if me ($call self_closure (st))
+                   ($if fr ($call spec_fn_frame (st, e, r, args, keys)) $match hit (
             $case {$prop tag "cons"}
               $if inst
                   ($if ($call lt (hit.head.mod, -1))
@@ -3447,8 +3478,8 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
             $case hit
               $if inst ($call spec_build_inst (st, e, r, args, keys, n, tail))
                   ($call spec_build_props (st, e, r, args, keys, n))
-          )
-        $decl ret3 $if ($if isfn ($call lt (-1, ret2.mod)) false)
+          ))
+        $decl ret3 $if ($if wr ($call lt (-1, ret2.mod)) false)
                        ($call lower_prop (st, ret2.mod, "$fn", n)) ret2
       }.ret3
 }.ret
@@ -4690,8 +4721,11 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       // does not see it; `self` only when the body names it (P10).
       $decl rnm  $call P.sval (st.recname)
       $decl clr  $set st.recname ""
+      $decl tfs  $call P.sval (st.tfself)
+      $decl clt  $set st.tfself ""
       $decl fns  $call free_names (n, strs.nil)
-      $decl self $if ($call eq_str (rnm, "")) "" ($if ($call mem_strs (fns, rnm)) rnm "")
+      $decl self $if ($call not ($call eq_str (tfs, ""))) tfs
+                     ($if ($call eq_str (rnm, "")) "" ($if ($call mem_strs (fns, rnm)) rnm ""))
       $decl cs0  $call caps (fns, e, benv.nil)
       // Bound by a block's `$decl`: its defaults are what a short call to it lowers
       // (`ldef_ent`), so they are kept, with the scope they are read in.
