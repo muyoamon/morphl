@@ -9,13 +9,15 @@
 # name that is a global at the top level is a frame slot there. --bugs prints only the classes that
 # are compiler bugs. Classes, first match wins:
 #
-#   NOT-COMPILED  stage 0 runs it and the checker accepts it, mplc refuses it
+#   NOT-COMPILED  the checker accepts it, mplc refuses it (whatever stage 0 says: mplc runs that
+#                 checker first, so what it refuses after is lowering, verify or emit)
 #   BAD-C         mplc emits C that cc refuses
 #   CRASH         the compiled program dies where stage 0 answered
 #   MISCOMPILE    stage 0 and the compiled program both answer, differently
 #   STRICTER      stage 0 runs it, the checker refuses it
 #   LENIENT       the checker accepts it, stage 0 refuses it
 #   UNLINKED      the C compiles and a symbol is missing at link (a §4.16 `$extern` with no host)
+#   REFUSED       NOT-COMPILED in a fixture that exists to be: `refused` below says why
 #
 # The first four are bugs, and any of them makes the exit status 1. The others often are not:
 # STRICTER is mostly a rule only the checker has (§4.10's source order, §5.3a), and LENIENT the
@@ -69,6 +71,14 @@ if [ $lift = 1 ]; then
   done
 fi
 
+# Programs mplc must refuse after the checker accepts them, and why. A lifted copy is the same.
+declare -A refused=(
+  [emit_err]="test-stage2: mplc fails on an emit error"
+  [override_diag]="test-reject: lowering's diagnostics, mapped back from an \$override"
+  [override2_diag]="test-reject: the same, two overrides down"
+  [override2_dmid]="override2_diag's middle module"
+  [override_diag_util]="override_diag's module, whose \$specialize is the refused shape"
+)
 declare -A count
 nbug=0
 for f in "${files[@]}"; do
@@ -91,8 +101,10 @@ for f in "${files[@]}"; do
     host=${f%.mpl}_host.c
     case "$f" in "$W"/lifted/*) host=stage1/fixtures/$(basename "${f%.mpl}")_host.c ;; esac
     [ -f "$host" ] || host=""
-    if ! cc -O1 -w -c -o "$b".o "$b".c 2>"$b".ccerr; then ccrc=1
-    elif ! cc -O1 -w -o "$b".bin "$b".o $host 2>"$b".ccerr; then ccrc=2
+    # -O0, as `test-emit`: an optimising cc turns a self call into a loop itself, which
+    # would hide a tail call §7.7 needed and the backend did not make.
+    if ! cc -O0 -w -c -o "$b".o "$b".c 2>"$b".ccerr; then ccrc=1
+    elif ! cc -O0 -w -o "$b".bin "$b".o $host 2>"$b".ccerr; then ccrc=2
     else
       ccrc=0
       out=$( (ulimit -v 8000000; timeout 120 "$b".bin) 2>&1 ); runrc=$?
@@ -104,7 +116,9 @@ for f in "${files[@]}"; do
   if [ $s0rc -ne 0 ] && [ -n "$s0p" ] && [ "$ccrc" = 0 ] && [ $lib = 0 ]; then
     # 134 is §7.8's abort, under `timeout` as without it.
     [ "$runrc" = 134 ] || { cls=MISCOMPILE; why="stage 0 ${s0p#error: }, compiled exit $runrc: $out"; }
-  elif [ $s0rc -eq 0 ] && [ "$tcn" = 0 ] && [ $mcrc -ne 0 ]; then cls=NOT-COMPILED; why=$mcl
+  elif [ "$tcn" = 0 ] && [ $mcrc -ne 0 ]; then
+    cls=NOT-COMPILED; why=$mcl
+    r=${refused[$(basename "$f" .mpl)]}; [ -n "$r" ] && { cls=REFUSED; why=$r; }
   elif [ $mcrc -eq 0 ] && [ "$ccrc" = 1 ]; then
     cls=BAD-C; why=$(grep -m1 error "$b".ccerr)
   elif [ "$ccrc" = 2 ]; then cls=UNLINKED; why=$(grep -m1 'undefined reference' "$b".ccerr)
@@ -125,7 +139,7 @@ for f in "${files[@]}"; do
   echo "$name: $cls  $why"
 done
 summary=""
-for c in NOT-COMPILED BAD-C CRASH MISCOMPILE STRICTER LENIENT UNLINKED; do
+for c in NOT-COMPILED BAD-C CRASH MISCOMPILE STRICTER LENIENT UNLINKED REFUSED; do
   [ -n "${count[$c]}" ] && summary="$summary $c ${count[$c]}"
 done
 echo "sweep: ${#files[@]} program(s),${summary:- all agree}"
