@@ -18,8 +18,10 @@
 #   LENIENT       the checker accepts it, stage 0 refuses it
 #   UNLINKED      the C compiles and a symbol is missing at link (a §4.16 `$extern` with no host)
 #   REFUSED       NOT-COMPILED in a fixture that exists to be: `refused` below says why
+#   UNSWEPT       all three refuse a fixture `build.zig` gives an answer (`.want`) — so the sweep
+#                 is not testing it, which a missing `// mplc-args:` line looks like
 #
-# The first four are bugs, and any of them makes the exit status 1. The others often are not:
+# The first four are bugs, and any of them makes the exit status 1, as UNSWEPT does. The others often are not:
 # STRICTER is mostly a rule only the checker has (§4.10's source order, §5.3a), and LENIENT the
 # bootstrap subset, which stage 0 enforces and the checker does not (BOOTSTRAP §1.2).
 #
@@ -86,6 +88,10 @@ declare -A refused=(
   [override2_dmid]="override2_diag's middle module"
   [override_diag_util]="override_diag's module, whose \$specialize specialises itself"
 )
+# The fixtures with an answer, which something has to be able to run.
+declare -A wants
+while read -r w; do wants[$w]=1; done < <(
+  grep -o 'stage1/fixtures/[A-Za-z0-9_]*\.mpl", \.want' build.zig | sed 's/", \.want$//')
 declare -A count
 nbug=0
 for f in "${files[@]}"; do
@@ -141,16 +147,18 @@ for f in "${files[@]}"; do
   elif [ $s0rc -eq 0 ] && [ "$tcn" != 0 ]; then cls=STRICTER; why="checker: $tcn error(s)"
   elif [ $s0rc -ne 0 ] && [ "$tcn" = 0 ]; then
     cls=LENIENT; why="stage 0: $(printf '%s\n' "$s0" | grep -m1 -i error)"
+  elif [ $s0rc -ne 0 ] && [ $mcrc -ne 0 ] && [ -n "${wants[$f]}" ]; then
+    cls=UNSWEPT; why="build.zig expects an answer; mplc: $mcl"
   fi
   [ -z "$cls" ] && continue
   count[$cls]=$(( ${count[$cls]:-0} + 1 ))
-  case $cls in NOT-COMPILED|BAD-C|CRASH|MISCOMPILE) nbug=$((nbug + 1)) ;;
+  case $cls in NOT-COMPILED|BAD-C|CRASH|MISCOMPILE|UNSWEPT) nbug=$((nbug + 1)) ;;
     *) [ $bugs = 1 ] && continue ;; esac
   name=$f; is_lifted "$f" && name="$(orig_name "$f").mpl (lifted)"
   echo "$name: $cls  $why"
 done
 summary=""
-for c in NOT-COMPILED BAD-C CRASH MISCOMPILE STRICTER LENIENT UNLINKED REFUSED; do
+for c in NOT-COMPILED BAD-C CRASH MISCOMPILE UNSWEPT STRICTER LENIENT UNLINKED REFUSED; do
   [ -n "${count[$c]}" ] && summary="$summary $c ${count[$c]}"
 done
 echo "sweep: ${#files[@]} program(s),${summary:- all agree}"
