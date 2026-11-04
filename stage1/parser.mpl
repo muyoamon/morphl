@@ -932,9 +932,38 @@ $decl lit_key $func ($decl n proto_node) $match n (
 // a missing module is reported exactly where and as it was. Shared, because a module's
 // resolved path is its identity in both passes (§4.14: "all imports of the same resolved
 // file yield the same module"), and with no roots it reads nothing.
+//
+// The joined path is normalised as text — a `.` segment dropped, `dir/..` folded — because
+// it is that identity: `./inner` and `inner` name one file, and keyed as written they were
+// two modules, each initialised, and two outputs defining one module's functions.
+$decl seg_push $func ($decl st pstrs.node, $decl s "")
+  $if ($call eq_str (s, "")) st
+  ($if ($call eq_str (s, ".")) st
+  ($if ($call eq_str (s, "..")) $match st (
+        $case {$prop tag "cons"}
+          $if ($call eq_str (st.head, "..")) ($call pstrs.cons (s, st)) ($call pstrs.val (st.tail)),
+        $case st ($call pstrs.cons (s, st)))
+       ($call pstrs.cons (s, st))))
+$decl segs_of $func ($decl p "", $decl i 0, $decl from 0, $decl st pstrs.node)
+  $if ($call eq_int (i, $call len (p))) ($call seg_push (st, $call slice (p, from, i)))
+      ($if ($call eq_int ($call byte (p, i), 47))
+           ($call segs_of (p, $call add (i, 1), $call add (i, 1),
+                $call seg_push (st, $call slice (p, from, i))))
+           ($call segs_of (p, $call add (i, 1), from, st)))
+// Newest first in, joined oldest first out.
+$decl segs_join $func ($decl st pstrs.node, $decl acc "") $match st (
+  $case {$prop tag "cons"}
+    $call segs_join ($call pstrs.val (st.tail),
+        $if ($call eq_str (acc, "")) st.head ($call concat (st.head, $call concat ("/", acc)))),
+  $case st acc
+)
+$decl norm_path $func ($decl p "") {
+  $decl abs $if ($call lt (0, $call len (p))) ($call eq_int ($call byte (p, 0), 47)) false
+  $decl ret $call concat ($if abs "/" "", $call segs_join ($call segs_of (p, 0, 0, pstrs.nil), ""))
+}.ret
 $decl join_path $func ($decl dir "", $decl nm "")
-  $if ($call eq_str (dir, "")) ($call concat (nm, ".mpl"))
-      ($call concat (dir, $call concat ("/", $call concat (nm, ".mpl"))))
+  $call norm_path ($if ($call eq_str (dir, "")) ($call concat (nm, ".mpl"))
+      ($call concat (dir, $call concat ("/", $call concat (nm, ".mpl")))))
 
 $decl is_file $func ($decl path "") {
   $decl r   $call read_file (path)

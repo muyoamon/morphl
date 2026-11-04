@@ -249,6 +249,7 @@ pub fn build(b: *std.Build) void {
         // §4.14: a module initialises at its first `$import`, in source order, not before
         // its importer's first item; a nested `$import` likewise, and a second one not at all.
         .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 " },
+        .{ .src = "stage1/fixtures/import_spell.mpl", .want = "i 5\n" },
         // A deferred prop read is a thunk lifted into the entry file's output, assigned
         // first; read as a value it used to be a zero pair and a crash. 2.
         .{ .src = "stage1/fixtures/init_lifted.mpl", .want = "2\n" },
@@ -892,6 +893,8 @@ pub fn build(b: *std.Build) void {
             // An intrinsic named as a value in two outputs, each with its generated wrapper,
             // and a pair made in the module called from the entry's file.
             .{ .src = "stage1/fixtures/prim_value.mpl", .want = "32555871\n", .mods = &.{"prim_value_util"} },
+            // One module under two spellings is one output, not two defining its functions.
+            .{ .src = "stage1/fixtures/import_spell.mpl", .want = "i 5\n", .mods = &.{ "import_spell_inner", "import_spell_util" } },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);

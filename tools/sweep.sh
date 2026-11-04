@@ -47,15 +47,18 @@ done
   { echo "sweep: needs zig-out/bin/mplc and morphlc (zig build && zig build stage2)"; exit 2; }
 
 W=${SWEEP_DIR:-${TMPDIR:-/tmp}/mpl-sweep}
-mkdir -p "$W/run" "$W/lifted" || exit 2
+mkdir -p "$W/run" || exit 2
+# Written into the source tree (the checker's driver, the lifted copies): removed however the
+# script ends.
+lifted=()
+trap 'rm -f stage1/.sweep_tc.mpl "${lifted[@]}"' EXIT
 
 # The checker, compiled. typecheck.mpl does its work at the top level, which a compiled program
 # runs from mpl_init, so it needs a `main` to link and does nothing in it.
 key=$(cat zig-out/bin/mplc stage1/*.mpl | md5sum | cut -c1-16)
 tc=$W/tc-$key
 if [ ! -x "$tc" ]; then
-  # Beside typecheck.mpl, so its `$import`s resolve; removed however the script ends.
-  trap 'rm -f stage1/.sweep_tc.mpl' EXIT
+  # Beside typecheck.mpl, so its `$import`s resolve.
   { cat stage1/typecheck.mpl; printf '\n$decl main $func () 0\n'; } > stage1/.sweep_tc.mpl
   ( ulimit -v 8000000; ./zig-out/bin/mplc stage1/.sweep_tc.mpl > "$W/tc.c" ) 2>"$W/tc.err"
   st=$?; rm -f stage1/.sweep_tc.mpl
@@ -63,11 +66,15 @@ if [ ! -x "$tc" ]; then
   cc -O1 -w -o "$tc" "$W/tc.c" || { echo "sweep: cc cannot compile the checker"; exit 2; }
 fi
 
+# A lifted copy is written beside its original, hidden from `*.mpl`: §4.14 resolves every
+# `$import` from the entry file's directory, a module's own included, so a copy anywhere else
+# could not load a module that imports another (`effect`, `import_order`, `module_value`).
+is_lifted() { case "$(basename "$1")" in .lifted_*) return 0 ;; esac; return 1; }
+orig_name() { local n; n=$(basename "$1" .mpl); printf '%s' "${n#.lifted_}"; }
 if [ $lift = 1 ]; then
-  rm -f "$W"/lifted/*.mpl
   for f in "${files[@]}"; do
-    out=$W/lifted/$(basename "$f")
-    python3 tools/lift.py "$f" "$out" && files+=("$out")
+    out=$(dirname "$f")/.lifted_$(basename "$f")
+    python3 tools/lift.py "$f" "$out" && { lifted+=("$out"); files+=("$out"); }
   done
 fi
 
@@ -98,8 +105,7 @@ for f in "${files[@]}"; do
     # Compiled and linked apart, so a C error is told from a missing symbol. A fixture that
     # crosses §4.16 links its `<name>_host.c`; one with no host that still lacks a symbol is
     # UNLINKED, which `unlinked.mpl` is on purpose.
-    host=${f%.mpl}_host.c
-    case "$f" in "$W"/lifted/*) host=stage1/fixtures/$(basename "${f%.mpl}")_host.c ;; esac
+    host=$(dirname "$f")/$(orig_name "$f")_host.c
     [ -f "$host" ] || host=""
     # -O0, as `test-emit`: an optimising cc turns a self call into a loop itself, which
     # would hide a tail call §7.7 needed and the backend did not make.
@@ -118,7 +124,7 @@ for f in "${files[@]}"; do
     [ "$runrc" = 134 ] || { cls=MISCOMPILE; why="stage 0 ${s0p#error: }, compiled exit $runrc: $out"; }
   elif [ "$tcn" = 0 ] && [ $mcrc -ne 0 ]; then
     cls=NOT-COMPILED; why=$mcl
-    r=${refused[$(basename "$f" .mpl)]}; [ -n "$r" ] && { cls=REFUSED; why=$r; }
+    r=${refused[$(orig_name "$f")]}; [ -n "$r" ] && { cls=REFUSED; why=$r; }
   elif [ $mcrc -eq 0 ] && [ "$ccrc" = 1 ]; then
     cls=BAD-C; why=$(grep -m1 error "$b".ccerr)
   elif [ "$ccrc" = 2 ]; then cls=UNLINKED; why=$(grep -m1 'undefined reference' "$b".ccerr)
@@ -135,7 +141,7 @@ for f in "${files[@]}"; do
   count[$cls]=$(( ${count[$cls]:-0} + 1 ))
   case $cls in NOT-COMPILED|BAD-C|CRASH|MISCOMPILE) nbug=$((nbug + 1)) ;;
     *) [ $bugs = 1 ] && continue ;; esac
-  name=$f; case "$f" in "$W"/lifted/*) name="$(basename "$f") (lifted)" ;; esac
+  name=$f; is_lifted "$f" && name="$(orig_name "$f").mpl (lifted)"
   echo "$name: $cls  $why"
 done
 summary=""

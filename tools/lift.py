@@ -6,8 +6,9 @@
 # The program's `main` is called from the new body and a new `main` calls that, so a lifted
 # fixture answers what the original does. `$import`s stay at the top level (§4.14 binds a module
 # where it stands, and a local one would be a different program), rewritten relative to <out>'s
-# directory so the copy can live anywhere. Exits 1, writing nothing, for a file with no
-# top-level `$decl main $func`.
+# directory. That is all a copy elsewhere can fix: a module's own `$import`s resolve from the
+# entry's directory too (§4.14), so tools/sweep.sh writes the copy beside the original. Exits 1,
+# writing nothing, for a file with no top-level `$decl main $func`.
 #
 # The point is the frame: a construct that works at the top level, where a name is a global, can
 # fail when the same name is a slot of an enclosing frame — §6a's trampoline, §4.15's `$try` in a

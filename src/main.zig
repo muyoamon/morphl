@@ -208,10 +208,11 @@ const FileLoader = struct {
         name: []const u8,
     ) interp.Loader.LoadError!interp.Loader.Resolved {
         const self: *const FileLoader = @ptrCast(@alignCast(ctx));
-        const path = if (self.base.len == 0)
+        const joined = if (self.base.len == 0)
             try std.fmt.allocPrint(arena, "{s}.mpl", .{name})
         else
             try std.fmt.allocPrint(arena, "{s}/{s}.mpl", .{ self.base, name });
+        const path = try normalizePath(arena, joined);
         const source = self.dir.readFileAlloc(self.io, path, arena, .limited(max_source_bytes)) catch
             return error.ReadFailed;
         return .{ .key = path, .source = source };
@@ -221,6 +222,28 @@ const FileLoader = struct {
         return .{ .ctx = self, .resolveFn = resolve };
     }
 };
+
+/// A path as text with each `.` segment dropped and each `dir/..` folded, as stage 1's
+/// `Pa.join_path` does: the result is the load-once key (§4.14: "all imports of the same
+/// resolved file yield the same module"), and keyed as written, `./inner` and `inner` were
+/// two modules and the file's effects ran twice.
+fn normalizePath(arena: Allocator, path: []const u8) Allocator.Error![]const u8 {
+    var segs: std.ArrayListUnmanaged([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0 or std.mem.eql(u8, seg, ".")) continue;
+        if (std.mem.eql(u8, seg, "..") and segs.items.len > 0 and
+            !std.mem.eql(u8, segs.items[segs.items.len - 1], ".."))
+        {
+            _ = segs.pop();
+            continue;
+        }
+        try segs.append(arena, seg);
+    }
+    const joined = try std.mem.join(arena, "/", segs.items);
+    if (path.len > 0 and path[0] == '/') return std.fmt.allocPrint(arena, "/{s}", .{joined});
+    return joined;
+}
 
 /// The host behind `read_file`, `write_file` and `args`.
 ///
