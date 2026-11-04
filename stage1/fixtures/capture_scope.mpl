@@ -15,7 +15,8 @@ $decl pr $func ($decl add $func ($decl a 0, $decl b 0) 0) {
   $decl b   { $prop f $func () $call add (1, 2) }
   $decl ret 0
 }.ret
-// Legal: a local `cb` that captures, and after it the top-level one passed as itself.
+// Legal: a local `cb` that captures, after it the top-level one passed as itself, and local
+// names for an intrinsic and for a global, which are those (`lower_item0`).
 $decl loc $func ($decl k 0) {
   $decl cb  $func ($decl x 0, $decl y 0) k
   $decl ret $call cb (1, 2)
@@ -24,6 +25,10 @@ $decl ok $func () {
   $decl r   $call qsort (0, 0, 8, cb)
   $decl c   $func ($decl x 0, $decl y 0) $call add (x, y)
   $decl s   $call qsort (0, 0, 8, c)
+  $decl iadd add
+  $decl h   cb
+  $decl d   $func ($decl x 0, $decl y 0) $call iadd (x, $call h (x, y))
+  $decl t   $call qsort (0, 0, 8, d)
   $decl ret 0
 }.ret
 $decl main $func () 0

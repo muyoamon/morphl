@@ -1991,6 +1991,11 @@ $decl fwd_cell_ty $func ($decl t T.proto_ty) $call T.t_ref_k ("", t, T.k_alloc)
 $decl cap_ty $func ($decl b proto_pbind)
   $if ($call is_fwd_kind (b.kind)) ($call fwd_cell_ty ($call T.tval (b.ty))) ($call T.tval (b.ty))
 
+// The intrinsic a `prim` binding names: a root one's own name (an `$override`'s hidden name
+// is the plain one, `Pa.ov_plain`), or the one a local alias recorded (`prim:<name>`).
+$decl prim_name $func ($decl k "", $decl nm "")
+  $if ($if ($call lt (5, $call len (k))) ($call eq_str ($call slice (k, 0, 5), "prim:")) false)
+      ($call slice (k, 5, $call len (k))) ($call Pa.ov_plain (nm))
 $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
   $decl nm $call name_of (n)
   $decl f  $call lookup (e, nm)
@@ -2025,7 +2030,7 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
                  ($call IR.e_prim ($if ($call is_over_l (bt))
                      ($call intern_cands (st, $call over_cands (bt), id))
                      ($do ($call seal_fn (st, bt)) id),
-                     $call Pa.ov_plain (nm)))))
+                     $call prim_name (f.bnd.kind, nm)))))
         $decl ret2  $call lres4 (ir, bt, f.bnd.mod, f.bnd.tmpl)
       }.ret2))
 }.ret
@@ -2188,6 +2193,7 @@ $decl own_props $func ($decl t0 T.proto_ty) {
 }.ret
 
 $decl global_of $func ($decl x IR.proto_expr) $match x ($case {$prop tag "global"} x.fn, $case x -1)
+$decl prim_of   $func ($decl x IR.proto_expr) $match x ($case {$prop tag "prim"} x.name, $case x "")
 
 $decl is_name_node $func ($decl n Pa.proto_node) $match n ($case {$prop tag "name"} true, $case n false)
 
@@ -5960,15 +5966,20 @@ $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
     // Another name for a global — `$decl h f`, `f` a top-level function — names it, not
     // the slot it is copied into: a short call through `h` takes `f`'s defaults (§3.4),
     // as one through a top-level alias does, and a `$func` naming `h` captures nothing.
-    $decl gx  $if ($call and ($call eq_int (v.mod, -1), $call eq_int (v.tmpl, -1)))
-                  ($call global_of (v.ir)) -1
+    // Another name for an intrinsic — `$decl isub sub` — is the intrinsic the same way
+    // (`prim:<name>`), so a call through it is the intrinsic's, inline, where it was an
+    // indirect call through the slot, and a `$func` or a `$prop` naming it captures nothing.
+    $decl pl  $call and ($call eq_int (v.mod, -1), $call eq_int (v.tmpl, -1))
+    $decl gx  $if pl ($call global_of (v.ir)) -1
+    $decl px  $if pl ($call prim_of (v.ir)) ""
     $decl ret   $call blk_acc (
         $call IR.bslots.cons ($call IR.bslot (sl, ir), $call IR.bslots.val (a.slots)),
         $call T.fields.cons ($call T.field (nm, v.ty), $call T.fields.val (a.flds)),
         $call T.props.val (a.prps),
-        $call benv.cons ($if ($call lt (gx, 0))
-                ($call bind_ent6 (nm, "local", sl, v.ty, v.mod, v.tmpl))
-                ($call bind_ent6 (nm, "global", gx, v.ty, v.mod, v.tmpl)),
+        $call benv.cons ($if ($call not ($call lt (gx, 0)))
+                ($call bind_ent6 (nm, "global", gx, v.ty, v.mod, v.tmpl))
+                ($if ($call eq_str (px, "")) ($call bind_ent6 (nm, "local", sl, v.ty, v.mod, v.tmpl))
+                     ($call bind_ent6 (nm, $call concat ("prim:", px), 0, v.ty, v.mod, v.tmpl))),
             $call benv.val (a.env)),
         IR.exprs.nil)
   }.ret)

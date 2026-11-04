@@ -800,6 +800,8 @@ $decl root_env
 // like an intrinsic — `add`, `allocator` — read as one, and no capture.
 $decl root_len $call env.length (root_env, 0)
 $decl root_mark $func ($decl nm "") $call concat ("$r:", nm)
+$decl bind_root $func ($decl e env.node, $decl n "", $decl r P.boolean)
+  $if r ($call bind (e, $call root_mark (n), T.t_unit)) e
 $decl root_named $func ($decl e env.node, $decl n "") $match e (
   $case {$prop tag "cons"}
     $if ($call eq_str (e.head.name, $call root_mark (n))) true
@@ -3582,8 +3584,7 @@ $decl hide_names $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
     $decl ci  $call cf_named (e, nm)
     $decl b   $call bind_glob ($call bind_if (acc, hn, f.ty,
                   $call def_named (e, nm, $call def_mark (nm))), hn, $call is_glob (e, nm))
-    $decl b2  $call bind_cf ($if ($call root_named (e, nm))
-                  ($call bind (b, $call root_mark (hn), T.t_unit)) b,
+    $decl b2  $call bind_cf ($call bind_root (b, hn, $call root_named (e, nm)),
                   hn, $call not ($call eq_int (ci, -1)), ci)
     $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail), $if f.ok b2 acc, d)
   }.ret,
@@ -4472,9 +4473,15 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
                 ($if ($call is_form (init, "import")) true ($call names_def (s.env, init)))
   // DEFER.md: where a local's storage came from, for `$free` (`prov_of`).
   $decl pv    $if ($call bval (cx.atfile)) -2 ($call prov_of (cx, s.env, init, ty))
-  $decl bound $set s.env ($call bind_cf ($call bind_prov ($call bind_glob ($call bind_if (s.env,
-                 nm, ty, isd), nm, $call bval (cx.atfile)), nm, pv, $call ival (cx.fdepth)), nm,
-                 $call is_form (init, "func"), cfi))
+  // Another name for a global or an intrinsic is that one, as lowering binds it
+  // (`lower_item0`): no capture, and a call's result through a global is root storage.
+  $decl an    $call name_of (init)
+  $decl glob  $if ($call bval (cx.atfile)) true
+                  ($if ($call eq_str (an, "")) false ($call is_glob (s.env, an)))
+  $decl rt    $if ($call eq_str (an, "")) false ($call root_named (s.env, an))
+  $decl bound $set s.env ($call bind_cf ($call bind_prov ($call bind_glob ($call bind_root (
+                 $call bind_if (s.env, nm, ty, isd), nm, rt), nm, glob), nm, pv,
+                 $call ival (cx.fdepth)), nm, $call is_form (init, "func"), cfi))
   // A `$fwd` already reserved this slot at its own position (§4.11), so
   // complete that one rather than appending a second.
   $decl added $set s.flds ($call put_field (s.flds, nm, ty))
