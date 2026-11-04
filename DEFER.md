@@ -507,9 +507,10 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      it was entered with. A local bound from storage, and a parameter typed as allocated
      storage, carry it on a hidden `$a:<name>` entry with the depth of the body that bound
      it (`bind_prov`), which a capture or a rebinding hides. `$free` and a freeing callee's
-     argument (`free_arg`) ask it with lowering's messages. A call is taken as root storage
-     whenever its callee guarantees it, where lowering asks that only of a global or a
-     member (`call_root`), so the checker is the more permissive there.
+     argument (`free_arg`) ask it with lowering's messages. A call is root storage when its
+     callee guarantees it and is one lowering can ask — a global, or a module's member
+     named `M.f` or from inside the module (`root_callee`, mirroring `call_root`): a local
+     function's type is lowering's own and carries no facts.
      `stage1/fixtures/free_route.mpl` in `test-reject`.
 
 ## Open questions

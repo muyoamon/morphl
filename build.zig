@@ -691,8 +691,10 @@ pub fn build(b: *std.Build) void {
                 "free_route.mpl:20:47: this storage came from another allocator than the one in scope here",
                 "free_route.mpl:25:26: the callee frees this argument through the root allocator, but it came from another",
                 "free_route.mpl:28:70: the callee frees this argument, so where it came from must be known here",
+                "free_route.mpl:32:26: the callee frees this argument, so where it came from must be known here",
+                "free_route.mpl:37:13: $free needs a name this function bound from an $alloc",
             },
-            .count = "errors: 5\n",
+            .count = "errors: 7\n",
             .stage0 = null,
         },
         // Lowering's diagnostics name their own file: a base template's line spliced by an

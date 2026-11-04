@@ -26,6 +26,16 @@ $decl pass $func () {
   $decl ret 0
 }.ret
 $decl lend $func ($decl b { $decl c ($call open (0)) }) $call close (b.c)
+// A local constructor's result: its type is no promise lowering can read (`call_root`).
+$decl loc $func () {
+  $decl mk  $func () $call open (1)
+  $decl ret $call close ($call mk ())
+}.ret
+$decl loc2 $func () {
+  $decl mk  $func () $call open (1)
+  $decl c   $call mk ()
+  $decl ret $free c
+}.ret
 // Legal: the allocator that made it, a copy, a root constructor's result, a parameter
 // passed on, and storage freed under its own arena.
 $decl ok $func () {

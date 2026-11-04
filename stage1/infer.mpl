@@ -2045,17 +2045,32 @@ $decl storage_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_f
 
 // Where storage `x` (of type `t`) came from, as `alloc_at` names it: an `$alloc` (or a view
 // of one) from the allocator in scope; a call, from the root when its callee guarantees it
-// (not in `nonroot`); a local, from its mark. Lowering is narrower about calls (`call_root`).
+// (not in `nonroot`) and is one lowering can ask (`root_callee`); a local, from its mark.
 $decl is_alloc_init $func ($decl n Pa.proto_node)
   $if ($call is_form (n, "alloc")) true
       ($if ($call P.or ($call is_form (n, "mut"), $call is_form (n, "const")))
            ($call is_form ($call op (n, 0), "alloc")) false)
+// A callee whose facts lowering reads (`call_root`): a global, or a member of a module —
+// `M.f`, or `f` inside its module, which is a global there. A local function's type is
+// lowering's own and carries none, so its result is of unknown provenance.
+$decl root_callee $func ($decl e env.node, $decl c Pa.proto_node) $match c (
+  $case {$prop tag "name"} $call is_glob (e, c.text),
+  $case {$prop tag "proj_name"} {
+    $decl tg   $call node_val (c.target)
+    $decl ret2 $match tg (
+        $case {$prop tag "name"} $call def_named (e, tg.text, $call def_mark (tg.text)),
+        $case tg false
+      )
+  }.ret2,
+  $case c false
+)
 $decl prov_of $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
                      $decl t T.proto_ty)
   $if ($call is_alloc_init (x)) ($call alloc_at (e))
   ($if ($call not ($call alloc_ref (t))) -2
   ($if ($call is_form (x, "call"))
-       ($if ($call in_strs ($call strs.val (cx.nonroot), $call fn_key_of (cx, x))) -2 -1)
+       ($if ($call in_strs ($call strs.val (cx.nonroot), $call fn_key_of (cx, x))) -2
+            ($if ($call root_callee (e, $call op (x, 0))) -1 -2))
   ($match x (
       $case {$prop tag "name"} ($call prov_named (e, x.text, $call ival (cx.fdepth))),
       $case x -2
