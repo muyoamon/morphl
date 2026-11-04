@@ -21,6 +21,10 @@
 # STRICTER is mostly a rule only the checker has (§4.10's source order, §5.3a), and LENIENT the
 # bootstrap subset, which stage 0 enforces and the checker does not (BOOTSTRAP §1.2).
 #
+# A program that panics agrees when the compiled one aborts too, and is a MISCOMPILE when it
+# does not. Only the abort is compared: §8 asks the two to agree on *that* an intrinsic panics,
+# and its text differs (`at`'s bounds); `zig build test-panic` checks the texts it pins.
+#
 # It tests the *installed* mplc, which is the committed backend until tools/regen.sh has run
 # (CLAUDE.md): sweep after regenerating, not before. A library — mplc warns there is no `main` —
 # is only compiled. The checker is typecheck.mpl compiled by that mplc, rebuilt when mplc or
@@ -92,11 +96,15 @@ for f in "${files[@]}"; do
     else
       ccrc=0
       out=$( (ulimit -v 8000000; timeout 120 "$b".bin) 2>&1 ); runrc=$?
-      out=$(printf '%s\n' "$out" | tail -1)
+      out=$(printf '%s\n' "$out" | grep -v '^timeout: ' | tail -1)
     fi
   fi
   cls=""; why=""
-  if [ $s0rc -eq 0 ] && [ "$tcn" = 0 ] && [ $mcrc -ne 0 ]; then cls=NOT-COMPILED; why=$mcl
+  s0p=$(printf '%s\n' "$s0" | grep -m1 -o 'error: panic: .*')
+  if [ $s0rc -ne 0 ] && [ -n "$s0p" ] && [ "$ccrc" = 0 ] && [ $lib = 0 ]; then
+    # 134 is §7.8's abort, under `timeout` as without it.
+    [ "$runrc" = 134 ] || { cls=MISCOMPILE; why="stage 0 ${s0p#error: }, compiled exit $runrc: $out"; }
+  elif [ $s0rc -eq 0 ] && [ "$tcn" = 0 ] && [ $mcrc -ne 0 ]; then cls=NOT-COMPILED; why=$mcl
   elif [ $mcrc -eq 0 ] && [ "$ccrc" = 1 ]; then
     cls=BAD-C; why=$(grep -m1 error "$b".ccerr)
   elif [ "$ccrc" = 2 ]; then cls=UNLINKED; why=$(grep -m1 'undefined reference' "$b".ccerr)

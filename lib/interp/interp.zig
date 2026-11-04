@@ -1256,15 +1256,15 @@ pub const Interp = struct {
             // and never frees (BOOTSTRAP §3), so here they are one form.
             .new, .alloc => blk: {
                 // DEFER.md: a block evaluated *into* storage runs its deferrals when the
-                // storage's owner dies or it is `$free`d — steps 3 and 4. Until then it is
-                // refused, rather than given the plain value's meaning it will lose.
-                // A `$new` literal's deferrals are its storage's (DEFER.md step 3): the
-                // literal hands them here instead of running them, and they go with the
-                // cell until the item it was made in decides who owns it (`settleFresh`).
-                // `$alloc` runs them when freed, which is step 4.
+                // storage's owner dies or it is `$free`d — steps 3 and 4. `$alloc`'s wait for
+                // a release stage 0 never makes (BOOTSTRAP §3), so it is refused, as `$free`
+                // is, rather than given the plain value's meaning. A `$new` literal's
+                // deferrals are its storage's (DEFER.md step 3): the literal hands them here
+                // instead of running them, and they go with the cell until the item it was
+                // made in decides who owns it (`settleFresh`).
                 var stored = false;
                 if (ops[0].data == .block) for (ops[0].data.block) |*e| if (e.isForm(.@"defer")) {
-                    if (f.keyword == .alloc) break :blk self.rt.fail(e.span, "$defer in a block that is $alloc storage is not implemented yet (DEFER.md, step 4)", .{});
+                    if (f.keyword == .alloc) break :blk self.rt.fail(e.span, "$defer in a block that is $alloc storage is outside the bootstrap subset: it runs when the storage is released, and stage 0 releases nothing (BOOTSTRAP 1.2)", .{});
                     stored = true;
                     break;
                 };
