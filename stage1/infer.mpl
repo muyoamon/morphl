@@ -96,11 +96,13 @@ $decl is_glob $func ($decl e env.node, $decl n "") $call def_named (e, n, $call 
 // A `$func` prop's identity beside its name, for `short_ok` (`dfr_ent`): -1 when the first of
 // the two a walk meets is the name.
 $decl dfr_mark $func ($decl nm "") $call concat ("$d:", nm)
-$decl bind_dfr $func ($decl e env.node, $decl n "", $decl f P.boolean, $decl i 0)
+$decl bind_idm $func ($decl e env.node, $decl k "", $decl f P.boolean, $decl i 0)
   $if f
-      ($call bind (e, $call dfr_mark (n), $call T.t_block (T.fields.nil,
+      ($call bind (e, k, $call T.t_block (T.fields.nil,
           $call T.props.cons ($call T.prop_entry ("id", $call T.cv_opaque (i)), T.props.nil))))
       e
+$decl bind_dfr $func ($decl e env.node, $decl n "", $decl f P.boolean, $decl i 0)
+  $call bind_idm (e, $call dfr_mark (n), f, i)
 $decl opaque_id $func ($decl c T.proto_cv) $match c (
   $case {$prop tag "copaque"} c.id,
   $case c -1
@@ -227,8 +229,8 @@ $decl fwd_list  $specialize P.list proto_fwd
 // `$decl` of a literal records is the **literal**, not a verdict about it. The
 // capture analysis is two AST walks and is wanted only for an argument that
 // actually crosses into C, which in a program with no `$extern` is none.
-$decl fnlit_ent   $func ($decl n "", $decl l Pa.proto_node, $decl en env.node)
-  { $decl name n  $decl lit l  $decl env en }
+$decl fnlit_ent   $func ($decl n "", $decl l Pa.proto_node, $decl en env.node, $decl i 0)
+  { $decl name n  $decl lit l  $decl env en  $decl id i }
 $decl proto_fnlit $call fnlit_ent ("", Pa.proto_node)
 $decl fnlit_list  $specialize P.list proto_fnlit
 
@@ -236,6 +238,24 @@ $decl find_fnlit $func ($decl xs fnlit_list.node, $decl nm "") $match xs (
   $case {$prop tag "cons"}
     $if ($call eq_str (xs.head.name, nm)) xs.head
         ($call find_fnlit ($call fnlit_list.val (xs.tail), nm)),
+  $case xs ($call fnlit_ent ("", Pa.proto_node))
+)
+// The literal a name in scope was bound to: its `$c:<name>` mark carries the entry's `id`
+// (`bind_cf`), and the first of the name and the mark a walk meets answers, so a parameter or
+// a later `$decl` spelled the same hides it. By name alone, a local `cb` answered with
+// whichever literal was last bound to any `cb`.
+$decl cf_mark $func ($decl nm "") $call concat ("$c:", nm)
+$decl bind_cf $func ($decl e env.node, $decl n "", $decl f P.boolean, $decl i 0)
+  $call bind_idm (e, $call cf_mark (n), f, i)
+$decl cf_named $func ($decl e env.node, $decl n "") $call dfr_named (e, n, $call cf_mark (n))
+$decl next_fnlit $func ($decl xs fnlit_list.node) $match xs (
+  $case {$prop tag "cons"} ($call add (xs.head.id, 1)),
+  $case xs 0
+)
+$decl find_fnlit_id $func ($decl xs fnlit_list.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.id, i)) xs.head
+        ($call find_fnlit_id ($call fnlit_list.val (xs.tail), i)),
   $case xs ($call fnlit_ent ("", Pa.proto_node))
 )
 
@@ -458,11 +478,12 @@ $decl ctx $func () {
   // top-level name read as global here, and the callback crossed into C with its
   // environment dropped (`topname_scope.mpl`).
   //
-  // Both grow and never shrink, like `ctnames` above. `cffns` answering for a name that
-  // is no longer the one in scope means a capture missed, which §5.3a's scope-blind
-  // `Pa.bound_names` already accepts as the right direction. `extnames` too large is the
-  // one that could reject a valid program, and takes a call to an unrelated name spelled
-  // like an extern.
+  // Both grow and never shrink, like `ctnames` above. A name finds its literal through a
+  // hidden `$c:<name>` entry carrying the entry's id (`cf_named`), so the answer follows
+  // scope: by name, a parameter `cb` was answered for by the top-level literal and a later
+  // local `cb` that captured refused the top-level one (`capture_scope.mpl`). `extnames` too
+  // large is the one that could reject a valid program, and takes a call to an unrelated
+  // name spelled like an extern.
   $decl extnames $mut $alloc strs.node
   $decl cffns    $mut $alloc fnlit_list.node
   // §3.4's short calls to a `$func` prop that must pass some arguments (`dfr_ent`).
@@ -771,6 +792,22 @@ $decl root_env
                                   $call T.union2 (t_ok, t_err))),
     "array", T.ffi_array), "at", T.ffi_at), "alen", T.ffi_alen), "args", args_t),
     "err", t_err), "none", t_none)
+
+// A name that is the root block's own binding where it is read: the first binding a walk meets
+// lies in the root's part of the environment, which every environment extends (counted from
+// the far end, as `alloc_at` counts), or it is an `$override`'s hidden name for one — a
+// `$r:<name>` mark, which `hide_names` binds. Asking `root_env` by name made a local spelled
+// like an intrinsic — `add`, `allocator` — read as one, and no capture.
+$decl root_len $call env.length (root_env, 0)
+$decl root_mark $func ($decl nm "") $call concat ("$r:", nm)
+$decl root_named $func ($decl e env.node, $decl n "") $match e (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (e.head.name, $call root_mark (n))) true
+        ($if ($call eq_str (e.head.name, n))
+             ($call not ($call lt (root_len, $call env.length (e, 0))))
+             ($call root_named (e.tail, n))),
+  $case e false
+)
 
 // ------------------------------------------------------------------ the walk
 
@@ -1121,15 +1158,14 @@ $decl infer_impl $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
 // The first name a `$func` literal captures, or "". A free name of the body is a
 // capture unless the literal binds it — a parameter, or a `$decl` inside — or it
 // is a **global**: a file top-level `$decl` in scope where the literal is written
-// (`is_glob`), or a root-block intrinsic, which §7.3 reaches through a static rather than
-// through the environment word.
+// (`is_glob`), or a root-block intrinsic where it is read (`root_named`), which §7.3 reaches
+// through a static rather than through the environment word.
 $decl first_cap $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
                        $decl skip Pa.pstrs.node) $match ns (
     $case {$prop tag "cons"} {
       $decl nm ns.head
-      $decl gl $call lookup (root_env, nm)
       $decl ok $if ($call Pa.mem_pstr (skip, nm)) true
-                   ($if ($call is_glob (e, nm)) true gl.ok)
+                   ($if ($call is_glob (e, nm)) true ($call root_named (e, nm)))
       $decl ret  $if ok ($call first_cap (cx, e, $call Pa.pstrs.val (ns.tail), skip)) nm
     }.ret,
     $case ns ""
@@ -1152,7 +1188,7 @@ $decl cb_ok $func ($decl cx proto_ctx, $decl e env.node, $decl a Pa.proto_node) 
   $case {$prop tag "form"}
     $if ($call eq_str (a.keyword, "func")) ($call eq_str ($call lit_caps (cx, e, a), "")) false,
   $case {$prop tag "name"} {
-    $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
+    $decl f $call find_fnlit_id ($call fnlit_list.val (cx.cffns), $call cf_named (e, a.text))
     $decl ret $if ($call eq_str (f.name, "")) false
                 ($call eq_str ($call lit_caps (cx, f.env, f.lit), ""))
   }.ret,
@@ -1165,7 +1201,7 @@ $decl cb_why $func ($decl cx proto_ctx, $decl e env.node, $decl a Pa.proto_node)
         ($call concat ("it captures ", $call lit_caps (cx, e, a)))
         "the compiler cannot see which $func literal it is",
   $case {$prop tag "name"} {
-    $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
+    $decl f $call find_fnlit_id ($call fnlit_list.val (cx.cffns), $call cf_named (e, a.text))
     $decl ret $if ($call eq_str (f.name, ""))
                 ($call concat (a.text, " is not a $decl of a $func literal"))
                 ($call concat (a.text, $call concat (" captures ",
@@ -3543,10 +3579,13 @@ $decl hide_names $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
     $decl f   $call lookup (e, nm)
     $decl cn  $call strs.val (cx.ctnames)
     $decl ct  $set cx.ctnames ($if ($call in_strs (cn, nm)) ($call strs.cons (hn, cn)) cn)
-    $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail),
-                  $if f.ok ($call bind_glob ($call bind_if (acc, hn, f.ty,
-                      $call def_named (e, nm, $call def_mark (nm))), hn, $call is_glob (e, nm)))
-                      acc, d)
+    $decl ci  $call cf_named (e, nm)
+    $decl b   $call bind_glob ($call bind_if (acc, hn, f.ty,
+                  $call def_named (e, nm, $call def_mark (nm))), hn, $call is_glob (e, nm))
+    $decl b2  $call bind_cf ($if ($call root_named (e, nm))
+                  ($call bind (b, $call root_mark (hn), T.t_unit)) b,
+                  hn, $call not ($call eq_int (ci, -1)), ci)
+    $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail), $if f.ok b2 acc, d)
   }.ret,
   $case ns acc
 )
@@ -4423,17 +4462,19 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   // all go away.
   $decl xn $set cx.extnames ($if ($call is_form (init, "extern"))
       ($call strs.cons (nm, cx.extnames)) ($call strs.val (cx.extnames)))
-  $decl cf $set cx.cffns ($if ($call is_form (init, "func"))
+  $decl cfi $call next_fnlit ($call fnlit_list.val (cx.cffns))
+  $decl cf  $set cx.cffns ($if ($call is_form (init, "func"))
       ($call fnlit_list.cons ($call fnlit_ent (nm, init,
-          $call bind_glob (s.env, nm, $call bval (cx.atfile))), cx.cffns))
+          $call bind_glob (s.env, nm, $call bval (cx.atfile)), cfi), cx.cffns))
       ($call fnlit_list.val (cx.cffns)))
   // §3.4: a `$func`, a module, or another name for a definition (`names_def`).
   $decl isd $if ($call is_form (init, "func")) true
                 ($if ($call is_form (init, "import")) true ($call names_def (s.env, init)))
   // DEFER.md: where a local's storage came from, for `$free` (`prov_of`).
   $decl pv    $if ($call bval (cx.atfile)) -2 ($call prov_of (cx, s.env, init, ty))
-  $decl bound $set s.env ($call bind_prov ($call bind_glob ($call bind_if (s.env, nm, ty, isd),
-                 nm, $call bval (cx.atfile)), nm, pv, $call ival (cx.fdepth)))
+  $decl bound $set s.env ($call bind_cf ($call bind_prov ($call bind_glob ($call bind_if (s.env,
+                 nm, ty, isd), nm, $call bval (cx.atfile)), nm, pv, $call ival (cx.fdepth)), nm,
+                 $call is_form (init, "func"), cfi))
   // A `$fwd` already reserved this slot at its own position (§4.11), so
   // complete that one rather than appending a second.
   $decl added $set s.flds ($call put_field (s.flds, nm, ty))
@@ -4611,11 +4652,10 @@ $decl prop_cap_name $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pst
     $decl nm   ns.head
     // An `$override`'s hidden name is the plain name where the text matters (`Pa.ov_plain`).
     $decl pn   $call Pa.ov_plain (nm)
-    $decl gl   $call lookup (root_env, pn)
     $decl kept $if ($call Pa.mem_pstr (skip, nm)) true
                ($if ($call is_glob (e, nm)) true
                ($if ($call in_strs ($call strs.val (cx.ctnames), nm)) true
-               ($if ($call eq_str (nm, rn)) true gl.ok)))
+               ($if ($call eq_str (nm, rn)) true ($call root_named (e, nm)))))
     $decl f    $call lookup (e, nm)
     $decl t    $if ($if kept false f.ok) ($call deref_ty (f.ty)) T.t_unit
     $decl here $if ($if kept true ($call not (f.ok))) "" $match t (

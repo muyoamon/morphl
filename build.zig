@@ -709,6 +709,18 @@ pub fn build(b: *std.Build) void {
             .count = "errors: 3\n",
             .stage0 = null,
         },
+        // A root-block name and a callback's literal are asked of the scope too: a local `add`
+        // is a capture, and a parameter `cb` is no `$decl` of the top-level literal.
+        .{
+            .src = "stage1/fixtures/capture_scope.mpl",
+            .stage1 = &.{
+                "capture_scope.mpl:10:35: a callback passed to C must be capture-free (§4.16 rule 2): c captures add",
+                "capture_scope.mpl:13:81: a callback passed to C must be capture-free (§4.16 rule 2): cb is not a $decl of a $func literal",
+                "capture_scope.mpl:15:15: a $prop's $func may not capture 'add': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
+            },
+            .count = "errors: 3\n",
+            .stage0 = null,
+        },
         // Lowering's diagnostics name their own file: a base template's line spliced by an
         // `$override` is mapped back from `Pa.ov_shift` (§4.12a), and a module member's
         // used to be reported against the entry file.
