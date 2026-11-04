@@ -192,7 +192,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/local_tmpl.mpl", .want = "573578\n" },
         .{ .src = "stage1/fixtures/local_prop.mpl", .want = "217646\n" },
         .{ .src = "stage1/fixtures/short_self.mpl", .want = "43607\n" },
-        .{ .src = "stage1/fixtures/prim_value.mpl", .want = "2555862\n" },
+        .{ .src = "stage1/fixtures/prim_value.mpl", .want = "32555871\n" },
         .{ .src = "stage1/fixtures/prop_dflt_local.mpl", .want = "34685\n" },
         .{ .src = "stage1/fixtures/short_alias.mpl", .want = "436\n" },
         .{ .src = "stage1/fixtures/prim_alias.mpl", .want = "44000000\n" },
@@ -888,6 +888,9 @@ pub fn build(b: *std.Build) void {
             .{ .src = "stage1/fixtures/override2.mpl", .want = "31410\n", .mods = &.{"override2_util"} },
             // A wrapper table is static in the output that coerces, named after its module.
             .{ .src = "stage1/fixtures/trait_wrap.mpl", .want = "534168\n", .mods = &.{"trait_wrap_util"} },
+            // An intrinsic named as a value in two outputs, each with its generated wrapper,
+            // and a pair made in the module called from the entry's file.
+            .{ .src = "stage1/fixtures/prim_value.mpl", .want = "32555871\n", .mods = &.{"prim_value_util"} },
         }) |fx| {
             const write = std.Build.Step.Run.create(b, "emit one output per module");
             write.addFileArg(ef_bin);

@@ -4,9 +4,11 @@
 // was "cannot emit the intrinsic" — at the top level and in a function alike. Emit now
 // generates the wrapper, whose body is a call to the intrinsic emitted as any call to it is.
 //
-// Answer 2555862: the top level's 42, `outer (7)` 1271345 and `outer (20)` 1284475, with each
+// Answer 32555871: the top level's 42, `outer (7)` 1271345 and `outer (20)` 1284475, with each
 // intrinsic reached through a local `$decl`, an alias of that, a higher-order call, a
-// closure, and an overload whose candidate on `Float` the program never otherwise uses.
+// closure, and an overload whose candidate on `Float` the program never otherwise uses; and
+// 30000009 from a module naming `str_to_int` and `concat` as values too (`test-split`).
+$decl u   $import "prim_value_util"
 $decl toi str_to_int
 $decl top $func () {
   $decl o   $call toi ("42")
@@ -43,4 +45,9 @@ $decl outer $func ($decl k 0) {
               $call add ($call mul (1000, $call by (cs, 0)), $call add ($call mul (100, wn),
               $call add ($call mul (10, rn), $call add (iv, $call loop (1000000))))))
 }.ret
-$decl main $func () $call add ($call top (), $call add ($call outer (7), $call outer (20)))
+$decl split $func () {
+  $decl c   $call u.pick ()
+  $decl ret $call add ($call mul (10000000, $call len ($call c ("ab", "c"))), $call u.via ("9"))
+}.ret
+$decl main $func () $call add ($call add ($call top (), $call outer (7)),
+                               $call add ($call outer (20), $call split ()))
