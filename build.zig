@@ -197,6 +197,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/short_alias.mpl", .want = "436\n" },
         .{ .src = "stage1/fixtures/prim_alias.mpl", .want = "44000000\n" },
         .{ .src = "stage1/fixtures/tmpl_frame_fn.mpl", .want = "3442440001222220\n", .stage0 = false },
+        .{ .src = "stage1/fixtures/tmpl_value.mpl", .want = "43532\n" },
+        .{ .src = "stage1/fixtures/self_shadow.mpl", .want = "32426\n" },
         .{ .src = "stage1/fixtures/spec_self.mpl", .want = "684173\n" },
         .{ .src = "stage1/fixtures/spec_direct.mpl", .want = "351742\n" },
         .{ .src = "stage1/fixtures/spec_tmpl_gen.mpl", .want = "56873\n" },
@@ -731,7 +733,7 @@ pub fn build(b: *std.Build) void {
             .src = "stage1/fixtures/override_diag.mpl",
             .stage1 = &.{
                 "override_diag_util.mpl:9:39: $free needs a name this function bound from an $alloc",
-                "override_diag_util.mpl:13:13: $specialize: this template's body is not a block with props or $decls",
+                "override_diag_util.mpl:11:38: this template's value specialises itself where it is evaluated",
             },
             .count = "check errors: 2\n",
             .stage0 = "$override is outside the bootstrap subset",

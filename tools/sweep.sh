@@ -84,7 +84,7 @@ declare -A refused=(
   [override_diag]="test-reject: lowering's diagnostics, mapped back from an \$override"
   [override2_diag]="test-reject: the same, two overrides down"
   [override2_dmid]="override2_diag's middle module"
-  [override_diag_util]="override_diag's module, whose \$specialize is the refused shape"
+  [override_diag_util]="override_diag's module, whose \$specialize specialises itself"
 )
 declare -A count
 nbug=0

@@ -594,6 +594,11 @@ $decl rcv_list $specialize P.list proto_rcv
 $decl tview_ent $func ($decl i 0, $decl en benv.node) { $decl id i  $decl env en }
 $decl proto_tview $call tview_ent (0, benv.nil)
 $decl tviews $specialize P.list proto_tview
+// A value-bodied specialisation being lowered (`spec_expr`), by its key, with what a use of it
+// inside its own body types as: §5.5's placeholder on the first pass, the closed type after.
+$decl sx_ent   $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty t }
+$decl proto_sx $call sx_ent ("", T.t_bot)
+$decl sxs      $specialize P.list proto_sx
 
 // §3.4's defaults of a `$func` a block's `$decl` binds — a *local* function, which has no
 // definition context of the `fdef_ent` kind, since it is a closure and no wrapper could hold
@@ -760,6 +765,8 @@ $decl lstate $func () {
   $decl sreach   $mut $alloc strs.node
   // The templates whose body is lowered against a view here, innermost first (`tview_ent`).
   $decl tview    $mut $alloc tviews.node
+  // The value-bodied specialisations being lowered, innermost first (`sx_ent`).
+  $decl sxpend   $mut $alloc sxs.node
   // Local functions' defaults (`ldef_ent`), newest first, and how many there have been.
   $decl ldefs    $mut $alloc ldef_list.node
   $decl nldef    $mut $alloc 0
@@ -2002,12 +2009,17 @@ $decl prim_name $func ($decl k "", $decl nm "")
 $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
   $decl nm $call name_of (n)
   $decl f  $call lookup (e, nm)
-  $decl ret $if ($call not (f.hit))
-      ($if ($if ($call eq_str ($call P.sval (st.scname), "")) false
-                ($call eq_str (nm, $call P.sval (st.scname))))
-           ($call self_closure (st))
-           ($call lres ($call IR.e_unit ($call err (st, $call concat ("unknown name '",
-                $call concat (nm, "'")), n)), T.t_bot)))
+  // A literal's own name (`self_closure`) wins over anything bound outside the literal — the
+  // root block's, a global, a captured outer binding — as the `$decl` naming it does from its
+  // own line on (§4.1); only a binding in the literal's frame hides it. Asked only on a miss,
+  // a block-local recursive `len` called the intrinsic.
+  $decl own $if f.hit ($if ($call eq_str (f.bnd.kind, "local")) true
+                           ($call eq_str (f.bnd.kind, "fwdl"))) false
+  $decl me  $if own false ($if ($call eq_str ($call P.sval (st.scname), "")) false
+                               ($call eq_str (nm, $call P.sval (st.scname))))
+  $decl ret $if me ($call self_closure (st)) ($if ($call not (f.hit))
+      ($call lres ($call IR.e_unit ($call err (st, $call concat ("unknown name '",
+                $call concat (nm, "'")), n)), T.t_bot))
     ($if ($call is_fwd_kind (f.bnd.kind)) {
         $decl bt   $call T.tval (f.bnd.ty)
         $decl rid  $call intern (st, $call fwd_cell_ty (bt))
@@ -2035,7 +2047,7 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
                      ($do ($call seal_fn (st, bt)) id),
                      $call prim_name (f.bnd.kind, nm)))))
         $decl ret2  $call lres4 (ir, bt, f.bnd.mod, f.bnd.tmpl)
-      }.ret2))
+      }.ret2)))
 }.ret
 
 // §4.6 as a layout position. The target is a value position, so a reference
@@ -3445,6 +3457,95 @@ $decl spec_fn_frame $func ($decl st proto_lst, $decl e benv.node, $decl r proto_
   $decl ret v
 }.ret
 
+// §4.9 lets a template's body be any expression, and only a block and a `$func` have a path
+// of their own: anything else — `$template T $union ({…none}, {…some $decl v T})`, an option
+// type — was refused ("the only shape lowered so far") although the checker accepted it and
+// stage 0 ran it. Such a body is a *value*, and §4.9 does not memoise values: it is lowered
+// where the use stands, the arguments bound into slots once, as an instance's are
+// (`bind_args`), against the template's view of the frame — the value is an outer block of
+// those slots and the body's, read at the body's. Not the props path: its generics module
+// keeps the first site's argument sources for every use at those types, which §4.10 makes
+// harmless for a prop and is wrong for a body that evaluates a generic.
+// A body the props path cannot take: one that may name or build a module — a name, which may
+// be one, or a `$specialize`, `$override`, `$impl` or `$import` — stays on it, as before.
+$decl value_body $func ($decl b Pa.proto_node) $match b (
+  $case {$prop tag "name"} false,
+  $case {$prop tag "form"}
+    $if ($call eq_str (b.keyword, "specialize")) false
+    ($if ($call eq_str (b.keyword, "override")) false
+    ($if ($call eq_str (b.keyword, "impl")) false
+    ($call not ($call eq_str (b.keyword, "import"))))),
+  $case b true
+)
+$decl find_sx $func ($decl xs sxs.node, $decl k "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head.key, k)) xs ($call find_sx (xs.tail, k)),
+  $case xs xs
+)
+$decl spec_expr_lower $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                             $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl sk "") {
+  $decl ms  $call enter_mod_in (st, sk, r.file, $call spec_ictx (st, r, keys), r.bfile)
+  $decl ga  $call bind_args (st, e, $call strs.val (r.generics), args,
+                $call gen_acc ($call tmpl_env (st, r), IR.bslots.nil, T.fields.nil))
+  $decl v   $call lval ($call lower (st, $call benv.val (ga.env), r.body, false))
+  $decl mr  $call leave_mod (st, ms)
+  $decl vid $call intern (st, v.ty)
+  $decl sl  $call fresh_slot (st, vid)
+  $decl oty $call T.t_block ($call T.fields.reverse ($call T.fields.cons ($call T.field ("$v", v.ty),
+                $call T.fields.val (ga.flds)), T.fields.nil), T.props.nil)
+  $decl oid $call intern (st, oty)
+  $decl oir $call IR.e_block (oid, $call IR.bslots.reverse (
+                $call IR.bslots.cons ($call IR.bslot (sl, v.ir), $call IR.bslots.val (ga.slots)),
+                IR.bslots.nil))
+  $decl ret $call lres4 ($call IR.e_field (vid, oir, $call strs.length (r.generics, 0)), v.ty,
+                v.mod, v.tmpl)
+}.ret
+// §5.5's knot, as `lower_prop_value` ties a recursive prop's: a use of this specialisation
+// inside its own body — a recursive generic `$union`, `$alloc $specialize lst T` in a later
+// member — takes a placeholder, the body derives `B(R)`, and a second pass is lowered
+// against `μR. B(R)`.
+$decl spec_expr_go $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                          $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl sk "",
+                          $decl n Pa.proto_node) {
+  $decl pv   $call fresh_var (st)
+  $decl old  $call sxs.val (st.sxpend)
+  $decl s0   $set st.sxpend ($call sxs.cons ($call sx_ent (sk, $call T.t_var (pv)), old))
+  // The snapshot holds neither diagnostics nor frame slots, so the first pass's are put
+  // back by hand, as `spec_knot` does.
+  $decl sn   $call take_snap (st)
+  $decl er   $call eval_diags (st.errs)
+  $decl ns   $call P.ival (st.nslots)
+  $decl sy   $call IR.ints.val (st.sltys)
+  $decl v0   $call spec_expr_lower (st, e, r, args, keys, sk)
+  $decl self $call T.occurs (v0.ty, pv)
+  $decl ty   $if self ($call T.close_var (v0.ty, pv)) ($call T.tval (v0.ty))
+  $decl gd   $if ($call T.unguarded_rec (ty))
+      ($call err (st, $call concat (
+          "this template's value recurs through a value, not storage, so it has no layout: write $alloc at the recursive position (§5.5). Derived ",
+          $call T.show (ty)), n))
+      0
+  $decl und  $if self ($do ($call put_snap (st, sn)) ($do ($set st.errs er)
+                 ($do ($set st.nslots ns) ($do ($set st.sltys sy) 0)))) 0
+  $decl s1   $set st.sxpend ($call sxs.cons ($call sx_ent (sk, ty), old))
+  $decl v    $if self ($call spec_expr_lower (st, e, r, args, keys, sk)) v0
+  $decl s2   $set st.sxpend old
+  $decl ret  $call lres4 (v.ir, ty, v.mod, v.tmpl)
+}.ret
+$decl spec_expr $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
+                       $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl n Pa.proto_node) {
+  $decl sk  $call spec_key (st, r, keys)
+  $decl hit $call find_sx ($call sxs.val (st.sxpend), sk)
+  // In a type-only position (§5.7) only the type is wanted, and it is the knot's. Evaluated,
+  // the value would be itself again, with nothing to stop it.
+  $decl ret $match hit (
+      $case {$prop tag "cons"}
+        $if ($call lt (0, $call P.ival (st.tonly)))
+            ($call lres ($call IR.e_unit ($call intern (st, hit.head.ty)), hit.head.ty))
+            ($call lres ($call IR.e_unit ($call err (st,
+                "this template's value specialises itself where it is evaluated, which has no end (§4.9); only a type-only position may, as a $union's later member does",
+                n)), T.t_bot)),
+      $case hit ($call spec_expr_go (st, e, r, args, keys, sk, n)))
+}.ret
+
 $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl n Pa.proto_node) {
   $decl tail $call P.bval (st.sptail)
@@ -3456,6 +3557,7 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
         $decl isfn $call is_form (b0, "func")
         $decl fr   $if isfn ($call not ($call benv.is_nil ($call tmpl_cs (st, r0)))) false
         $decl wr   $if fr false isfn
+        $decl ex   $if isfn false ($if ($call is_block_ast (b0)) false ($call value_body (b0)))
         $decl r    $call tmpl_rec_x (r0.id, r0.generics, $if wr ($call fn_wrap (b0)) b0,
                        r0.env, r0.key, r0.file, r0.iid, r0.ctg, true,
                        $call spec_vals (st, r0.generics, args, r0.ctg, ""), r0.bfile)
@@ -3465,7 +3567,8 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
         $decl me   $if fr ($call eq_str ($call P.sval (st.scname), $call tf_self (st, r, keys)))
                        false
         $decl ret2 $if me ($call self_closure (st))
-                   ($if fr ($call spec_fn_frame (st, e, r, args, keys)) $match hit (
+                   ($if fr ($call spec_fn_frame (st, e, r, args, keys))
+                   ($if ex ($call spec_expr (st, e, r, args, keys, n)) $match hit (
             $case {$prop tag "cons"}
               $if inst
                   ($if ($call lt (hit.head.mod, -1))
@@ -3478,7 +3581,7 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
             $case hit
               $if inst ($call spec_build_inst (st, e, r, args, keys, n, tail))
                   ($call spec_build_props (st, e, r, args, keys, n))
-          ))
+          )))
         $decl ret3 $if ($if wr ($call lt (-1, ret2.mod)) false)
                        ($call lower_prop (st, ret2.mod, "$fn", n)) ret2
       }.ret3
