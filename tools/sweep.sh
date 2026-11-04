@@ -91,11 +91,16 @@ nbug=0
 for f in "${files[@]}"; do
   b=$W/run/$(printf '%s' "$f" | tr '/.' '__')
   rm -f "$b".c "$b".o "$b".bin "$b".ccerr
-  s0=$( (ulimit -v 3000000; timeout 120 ./zig-out/bin/morphlc --run --main "$f" 2>&1) ); s0rc=$?
+  # A fixture's own flags — `// mplc-args: -L stage1/fixtures/lib` — go to all three, as
+  # `mplc` takes them: after the file, and before it for stage 0, whose later arguments are
+  # the program's.
+  read -ra xa <<< "$(sed -n 's|^// mplc-args: *||p' "$f" | head -1)"
+  s0=$( (ulimit -v 3000000; timeout 120 ./zig-out/bin/morphlc --run --main "${xa[@]}" "$f" 2>&1) )
+  s0rc=$?
   s0l=$(printf '%s\n' "$s0" | tail -1)
-  tcn=$( (ulimit -v 8000000; timeout 120 "$tc" "$f" 2>&1) | grep '^errors: ' | tail -1)
+  tcn=$( (ulimit -v 8000000; timeout 120 "$tc" "$f" "${xa[@]}" 2>&1) | grep '^errors: ' | tail -1)
   tcn=${tcn#errors: }; [ -z "$tcn" ] && tcn=crash
-  mc=$( (ulimit -v 8000000; timeout 120 ./zig-out/bin/mplc "$f") 2>&1 >"$b".c ); mcrc=$?
+  mc=$( (ulimit -v 8000000; timeout 120 ./zig-out/bin/mplc "$f" "${xa[@]}") 2>&1 >"$b".c ); mcrc=$?
   mcl=$(printf '%s\n' "$mc" | grep -v 'warning: no top-level' | head -1)
   lib=0; printf '%s\n' "$mc" | grep -q "no top-level \$decl named 'main'" && lib=1
   ccrc=-; runrc=-; out=""

@@ -177,19 +177,22 @@ const RunCtx = struct {
 };
 
 const usage =
-    \\usage: morphlc [--tokens|--run [--main]] <file.mpl> [program args...]
+    \\usage: morphlc [--tokens|--run [--main]] [-L <dir>]... <file.mpl> [program args...]
     \\
     \\  --tokens   print the token stream instead of the AST
     \\  --run      evaluate the file instead of printing the AST
     \\  --main     with --run, then call the file's `main` and print what it
     \\             answers, as the compiled program's `main` does
+    \\  -L <dir>   a search root for `$import`, tried after the entry file's
+    \\             directory, in order (§4.14; `mplc <file> -L <dir>`)
     \\
     \\Arguments after <file.mpl> are passed to the program, where the `args`
     \\intrinsic returns them.
     \\
 ;
 
-/// Resolves `$import "name"` to `<entry file's directory>/name.mpl`.
+/// Resolves `$import "name"` to `<entry file's directory>/name.mpl`, or failing that to
+/// the first `<root>/name.mpl` that reads, `-L`'s roots in order — `Pa.resolve_import`.
 ///
 /// §4.14 makes import names logical and hands resolution to the build program
 /// ("search roots and an explicit name→file map"). This is the stage-0
@@ -201,6 +204,20 @@ const FileLoader = struct {
     io: Io,
     dir: Io.Dir,
     base: []const u8,
+    roots: []const []const u8 = &.{},
+
+    fn read(self: *const FileLoader, arena: Allocator, dir: []const u8, name: []const u8)
+        interp.Loader.LoadError!?interp.Loader.Resolved
+    {
+        const joined = if (dir.len == 0)
+            try std.fmt.allocPrint(arena, "{s}.mpl", .{name})
+        else
+            try std.fmt.allocPrint(arena, "{s}/{s}.mpl", .{ dir, name });
+        const path = try normalizePath(arena, joined);
+        const source = self.dir.readFileAlloc(self.io, path, arena, .limited(max_source_bytes)) catch
+            return null;
+        return .{ .key = path, .source = source };
+    }
 
     fn resolve(
         ctx: *const anyopaque,
@@ -208,14 +225,9 @@ const FileLoader = struct {
         name: []const u8,
     ) interp.Loader.LoadError!interp.Loader.Resolved {
         const self: *const FileLoader = @ptrCast(@alignCast(ctx));
-        const joined = if (self.base.len == 0)
-            try std.fmt.allocPrint(arena, "{s}.mpl", .{name})
-        else
-            try std.fmt.allocPrint(arena, "{s}/{s}.mpl", .{ self.base, name });
-        const path = try normalizePath(arena, joined);
-        const source = self.dir.readFileAlloc(self.io, path, arena, .limited(max_source_bytes)) catch
-            return error.ReadFailed;
-        return .{ .key = path, .source = source };
+        if (try self.read(arena, self.base, name)) |r| return r;
+        for (self.roots) |root| if (try self.read(arena, root, name)) |r| return r;
+        return error.ReadFailed;
     }
 
     fn loader(self: *const FileLoader) interp.Loader {
@@ -351,6 +363,7 @@ pub fn main(init: process.Init.Minimal) !void {
     var dump_tokens = false;
     var run = false;
     var call_main = false;
+    var roots: std.ArrayListUnmanaged([]const u8) = .empty;
     // Everything after the input file belongs to the program, not to morphlc,
     // and is what its `args` intrinsic returns.
     var program_args: []const []const u8 = &.{};
@@ -369,6 +382,9 @@ pub fn main(init: process.Init.Minimal) !void {
             run = true;
         } else if (std.mem.eql(u8, arg, "--main")) {
             call_main = true;
+        } else if (std.mem.eql(u8, arg, "-L") and i + 1 < args.len) {
+            i += 1;
+            try roots.append(arena, args[i]);
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try out.writeAll(usage);
             try out.flush();
@@ -418,6 +434,7 @@ pub fn main(init: process.Init.Minimal) !void {
                     .io = io,
                     .dir = Io.Dir.cwd(),
                     .base = Io.Dir.path.dirname(file_path) orelse "",
+                    .roots = roots.items,
                 };
                 const host: HostPlatform = .{
                     .io = io,

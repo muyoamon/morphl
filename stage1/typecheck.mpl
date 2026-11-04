@@ -1,4 +1,5 @@
-// Type-check a file: morphlc --run stage1/typecheck.mpl <file.mpl>
+// Type-check a file: morphlc --run stage1/typecheck.mpl <file.mpl> [-L <dir>]...
+// `-L` as `mplc` takes it: §4.14's search roots, after the file's own directory.
 //
 // §9's pipeline, stopped after `check`: a driver is a build program that calls
 // the compiler library and prints what came back (§9.1).
@@ -18,7 +19,17 @@ $decl src $match rf (
   $case rf ($call panic ($call concat ("cannot read ", path)))
 )
 
-$decl r $call C.infer ($call C.parse (src, path))
+// The `-L <dir>` pairs after the file, in order (`mplc.mpl`'s `lib_roots`).
+$decl nargv $call alen (argv)
+$decl arg_at $func ($decl i 0) $if ($call lt (i, nargv)) ($call P.sval ($call at (argv, i))) ""
+$decl lib_roots $func ($decl i 0, $decl acc Pa.pstrs.node)
+  $if ($if ($call eq_str ($call arg_at (i), "-L")) ($call lt ($call add (i, 1), nargv)) false)
+      ($call lib_roots ($call add (i, 2),
+           $call Pa.pstrs.cons ($call arg_at ($call add (i, 1)), acc)))
+      ($call Pa.pstrs.reverse (acc, Pa.pstrs.nil))
+$decl roots $call lib_roots (1, Pa.pstrs.nil)
+
+$decl r $call C.infer ($call C.parse (src, path, roots))
 
 $decl show_errs $func ($decl xs Pa.diags.node, $decl p "") $match xs (
   $case {$prop tag "cons"}

@@ -1,5 +1,6 @@
 // §4.14's search roots: `mplc libroot.mpl -L stage1/fixtures/lib`. A name resolves
 // beside the entry file first and then in each root in order (`Pa.resolve_import`).
+// mplc-args: -L stage1/fixtures/lib
 //
 // 10 + 12 + 1 = 23: a library module, a library module importing another through the
 // root, and a module beside the entry winning over the root's of the same name (100).
