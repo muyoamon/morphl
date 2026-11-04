@@ -697,6 +697,18 @@ pub fn build(b: *std.Build) void {
             .count = "errors: 7\n",
             .stage0 = null,
         },
+        // A local spelled like a top-level name is no global: §4.16 rule 2's callback, a
+        // trait object's frame (§5.3a) and an `$alloc` block's deferral ask the scope.
+        .{
+            .src = "stage1/fixtures/topname_scope.mpl",
+            .stage1 = &.{
+                "topname_scope.mpl:12:35: a callback passed to C must be capture-free (§4.16 rule 2): c captures helper",
+                "topname_scope.mpl:15:10: this function's result holds frame storage made in this call",
+                "topname_scope.mpl:21:33: an $alloc block's deferral runs at $free, after this frame is gone",
+            },
+            .count = "errors: 3\n",
+            .stage0 = null,
+        },
         // Lowering's diagnostics name their own file: a base template's line spliced by an
         // `$override` is mapped back from `Pa.ov_shift` (§4.12a), and a module member's
         // used to be reported against the entry file.

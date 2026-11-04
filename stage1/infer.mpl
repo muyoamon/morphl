@@ -85,8 +85,8 @@ $decl def_named $func ($decl e env.node, $decl n "", $decl k "") $match e (
   $case e false
 )
 // A file's own top-level binding is a global (§7.3): reading one from a `$func` is no capture.
-// Marked the same way, `$g:<name>` after the name, so the answer follows scope where `topnames`
-// is only a set of names — one module's top-level `helper` made every `helper` read as global,
+// Marked the same way, `$g:<name>` after the name, so the answer follows scope where
+// `topnames` was only a set of names — one module's top-level `helper` made every `helper` global,
 // a function's local included, and a `$prop`'s `$func` reading that local was accepted here and
 // refused by lowering (`prop_cap_name`). Bound only while `atfile`: what lowering lifts.
 $decl glob_mark $func ($decl nm "") $call concat ("$g:", nm)
@@ -227,7 +227,8 @@ $decl fwd_list  $specialize P.list proto_fwd
 // `$decl` of a literal records is the **literal**, not a verdict about it. The
 // capture analysis is two AST walks and is wanted only for an argument that
 // actually crosses into C, which in a program with no `$extern` is none.
-$decl fnlit_ent   $func ($decl n "", $decl l Pa.proto_node) { $decl name n  $decl lit l }
+$decl fnlit_ent   $func ($decl n "", $decl l Pa.proto_node, $decl en env.node)
+  { $decl name n  $decl lit l  $decl env en }
 $decl proto_fnlit $call fnlit_ent ("", Pa.proto_node)
 $decl fnlit_list  $specialize P.list proto_fnlit
 
@@ -288,9 +289,10 @@ $decl proto_fframe $call fframe (0, 0, "")
 $decl fframes      $specialize P.list proto_fframe
 
 $decl pesc_ent $func ($decl pid 0, $decl pi 0, $decl px Pa.proto_node, $decl pr T.proto_ty,
-    $decl pw T.proto_ty, $decl po 0, $decl pk fframes.node)
-  { $decl id pid  $decl i pi  $decl x px  $decl raw pr  $decl want pw  $decl own po  $decl stk pk }
-$decl proto_pesc $call pesc_ent (0, 0, Pa.proto_node, T.t_bot, T.t_bot, 0, fframes.nil)
+    $decl pw T.proto_ty, $decl po 0, $decl pk fframes.node, $decl pe env.node)
+  { $decl id pid  $decl i pi  $decl x px  $decl raw pr  $decl want pw  $decl own po  $decl stk pk
+    $decl env pe }
+$decl proto_pesc $call pesc_ent (0, 0, Pa.proto_node, T.t_bot, T.t_bot, 0, fframes.nil, env.nil)
 $decl pesc_list  $specialize P.list proto_pesc
 
 // A parameter found to escape after its function had already closed: its key and index,
@@ -442,28 +444,27 @@ $decl ctx $func () {
   // §4.16 rule 2. The section makes capture-freeness "a property of the
   // *expression* in the argument position", holding "when the compiler can see
   // which `$func` literal the value came from" — so the check is syntactic, and
-  // these three sets are what it can see.
+  // these two sets are what it can see, with `is_glob` for what is global.
   //
   // `extnames` is the names bound to an `$extern`, which is how a call site
   // knows it is crossing into C: §4.16's signature is an ordinary `$func` type
   // and carries nothing to say so. `cffns` maps a name to the `$func` **literal**
   // its `$decl` gave it — the literal itself, not a verdict about it, since the
   // capture analysis is two AST walks and is wanted only for an argument that
-  // actually crosses. `topnames` is the names bound at a file's top
-  // level, which lowering lifts to globals — reading one is not a capture
-  // (§7.3), so they are what the captured set is taken modulo.
+  // actually crosses; it keeps the environment the literal was written in, which is
+  // where a free name of its body is judged global (`first_cap`). A global — a file's
+  // top-level binding, which lowering lifts — is no capture (§7.3), and `is_glob` asks
+  // the scope: `topnames`, a set of bare names, made a local spelled like one module's
+  // top-level name read as global here, and the callback crossed into C with its
+  // environment dropped (`topname_scope.mpl`).
   //
-  // All three grow and never shrink, like `ctnames` above, and all three err
-  // the same way: `topnames` too large, or `cffns` answering for a name that is
-  // no longer the one in scope, means a capture missed,
-  // which §5.3a's scope-blind `Pa.bound_names` already accepts as the right
-  // direction. `extnames` too large is the one that could reject a valid
-  // program, and takes a call to an unrelated name spelled like an extern.
-  // §4.10's prop rule asks the environment instead (`is_glob`), since lowering
-  // refuses what a too-large `topnames` lets through there.
+  // Both grow and never shrink, like `ctnames` above. `cffns` answering for a name that
+  // is no longer the one in scope means a capture missed, which §5.3a's scope-blind
+  // `Pa.bound_names` already accepts as the right direction. `extnames` too large is the
+  // one that could reject a valid program, and takes a call to an unrelated name spelled
+  // like an extern.
   $decl extnames $mut $alloc strs.node
   $decl cffns    $mut $alloc fnlit_list.node
-  $decl topnames $mut $alloc strs.node
   // §3.4's short calls to a `$func` prop that must pass some arguments (`dfr_ent`).
   $decl dfrs     $mut $alloc dfr_list.node
   // §5.3a's provenance (`owns_x`): the positions — file, line and column — of call results
@@ -963,13 +964,14 @@ $decl in_strs $func ($decl xs strs.node, $decl n "") $match xs (
 // or a reference — to fresh frame storage holding its value, as `$new e` would. Its type is
 // `e`'s props' signatures with `e`'s own type abstracted as `Self`.
 // Whether the object made is frame-bound (§5.3a): a reference has its own kind; a name
-// bound in a function frame is frame; anything else is `$new`'s frame storage there.
-$decl traitsof_frame $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl t0 T.proto_ty)
-    $match t0 (
+// bound in a function frame is frame — a global, one `is_glob` finds in scope, is not;
+// anything else is `$new`'s frame storage there.
+$decl traitsof_frame $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+                            $decl t0 T.proto_ty) $match t0 (
   $case {$prop tag "ref"} ($call not ($call T.is_alloc (t0.kind))),
   $case t0 $if ($call eq_int ($call ival (cx.fdepth), 0)) false
       ($match x (
-          $case {$prop tag "name"} ($call not ($call in_strs ($call strs.val (cx.topnames), x.text))),
+          $case {$prop tag "name"} ($call not ($call is_glob (e, x.text))),
           $case x true))
 )
 
@@ -1030,12 +1032,12 @@ $decl infer_traitsof_of $func ($decl cx proto_ctx, $decl e env.node, $decl n pro
   $decl t   $call deref_ty (t0)
   $decl pv  $call var_id (t)
   $decl ret $if ($if ($call lt (-1, pv)) ($call memo_has_var ($call eval_memo (cx.memo), pv)) false)
-      ($call spec_self_trait (cx, pv)) ($call infer_traitsof_ty (cx, x, t0, t, n))
+      ($call spec_self_trait (cx, pv)) ($call infer_traitsof_ty (cx, e, x, t0, t, n))
 }.ret
 
-$decl infer_traitsof_ty $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl t0 T.proto_ty,
-                               $decl t T.proto_ty, $decl n proto_form) {
-  $decl fr  $call traitsof_frame (cx, x, t0)
+$decl infer_traitsof_ty $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+                               $decl t0 T.proto_ty, $decl t T.proto_ty, $decl n proto_form) {
+  $decl fr  $call traitsof_frame (cx, e, x, t0)
   // §6: "one made from `$mut` storage is mutable".
   $decl tr  $call T.tval (t0)
   $decl q   $match tr ($case {$prop tag "ref"} ($if ($call eq_str (tr.qual, "mut")) "mut" ""),
@@ -1118,25 +1120,26 @@ $decl infer_impl $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
 
 // The first name a `$func` literal captures, or "". A free name of the body is a
 // capture unless the literal binds it — a parameter, or a `$decl` inside — or it
-// is a **global**: a file top-level `$decl` or a root-block intrinsic, which §7.3
-// reaches through a static rather than through the environment word.
-$decl first_cap $func ($decl cx proto_ctx, $decl ns Pa.pstrs.node, $decl skip Pa.pstrs.node)
-  $match ns (
+// is a **global**: a file top-level `$decl` in scope where the literal is written
+// (`is_glob`), or a root-block intrinsic, which §7.3 reaches through a static rather than
+// through the environment word.
+$decl first_cap $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
+                       $decl skip Pa.pstrs.node) $match ns (
     $case {$prop tag "cons"} {
       $decl nm ns.head
       $decl gl $call lookup (root_env, nm)
       $decl ok $if ($call Pa.mem_pstr (skip, nm)) true
-                   ($if ($call in_strs ($call strs.val (cx.topnames), nm)) true gl.ok)
-      $decl ret  $if ok ($call first_cap (cx, $call Pa.pstrs.val (ns.tail), skip)) nm
+                   ($if ($call is_glob (e, nm)) true gl.ok)
+      $decl ret  $if ok ($call first_cap (cx, e, $call Pa.pstrs.val (ns.tail), skip)) nm
     }.ret,
     $case ns ""
   )
 
-$decl lit_caps $func ($decl cx proto_ctx, $decl n Pa.proto_node) {
+$decl lit_caps $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) {
   $decl ps   $call group_items ($call op (n, 0))
   $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
   $decl shad $call Pa.bound_names ($call op (n, 1), $call param_names (ps, Pa.pstrs.nil))
-  $decl ret  $call first_cap (cx, free, shad)
+  $decl ret  $call first_cap (cx, e, free, shad)
 }.ret
 
 // "Can the compiler see which `$func` literal this came from?" A literal, yes. A
@@ -1145,28 +1148,28 @@ $decl lit_caps $func ($decl cx proto_ctx, $decl n Pa.proto_node) {
 // read through a `$mut` slot. There is no partial answer, which is the point —
 // captures are by copy and static per literal, so seeing the literal is seeing
 // the captured set.
-$decl cb_ok $func ($decl cx proto_ctx, $decl a Pa.proto_node) $match a (
+$decl cb_ok $func ($decl cx proto_ctx, $decl e env.node, $decl a Pa.proto_node) $match a (
   $case {$prop tag "form"}
-    $if ($call eq_str (a.keyword, "func")) ($call eq_str ($call lit_caps (cx, a), "")) false,
+    $if ($call eq_str (a.keyword, "func")) ($call eq_str ($call lit_caps (cx, e, a), "")) false,
   $case {$prop tag "name"} {
     $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
     $decl ret $if ($call eq_str (f.name, "")) false
-                ($call eq_str ($call lit_caps (cx, f.lit), ""))
+                ($call eq_str ($call lit_caps (cx, f.env, f.lit), ""))
   }.ret,
   $case a false
 )
 
-$decl cb_why $func ($decl cx proto_ctx, $decl a Pa.proto_node) $match a (
+$decl cb_why $func ($decl cx proto_ctx, $decl e env.node, $decl a Pa.proto_node) $match a (
   $case {$prop tag "form"}
     $if ($call eq_str (a.keyword, "func"))
-        ($call concat ("it captures ", $call lit_caps (cx, a)))
+        ($call concat ("it captures ", $call lit_caps (cx, e, a)))
         "the compiler cannot see which $func literal it is",
   $case {$prop tag "name"} {
     $decl f $call find_fnlit ($call fnlit_list.val (cx.cffns), a.text)
     $decl ret $if ($call eq_str (f.name, ""))
                 ($call concat (a.text, " is not a $decl of a $func literal"))
                 ($call concat (a.text, $call concat (" captures ",
-                    $call lit_caps (cx, f.lit))))
+                    $call lit_caps (cx, f.env, f.lit))))
   }.ret,
   $case a "the compiler cannot see which $func literal it is"
 )
@@ -1185,15 +1188,16 @@ $decl tys_rest $func ($decl ts T.tys.node) $match ts (
 
 // Applied only where the callee is an extern, because it is only there that §7.3's
 // pair has nowhere to go — an ordinary morphl call carries the environment word.
-$decl chk_cbs $func ($decl cx proto_ctx, $decl ts T.tys.node, $decl as Pa.nodes.node)
+$decl chk_cbs $func ($decl cx proto_ctx, $decl e env.node, $decl ts T.tys.node,
+                     $decl as Pa.nodes.node)
   $match as (
     $case {$prop tag "cons"} {
       $decl pt  $call deref_ty ($call tys_head (ts))
-      $decl bad $if ($call is_fn_ty (pt)) ($call not ($call cb_ok (cx, as.head))) false
+      $decl bad $if ($call is_fn_ty (pt)) ($call not ($call cb_ok (cx, e, as.head))) false
       $decl rep $if bad ($call err (cx,
                     $call concat ("a callback passed to C must be capture-free (§4.16 rule 2): ",
-                        $call cb_why (cx, as.head)), as.head)) T.t_unit
-      $decl ret   $call chk_cbs (cx, $call tys_rest (ts), $call Pa.nodes.val (as.tail))
+                        $call cb_why (cx, e, as.head)), as.head)) T.t_unit
+      $decl ret   $call chk_cbs (cx, e, $call tys_rest (ts), $call Pa.nodes.val (as.tail))
     }.ret,
     $case as T.t_unit
   )
@@ -1347,11 +1351,11 @@ $fwd arg_escapes_at
 
 // Whether passing this argument to an escaping parameter could matter: it is frame-bound,
 // or it may carry a parameter's mark.
-$decl may_escape $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
-    $decl want T.proto_ty)
+$decl may_escape $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+    $decl raw T.proto_ty, $decl want T.proto_ty)
   $if ($call T.frame_bound (raw, 0)) true
   ($if ($if ($call T.is_trait (want)) ($call not ($call T.is_trait ($call deref_ty (raw)))) false)
-       ($call traitsof_frame (cx, x, raw))
+       ($call traitsof_frame (cx, e, x, raw))
   ($if ($call lt (0, $call ival (cx.nmark)))
        ($call not ($call T.cints.is_nil ($call T.marks_of (raw, T.cints.nil)))) false))
 
@@ -1434,7 +1438,8 @@ $decl pesc_run $func ($decl cx proto_ctx, $decl xs pesc_list.node, $decl id 0,
     $decl x    xs.head
     $decl due  $if ($call eq_int (x.id, id)) ($call T.ci_mem (mine, x.i)) false
     $decl chk  $if due
-                   ($call arg_escapes_at (cx, x.x, x.raw, x.want, $call add (x.i, 1), false, -1))
+                   ($call arg_escapes_at (cx, $call env.val (x.env), x.x, x.raw, x.want,
+                       $call add (x.i, 1), false, -1))
                    x.raw
     $decl rt   $if due ($call route_marks (cx, $call T.marks_of (x.raw, T.cints.nil), x.stk)) 0
     $decl ret2 $call pesc_run (cx, $call pesc_list.val (xs.tail), id, mine,
@@ -1903,18 +1908,18 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
 // A call passing an argument to a parameter the callee lets escape (§5.3a): refused if
 // the argument is frame-bound, and an escape of the caller's own parameter if it carries
 // one's mark. A trait object made at the call is frame-bound as `$traitsof` would be.
-$decl arg_escapes $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
-    $decl want T.proto_ty, $decl i 0)
-  $call arg_escapes_at (cx, x, raw, want, i, true, -1)
+$decl arg_escapes $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+    $decl raw T.proto_ty, $decl want T.proto_ty, $decl i 0)
+  $call arg_escapes_at (cx, e, x, raw, want, i, true, -1)
 
 // `marks` false: refuse a frame-bound argument and note nothing. `lim` keeps only marks
 // below it, for a deferred check whose nested bodies have already closed.
-$decl arg_escapes_at $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
-    $decl want T.proto_ty, $decl i 0, $decl marks P.boolean, $decl lim 0) {
+$decl arg_escapes_at $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+    $decl raw T.proto_ty, $decl want T.proto_ty, $decl i 0, $decl marks P.boolean, $decl lim 0) {
   $decl v   $call deref_ty (raw)
   $decl fb  $if ($call T.frame_bound (raw, 0)) true
                 ($if ($call and ($call T.is_trait (want), $call not ($call T.is_trait (v))))
-                     ($call traitsof_frame (cx, x, raw)) false)
+                     ($call traitsof_frame (cx, e, x, raw)) false)
   $decl ret $if fb
       ($call err (cx, $call concat ("argument ", $call concat ($call int_to_str (i),
            " refers to frame storage, and this function lets that parameter escape (§5.3a); pass $alloc storage instead")), x))
@@ -2010,8 +2015,9 @@ $decl two_params $func ($decl t T.proto_ty) $match t (
 )
 
 // An `$alloc` block's deferrals run at `$free`, after the frame that wrote them is gone.
-$decl alloc_caps $func ($decl cx proto_ctx, $decl b Pa.proto_node, $decl d Pa.proto_node) {
-  $decl cap $call first_cap (cx, $call dfr_free (b), $call Pa.bound_names (b, Pa.pstrs.nil))
+$decl alloc_caps $func ($decl cx proto_ctx, $decl e env.node, $decl b Pa.proto_node,
+                        $decl d Pa.proto_node) {
+  $decl cap $call first_cap (cx, e, $call dfr_free (b), $call Pa.bound_names (b, Pa.pstrs.nil))
   $decl ret $if ($call eq_str (cap, "")) ()
       ($do ($call err (cx, $call concat ("an $alloc block's deferral runs at $free, after this frame is gone: it may name only the block's fields and globals (§4.10), not '",
            $call concat (cap, "'")), d)) ())
@@ -2022,7 +2028,7 @@ $decl alloc_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_for
   $decl f   $call lookup (e, "allocator")
   $decl b   $call op (n, 0)
   $decl root $if f.ok ($call T.same (f.ty, T.ffi_alloc)) true
-  $decl ret $if root ($call alloc_caps (cx, $call op (n, 0), d))
+  $decl ret $if root ($call alloc_caps (cx, e, $call op (n, 0), d))
       {
         $decl sp   $call P.span_of (n)
         $decl m    $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "defer_at",
@@ -2032,7 +2038,7 @@ $decl alloc_defer $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_for
         $decl e1   $if ok ()
             ($do ($call err (cx, $call concat ("the allocator in scope cannot run an $alloc block's deferrals: its defer_at is ",
                  $call concat ($call T.show (mt), ", which must take an address and a function (DEFER.md)")), d)) ())
-        $decl ret2 $call alloc_caps (cx, b, d)
+        $decl ret2 $call alloc_caps (cx, e, b, d)
       }.ret2
 }.ret
 
@@ -2099,14 +2105,14 @@ $decl free_arg $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_nod
 
 // What a borrowed argument lends the call's result: its marks, and whether it is
 // frame-bound — directly, or as the trait object §6's coercion makes over frame storage.
-$decl note_barg $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl raw T.proto_ty,
-                       $decl p T.proto_ty) {
+$decl note_barg $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+                       $decl raw T.proto_ty, $decl p T.proto_ty) {
   $decl m   $set cx.bmarks ($call T.ci_union ($call T.marks_of (raw, T.cints.nil),
                 $call T.cints.val (cx.bmarks)))
   $decl fb  $if ($call T.frame_bound (raw, 0)) true
                 ($if ($call T.is_trait (p))
                      ($if ($call T.is_trait ($call deref_ty (raw))) false
-                          ($call traitsof_frame (cx, x, raw)))
+                          ($call traitsof_frame (cx, e, x, raw)))
                      false)
   $decl ret $if fb ($set cx.bframe true) false
 }.ret
@@ -2156,7 +2162,7 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
         // refers to frame storage.
         $decl cw   $call coerce_why (x, raw, tgt.inner)
         $decl fr   $call P.and ($call P.not ($call T.is_trait (val)),
-                       $call traitsof_frame (cx, x, raw))
+                       $call traitsof_frame (cx, e, x, raw))
         $decl ret2 $if ($call not ($call eq_str (cw, ""))) ($call err (cx, cw, x))
             ($if ($call P.and ($call T.is_trait (tgt.inner), fr))
                  // §5.3a's A0, for storage of either kind: a trait object referring to frame
@@ -2712,7 +2718,7 @@ $decl check_one $func ($decl cx proto_ctx, $decl e env.node, $decl p T.proto_ty,
                               $match raw ($case {$prop tag "ref"} false, $case raw true)))
                 false
   $decl pl  $if tco
-                ($if ($call traitsof_frame (cx, x, raw))
+                ($if ($call traitsof_frame (cx, e, x, raw))
                      ($set cx.placed ($call strs.cons ($call fn_key_of (cx, x),
                           $call strs.val (cx.placed))))
                      ($call strs.val (cx.placed)))
@@ -2723,13 +2729,14 @@ $decl check_one $func ($decl cx proto_ctx, $decl e env.node, $decl p T.proto_ty,
                 ($call strs.val (cx.slotref))
   $decl cw  $call coerce_why (x, raw, p)
   $decl ia  $call inject_check (cx, at, p, x)
-  $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1))) ($call arg_escapes (cx, x, raw, p, i)) raw
+  $decl ae  $if ($call T.ci_mem (es, $call sub (i, 1)))
+                ($call arg_escapes (cx, e, x, raw, p, i)) raw
   // §5.3a's borrowing: an argument whose parameter the callee's result borrows lends what
   // it carries to the result — and for a callee still being typed, whose borrows are not
   // known yet, every function- or trait-typed argument does, which can only be stricter.
   $decl bw  $if ($if ($call T.ci_mem (es, $call add (63, i))) true
                      ($if ($call lt (-1, pd)) ($call T.markable (p)) false))
-                ($call note_barg (cx, x, raw, p)) ()
+                ($call note_barg (cx, e, x, raw, p)) ()
   // DEFER.md: the callee frees this parameter (through the root), so a name passed here
   // is freed by this function too.
   $decl fr  $if ($call T.ci_mem (es, $call add (127, i))) ($call free_arg (cx, e, x, raw)) ()
@@ -2737,10 +2744,10 @@ $decl check_one $func ($decl cx proto_ctx, $decl e env.node, $decl p T.proto_ty,
   // Only an argument that could be refused or could carry a mark is worth keeping,
   // and nearly none is — keeping every one made each closing function rescan them.
   $decl rec $set cx.pesc ($if ($if ($call lt (pd, 0)) true
-                                   ($call not ($call may_escape (cx, x, raw, p))))
+                                   ($call not ($call may_escape (cx, e, x, raw, p))))
                               ($call pesc_list.val (cx.pesc))
                 ($call pesc_list.cons ($call pesc_ent (pd, $call sub (i, 1), x, raw,
-                    p, $call ival (cx.curfn), $call fframes.val (cx.fstack)), cx.pesc)))
+                    p, $call ival (cx.curfn), $call fframes.val (cx.fstack), e), cx.pesc)))
   $decl ret $if ($call not ($call eq_str (cw, "")))
       ($do ($call err (cx, cw, x)) false)
       ($if ($call T.sub (at, p)) true
@@ -2871,7 +2878,7 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
                               $call strs.val (cx.nonroot))))
                           ()) ()
         $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
-            ($call chk_cbs (cx, $call T.tys.val (ft.params), args)) T.t_unit
+            ($call chk_cbs (cx, e, $call T.tys.val (ft.params), args)) T.t_unit
         // A `$decl` initializer keeps a reference (§5.4), and `result` is
         // storage now, so the type has to be taken out of it here.
         $decl ret2  $if ok ($call T.tval (ft.result)) T.t_bot
@@ -3536,8 +3543,6 @@ $decl hide_names $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.
     $decl f   $call lookup (e, nm)
     $decl cn  $call strs.val (cx.ctnames)
     $decl ct  $set cx.ctnames ($if ($call in_strs (cn, nm)) ($call strs.cons (hn, cn)) cn)
-    $decl tn  $call strs.val (cx.topnames)
-    $decl tp  $set cx.topnames ($if ($call in_strs (tn, nm)) ($call strs.cons (hn, tn)) tn)
     $decl ret $call hide_names (cx, e, $call Pa.pstrs.val (ns.tail),
                   $if f.ok ($call bind_glob ($call bind_if (acc, hn, f.ty,
                       $call def_named (e, nm, $call def_mark (nm))), hn, $call is_glob (e, nm)))
@@ -4375,11 +4380,6 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   // A `$fwd` for this name already bound it to `[params] -> R` (§5.5), so the
   // body is typed against that placeholder and its resolution recorded as one
   // equation of the group's system.
-  // A top-level name is a global from inside its own initializer too — a `$func` naming
-  // itself, or a prop's `$func` in a block it builds (`prop_fn_cap`) — so it is one of
-  // §4.16 rule 2's `topnames` before the initializer is typed, not after.
-  $decl tn $set cx.topnames ($if ($call eq_int ($call ival (cx.fdepth), 0))
-      ($call strs.cons (nm, cx.topnames)) ($call strs.val (cx.topnames)))
   $decl fe $call find_fwd (s.fwds, nm)
   $decl ty $if ($call lt (-1, fe.id))
       ($call infer_fwd_body (cx, s.env, init, fe.id))
@@ -4408,9 +4408,9 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   $decl mbr $set cx.ualloc ($if ($call bval (cx.atfile))
                 ($call member_facts (cx, nm, $call T.tval (ty), $call strs.val (cx.ualloc)))
                 ($call strs.val (cx.ualloc)))
-  // §4.16 rule 2's three sets — see `ctx`. `topnames` is guarded on `fdepth`
-  // because a `$decl` inside a `$func` body takes a frame slot (§7.2) and
-  // reading it *is* a capture, while a file top-level one is lifted to a global.
+  // §4.16 rule 2's two sets — see `ctx`. A literal's environment has its own name
+  // marked global when it is one (`bind_glob`), so a top-level callback naming itself
+  // is no capture.
   //
   // The condition is inside the `$set`, not around it, and that is not a style
   // choice. `$if c ($set …) ()` has arms of two *different* types, so §3.6 joins
@@ -4424,7 +4424,8 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   $decl xn $set cx.extnames ($if ($call is_form (init, "extern"))
       ($call strs.cons (nm, cx.extnames)) ($call strs.val (cx.extnames)))
   $decl cf $set cx.cffns ($if ($call is_form (init, "func"))
-      ($call fnlit_list.cons ($call fnlit_ent (nm, init), cx.cffns))
+      ($call fnlit_list.cons ($call fnlit_ent (nm, init,
+          $call bind_glob (s.env, nm, $call bval (cx.atfile))), cx.cffns))
       ($call fnlit_list.val (cx.cffns)))
   // §3.4: a `$func`, a module, or another name for a definition (`names_def`).
   $decl isd $if ($call is_form (init, "func")) true
