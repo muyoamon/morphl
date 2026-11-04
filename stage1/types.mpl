@@ -1438,6 +1438,7 @@ $decl pz_class $mut $alloc 0
 $decl pz_fall  $mut $alloc 0
 $decl pz_merge $mut $alloc 0
 $decl pz_split $mut $alloc 0
+$decl pz_tie   $mut $alloc 0
 $decl pz_val   $func ($decl x 0) x
 $decl pz_bump  $func ($decl c $mut $alloc 0) $set c ($call add ($call pz_val (c), 1))
 
@@ -1446,9 +1447,14 @@ $decl set_paranoid $func ($decl on ($union (false, true))) $set paranoid on
 // The counts so far: comparisons answered by class, fallbacks (a side had no class),
 // class-equal pairs `same_deep` calls different — a **merge**, the direction that would
 // miscompile — and `same` pairs in different classes — a **split**, slow but harmless.
+// And **ties** (`shty_ins`): two union members of different classes rendering alike.
+// `same_deep` compares a union positionally, trusting the sort to be canonical, so a tie
+// is the one disagreement neither answer sees — the sort keeps arrival order, and two
+// equal unions could come out in two orders, two types and two discriminator layouts.
 $decl pz_counts $func () {
   $decl class  $call pz_val (pz_class)  $decl fallbacks $call pz_val (pz_fall)
   $decl merges $call pz_val (pz_merge)  $decl splits $call pz_val (pz_split)
+  $decl ties   $call pz_val (pz_tie)
 }
 
 $decl same_ref $func ($decl a proto_ty, $decl b proto_ty)
@@ -1541,9 +1547,18 @@ $decl shty       $func ($decl k "", $decl t proto_ty) { $decl key k  $decl ty t 
 $decl proto_shty $call shty ("", t_bot)
 $decl shtys      $specialize P.list proto_shty
 
+// Paranoid mode's tie count (`pz_counts`); off, one read of the flag.
+$decl pz_tie_at $func ($decl p proto_shty, $decl q proto_shty)
+  $if ($call P.bval (paranoid))
+      ($if ($if ($call eq_str (p.key, q.key))
+               ($call not ($call eq_int ($call cid_of ($call tval (p.ty)),
+                   $call cid_of ($call tval (q.ty))))) false)
+           ($do ($call pz_bump (pz_tie)) ()) ())
+      ()
 $decl shty_ins $func ($decl p proto_shty, $decl xs shtys.node) $match xs (
   $case {$prop tag "cons"}
-    $if ($call str_lt (p.key, xs.head.key)) ($call shtys.cons (p, xs))
+    $if ($do ($call pz_tie_at (p, xs.head)) ($call str_lt (p.key, xs.head.key)))
+        ($call shtys.cons (p, xs))
         ($call shtys.cons (xs.head, $call shty_ins (p, $call shtys.val (xs.tail)))),
   $case xs ($call shtys.cons (p, shtys.nil))
 )

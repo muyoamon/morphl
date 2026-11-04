@@ -7,7 +7,9 @@
 // key (`types.mpl`'s `ckey`, built in each constructor) has to mirror `same_deep` case by
 // case and nothing else would notice if it stopped: a **merge** — two types `same_deep`
 // calls different in one class — is a miscompile, and a **split** — one type in two
-// classes — is only slow. INTERNING.md says why both directions are checked.
+// classes — is only slow. INTERNING.md says why both directions are checked. A **tie** —
+// two union members of different classes rendering alike — is the one disagreement both
+// answers miss, since `same_deep` trusts the union sort's order, and stops it too.
 //
 // The check runs the full pipeline through `emit`, because lowering and emit compare
 // far more types than inference does, and stops with a non-zero exit on a merge.
@@ -35,9 +37,13 @@ $decl main $func () {
   $decl s   $call concat ("paranoid: ", $call concat ($call int_to_str (n.class),
             $call concat (" compared by class, ", $call concat ($call int_to_str (n.fallbacks),
             $call concat (" fallbacks, ", $call concat ($call int_to_str (n.merges),
-            $call concat (" merges, ", $call concat ($call int_to_str (n.splits), " splits\n"))))))))
+            $call concat (" merges, ", $call concat ($call int_to_str (n.splits),
+            $call concat (" splits, ", $call concat ($call int_to_str (n.ties), " ties\n"))))))))))
   $decl g   $if ($call lt (0, n.merges))
       ($call panic ($call concat (s, "a merge is two different types in one class: the class key no longer mirrors same_deep")))
+      ""
+  $decl t   $if ($call lt (0, n.ties))
+      ($call panic ($call concat (s, "a tie is two union members of different classes rendering alike: show no longer separates what same does, and the member order is not canonical")))
       ""
   $decl ret   s
 }.ret
