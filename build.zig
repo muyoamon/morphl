@@ -154,6 +154,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/mu_group.mpl", .want = "2143\n" },
         .{ .src = "stage1/fixtures/ref_join.mpl", .want = "387101242\n" },
         .{ .src = "stage1/fixtures/match_scrut.mpl", .want = "6\n" },
+        .{ .src = "stage1/fixtures/effect_drop.mpl", .want = "7041\n" },
         .{ .src = "stage1/fixtures/prop_union.mpl", .want = "9\n" },
         // §3.3's top-level `$prop`s. All four shapes §1.1 allows, because each takes a
         // different route through `lower_prop_*`: a scalar is read off the type, a

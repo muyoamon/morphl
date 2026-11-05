@@ -1702,6 +1702,35 @@ $decl has_recvfn $func ($decl st proto_lst, $decl i 0)
 
 $decl is_name_at $func ($decl n Pa.proto_node) $match n ($case {$prop tag "name"} true, $case n false)
 
+// Whether evaluating `x` can be skipped: it reads a name or is a literal, and a block of
+// such things. Anything else may have an effect, which §7.1 runs.
+$fwd ir_pure
+$decl slots_pure $func ($decl xs IR.bslots.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call ir_pure (xs.head.init)) ($call slots_pure ($call IR.bslots.val (xs.tail))) false,
+  $case xs true
+)
+$decl ir_pure $func ($decl x IR.proto_expr) $match x (
+  $case {$prop tag "local"}   true,
+  $case {$prop tag "capture"} true,
+  $case {$prop tag "global"}  true,
+  $case {$prop tag "prim"}    true,
+  $case {$prop tag "extern"}  true,
+  $case {$prop tag "int"}     true,
+  $case {$prop tag "float"}   true,
+  $case {$prop tag "str"}     true,
+  $case {$prop tag "bool"}    true,
+  $case {$prop tag "unit"}    true,
+  $case {$prop tag "block"}   $call slots_pure ($call IR.bslots.val (x.slots)),
+  $case x false
+)
+// A prop's value is the type's (§4.10), so a projection onto one needs nothing from the
+// target at run time — but the target is still an expression, and `($call mk ()).k` ran
+// `mk` in stage 0 and not compiled. Kept for its effect when it may have one.
+$decl keep_target $func ($decl st proto_lst, $decl raw proto_lres, $decl r proto_lres)
+  $if ($call ir_pure (raw.ir)) r
+      ($call lres4 ($call IR.e_do ($call intern (st, r.ty), raw.ir, r.ir), r.ty, r.mod, r.tmpl))
+
 // §4.10: a member that names its receiver is a closure over it, so a projection onto one
 // builds the closure from the target it was projected from. "The receiver is a
 // reference", so the capture is the target's **own storage**, read-only or not: the
@@ -1752,8 +1781,8 @@ $decl recv_wrap $func ($decl st proto_lst, $decl raw proto_lres, $decl tgt proto
           $decl cap  $if ($if same true inj) cap0 ($call IR.e_copy (rk, cap0))
           $decl ret2 $call lres ($call IR.e_closure (ir.ty, ir.fn,
                          $call IR.exprs.cons (cap, IR.exprs.nil)), r.ty)
-        }.ret2 r,
-      $case ir r
+        }.ret2 ($call keep_target (st, raw, r)),
+      $case ir ($call keep_target (st, raw, r))
     )
 }.ret
 
@@ -3682,6 +3711,46 @@ $decl spec_expr $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
       $case hit ($call spec_expr_go (st, e, r, args, keys, sk, n)))
 }.ret
 
+// §4.9: a `$specialize` "evaluates each argument once" — its side effects happen once per
+// evaluation — however the body uses it. An instance binds each argument into a slot, but
+// a props-only body binds the generic to the argument's source, read only where a type
+// is wanted, so `($specialize t ($call bump ())).k` never bumped. Those arguments are
+// evaluated in front, left to right, where they may have an effect.
+$fwd ast_pure
+$decl asts_pure $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"} $if ($call ast_pure (xs.head)) ($call asts_pure (xs.tail)) false,
+  $case xs true
+)
+$decl ast_pure $func ($decl n Pa.proto_node) $match n (
+  $case {$prop tag "name"}  true,
+  $case {$prop tag "int"}   true,
+  $case {$prop tag "float"} true,
+  $case {$prop tag "str"}   true,
+  $case {$prop tag "bool"}  true,
+  $case {$prop tag "unit"}  true,
+  $case {$prop tag "group"} $call asts_pure ($call Pa.nodes.val (n.items)),
+  $case {$prop tag "proj_name"}  $call ast_pure (n.target),
+  $case {$prop tag "proj_index"} $call ast_pure (n.target),
+  // `tyhole`: a generic §4.9's application inferred (`lower_apply`), a type and no value.
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "func")) true
+    ($if ($call eq_str (n.keyword, "template")) true ($call eq_str (n.keyword, "tyhole"))),
+  $case n false
+)
+$decl spec_eff $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
+                      $decl r proto_lres) $match xs (
+  $case {$prop tag "cons"} {
+    $decl rest $call lval ($call spec_eff (st, e, $call Pa.nodes.val (xs.tail), r))
+    $decl ret  $if ($call ast_pure (xs.head)) rest {
+      $decl v    $call lval ($call lower (st, e, xs.head, false))
+      $decl ret2 $if ($call ir_pure (v.ir)) rest
+          ($call lres4 ($call IR.e_do ($call intern (st, rest.ty), v.ir, rest.ir), rest.ty,
+               rest.mod, rest.tmpl))
+    }.ret2
+  }.ret,
+  $case xs r
+)
+
 $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl n Pa.proto_node) {
   $decl tail $call P.bval (st.sptail)
@@ -3720,7 +3789,9 @@ $decl spec_args $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl
           )))
         $decl ret3 $if ($if wr ($call lt (-1, ret2.mod)) false)
                        ($call lower_prop (st, ret2.mod, "$fn", n)) ret2
-      }.ret3
+        $decl ret4 $if ($if me true ($if fr true ($if ex true inst))) ret3
+                       ($call spec_eff (st, e, args, ret3))
+      }.ret4
 }.ret
 
 $decl spec_with $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
@@ -4574,6 +4645,18 @@ $decl short_callee $func ($decl st proto_lst, $decl f proto_lres, $decl k 0,
 
 // A call: the callee is lowered already, because §8's FFI intrinsics are told apart
 // by it before their arguments are lowered (`lower_ffi`).
+// A callee lowered as `$do (a, f)` — a prop off an expression (`keep_target`), or a
+// `$specialize` whose argument is kept for its effect (`spec_eff`) — is called as
+// `$do (a, f (args))`: the same order (§7.1 evaluates the callee first), and `f` stays a
+// direct callee rather than a function value to call through.
+$decl call_through $func ($decl st proto_lst, $decl ty 0, $decl cf IR.proto_expr,
+                          $decl args IR.exprs.node, $decl tail P.boolean) $match cf (
+  $case {$prop tag "do"}
+    $call IR.e_do (ty, $call IR.eval (cf.first),
+        $call call_through (st, ty, $call IR.eval (cf.then), args, tail)),
+  $case cf ($call IR.e_call (ty, cf, args, tail))
+)
+
 $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean, $decl f0 proto_lres) {
   $decl ov   $call is_over_l (f0.ty)
@@ -4599,7 +4682,7 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $case dh IR.exprs.nil)
   $decl loc  $match dh ($case {$prop tag "cons"} true, $case dh false)
   $decl cf   $if loc f.ir ($call short_callee (st, f, na, n))
-  $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf,
+  $decl ret  $call lres ($call call_through (st, $call intern (st, ty), cf,
                  $call append_exprs (as.irs, dv), tail), ty)
 }.ret
 
