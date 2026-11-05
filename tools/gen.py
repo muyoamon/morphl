@@ -10,7 +10,16 @@
 # higher-order calls, `$try` stripping an error member, a `$defer` whose effect the answer
 # reads, a template specialised inside another, and a module importing a module — each placed
 # at the top level or inside `main` at random (an `$import` always at the top), and `main`
-# answers their sum. A program's modules are written beside it, named after it. Everything stays inside stage 0's subset (BOOTSTRAP.md §1), so stage 0
+# answers their sum. A program's modules are written beside it, named after it.
+#
+# An `$override` (§4.12a) is outside stage 0's subset, so a program using one gets a second,
+# `<name>_ref.mpl`, with each override written out by hand: on a value, the base's literal
+# under the new name with the replaced prop's body swapped in and the others' text kept,
+# still naming the base, since binding is static; on a template, the body with the
+# replacement spliced in, where a sibling's bare name reaches it. tools/fuzz.sh checks the
+# two answer alike, and the sweep checks the reference against stage 0. An override's
+# bodies read only parameters and what is in scope, never a member's name — the one place
+# the splice renames (`$o:`) and a textual copy would not. Everything stays inside stage 0's subset (BOOTSTRAP.md §1), so stage 0
 # answers every program and tools/sweep.sh can compare it with the compiled one. Values stay
 # small: `mul` is always taken `mod` a prime, and recursion runs on a fuel parameter.
 import os
@@ -171,29 +180,72 @@ class Gen:
         self.imports.append('$decl %s $import "%s"' % (m, outer))
         return ([], '$call add ($call %s.f (%s), %s.k)' % (m, self.expr(scope), m))
 
-    SHAPES = ['closure', 'recursion', 'alias', 'props', 'trait', 'tmpl_fn', 'tmpl_union',
-              'union', 'cell', 'higher', 'try_', 'defer', 'tmpl_nest', 'import_']
+    def override_val(self, scope):
+        a, b = self.fresh('ob'), self.fresh('oo')
+        w = self.r.randrange(-5, 30)
+        # A prop's body reads no local (§4.10), so only the globals, the parameter and the field.
+        e1 = self.expr(self.globals + ['x', a + '.w'])
+        e2 = self.expr(self.globals + ['x', b + '.w'])
+        q = '$prop q $func ($decl x 0) $call add ($call %s.p (x), %s.w)' % (a, a)
+        base = '$decl %s { $decl w %d  $prop p $func ($decl x 0) %s  %s }' % (a, w, e1, q)
+        over = '$decl %s $override %s { $prop p $func ($decl x 0) %s }' % (b, a, e2)
+        ref = '$decl %s { $decl w %d  $prop p $func ($decl x 0) %s  %s }' % (b, w, e2, q)
+        x1, x2 = self.expr(scope), self.expr(scope)
+        return ([base, over], '$call add ($call %s.p (%s), $call %s.q (%s))' % (b, x1, b, x2),
+                [base, ref])
 
+    def override_tmpl(self, scope):
+        t, o, sp = self.fresh('tp'), self.fresh('to'), self.fresh('ts')
+        e1, e2 = self.expr(self.globals + ['x']), self.expr(self.globals + ['x'])
+        q = '$prop q $func ($decl x T) $call add ($call p (x), 1)'
+        base = '$decl %s $template T { $prop p $func ($decl x T) %s  %s }' % (t, e1, q)
+        over = '$decl %s $override %s { $prop p $func ($decl x 0) %s }' % (o, t, e2)
+        ref = '$decl %s $template T { $prop p $func ($decl x 0) %s  %s }' % (o, e2, q)
+        spec = '$decl %s $specialize %s 0' % (sp, o)
+        return ([base, over, spec], '$call %s.q (%s)' % (sp, self.expr(scope)),
+                [base, ref, spec])
+
+    # A value override's reference copies the base's other props into the new block, naming
+    # the base; in a frame the base is a local and the copy a capture, which §4.10 forbids
+    # where the override itself is legal — so it is written where the base is a global.
+    TOP_ONLY = ['override_val']
+
+    SHAPES = ['closure', 'recursion', 'alias', 'props', 'trait', 'tmpl_fn', 'tmpl_union',
+              'union', 'cell', 'higher', 'try_', 'defer', 'tmpl_nest', 'import_',
+              'override_val', 'override_tmpl']
+
+    # The program, and its reference when an override made one necessary (else None).
     def program(self):
         r = self.r
         top, body, parts = [], [], []
+        rtop, rbody, has_ref = [], [], False
         top_scope, local_scope = [], []
         for i in range(r.randrange(2, 4)):
             v = self.fresh('g')
-            top.append('$decl %s %d' % (v, r.randrange(-5, 40)))
+            gl = '$decl %s %d' % (v, r.randrange(-5, 40))
+            top.append(gl)
+            rtop.append(gl)
             top_scope.append(v)
+        self.globals = top_scope
         for i in range(r.randrange(3, 7)):
             shape = r.choice(self.SHAPES)
-            at_top = r.randrange(3) == 0
+            at_top = shape in self.TOP_ONLY or r.randrange(3) == 0
             scope = top_scope if at_top else top_scope + local_scope
-            items, e = getattr(self, shape)(scope)
+            got = getattr(self, shape)(scope)
+            items, e = got[0], got[1]
+            ritems = got[2] if len(got) > 2 else items
+            has_ref = has_ref or len(got) > 2
             if at_top:
                 top += items
+                rtop += ritems
             else:
                 body += items
+                rbody += ritems
                 if r.randrange(2) == 0:
                     v = self.fresh('l')
-                    body.append('$decl %s %s' % (v, self.expr(top_scope + local_scope)))
+                    lv = '$decl %s %s' % (v, self.expr(top_scope + local_scope))
+                    body.append(lv)
+                    rbody.append(lv)
                     local_scope.append(v)
             parts.append(e)
         total = parts[0]
@@ -202,17 +254,22 @@ class Gen:
         pre = ['$decl ival $func ($decl x 0) x',
                '$decl neg1 $func ($decl x 0) $call sub (0, x)',
                '$decl ap1 $func ($decl f $func ($decl x 0) 0, $decl x 0) $call f (x)']
-        lines = self.imports + pre + top + ['$decl main $func () {'] + ['  ' + b for b in body] + \
-            ['  $decl ret %s' % total, '}.ret']
-        return '\n'.join(lines) + '\n'
+        def text(t, b):
+            lines = self.imports + pre + t + ['$decl main $func () {'] + ['  ' + x for x in b] + \
+                ['  $decl ret %s' % total, '}.ret']
+            return '\n'.join(lines) + '\n'
+        return text(top, body), (text(rtop, rbody) if has_ref else None)
 
 
 for i in range(count):
     base = 'gen_%d_%d' % (seed, i)
     g = Gen(random.Random(seed * 100003 + i), base)
-    text = g.program()
+    text, ref = g.program()
     with open(os.path.join(out_dir, base + '.mpl'), 'w') as f:
         f.write(text)
+    if ref is not None:
+        with open(os.path.join(out_dir, base + '_ref.mpl'), 'w') as f:
+            f.write(ref)
     for name, mod in g.mods:
         with open(os.path.join(out_dir, name + '.mpl'), 'w') as f:
             f.write(mod)
