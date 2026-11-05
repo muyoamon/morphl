@@ -15,6 +15,7 @@
 #   CRASH         the compiled program dies where stage 0 answered
 #   MISCOMPILE    stage 0 and the compiled program both answer, differently
 #   STRICTER      stage 0 runs it, the checker refuses it
+#   RULE          STRICTER in a fixture that exists to be, for the reason `rules` below gives
 #   LENIENT       the checker accepts it, stage 0 refuses it
 #   UNLINKED      the C compiles and a symbol is missing at link (a §4.16 `$extern` with no host)
 #   REFUSED       NOT-COMPILED in a fixture that exists to be: `refused` below says why
@@ -22,7 +23,8 @@
 #                 is not testing it, which a missing `// mplc-args:` line looks like
 #
 # The first four are bugs, and any of them makes the exit status 1, as UNSWEPT does. The others often are not:
-# STRICTER is mostly a rule only the checker has (§4.10's source order, §5.3a), and LENIENT the
+# STRICTER is mostly a rule only the checker has (§4.10's source order, §5.3a) — every one the
+# fixtures meet on purpose is RULE, so a STRICTER line is worth reading — and LENIENT the
 # bootstrap subset, which stage 0 enforces and the checker does not (BOOTSTRAP §1.2).
 #
 # A program that panics agrees when the compiled one aborts too, and is a MISCOMPILE when it
@@ -88,6 +90,28 @@ declare -A refused=(
   [override2_dmid]="override2_diag's middle module"
   [override_diag_util]="override_diag's module, whose \$specialize specialises itself"
 )
+# Programs the checker must refuse although stage 0 runs them, and the text its first
+# diagnostic carries: a rule only the checker has. A lifted copy looks up `<name>@lift`
+# first, then `<name>`. Anything else refused, and any of these refused for another reason,
+# stays STRICTER — so a new checker gap is not hidden by an old fixture.
+declare -A rules=(
+  [dead_arm]="is no member of the scrutinee's type"
+  [free_bad]="\$free needs allocated storage"
+  [owner_bad]="holds a place owned by this block"
+  [places]="this function's result holds frame storage made in this call"
+  [prop_cap]="a \$prop's \$func may not capture"
+  [short_frame]="an omitted argument's default reads"
+  [short_value]="this callee is a function value whose definition is not known"
+  # Lifting makes the file's globals the function's locals, so a `$func` prop naming one
+  # captures it (§4.10), and a trait object over one is frame-bound (§5.3a).
+  [receiver@lift]="a \$prop's \$func may not capture 'ival'"
+  [self_param@lift]="a \$prop's \$func may not capture 'ival'"
+  [self_trait@lift]="a \$prop's \$func may not capture 'ival'"
+  [trait_coerce@lift]="a \$prop's \$func may not capture 'cnt'"
+  [wrap_self@lift]="a \$prop's \$func may not capture 'of'"
+  [traits@lift]="this value holds frame storage (a trait object referring to frame storage)"
+  [tramp_shim@lift]="this value holds frame storage (a trait object referring to frame storage)"
+)
 # The fixtures with an answer, which something has to be able to run.
 declare -A wants
 while read -r w; do wants[$w]=1; done < <(
@@ -104,8 +128,10 @@ for f in "${files[@]}"; do
   s0=$( (ulimit -v 3000000; timeout 120 ./zig-out/bin/morphlc --run --main "${xa[@]}" "$f" 2>&1) )
   s0rc=$?
   s0l=$(printf '%s\n' "$s0" | tail -1)
-  tcn=$( (ulimit -v 8000000; timeout 120 "$tc" "$f" "${xa[@]}" 2>&1) | grep '^errors: ' | tail -1)
+  tco=$( (ulimit -v 8000000; timeout 120 "$tc" "$f" "${xa[@]}" 2>&1) )
+  tcn=$(printf '%s\n' "$tco" | grep '^errors: ' | tail -1)
   tcn=${tcn#errors: }; [ -z "$tcn" ] && tcn=crash
+  tcd=$(printf '%s\n' "$tco" | grep -v '^errors: ' | head -1)
   mc=$( (ulimit -v 8000000; timeout 120 ./zig-out/bin/mplc "$f" "${xa[@]}") 2>&1 >"$b".c ); mcrc=$?
   mcl=$(printf '%s\n' "$mc" | grep -v 'warning: no top-level' | head -1)
   lib=0; printf '%s\n' "$mc" | grep -q "no top-level \$decl named 'main'" && lib=1
@@ -144,7 +170,12 @@ for f in "${files[@]}"; do
     cls=CRASH; why="exit $runrc, stage 0 answered $s0l"
   elif [ $s0rc -eq 0 ] && [ "$ccrc" = 0 ] && [ "$out" != "$s0l" ]; then
     cls=MISCOMPILE; why="stage 0 $s0l, compiled $out"
-  elif [ $s0rc -eq 0 ] && [ "$tcn" != 0 ]; then cls=STRICTER; why="checker: $tcn error(s)"
+  elif [ $s0rc -eq 0 ] && [ "$tcn" != 0 ]; then
+    cls=STRICTER; why="checker: $tcn error(s): ${tcd#*: }"
+    on=$(orig_name "$f"); rule=""
+    is_lifted "$f" && rule=${rules[$on@lift]}
+    [ -z "$rule" ] && rule=${rules[$on]}
+    [ -n "$rule" ] && [[ "$tcd" == *"$rule"* ]] && { cls=RULE; why="checker: ${tcd#*: }"; }
   elif [ $s0rc -ne 0 ] && [ "$tcn" = 0 ]; then
     cls=LENIENT; why="stage 0: $(printf '%s\n' "$s0" | grep -m1 -i error)"
   elif [ $s0rc -ne 0 ] && [ $mcrc -ne 0 ] && [ -n "${wants[$f]}" ]; then
@@ -158,7 +189,7 @@ for f in "${files[@]}"; do
   echo "$name: $cls  $why"
 done
 summary=""
-for c in NOT-COMPILED BAD-C CRASH MISCOMPILE UNSWEPT STRICTER LENIENT UNLINKED REFUSED; do
+for c in NOT-COMPILED BAD-C CRASH MISCOMPILE UNSWEPT STRICTER RULE LENIENT UNLINKED REFUSED; do
   [ -n "${count[$c]}" ] && summary="$summary $c ${count[$c]}"
 done
 echo "sweep: ${#files[@]} program(s),${summary:- all agree}"
