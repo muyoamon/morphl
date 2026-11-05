@@ -3925,8 +3925,19 @@ $decl emit_expr $func ($decl st proto_est, $decl fi 0, $decl e IR.proto_expr,
           $decl ret2 ()
         }.ret2,
         // Not a union, so there is no discriminator and no choice: §4.7's
-        // first arm covers the whole type.
-        $case st2 ($call emit_first_arm (st, fi, $call IR.arms.val (e.arms), dest, e.ty, ts))
+        // first arm covers the whole type. The scrutinee is still evaluated (§7.1): it
+        // used to be dropped, so `$match ($call bump ()) ($case 0 5)` never bumped.
+        $case st2 {
+          $decl sv   $call into_tmp (st, fi, sc, ts)
+          $decl d0   $call say (st, $call concat ("  (void)", $call concat (sv, ";\n")))
+          $decl xs   $call IR.arms.val (e.arms)
+          $decl d1   $match xs (
+              $case {$prop tag "cons"}
+                $if ($call eq_int (xs.head.slot, -1)) ()
+                    ($call assign (st, $call slot_name (xs.head.slot), sv)),
+              $case xs ())
+          $decl ret2 $call emit_first_arm (st, fi, xs, dest, e.ty, ts)
+        }.ret2
       )
   }.ret,
   // §7.3: the captures are copied *here*, where the literal stood, into an

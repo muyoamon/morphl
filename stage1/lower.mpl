@@ -1532,10 +1532,32 @@ $decl ref_kind $func ($decl t0 T.proto_ty) {
   $decl ret $match t ($case {$prop tag "ref"} t.kind, $case t "")
 }.ret
 
+$decl rm_any $func ($decl ms T.tys.node) $match ms (
+  $case {$prop tag "cons"} {
+    $decl m   $call T.unroll (ms.head)
+    $decl ret $match m (
+        $case {$prop tag "ref"} true,
+        $case m ($call rm_any ($call T.tys.val (ms.tail)))
+      )
+  }.ret,
+  $case ms false
+)
+$decl rd_join $func ($decl ms T.tys.node, $decl acc T.proto_ty) $match ms (
+  $case {$prop tag "cons"} {
+    $decl m   $call T.unroll (ms.head)
+    $decl one $match m ($case {$prop tag "ref"} ($call T.tval (m.inner)), $case m ms.head)
+    $decl ret $call rd_join ($call T.tys.val (ms.tail), $call T.join (acc, one))
+  }.ret,
+  $case ms acc
+)
+// A union with reference members reads through each, as `as_value` emits it.
 $decl deref_ty $func ($decl t0 T.proto_ty) {
   $decl t $call T.unroll (t0)
   $decl ret $match t (
       $case {$prop tag "ref"} ($call T.tval (t.inner)),
+      $case {$prop tag "union"}
+        $if ($call rm_any ($call T.tys.val (t.members)))
+            ($call rd_join ($call T.tys.val (t.members), T.t_bot)) t,
       $case t t
     )
 }.ret
@@ -1545,7 +1567,31 @@ $decl deref_ty $func ($decl t0 T.proto_ty) {
 //
 // The type is bound to a name before matching on it: §4.7 narrows a scrutinee
 // *by its name*, so `$match r.ty` would leave `r.ty.inner` on the whole union.
-$decl as_value $func ($decl st proto_lst, $decl r proto_lres) {
+// A union some of whose members are references is read through member by member, as a
+// `switch` whose arm for a reference member reads its pointee and whose arm for any other
+// passes the member on (`uproj_arms` is the same for a projection). The result is the
+// members' values joined, which is inference's `deref_ty`; the arms are coerced into it.
+$decl uval_arms $func ($decl st proto_lst, $decl ms T.tys.node, $decl i 0,
+                       $decl acc IR.arms.node, $decl ty T.proto_ty) $match ms (
+  $case {$prop tag "cons"} {
+    $decl m    $call T.unroll (ms.head)
+    $decl mid  $call intern (st, ms.head)
+    $decl sl   $call fresh_slot (st, mid)
+    $decl ld   $call IR.e_local (mid, sl)
+    $decl rd   $match m (
+        $case {$prop tag "ref"}
+          ($call lres ($call IR.e_deref ($call intern (st, $call T.tval (m.inner)), ld),
+              $call T.tval (m.inner))),
+        $case m ($call lres (ld, ms.head))
+      )
+    $decl ret  $call uval_arms (st, $call T.tys.val (ms.tail), $call add (i, 1),
+        $call IR.arms.cons ($call IR.arm ($call IR.ints.cons (i, IR.ints.nil), sl, rd.ir), acc),
+        $call T.join (ty, rd.ty))
+  }.ret,
+  $case ms ($call arms_res ($call IR.arms.reverse (acc, IR.arms.nil),
+                $call IR.e_unit ($call intern (st, T.t_unit)), ty))
+)
+$decl deref_one $func ($decl st proto_lst, $decl r proto_lres) {
   $decl t   $call T.unroll (r.ty)
   $decl ret $match t (
       $case {$prop tag "ref"} {
@@ -1555,6 +1601,24 @@ $decl as_value $func ($decl st proto_lst, $decl r proto_lres) {
         $decl ret2 $call lres4 ($call IR.e_deref ($call intern (st, inner), r.ir), inner,
                     r.mod, r.tmpl)
       }.ret2,
+      $case t r
+    )
+}.ret
+// A projection reads `deref_one` and not this: it reads a union of references member by
+// member itself (`lower_uproj`), field and all, rather than copying each value out first.
+$decl as_value $func ($decl st proto_lst, $decl r proto_lres) {
+  $decl t   $call T.unroll (r.ty)
+  $decl ret $match t (
+      $case {$prop tag "ref"} ($call deref_one (st, r)),
+      $case {$prop tag "union"}
+        $if ($call rm_any ($call T.tys.val (t.members))) {
+          // The discriminators are the interned union's (`canon_ty`): §7.5's order.
+          $decl ms   $call T.match_members ($call IR.ix_get ($call IR.tval_trie (st.tyix),
+                         $call intern (st, r.ty)))
+          $decl a    $call uval_arms (st, ms, 0, IR.arms.nil, T.t_bot)
+          $decl ret2 $call lres ($call IR.e_switch ($call intern (st, a.ty), r.ir, a.arms,
+                         a.default), a.ty)
+        }.ret2 r,
       $case t r
     )
 }.ret
@@ -2634,7 +2698,7 @@ $decl proj_at $func ($decl st proto_lst, $decl n proto_projn, $decl raw proto_lr
 
 $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
   $decl raw $call lval ($call lower (st, e, n.target, false))
-  $decl tgt $call as_value (st, raw)
+  $decl tgt $call deref_one (st, raw)
   $decl own $if ($call lt (tgt.mod, 0)) false ($call mod_has (st, tgt.mod, n.field))
   $decl ret $call proj_at (st, n, raw, tgt, $call T.unroll (tgt.ty), own)
 }.ret
@@ -2643,7 +2707,7 @@ $decl lower_proj $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pro
 // members have names — and inference reads it one-based, so this does too.
 $decl lower_projidx $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
                            $decl tgtn Pa.proto_node, $decl idx 0) {
-  $decl tgt $call as_value (st, $call lower (st, e, tgtn, false))
+  $decl tgt $call deref_one (st, $call lower (st, e, tgtn, false))
   $decl tt  $call T.unroll (tgt.ty)
   $decl ret $match tt (
       $case {$prop tag "group"} {

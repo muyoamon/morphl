@@ -539,9 +539,30 @@ $decl defer_check $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl b T.proto
   $decl ret T.t_unit
 }.ret
 
-// §5.4: a reference behaves as its pointee wherever a value is expected.
+// §5.4: a reference behaves as its pointee wherever a value is expected — and so does a
+// union some of whose members are references, member by member: `$if c s "x"` with `s`
+// storage is `<&Str, Str>`, and read as a value it is `Str`. Lowering reads it through with a
+// `switch` (`as_value`), as it projects such a union.
+$fwd deref_ty
+$decl refm_any $func ($decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl h   $call T.tval (xs.head)
+    $decl ret $match h ($case {$prop tag "ref"} true,
+                        $case h ($call refm_any ($call T.tys.val (xs.tail))))
+  }.ret,
+  $case xs false
+)
+$decl deref_all $func ($decl xs T.tys.node, $decl acc T.proto_ty) $match xs (
+  $case {$prop tag "cons"}
+    $call deref_all ($call T.tys.val (xs.tail),
+        $call T.join (acc, $call deref_ty ($call T.tval (xs.head)))),
+  $case xs acc
+)
 $decl deref_ty $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "ref"} $call deref_ty (t.inner),
+  $case {$prop tag "union"}
+    $if ($call refm_any ($call T.tys.val (t.members)))
+        ($call deref_all ($call T.tys.val (t.members), T.t_bot)) t,
   $case t t
 )
 
