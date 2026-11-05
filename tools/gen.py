@@ -10,7 +10,11 @@
 # higher-order calls, `$try` stripping an error member, a `$defer` whose effect the answer
 # reads, a template specialised inside another, and a module importing a module — each placed
 # at the top level or inside `main` at random (an `$import` always at the top), and `main`
-# answers their sum. A program's modules are written beside it, named after it.
+# answers their sum. A program's modules are written beside it, named after it. And three
+# shapes the compiler got wrong when they were added: two functions returning each other in
+# their results (§5.5's knot through a group, at the top, in a block or in a module), a
+# reference joined with a value where a value is expected (§5.4), and an operand whose
+# value the types settle but whose effect still has to happen (§7.1).
 #
 # An `$override` (§4.12a) is outside stage 0's subset, so a program using one gets a second,
 # `<name>_ref.mpl`, with each override written out by hand: on a value, the base's literal
@@ -205,6 +209,79 @@ class Gen:
         return ([base, over, spec], '$call %s.q (%s)' % (sp, self.expr(scope)),
                 [base, ref, spec])
 
+    # §5.5 through two functions: each returns a block holding the other, so the type recurses
+    # through both and closes into one `μ` (`T.canon`) — at the top level, solved before
+    # `main` reads it (`solve_early`); in a block; or in a module, whose members lowering
+    # derives and ties as a knot of its own (`knot_func`). The answer calls through `k`.
+    def mu_group(self, scope):
+        f, g = self.fresh('mf'), self.fresh('mg')
+        where = self.r.randrange(3)
+        sc = [] if where == 2 else scope
+        v1, v2 = self.expr(sc + ['n']), self.expr(sc + ['n'])
+        items = ['$fwd %s' % g,
+                 '$decl %s $func ($decl n 0) $if ($call lt (n, 1)) { $decl v %s  $decl k $alloc %s }'
+                 % (f, v1, g),
+                 '  ($call %s ($call sub (n, 1)))' % g,
+                 '$decl %s $func ($decl n 0) $if ($call lt (n, 1)) { $decl v %s  $decl k $alloc %s }'
+                 % (g, v2, f),
+                 '  ($call %s ($call sub (n, 1)))' % f]
+        a, b = self.r.randrange(0, 9), self.r.randrange(0, 9)
+        if where == 2:
+            m, name = self.fresh('U'), '%s_u%d' % (self.base, self.n)
+            self.mods.append((name, '\n'.join(items) + '\n'))
+            self.imports.append('$decl %s $import "%s"' % (m, name))
+            f, items = '%s.%s' % (m, f), []
+        x = self.fresh('mx')
+        return (items, '{ $decl %s $call %s (%d)  $decl %sb $call %s.k (%d)  '
+                       '$decl ret2 $call add (%s.v, %sb.v) }.ret2' % (x, f, a, x, x, b, x, x))
+
+    # §5.4: `$if c cell e` joins a reference with a value, and wherever a value is expected
+    # that is read through member by member — an argument (`add` is an overload, chosen by
+    # the read-through type), `$new`'s operand, and a function's result, which keeps the
+    # union to the call.
+    def ref_join(self, scope):
+        c, p = self.fresh('rc'), self.fresh('rp')
+        a, b = self.expr(scope), self.expr(scope)
+        items = ['$decl %s $mut $alloc %s' % (c, self.expr(scope)),
+                 '$decl %s $func ($decl t $union (true, false)) $if t %s %s' % (p, c,
+                                                                            self.expr(scope))]
+        k = self.r.randrange(3)
+        if k == 0:
+            e = '$call add ($call %s (true), $call %s (false))' % (p, p)
+        elif k == 1:
+            e = '$call add ($if ($call lt (%s, %s)) %s %s, 1)' % (a, b, c, self.expr(scope))
+        else:
+            e = '$call ival ($new ($call %s ($call lt (%s, %s))))' % (p, a, b)
+        return (items, e)
+
+    # §7.1: an operand whose value the compiler knows from the types is still evaluated — a
+    # prop off a call (§4.10 puts its value in the type), a `$func` prop off one, a props-only
+    # `$specialize`'s argument (§4.9 evaluates it once), a `$match` on a non-union, whose
+    # first arm is the answer. Each bumps a counter the answer reads afterwards. The `$func`
+    # prop reads only its parameter: a global would be a capture once tools/lift.py makes it
+    # a local, which §4.10 refuses.
+    def static_eff(self, scope):
+        c, b, t, q = self.fresh('ec'), self.fresh('eb'), self.fresh('et'), self.fresh('eq')
+        k = self.r.randrange(0, 20)
+        items = ['$decl %s $mut $alloc 0' % c,
+                 '$decl %s $func ($decl x 0) $do ($set %s ($call add ($call ival (%s), x))) '
+                 '{ $prop k %d  $prop h $func ($decl y 0) %s }' % (b, c, c, k, self.expr(['y'])),
+                 '$decl %s $template T { $prop k %d }' % (t, self.r.randrange(0, 20)),
+                 '$decl %s $func ($decl x 0) $do ($set %s ($call add ($call ival (%s), x))) x'
+                 % (q, c, c)]
+        ops = ['($call %s (%d)).k' % (b, self.r.randrange(1, 5)),
+               '$call ($call %s (%d)).h (%s)' % (b, self.r.randrange(1, 5), self.expr(scope)),
+               '($specialize %s ($call %s (%d))).k' % (t, q, self.r.randrange(1, 5)),
+               '$match ($call %s (%d)) ($case 0 %d)' % (q, self.r.randrange(1, 5),
+                                                      self.r.randrange(0, 9))]
+        picks = [o for o in ops if self.r.randrange(2) == 0] or [ops[0]]
+        x = self.fresh('ex')
+        decls = '  '.join('$decl %s%d %s' % (x, i, o) for i, o in enumerate(picks))
+        total = '$call ival (%s)' % c
+        for i in range(len(picks)):
+            total = '$call add (%s%d, %s)' % (x, i, total)
+        return (items, '{ %s  $decl ret2 %s }.ret2' % (decls, total))
+
     # A value override's reference copies the base's other props into the new block, naming
     # the base; in a frame the base is a local and the copy a capture, which §4.10 forbids
     # where the override itself is legal — so it is written where the base is a global.
@@ -212,7 +289,7 @@ class Gen:
 
     SHAPES = ['closure', 'recursion', 'alias', 'props', 'trait', 'tmpl_fn', 'tmpl_union',
               'union', 'cell', 'higher', 'try_', 'defer', 'tmpl_nest', 'import_',
-              'override_val', 'override_tmpl']
+              'override_val', 'override_tmpl', 'mu_group', 'ref_join', 'static_eff']
 
     # The program, and its reference when an override made one necessary (else None).
     def program(self):
