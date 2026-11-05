@@ -151,6 +151,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/alloc.mpl", .want = "41\n" },
         .{ .src = "stage1/fixtures/option.mpl", .want = "33\n" },
         .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n" },
+        .{ .src = "stage1/fixtures/mu_group.mpl", .want = "2143\n" },
         .{ .src = "stage1/fixtures/prop_union.mpl", .want = "9\n" },
         // §3.3's top-level `$prop`s. All four shapes §1.1 allows, because each takes a
         // different route through `lower_prop_*`: a scalar is read off the type, a
@@ -856,6 +857,9 @@ pub fn build(b: *std.Build) void {
             // A cycle between two module members (§5.5), so each is named from the
             // other's output.
             .{ .src = "stage1/fixtures/mutual_import.mpl", .want = "5\n", .mods = &.{"mutual_util"} },
+            // The same cycle, through each other's function in the result: one `μ`, named
+            // from both outputs.
+            .{ .src = "stage1/fixtures/mu_group.mpl", .want = "2143\n", .mods = &.{"mu_group_util"} },
             // A module's resource registered with the root's `defer_at` in its output and
             // freed from the entry's, through the side table only `main.c` defines.
             .{ .src = "stage1/fixtures/open_mod.mpl", .want = "52431\n", .mods = &.{"open_util"} },

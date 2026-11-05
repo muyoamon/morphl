@@ -5490,6 +5490,41 @@ $decl member_key $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_
   }.ret2,
   $case c ""
 )
+// §5.5's knot for a member, when retrying cannot settle its type. A retry lowers the body
+// against the first pass's answer, and that answer holds ⊥ wherever a sibling still in
+// progress was read — `f` returning `{v, k: &^g}` and `g` returning `{v, k: &^f}` came out
+// `{v, k: &^[Int] -> {v, k: &^!}}`, each pass one level deeper and none of them a type. So
+// the body is lowered once more with the member at `[params] -> R`, which every read of it
+// sees, and its result closes into `μR. B(R)`, written once (`T.canon`) as inference writes
+// it. `fty` is the first pass's type; the pass is rolled back like the first.
+$decl knot_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "", $decl idx 0,
+                       $decl pn Pa.proto_node, $decl pe benv.node, $decl fty T.proto_ty,
+                       $decl ets IR.ints.node, $decl dpe benv.node, $decl mkey "",
+                       $decl sn proto_lsnap, $decl er0 Pa.diags.node) $match fty (
+  $case {$prop tag "func"} {
+    $decl pv   $call fresh_var (st)
+    $decl ph   $call T.t_func_x ($call T.tys.val (fty.params), $call T.t_var (pv), fty.frame,
+                   fty.rmut, $call T.cints.val (fty.esc), $call T.cints.val (fty.marks))
+    $decl p0   $call note_prop (st, m.id, $call mdone (nm, "global", idx, ph, -1, -1))
+    $decl lk   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0),
+                   ets, dpe)
+    // Read before the rollback, which `fn_ty`'s interned indices do not survive.
+    $decl fk   $call with_facts (st, $call fn_ty (st, lk), mkey)
+    $decl und  $do ($call put_snap (st, sn)) ($do ($set st.errs er0) 0)
+    $decl ret2 $match fk (
+        $case {$prop tag "func"} {
+          $decl r    $call T.tval (fk.result)
+          $decl rc   $if ($call T.occurs (r, pv))
+                         ($call T.canon ($call T.close_var ($call T.drop_var (r, pv), pv))) r
+          $decl ret3 $call T.t_func_x ($call T.tys.val (fk.params), rc, fk.frame, fk.rmut,
+                         $call T.cints.val (fk.esc), $call T.cints.val (fk.marks))
+        }.ret3,
+        $case fk fty
+      )
+  }.ret2,
+  $case fty fty
+)
+
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
@@ -5572,20 +5607,22 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // A retry drops the first pass's diagnostics with its tree: the second reports what is
   // wrong, and a self-taken trait (`self_knot`) is a placeholder the first cannot project.
   $decl und $if again ($do ($call put_snap (st, sn)) ($do ($set st.errs er0) 0)) 0
+  $decl ftk $if ($if again ($call T.bot_in (fty)) false)
+                ($call knot_func (st, m, nm, idx, pn, pe, fty, ets, dpe, mkey, sn, er0)) fty
   // Completed now that the body has given up its result type. The new entry
   // goes in front of the placeholder, which `find_mdone` therefore stops at.
-  $decl p1  $call note_prop (st, m.id, $call mdone (nm, "global", idx, fty, -1, -1))
+  $decl p1  $call note_prop (st, m.id, $call mdone (nm, "global", idx, ftk, -1, -1))
   // A self-taken trait (`self_knot`): its placeholder in `fty` becomes the trait taken again,
   // which this member's now-known type lets `self_knot` close — `μR. trait{…}` — and the
   // second pass is lowered against that.
   $decl tv  $call find_ts ($call tsl.val (st.tself), idx)
   $decl fty1 $match tv (
       $case {$prop tag "cons"}
-        $if ($if again ($call T.occurs (fty, tv.head.var)) false)
-            ($call T.subst (fty, tv.head.var, $call ltrait_of (st, tv.head.blk, tv.head.qual, pn)))
-            fty,
-      $case tv fty)
-  $decl p1b $if ($call T.same (fty1, fty)) 0
+        $if ($if again ($call T.occurs (ftk, tv.head.var)) false)
+            ($call T.subst (ftk, tv.head.var, $call ltrait_of (st, tv.head.blk, tv.head.qual, pn)))
+            ftk,
+      $case tv ftk)
+  $decl p1b $if ($call T.same (fty1, ftk)) 0
                 ($call note_prop (st, m.id, $call mdone (nm, "global", idx, fty1, -1, -1)))
   $decl mf1 $set st.mfree mfr
   $decl lf  $if again

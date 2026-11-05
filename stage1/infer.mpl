@@ -592,7 +592,10 @@ $decl hfv $func ($decl t T.proto_ty) $match t (
   $case t false
 )
 
-$decl has_free_var $func ($decl t T.proto_ty) $call hfv (t)
+// `T.has_var` is a field read and answers false for every type `hfv` would walk to the end
+// of — which, once a group's answers are in the environment as soon as it closes
+// (`solve_early`), is nearly every type asked about.
+$decl has_free_var $func ($decl t T.proto_ty) $if ($call T.has_var (t, 0)) ($call hfv (t)) false
 
 // Every `μ` in a program is tied here, so this is where §5.5's rule that
 // recursion must pass through storage is enforced: the type is reported if its
@@ -619,7 +622,8 @@ $decl close_rec $func ($decl cx proto_ctx, $decl t T.proto_ty, $decl i 0, $decl 
             "this recursive type has no layout: it recurs through a value, not storage. Write $new at the recursive position (§5.5). Inferred ",
             $call T.show (m)), x))
         T.t_bot
-    $decl ret2   m
+    // §5.5's knot writes one type several ways (`T.canon`).
+    $decl ret2   $call T.canon (m)
   }.ret2
       r
 }.ret
@@ -4411,6 +4415,110 @@ $decl member_facts $func ($decl cx proto_ctx, $decl nm "", $decl t T.proto_ty,
   $case t acc
 )
 
+// Solving the system. Each equation is substituted into the others — never into
+// itself, which `close_rec` handles instead — and one round per equation is
+// enough to resolve a cycle of that length.
+// The solution applied: every equation substituted, in order. `vs` is `compose_res`'s,
+// which turns the sequence into one simultaneous substitution — `v_k` replaced by its type
+// with the equations after it already applied — so a type is rebuilt once rather than once
+// per equation whose placeholder occurs in it (PERF.md).
+$decl subst_all $func ($decl t T.proto_ty, $decl vs T.vsubs.node) $call T.subst_many (t, vs)
+
+$decl compose_go $func ($decl rs res_list.node, $decl acc T.vsubs.node) $match rs (
+  $case {$prop tag "cons"}
+    $call compose_go (rs.tail, $call T.vsubs.cons ($call T.vsub (rs.head.id,
+        $call T.subst_many (rs.head.ty, acc)), acc)),
+  $case rs acc
+)
+$decl compose_res $func ($decl rs res_list.node)
+  $call compose_go ($call res_list.reverse (rs, res_list.nil), T.vsubs.nil)
+
+$decl subst_others $func ($decl t T.proto_ty, $decl rs res_list.node, $decl self 0) $match rs (
+  $case {$prop tag "cons"}
+    $call subst_others ($if ($call eq_int (rs.head.id, self)) t ($call T.subst (t, rs.head.id,
+        rs.head.ty)),
+                        rs.tail, self),
+  $case rs t
+)
+
+$decl solve_once $func ($decl cx proto_ctx, $decl rs res_list.node, $decl all res_list.node,
+                        $decl acc res_list.node, $decl x P.proto_span) $match rs (
+  $case {$prop tag "cons"} {
+    $decl t2  $call close_rec (cx, $call subst_others (rs.head.ty, all, rs.head.id), rs.head.id, x)
+    $decl ret $call solve_once (cx, rs.tail, all, $call res_list.cons ($call res_ent (rs.head.id,
+        t2), acc), x)
+  }.ret,
+  $case rs ($call res_list.reverse (acc, res_list.nil))
+)
+
+$decl solve $func ($decl cx proto_ctx, $decl rs res_list.node, $decl n 0, $decl x P.proto_span)
+  $if ($call eq_int (n, 0)) rs
+      ($call solve (cx, $call solve_once (cx, rs, rs, res_list.nil, x), $call sub (n, 1), x))
+
+// A sibling typed against the group's placeholders, with the answers in — which writes a
+// `μ` beside its own unrolling, so it is written once again (`T.canon`).
+// `rv`: the answers holding a `μ` (`T.rec_subs`), the only ones that write one twice.
+$decl solved_ty $func ($decl t T.proto_ty, $decl rs T.vsubs.node, $decl rv T.vsubs.node)
+  $if ($call T.occurs_some (t, rs))
+      ($if ($call T.occurs_some (t, rv)) ($call T.canon ($call subst_all (t, rs)))
+           ($call subst_all (t, rs)))
+      t
+
+$decl apply_res_fields $func ($decl fs T.fields.node, $decl rs T.vsubs.node,
+    $decl rv T.vsubs.node, $decl acc T.fields.node) $match fs (
+  $case {$prop tag "cons"}
+    $call apply_res_fields (fs.tail, rs, rv,
+        $call T.fields.cons ($call T.field (fs.head.name, $call solved_ty (fs.head.ty, rs, rv)),
+            acc)),
+  $case fs ($call T.fields.reverse (acc, T.fields.nil))
+)
+
+// §5.5's system, solved as soon as it can be: when no equation so far mentions a `$fwd`
+// still to be completed. The block's type has the answers substituted at its end, but an
+// item after the group reads the group's names now — `($call f (5)).v` was a projection off
+// `g`'s placeholder — so they go into the environment as well, and the equations are kept
+// solved, which the end's solve then leaves as they are.
+$decl res_has $func ($decl rs res_list.node, $decl i 0) $match rs (
+  $case {$prop tag "cons"} $if ($call eq_int (rs.head.id, i)) true ($call res_has (rs.tail, i)),
+  $case rs false
+)
+$decl res_mention $func ($decl rs res_list.node, $decl i 0) $match rs (
+  $case {$prop tag "cons"} $if ($call occurs (rs.head.ty, i)) true ($call res_mention (rs.tail, i)),
+  $case rs false
+)
+$decl res_open $func ($decl fs fwd_list.node, $decl rs res_list.node) $match fs (
+  $case {$prop tag "cons"}
+    $if ($if ($call res_has (rs, fs.head.id)) false ($call res_mention (rs, fs.head.id))) true
+        ($call res_open (fs.tail, rs)),
+  $case fs false
+)
+// The entries up to the last one the answers change, rebuilt; the rest shared.
+$decl env_last $func ($decl e env.node, $decl vs T.vsubs.node, $decl i 0, $decl k -1) $match e (
+  $case {$prop tag "cons"}
+    $call env_last (e.tail, vs, $call add (i, 1), $if ($call T.occurs_some (e.head.ty, vs)) i k),
+  $case e k
+)
+$decl env_take $func ($decl e env.node, $decl vs T.vsubs.node, $decl rv T.vsubs.node,
+                      $decl n 0, $decl acc env.node)
+  $if ($call lt (n, 0)) ($call env.reverse (acc, e)) ($match e (
+      $case {$prop tag "cons"}
+        $call env_take (e.tail, vs, rv, $call sub (n, 1),
+            $call env.cons ($call binding (e.head.name, $call solved_ty (e.head.ty, vs, rv)),
+                acc)),
+      $case e ($call env.reverse (acc, e))))
+$decl solve_early $func ($decl cx proto_ctx, $decl s proto_bst, $decl x P.proto_span) {
+  $decl rs  $call eval_res (s.res)
+  $decl ret $if ($call res_open ($call eval_fwds (s.fwds), rs)) () {
+    $decl solved $call solve (cx, rs, $call res_list.length (rs, 0), x)
+    $decl vs     $call compose_res (solved)
+    $decl e      $call eval_env (s.env)
+    $decl put    $set s.env ($call env_take (e, vs, $call T.rec_subs (vs, T.vsubs.nil),
+                     $call env_last (e, vs, 0, -1), env.nil))
+    $decl kept   $set s.res solved
+    $decl ret2   ()
+  }.ret2
+}.ret
+
 $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.proto_node) {
   $decl nm   $call name_of ($call op (it, 0))
   $decl init $call op (it, 1)
@@ -4445,6 +4553,7 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
       ($set s.res ($call res_list.cons ($call res_ent (fe.id, $call result_of (ty)),
                                         $call eval_res (s.res))))
       ()
+  $decl early $if ($call lt (-1, fe.id)) ($call solve_early (cx, s, it)) ()
   $decl mbr $set cx.ualloc ($if ($call bval (cx.atfile))
                 ($call member_facts (cx, nm, $call T.tval (ty), $call strs.val (cx.ualloc)))
                 ($call strs.val (cx.ualloc)))
@@ -4904,54 +5013,6 @@ $decl infer_fwd_body $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.pro
       }.ret
 
 
-// Solving the system. Each equation is substituted into the others — never into
-// itself, which `close_rec` handles instead — and one round per equation is
-// enough to resolve a cycle of that length.
-// The solution applied: every equation substituted, in order. `vs` is `compose_res`'s,
-// which turns the sequence into one simultaneous substitution — `v_k` replaced by its type
-// with the equations after it already applied — so a type is rebuilt once rather than once
-// per equation whose placeholder occurs in it (PERF.md).
-$decl subst_all $func ($decl t T.proto_ty, $decl vs T.vsubs.node) $call T.subst_many (t, vs)
-
-$decl compose_go $func ($decl rs res_list.node, $decl acc T.vsubs.node) $match rs (
-  $case {$prop tag "cons"}
-    $call compose_go (rs.tail, $call T.vsubs.cons ($call T.vsub (rs.head.id,
-        $call T.subst_many (rs.head.ty, acc)), acc)),
-  $case rs acc
-)
-$decl compose_res $func ($decl rs res_list.node)
-  $call compose_go ($call res_list.reverse (rs, res_list.nil), T.vsubs.nil)
-
-$decl subst_others $func ($decl t T.proto_ty, $decl rs res_list.node, $decl self 0) $match rs (
-  $case {$prop tag "cons"}
-    $call subst_others ($if ($call eq_int (rs.head.id, self)) t ($call T.subst (t, rs.head.id,
-        rs.head.ty)),
-                        rs.tail, self),
-  $case rs t
-)
-
-$decl solve_once $func ($decl cx proto_ctx, $decl rs res_list.node, $decl all res_list.node,
-                        $decl acc res_list.node, $decl x P.proto_span) $match rs (
-  $case {$prop tag "cons"} {
-    $decl t2  $call close_rec (cx, $call subst_others (rs.head.ty, all, rs.head.id), rs.head.id, x)
-    $decl ret $call solve_once (cx, rs.tail, all, $call res_list.cons ($call res_ent (rs.head.id,
-        t2), acc), x)
-  }.ret,
-  $case rs ($call res_list.reverse (acc, res_list.nil))
-)
-
-$decl solve $func ($decl cx proto_ctx, $decl rs res_list.node, $decl n 0, $decl x P.proto_span)
-  $if ($call eq_int (n, 0)) rs
-      ($call solve (cx, $call solve_once (cx, rs, rs, res_list.nil, x), $call sub (n, 1), x))
-
-$decl apply_res_fields $func ($decl fs T.fields.node, $decl rs T.vsubs.node,
-    $decl acc T.fields.node) $match fs (
-  $case {$prop tag "cons"}
-    $call apply_res_fields (fs.tail, rs,
-        $call T.fields.cons ($call T.field (fs.head.name, $call subst_all (fs.head.ty, rs)), acc)),
-  $case fs ($call T.fields.reverse (acc, T.fields.nil))
-)
-
 $decl infer_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl pe env.node,
                         $decl all Pa.nodes.node, $decl it Pa.proto_node)
   $if ($call is_form (it, "prop")) ($call infer_prop_item (cx, s, pe, it))
@@ -5131,8 +5192,9 @@ $decl infer_block $func ($decl cx proto_ctx, $decl e0 env.node, $decl items Pa.n
   // placeholders.
   $decl eqns   $call eval_res (s.res)
   $decl solved $call solve (cx, eqns, $call res_list.length (eqns, 0), x)
-  $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil),
-                                       $call compose_res (solved), T.fields.nil)
+  $decl vsol   $call compose_res (solved)
+  $decl flds   $call apply_res_fields ($call T.fields.reverse (s.flds, T.fields.nil), vsol,
+                                       $call T.rec_subs (vsol, T.vsubs.nil), T.fields.nil)
   $decl late $call recheck_defers (cx, solved)
   $decl fwt  $set cx.ualloc ($if ($if ($call bval (cx.atfile)) false ($call has_fwd (items)))
                  ($call note_fwds (cx, items, flds, $call strs.val (cx.ualloc)))

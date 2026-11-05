@@ -57,6 +57,11 @@ $decl isub sub
 // first member, so member order is what picks the initial value.
 $decl want_trace $mut $alloc ($union (false, true))
 $decl trace_on   $mut $alloc ($union (false, true))
+// §5.5's normal form (`canon`) asks whether two spellings are one type, which is equality
+// up to unrolling *everywhere* — beneath an invariant reference too, where `sub` otherwise
+// asks for the same term, since two spellings of one type can be laid out differently and
+// a pointer to one is no pointer to the other. Set only while `canon` compares.
+$decl equi_on    $mut $alloc ($union (false, true))
 $decl tbudget    $mut $alloc 0
 $decl bval       $func ($decl b P.boolean) b
 
@@ -1723,6 +1728,57 @@ $decl occurs $func ($decl t proto_ty, $decl i 0)
   $case t false
 ))
 
+// Whether ⊥ stands anywhere in `t`. Lowering's first pass over a module member leaves it
+// where a sibling still in progress was read (`lower_prop_func`).
+$fwd bot_in
+$decl bot_in_tys $func ($decl xs tys.node) $match xs (
+  $case {$prop tag "cons"} $if ($call bot_in (xs.head)) true ($call bot_in_tys (xs.tail)),
+  $case xs false
+)
+$decl bot_in_fields $func ($decl xs fields.node) $match xs (
+  $case {$prop tag "cons"} $if ($call bot_in (xs.head.ty)) true ($call bot_in_fields (xs.tail)),
+  $case xs false
+)
+$decl bot_in $func ($decl t proto_ty) $match t (
+  $case {$prop tag "bottom"} true,
+  $case {$prop tag "block"} $call bot_in_fields (t.fields),
+  $case {$prop tag "group"} $call bot_in_tys (t.items),
+  $case {$prop tag "func"}  $if ($call bot_in_tys (t.params)) true ($call bot_in (t.result)),
+  $case {$prop tag "ref"}   $call bot_in (t.inner),
+  $case {$prop tag "array"} $call bot_in (t.elem),
+  $case {$prop tag "union"} $call bot_in_tys (t.members),
+  $case {$prop tag "inter"} $call bot_in_tys (t.members),
+  $case {$prop tag "rec"}   $call bot_in (t.body),
+  $case {$prop tag "over"}  $call bot_in_tys (t.cands),
+  $case {$prop tag "trait"} $call bot_in_fields (t.members),
+  $case {$prop tag "with"}  $call bot_in (t.base),
+  $case t false
+)
+
+// Whether a `μ` stands anywhere in `t`, a prop's type aside: what `canon` has to look at.
+$fwd rec_in
+$decl rec_in_tys $func ($decl xs tys.node) $match xs (
+  $case {$prop tag "cons"} $if ($call rec_in (xs.head)) true ($call rec_in_tys (xs.tail)),
+  $case xs false
+)
+$decl rec_in_fields $func ($decl xs fields.node) $match xs (
+  $case {$prop tag "cons"} $if ($call rec_in (xs.head.ty)) true ($call rec_in_fields (xs.tail)),
+  $case xs false
+)
+$decl rec_in $func ($decl t proto_ty) $match t (
+  $case {$prop tag "rec"}   true,
+  $case {$prop tag "block"} $call rec_in_fields (t.fields),
+  $case {$prop tag "group"} $call rec_in_tys (t.items),
+  $case {$prop tag "func"}  $if ($call rec_in_tys (t.params)) true ($call rec_in (t.result)),
+  $case {$prop tag "ref"}   $call rec_in (t.inner),
+  $case {$prop tag "array"} $call rec_in (t.elem),
+  $case {$prop tag "union"} $call rec_in_tys (t.members),
+  $case {$prop tag "inter"} $call rec_in_tys (t.members),
+  $case {$prop tag "over"}  $call rec_in_tys (t.cands),
+  $case {$prop tag "trait"} true,
+  $case {$prop tag "with"}  $call rec_in (t.base),
+  $case t false
+)
 // Every rewriting of a type is the same walk: rebuild each node, count the
 // binders passed on the way down, and do something at a leaf. Writing that walk
 // four times — once to substitute a placeholder, once to renumber, once to
@@ -1740,6 +1796,15 @@ $decl vsub_find $func ($decl xs vsubs.node, $decl i 0) $match xs (
   $case {$prop tag "cons"} $if ($call eq_int (xs.head.id, i)) xs
       ($call vsub_find ($call vsubs.val (xs.tail), i)),
   $case xs xs
+)
+
+// The answers among `vs` that hold a `μ`: substituting only the others writes nothing
+// `canon` would change.
+$decl rec_subs $func ($decl vs vsubs.node, $decl acc vsubs.node) $match vs (
+  $case {$prop tag "cons"}
+    $call rec_subs ($call vsubs.val (vs.tail),
+        $if ($call rec_in ($call tval (vs.head.ty))) ($call vsubs.cons (vs.head, acc)) acc),
+  $case vs acc
 )
 
 $decl rop $func ($decl k "", $decl n 0, $decl r proto_ty, $decl v vsubs.node)
@@ -1795,7 +1860,16 @@ $fwd remap_go
 $decl remap $func ($decl t proto_ty, $decl o proto_rop, $decl d 0)
   $if ($call has_pa (t, 0)) ($call remap_go (t, o, d))
   ($if ($call eq_str (o.kind, "shift")) ($call remap_go (t, o, d))
-  ($if ($call eq_str (o.kind, "bnd")) ($call remap_go (t, o, d)) t))
+  ($if ($call eq_str (o.kind, "bnd")) ($call remap_go (t, o, d))
+  ($if ($call eq_str (o.kind, "env")) ($call remap_go (t, o, d)) t)))
+
+// `env`: every bound variable free in the subtree replaced by the closed type `vs` gives
+// its index (`canon`'s context), so an open subterm of a `μ` can be compared as a type.
+$decl env_at $func ($decl t proto_ty, $decl k 0, $decl o proto_rop, $decl d 0)
+  $if ($call lt (k, d)) t {
+    $decl f    $call vsub_find ($call vsubs.val (o.vs), $call isub (k, d))
+    $decl ret2 $match f ($case {$prop tag "cons"} ($call tval (f.head.ty)), $case f t)
+  }.ret2
 
 $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
   $case {$prop tag "var"}
@@ -1816,7 +1890,7 @@ $decl remap_go $func ($decl t proto_ty, $decl o proto_rop, $decl d 0) $match t (
          ($if ($call eq_int (t.idx, d))
               ($if ($call eq_int (d, 0)) o.ty ($call remap (o.ty, $call rop_shift (d), 0)))
               t)
-         t),
+         ($if ($call eq_str (o.kind, "env")) ($call env_at (t, t.idx, o, d)) t)),
   $case {$prop tag "rec"}   $call t_rec ($call remap (t.body, o, $call add (d, 1))),
   // A binder: `Self` is index 0 inside, so everything else moves up by one.
   $case {$prop tag "trait"}
@@ -2736,14 +2810,20 @@ $decl repr_up $func ($decl a proto_ty, $decl b proto_ty, $decl d 0)
             $case au $if ($call same (bu, t_bool)) ($call is_tag_bool (au)) false))
   }.ret2)
 
+// An invariant position: the same type, which is the same term — or, while `canon` asks
+// (`equi_on`), the same up to §5.5.
+$decl inv_eq $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx)
+  $if ($call same (a, b)) true
+      ($if equi_on ($if ($call sub_seen (a, b, st)) ($call sub_seen (b, a, st)) false) false)
+
 $decl sub_ref $func ($decl a proto_ref, $decl b proto_ref, $decl st proto_actx)
   $if ($call not ($call sub_kind (a.kind, b.kind))) false
   ($if ($call eq_str (b.qual, "const"))
        ($if ($call sub_seen (a.inner, b.inner, st))
             ($call repr_up ($call tval (a.inner), $call tval (b.inner), 0)) false)
   ($if ($call eq_str (b.qual, "mut"))
-       ($call and ($call not ($call eq_str (a.qual, "const")), $call ty_eq (a.inner, b.inner)))
-       ($call and ($call eq_str (a.qual, ""), $call ty_eq (a.inner, b.inner)))))
+       ($if ($call eq_str (a.qual, "const")) false ($call inv_eq (a.inner, b.inner, st)))
+       ($if ($call eq_str (a.qual, "")) ($call inv_eq (a.inner, b.inner, st)) false)))
 
 // §6: a trait object's type is a supertype of every type that conforms to it. A member
 // is met by a prop of the same name whose *type* — `ty`, which `same_props` ignores — is a
@@ -2925,7 +3005,7 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
             ),
           $case {$prop tag "array"} $match b (
               // Element type is invariant: an array's references are `&mut`.
-              $case {$prop tag "array"} $call ty_eq (a.elem, b.elem),
+              $case {$prop tag "array"} $call inv_eq (a.elem, b.elem, st),
               $case b false
             ),
           // Base types are unrelated (§5.1) and equality was already checked,
@@ -3249,6 +3329,234 @@ $decl join $func ($decl a proto_ty, $decl b proto_ty) {
   $decl ret $if ($call frame_bound (r, 0)) r
                 ($if ($call P.or ($call frame_bound (a, 0), $call frame_bound (b, 0)))
                      ($call make_frame (r)) r)
+}.ret
+
+// ------------------------------------------------- §5.5's normal form
+//
+// A `μ` and its unrolling are one type (§5.5), and so is every other way of writing the same
+// infinite type down — but `same` compares terms, an invariant reference asks for the same
+// term, and §9.3 makes each term its own C struct. A group's knot writes the same type
+// several ways: `f` returning `{v, k: &^g}` and `g` returning `{v, k: &^f}` close into
+// `μX.<{v, k: &^[Int] -> <X, {v, k: &^[Int] -> X}>}, {v, k: &^[Int] -> X}>`, two members
+// that are one type, and `f`'s own result came out as that `μ` beside its own first member
+// spelt out. Each is a different layout, so no value of one could be read as the other.
+//
+// `canon` writes such a type once: a union keeps one of the members that are one type —
+// or that a `μ` member's unrolling already holds, which is §3.6's set read through §5.5 —
+// and a node beneath a constructor that is the type an enclosing `μ` stands for becomes
+// that `μ`'s variable. A `μ` left with no use of its variable is its body. Both are asked
+// of the subterm closed by the enclosing `μ`s (`ctx`, index 0 the innermost), with
+// `equi_on` set, since below an invariant reference two spellings are compared too. This is
+// a normal form for what the knots write, not for every regular tree — a type that is the
+// unrolling of a `μ` nowhere around it is left as it is, as `alias_of` already handles.
+$decl ctx_up $func ($decl xs vsubs.node, $decl acc vsubs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call ctx_up ($call vsubs.val (xs.tail),
+        $call vsubs.cons ($call vsub ($call add (xs.head.id, 1), $call tval (xs.head.ty)), acc)),
+  $case xs ($call vsubs.reverse (acc, vsubs.nil))
+)
+$decl ctx_push $func ($decl c proto_ty, $decl xs vsubs.node)
+  $call vsubs.cons ($call vsub (0, c), $call ctx_up (xs, vsubs.nil))
+$decl ctx_inst $func ($decl t proto_ty, $decl xs vsubs.node) $match xs (
+  $case {$prop tag "cons"} ($call remap (t, $call rop ("env", 0, t_bot, xs), 0)),
+  $case xs t
+)
+
+// Whether closed `t` adds nothing to closed `m`: one type, or one a `μ` unrolls to.
+$decl canon_in_any $func ($decl t proto_ty, $decl ms tys.node) $match ms (
+  $case {$prop tag "cons"}
+    $if ($call eq_up (t, ms.head)) true ($call canon_in_any (t, $call tys.val (ms.tail))),
+  $case ms false
+)
+$decl canon_in $func ($decl t proto_ty, $decl m proto_ty)
+  $if ($call eq_up (t, m)) true ($match m (
+      $case {$prop tag "rec"} ($call canon_in_any (t, $call join_set (m))),
+      $case m false))
+// What can be one type at all, asked of the open terms before closing them: a variable
+// or a `μ` may unroll to anything, and otherwise the layouts must agree.
+$decl may_eq $func ($decl a proto_ty, $decl b proto_ty) $match a (
+  $case {$prop tag "bnd"} true,
+  $case {$prop tag "rec"} true,
+  $case a $match b (
+      $case {$prop tag "bnd"} true,
+      $case {$prop tag "rec"} true,
+      $case b ($call same_layout (a, b)))
+)
+$decl canon_into $func ($decl t proto_ty, $decl m proto_ty, $decl ctx vsubs.node)
+  $if ($call may_eq (t, m)) ($call canon_in ($call ctx_inst (t, ctx), $call ctx_inst (m, ctx)))
+      false
+$decl canon_absorbed $func ($decl t proto_ty, $decl ks tys.node, $decl ctx vsubs.node) $match ks (
+  $case {$prop tag "cons"}
+    $if ($call canon_into (t, ks.head, ctx)) true
+        ($call canon_absorbed (t, $call tys.val (ks.tail), ctx)),
+  $case ks false
+)
+$decl canon_keep $func ($decl ks tys.node, $decl t proto_ty, $decl ctx vsubs.node,
+                        $decl acc tys.node) $match ks (
+  $case {$prop tag "cons"}
+    $call canon_keep ($call tys.val (ks.tail), t, ctx,
+        $if ($call canon_into (ks.head, t, ctx)) acc ($call tys.cons (ks.head, acc))),
+  $case ks acc
+)
+$decl canon_set $func ($decl ms tys.node, $decl ctx vsubs.node, $decl acc tys.node) $match ms (
+  $case {$prop tag "cons"}
+    $call canon_set ($call tys.val (ms.tail), ctx,
+        $if ($call canon_absorbed (ms.head, acc, ctx)) acc
+            ($call tys.cons (ms.head, $call canon_keep (acc, ms.head, ctx, tys.nil)))),
+  $case ms acc
+)
+// A node beneath a constructor that is the type an enclosing `μ` stands for. Only a `μ`
+// whose unrolling is one member is asked: one of a union's is never the whole union.
+$decl canon_fold $func ($decl t proto_ty, $decl ctx vsubs.node, $decl xs vsubs.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl c    $call tval (xs.head.ty)
+    $decl u    $call tval ($call unroll (c))
+    $decl hit  $match u (
+        $case {$prop tag "union"} false,
+        $case u ($if ($call same_layout (t, u)) ($call eq_up ($call ctx_inst (t, ctx), c)) false))
+    $decl ret2 $if hit ($call t_bnd (xs.head.id))
+                   ($call canon_fold (t, ctx, $call vsubs.val (xs.tail)))
+  }.ret2,
+  $case xs t
+)
+$decl canon_at $func ($decl t proto_ty, $decl ctx vsubs.node, $decl g P.boolean)
+  $if g ($call canon_fold (t, ctx, ctx)) t
+
+$fwd canon_go
+$decl canon_tys $func ($decl xs tys.node, $decl ctx vsubs.node, $decl g P.boolean,
+                       $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call canon_tys ($call tys.val (xs.tail), ctx, g,
+        $call tys.cons ($call canon_go ($call tval (xs.head), ctx, g), acc)),
+  $case xs ($call tys.reverse (acc, tys.nil))
+)
+$decl canon_fields $func ($decl xs fields.node, $decl ctx vsubs.node, $decl acc fields.node)
+    $match xs (
+  $case {$prop tag "cons"}
+    $call canon_fields ($call fields.val (xs.tail), ctx, $call fields.cons ($call field (
+        xs.head.name, $call canon_go ($call tval (xs.head.ty), ctx, true)), acc)),
+  $case xs ($call fields.reverse (acc, fields.nil))
+)
+// `g`: beneath a constructor, where a node may become a variable. A union's members are
+// where the union is, and a `μ`'s body is not beneath one.
+// A closed subterm's normal form is a function of its class, so each is made once and kept,
+// in a trie like `rtable`'s: the answers a group's solve substitutes hold the same `μ`s over
+// and over — `proto_ty` in `types.mpl` — and rebuilding each was a fifth of a self-emit.
+// Only a type with no placeholder anywhere is kept, as `unroll_cache` keeps only those:
+// `same` ignores a prop's type, and one still mid-knot must not be handed a settled one's.
+$decl cnent       $func ($decl c 0, $decl t proto_ty) { $decl cid c  $decl ty t }
+$decl proto_cnent $call cnent (0, t_bot)
+$decl cnents      $specialize P.list proto_cnent
+$decl cntrie $union (
+  { $prop tag "leaf"   $decl items $alloc cnents.node },
+  { $prop tag "branch" $decl lo $alloc cntrie  $decl hi $alloc cntrie }
+)
+$decl cn_leaf   $func ($decl xs cnents.node) { $prop tag "leaf" $decl items $alloc xs }
+$decl cn_branch $func ($decl l cntrie, $decl h cntrie) {
+  $prop tag "branch" $decl lo $alloc l  $decl hi $alloc h
+}
+$decl cn_val   $func ($decl x cntrie) x
+$decl cn_items $func ($decl tr cntrie)
+    $match tr ($case {$prop tag "leaf"} ($call cnents.val (tr.items)), $case tr cnents.nil)
+$decl cn_scan $func ($decl xs cnents.node, $decl c 0) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_int (xs.head.cid, c)) xs ($call cn_scan ($call cnents.val (xs.tail), c)),
+  $case xs xs
+)
+$decl cn_find $func ($decl tr cntrie, $decl b 0, $decl c 0) $match tr (
+  $case {$prop tag "branch"}
+    $if ($call eq_int ($call mod (b, 2), 0))
+        ($call cn_find ($call cn_val (tr.lo), $call div (b, 2), c))
+        ($call cn_find ($call cn_val (tr.hi), $call div (b, 2), c)),
+  $case tr ($call cn_scan ($call cn_items (tr), c))
+)
+$decl cn_nil $call cn_leaf (cnents.nil)
+$decl cn_kid $func ($decl tr cntrie, $decl hi P.boolean) $match tr (
+  $case {$prop tag "branch"} ($call cn_val ($if hi tr.hi tr.lo)),
+  $case tr cn_nil
+)
+$decl cn_add $func ($decl tr cntrie, $decl b 0, $decl d 0, $decl e proto_cnent)
+  $if ($call not ($call lt (d, 14))) ($call cn_leaf ($call cnents.cons (e, $call cn_items (tr)))) {
+    $decl lo  $call cn_kid (tr, false)
+    $decl hi  $call cn_kid (tr, true)
+    $decl ret $if ($call eq_int ($call mod (b, 2), 0))
+        ($call cn_branch ($call cn_add (lo, $call div (b, 2), $call add (d, 1), e), hi))
+        ($call cn_branch (lo, $call cn_add (hi, $call div (b, 2), $call add (d, 1), e)))
+  }.ret
+$decl cntable $mut $alloc cntrie
+
+$fwd canon_node
+// Outside every `μ` a subtree holding none is left as it is: there is nothing to fold it
+// into, and its unions were joined when they were built.
+$decl canon_closed $func ($decl t proto_ty, $decl g P.boolean) {
+  $decl c   $call cid_of (t)
+  $decl ret $if ($if ($call lt (c, 0)) true ($call has_pa (t, 0)))
+                ($call canon_node (t, vsubs.nil, g)) {
+    $decl b    $call mod ($call div (c, 4), 16381)
+    $decl f    $call cn_find ($call cn_val (cntable), b, c)
+    $decl ret2 $match f (
+        $case {$prop tag "cons"} ($call tval (f.head.ty)),
+        $case f {
+          $decl r    $call canon_node (t, vsubs.nil, g)
+          $decl put  $set cntable ($call cn_add ($call cn_val (cntable), b, 0, $call cnent (c, r)))
+          $decl ret3 r
+        }.ret3)
+  }.ret2
+}.ret
+$decl canon_go $func ($decl t proto_ty, $decl ctx vsubs.node, $decl g P.boolean)
+  $if ($call vsubs.is_nil (ctx)) ($if ($call rec_in (t)) ($call canon_closed (t, g)) t)
+      ($call canon_node (t, ctx, g))
+$decl canon_node $func ($decl t proto_ty, $decl ctx vsubs.node, $decl g P.boolean) $match t (
+  $case {$prop tag "rec"} {
+    $decl b    $call canon_go ($call tval (t.body), $call ctx_push ($call ctx_inst (t, ctx), ctx),
+                   false)
+    $decl ret2 $if ($call mentions_bnd (b, 0)) ($call t_rec (b))
+                   ($call remap (b, $call rop_shift (-1), 0))
+  }.ret2,
+  $case {$prop tag "union"} {
+    $decl ms   $call canon_set ($call canon_tys ($call tys.val (t.members), ctx, g, tys.nil), ctx,
+                   tys.nil)
+    $decl ret2 $match ms (
+        $case {$prop tag "cons"}
+          $if ($call tys.is_nil ($call tys.val (ms.tail))) ($call tval (ms.head))
+              ($call t_union (ms)),
+        $case ms t)
+  }.ret2,
+  $case {$prop tag "block"}
+    $call canon_at ($call raw_block ($call canon_fields ($call fields.val (t.fields), ctx,
+        fields.nil), $call props.val (t.props)), ctx, g),
+  $case {$prop tag "group"}
+    $call canon_at ($call t_group ($call canon_tys ($call tys.val (t.items), ctx, true, tys.nil)),
+        ctx, g),
+  $case {$prop tag "func"}
+    $call canon_at ($call t_func_x ($call canon_tys ($call tys.val (t.params), ctx, true, tys.nil),
+        $call canon_go ($call tval (t.result), ctx, true), t.frame, t.rmut,
+        $call cints.val (t.esc), $call cints.val (t.marks)), ctx, g),
+  $case {$prop tag "ref"}
+    $call canon_at ($call t_ref_k (t.qual, $call canon_go ($call tval (t.inner), ctx, true),
+        t.kind), ctx, g),
+  $case {$prop tag "array"}
+    $call canon_at ($call t_array ($call canon_go ($call tval (t.elem), ctx, true)), ctx, g),
+  $case {$prop tag "inter"} $call t_inter ($call canon_tys ($call tys.val (t.members), ctx, g,
+                                tys.nil)),
+  $case {$prop tag "over"}
+    $call canon_at ($call t_over ($call canon_tys ($call tys.val (t.cands), ctx, true, tys.nil)),
+        ctx, g),
+  $case {$prop tag "with"}
+    $call canon_at ($call t_with ($call canon_go ($call tval (t.base), ctx, true),
+        $call props.val (t.props)), ctx, g),
+  // A binder too: index 0 inside is the trait itself.
+  $case {$prop tag "trait"}
+    $call canon_at ($call t_trait_q ($call canon_fields ($call fields.val (t.members),
+        $call ctx_push ($call ctx_inst (t, ctx), ctx), fields.nil), t.frame, t.qual), ctx, g),
+  $case t t
+)
+$decl canon $func ($decl t proto_ty) {
+  $decl was $call bval (equi_on)
+  $decl on  $set equi_on true
+  $decl r   $call canon_go (t, vsubs.nil, false)
+  $decl off $set equi_on was
+  $decl ret r
 }.ret
 
 // §3.6: "A value enters a union as its most specific member" — the member whose type it
