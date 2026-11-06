@@ -1,7 +1,8 @@
 # §7.6 storage: design note
 
-Status: **implemented.** All five plan steps are done; SPEC §3.5, §4.2, §4.2a, §5.3a, §7.6
-and §10 state the result, and this note keeps the reasoning and the measurements.
+Status: **implemented**, except §R3. All five plan steps are done; SPEC §3.5, §4.2, §4.2a,
+§5.3a, §7.6 and §10 state the result, and this note keeps the reasoning and the measurements.
+§R3, constructing calls, is decided and not yet implemented; it has its own plan.
 
 When this was written, SPEC §7.6 described two kinds of storage and the code had neither:
 `$new` and `$alloc` both compiled to `mpl_alloc`, which is `malloc` and was never freed, and
@@ -12,6 +13,7 @@ there was no `allocator` name in either root block.
 | A0 | what a frame reference is, and where it may go | **decided**: a place, never stored |
 | R | whether a function may return a place | **decided**: R2, a result may borrow |
 | — | whether top-level `$new` is special | **decided**: no, it is the outermost frame |
+| R3 | whether a function may construct into its caller's frame | **decided**: yes, when its body *is* the `$new` |
 | A | when frame storage is released, given §7.7's tail calls | **decided**: A4, a tail call may not pass its own places |
 | B | what an allocator is | **decided**: B2, with §8 raw-memory intrinsics |
 | C | whether the compiler itself uses allocators | not now (measured) |
@@ -160,6 +162,176 @@ What differs is only the implementation, and only because of how the backend run
 its `$decl`s are initialised by thunks called from `mpl_init`, and a thunk's return is not the
 top-level frame's exit. So a `$new` at top level is allocated in the program's frame — static
 storage — rather than in the thunk's.
+
+## R3. Constructing calls (decided, not implemented)
+
+R2 refuses case 5, `$func () $new 3`, and it is right to: the place dies with the activation
+that made it. But that leaves the language without a way to make a value with storage and
+deferrals — an owned string, a file handle, a buffer — from a function, short of `$alloc` and a
+`free` the author must remember. The workaround found so far is a value template:
+`$template k $new { … }` is frame storage of the scope `$specialize` stands in (SPEC §4.9), so
+`$specialize owned 3` is an inline constructor. It works in all three implementations
+(`tmpl_own.mpl`), and it is the wrong tool: a template's purpose is making a specialised *type*
+from an expression, not building a concrete value.
+
+**The rule: a function whose body is a `$new` constructs into its caller.** The caller provides
+the storage, and the call is frame storage of the scope it stands in — exactly as if that `$new`
+were written at the call site:
+
+```
+$decl mk $func ($decl k 0) $new { $decl v k  $defer $call say (v) }
+
+$decl user $func () {
+  $decl a   {
+    $decl s    $call mk (1)          // s owns the place, as it would own a $new written here
+    $decl ret2 $call say (2)
+  }.ret2                             // say (1) runs here, after say (2)
+  $decl ret $call say (3)
+}.ret                                // log: 213
+```
+
+Everything after the call follows from "a `$new` written there", and needs no rule of its own:
+the caller's `$decl` owns the place or it is ephemeral and dies at the item's end (SPEC
+§4.15a); it may be lent to a callee; R2 refuses returning it from a function that is not itself a
+constructor, and A4 refuses passing it in a tail call, because it is the caller's *own* place.
+
+### Only the syntactic shape constructs
+
+The body must **be** the `$new` — `$new e`, `$mut $new e` or `$const $new e` — or a bare tail
+call to another constructor. A place that merely *flows* to the result does not qualify:
+
+```
+$decl mk2 $func ($decl k 0) {        // still refused, by R2, with today's message
+  $decl s   $new { $decl v k }
+  $decl ret s
+}.ret
+```
+
+Accepting `mk2` would turn every frame leak R2 refuses today into a constructor without a word:
+whether a function constructed would follow where its references happen to go. With the shape
+rule, constructing is visible in the source and R2 stays exactly as written. It also removes
+every question of ownership *inside* the constructor: no `$decl` there binds the place, so there
+is no owner to hand over and no alias to excuse, and since each activation runs the one literal,
+its deferrals are one set known at compile time — no run-time flag, no drop pointer.
+
+It costs little, because a block's items can do any work: set-up that would follow the `$new`
+moves inside it.
+
+```
+$decl from $func ($decl src "") $new {
+  $decl n   $call len (src)
+  $decl p   $call raw_alloc (n)
+  $decl w   $call copy_into (p, src)        // initialisation is an item, not a later $set
+  $defer    $call raw_free (p)
+}
+```
+
+### A constructed block's deferrals read only the block and what is global
+
+They run when the *caller's* owner dies, long after the constructor's frame has gone, so they
+may name the block's own bindings, top-level bindings and the root block — never a parameter or
+a local of the constructor. Its field initialisers may read anything, since they run during
+construction:
+
+```
+$decl bad $func ($decl k 0) $new { $decl v k  $defer $call say (k) }    // refused: k
+$decl ok  $func ($decl k 0) $new { $decl v k  $defer $call say (v) }    // keep it as a field
+```
+
+A0 makes this the whole rule rather than an approximation: storage never holds a place, so a
+constructed block cannot keep a borrowed place for its deferral to read either. Stage 0 already
+fails the first at run time ("unknown name 'k'"); the checker refuses it statically.
+
+### Forwarding: a tail call to a constructor constructs
+
+```
+$decl mk0      $func () $call mk (0)                       // a default
+$decl from_len $func ($decl s "") $call mk ($call len (s)) // an adapter
+```
+
+The caller of `mk0` reserves the slot and passes its address; `mk0` passes the same address to
+`mk`, and the `$new` builds into it. A4 is not involved, since the slot belongs to `mk0`'s caller.
+A constructor's deferral set is a property of the function, so the caller runs it directly:
+`mk0`'s is `mk`'s. Without forwarding every wrapper, default or overload would repeat the
+literal.
+
+### Calling convention and type
+
+A constructing call passes a hidden destination after `env`, `T *dst`, and the `$new` writes
+there instead of to a local of its own; the result is `dst`. A thunk's slot is `static`, as a
+top-level `$new` is. Because the convention differs, the function type records it — a flag
+beside `esc`, part of identity and of subtyping, so it needs a `ckey` row, a hash term and its
+`pv`/`pa` rules (`types.mpl`). A constructing function **used as a value** is refused for now,
+for the same reason a short call must name a definition (SPEC §3.4): a call through a value would
+need a shim (a plain function adapts by ignoring `dst`) and a destination in §6a's pending block.
+
+### What the first cut leaves out
+
+| shape | first cut | later |
+|---|---|---|
+| body is `$new`, `$mut $new` or `$const $new` | **constructs** | |
+| body is a bare tail call to a constructor | **constructs** | |
+| `$if`/`$match` arms, each the same constructor | refused | maybe: one deferral set |
+| arms with different literals or storage types | refused | likely never: branch in a field |
+| a `$try` among the literal's items | refused | second step |
+| a constructor used as a value | refused | a shim, and `dst` in §6a's pending block |
+
+**Arms** would bring back what the shape rule removed. Two literals of one storage type have two
+deferral sets, so the callee would have to write a drop pointer beside the slot for the caller to
+test; two storage types (`<&A, &B>`) have no single slot at all. A branch inside one literal does
+the same job with one set, the field telling the deferral what to do:
+
+```
+$decl pick $func ($decl c true) $new {
+  $decl p   $if c ($call raw_alloc (8)) 0
+  $defer    $if ($call eq (p, 0)) () ($call raw_free (p))
+}
+```
+
+**`$try`** is the case worth having next — a constructor that can fail (open, parse, allocate):
+
+```
+$decl parse $func ($decl src "") $new {
+  $decl p   $call raw_alloc (16)
+  $defer    $call raw_free (p)
+  $decl n   $try ($call str_to_int (src)) none     // may leave half built
+  $decl w   $call store (p, n)
+}
+```
+
+On failure the block is half built in the caller's slot, which is still alive. SPEC §4.15a runs
+the deferrals registered before the `$try` (`raw_free (p)`), in the constructor, and that is
+sound; the constructor answers `none`. Its result widens to `<&T, none>` (§4.15), so the type
+must say which member is constructed, and the caller runs the drop only when its owner holds
+that member — a tag read, not an address compare. Stage 0 probably agrees already (it runs the
+registered deferrals and finds no place in `none`), which a probe has to show first.
+
+### What changes in SPEC
+
+- §5.3a, the second rule: a result may hold only borrowed places, **except** that a function
+  whose body is a `$new`, or a tail call to such a function, constructs: its result is frame
+  storage of the scope the call stands in, and the call is a `$new` written there.
+- §4.15a: a constructed block's deferrals may name only its own bindings and what is global; the
+  owner list's "a call that hands it back" gains the constructing call.
+- §7.3: the hidden destination, and that the function type records it.
+- §4.9: unchanged. A value template's `$new` stays the caller's frame storage, as fixed in
+  08eb63e, but the idiom for a constructor is a function.
+
+### Plan
+
+1. **SPEC**, as above.
+2. **Checker.** The shape test on a `$func` body (beside `func_close`, at all three typing sites:
+   `infer_func`, `infer_rec_func`, `infer_fwd_body`); the flag on `t_func`; R2's exemption; the
+   call site as an own place in `owns_form`, as `$specialize`'s is; the deferral-scope rule; and
+   the refusals in the table.
+3. **Lowering.** A constructing call is a place-making site for `flows_form`, keyed like a
+   `$new`; its deferrals are registered in the caller as the constructor's set, lowered once
+   against the block alone; the constructor registers none; a forwarding body passes `dst` on.
+4. **Emit.** `dst` after `env`; the caller's slot is a local `n<id>` from `news_of`, `static` in a
+   thunk; the `$new` in a constructor writes `*dst`.
+5. **Fixtures.** `tmpl_own.mpl`'s seven cases written as functions, in both stages and under
+   ASan; forwarding; `test-reject` for escaping from the caller, for a deferral naming a
+   constructor local, for value use, and for `mk2`'s shape keeping R2's message.
 
 ## A. Frame storage and tail calls (decided, A4)
 
