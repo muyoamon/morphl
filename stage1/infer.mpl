@@ -1705,7 +1705,11 @@ $decl owns_form $func ($decl cx proto_ctx, $decl e owns.node, $decl x Pa.proto_n
       ($if ($call eq_str (k, "union"))
           ($call owns_any (cx, e, $call group_items ($call op (x, 0))))
       ($if ($call eq_str (k, "func")) ($call owns_func (e, x))
-           false))))))))))
+      // §4.9: an instance's `$new` is this frame's storage. Counted own whenever the
+      // instance holds a place at all — a body handing back a borrowed argument is refused
+      // too, which is the safe direction.
+      ($if ($call eq_str (k, "specialize")) ($call placed_at (cx, x))
+           false)))))))))))
 }.ret
 
 $decl owns_x $func ($decl cx proto_ctx, $decl e owns.node, $decl x Pa.proto_node) $match x (
@@ -4082,9 +4086,12 @@ $decl specialize_over $func ($decl cx proto_ctx, $decl e env.node, $decl tt T.pr
 
 // §4.9 steps 2 and 3: type the substituted expression with ordinary rules, and
 // have exactly its type.
+// Whether the instance holds a place is noted as a call's result is (`placed`): SPEC §4.9
+// makes a `$new` in the body frame storage of the scope the `$specialize` stands in, and
+// §5.3a's walk has to see it there, or an instance returned from that scope dangled.
 $decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl tt $call deref_ty ($call infer (cx, e, $call op (n, 0)))
-  $decl ret $match tt (
+  $decl r  $match tt (
       $case {$prop tag "tmpl"}   $call specialize_with (cx, e, tt.id, $call op (n, 1), n),
       $case {$prop tag "over"}
         $call specialize_over (cx, e, tt, $call T.tys.val (tt.cands), $call op (n, 1), n),
@@ -4092,6 +4099,8 @@ $decl infer_specialize $func ($decl cx proto_ctx, $decl e env.node, $decl n prot
       $case tt ($call err (cx, $call concat ("$specialize expects a template, found ",
                     $call T.show (tt)), n))
     )
+  $decl pl  $call note_placed (cx, n, r)
+  $decl ret r
 }.ret
 
 // -------------------------------------------------------------- $import (§4.14)

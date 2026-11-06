@@ -102,6 +102,7 @@ declare -A rules=(
   [prop_cap]="a \$prop's \$func may not capture"
   [short_frame]="an omitted argument's default reads"
   [short_value]="this callee is a function value whose definition is not known"
+  [tmpl_escape]="this function's result holds frame storage made in this call"
   # Lifting makes the file's globals the function's locals, so a `$func` prop naming one
   # captures it (§4.10), and a trait object over one is frame-bound (§5.3a).
   [receiver@lift]="a \$prop's \$func may not capture 'ival'"

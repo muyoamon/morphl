@@ -677,13 +677,17 @@ $decl lit_defers $func ($decl n proto_node) $match n (
   $case n false
 )
 $decl is_block_lit $func ($decl n proto_node) $match n ($case {$prop tag "block"} true, $case n false)
+// A `$func`'s body and a `$template`'s are not evaluated where they are written (§4.9), so
+// storage in either is not this item's: a top-level `$template` whose body is
+// `$new { … $defer … }` was lowered as top-level storage and lost the template.
 $decl storage_defers $func ($decl n proto_node) $match n (
   $case {$prop tag "form"}
     $if ($call eq_str (n.keyword, "func")) false
+    ($if ($call eq_str (n.keyword, "template")) false
     ($if ($call eq_str (n.keyword, "new"))
          ($if ($call lit_defers ($call operand (n, 0))) true
               ($call storage_defers_list (n.operands)))
-         ($call storage_defers_list (n.operands))),
+         ($call storage_defers_list (n.operands)))),
   $case {$prop tag "block"}      ($call storage_defers_list (n.items)),
   $case {$prop tag "group"}      ($call storage_defers_list (n.items)),
   $case {$prop tag "proj_name"}

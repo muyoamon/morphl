@@ -157,6 +157,12 @@ pub fn build(b: *std.Build) void {
         // An intrinsic's option whose payload nothing reads: its members were never
         // interned, and the union came out as two `int64_t`s that `cc` refused.
         .{ .src = "stage1/fixtures/opt_unread.mpl", .want = "86322\n" },
+        // A value template as an inline constructor: its `$new`'s deferral belongs to the
+        // `$decl` that binds the instance, as a `$new` written there would.
+        .{ .src = "stage1/fixtures/tmpl_own.mpl", .want = "213654987321112 hits=1" },
+        // A `$new` with a deferral in a parameter default, a type-only position: its
+        // deferral was left on the enclosing frame and named captures it did not have.
+        .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
         .{ .src = "stage1/fixtures/effect_drop.mpl", .want = "7041\n" },
         .{ .src = "stage1/fixtures/prop_union.mpl", .want = "9\n" },
         // §3.3's top-level `$prop`s. All four shapes §1.1 allows, because each takes a
@@ -784,6 +790,14 @@ pub fn build(b: *std.Build) void {
                 "prop_cap_scope.mpl:19:13: a $prop's $func may not capture 'y': a prop is compile-time and its value part of the block's type (§4.10), and a capture is a runtime value",
             },
             .count = "errors: 3\n",
+            .stage0 = null,
+        },
+        .{
+            .src = "stage1/fixtures/tmpl_escape.mpl",
+            .stage1 = &.{
+                "tmpl_escape.mpl:5:13: this function's result holds frame storage made in this call (&block)",
+            },
+            .count = "errors: 1\n",
             .stage0 = null,
         },
         .{

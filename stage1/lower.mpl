@@ -599,6 +599,13 @@ $decl tviews $specialize P.list proto_tview
 $decl sx_ent   $func ($decl k "", $decl t T.proto_ty) { $decl key k  $decl ty t }
 $decl proto_sx $call sx_ent ("", T.t_bot)
 $decl sxs      $specialize P.list proto_sx
+// The body a value-bodied `$specialize` expanded, by its site (`spec_site`). SPEC §4.9 makes
+// a `$new` in it frame storage of the scope the `$specialize` stands in, so DEFER.md's flow
+// rule follows a place through it to the `$decl` that owns it (`flows_form`), as it does
+// through `$do`; without this the instance's deferrals ran as soon as it was built.
+$decl sb_ent   $func ($decl k "", $decl b Pa.proto_node) { $decl key k  $decl body $alloc b }
+$decl proto_sb $call sb_ent ("", Pa.proto_node)
+$decl sbs      $specialize P.list proto_sb
 // A member in progress whose trait its own body takes (`ltrait_of`), with the placeholder
 // that trait is on the first pass.
 $decl ts_ent   $func ($decl i 0, $decl v 0, $decl b T.proto_ty, $decl q "")
@@ -773,6 +780,8 @@ $decl lstate $func () {
   $decl tview    $mut $alloc tviews.node
   // The value-bodied specialisations being lowered, innermost first (`sx_ent`).
   $decl sxpend   $mut $alloc sxs.node
+  // Each value-bodied `$specialize` site's body, newest first (`sb_ent`).
+  $decl sbodies  $mut $alloc sbs.node
   // Local functions' defaults (`ldef_ent`), newest first, and how many there have been.
   $decl ldefs    $mut $alloc ldef_list.node
   $decl nldef    $mut $alloc 0
@@ -1840,13 +1849,18 @@ $fwd lower_prop
 // *derive* their types — so it lowers them and throws the tree away. What it
 // must not throw away by accident is the enclosing frame: a block in such a
 // position would otherwise take slots in it, and §7.2 puts the parameters in
-// the first slots, so the signature and the frame would stop agreeing.
+// the first slots, so the signature and the frame would stop agreeing. Nor its deferrals:
+// a `$new { … $defer … }` in a parameter default — written there, or as a template instance —
+// left its deferral on the enclosing frame's stack, lowered there against captures that frame
+// does not have ("capture index 0 names nothing").
 $decl type_only $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
   $decl keep $call take_slots (st)
+  $decl odf  $call dfr_list.val (st.defers)
   $decl tin  $set st.tonly ($call add ($call P.ival (st.tonly), 1))
   $decl v    $call lval ($call lower (st, e, n, false))
   $decl tout $set st.tonly ($call sub ($call P.ival (st.tonly), 1))
   $decl back $call restore_slots (st, keep)
+  $decl rdf  $set st.defers odf
   $decl ret  v
 }.ret
 
@@ -3713,8 +3727,15 @@ $decl spec_expr_go $func ($decl st proto_lst, $decl e benv.node, $decl r proto_t
   $decl s2   $set st.sxpend old
   $decl ret  $call lres4 (v.ir, ty, v.mod, v.tmpl)
 }.ret
+$decl spec_site $func ($decl st proto_lst, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl ret $call concat ($call P.sval (st.curfile), $call concat (":",
+                $call keep_key (sp.line, sp.col)))
+}.ret
 $decl spec_expr $func ($decl st proto_lst, $decl e benv.node, $decl r proto_tmpl,
                        $decl args Pa.nodes.node, $decl keys IR.ints.node, $decl n Pa.proto_node) {
+  $decl sb  $set st.sbodies ($call sbs.cons ($call sb_ent ($call spec_site (st, n), r.body),
+                $call sbs.val (st.sbodies)))
   $decl sk  $call spec_key (st, r, keys)
   $decl hit $call find_sx ($call sxs.val (st.sxpend), sk)
   // In a type-only position (§5.7) only the type is wanted, and it is the knot's. Evaluated,
@@ -6660,8 +6681,17 @@ $decl flows_arms $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl key ""
     $case xs acc
   )
 
+// The body the `$specialize` at `n` expanded, or nothing when it expanded none here.
+$decl find_sb $func ($decl xs sbs.node, $decl k "") $match xs (
+  $case {$prop tag "cons"}
+    $if ($call eq_str (xs.head.key, k)) ($call nd_val (xs.head.body))
+        ($call find_sb ($call sbs.val (xs.tail), k)),
+  $case xs ($call Pa.n_unit (0, 0))
+)
+
 // A call may hand back what an argument carries, and which it does is the callee's choice:
-// "may", decided at run time (`own_inits`, example 7).
+// "may", decided at run time (`own_inits`, example 7). A `$specialize` is its body,
+// expanded where it stands (§4.9).
 $decl flows_form $func ($decl st proto_lst, $decl n Pa.proto_node, $decl k "", $decl key "")
   $if ($call eq_str (k, "new")) ($if ($call eq_str ($call newlit_key ($call op (n, 0)), key)) 2 0)
   ($if ($call eq_str (k, "if"))
@@ -6675,7 +6705,10 @@ $decl flows_form $func ($decl st proto_lst, $decl n Pa.proto_node, $decl k "", $
   ($if ($call P.or ($call eq_str (k, "mut"), $call P.or ($call eq_str (k, "const"),
                   $call eq_str (k, "traitsof"))))
        ($call flows_to (st, $call op (n, 0), key))
-       0)))))
+  ($if ($call eq_str (k, "specialize"))
+       ($call flows_to (st, $call find_sb ($call sbs.val (st.sbodies), $call spec_site (st, n)),
+           key))
+       0))))))
 
 $decl flows_to $func ($decl st proto_lst, $decl n Pa.proto_node, $decl key "") $match n (
   $case {$prop tag "block"} ($call flows_fields (st, $call Pa.nodes.val (n.items), key, 0)),
