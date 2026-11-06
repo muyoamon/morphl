@@ -3029,3 +3029,49 @@ The steepest sites left with real volume are rendering and string sets, not lowe
 The biggest single sites — `tyio`'s pair-folding join of the output (97 MB, 1.12) and the
 `reverse`-built lists (`verify.merge` 35 MB, `lexer.tokenize` 32 MB, 1.1–1.3) — grow about as
 the input does, and are constant-factor targets.
+
+## Rendering a type: 107 MB to make 1.7 MB of union sort keys
+
+The steep rendering sites in the section above (`show`, `show_fields`, `join_strs`, slope
+2.3–2.8) had one outermost caller. Each renderer entry was wrapped in the instrumented C
+with a depth counter, charging what it allocated to the caller of the outermost call:
+
+| outermost caller | renderer | allocated |
+|---|---|---|
+| `types.sort_tys` (§7.5's member order) | `sort_key` → `show` | **109 MB** |
+| `lower.infer_key` | `show_key` | 24 MB |
+| `infer.memo_key` | `show_key` | 8 MB |
+
+`sort_key`'s cache by class was working — 86,597 of 88,816 calls hit, and no member was
+classless — so the cost was the 2,219 misses: **107 MB of allocation for 1.69 MB of keys**,
+64 times the output, the longest 32 KB. `show` left-folded `concat` at each level, so every
+level copied its children's text again: a rendering cost its length times its depth.
+
+Two changes, both keeping the strings exact (the self-emit's C is byte-identical, and union
+order is the most sensitive reader of them):
+
+- **`show` writes chunks, newest first, and joins once** with the pairwise join `tyio` and
+  `emit` already use, O(L log n).
+- **A union's members are rendered by `sort_key`**, the per-class cache, rather than by
+  `show`: every member of a union went through it when the union was built, so a nested
+  union's members come back as cached strings instead of being rendered at each level.
+
+| self-emit, same input | allocations | allocated | time at `-O2`, five runs |
+|---|---|---|---|
+| before | 20.16M | 1,131 MB | 10.2, 11.0, 11.1, 11.0, 10.9s |
+| after | **19.16M** | **1,046 MB (−7.5%)** | 10.3, 10.2, 11.0, 10.9, 11.0s |
+
+`sort_tys`'s share went from 109 MB to 22 MB. (These figures compile the tree with the
+change in it, which is larger than the one the previous section measured, hence 1,131 MB
+before rather than 1,093.)
+
+**The same rewrite of `show_key` made it worse**, 33 MB → 55 MB: `concat` fell and the chunk
+lists' cells rose by more. `show_key` renders many small types — memo keys for each
+specialisation use — where a left fold copies little and a chunk costs a 24-byte cell plus
+its share of a reverse and the join's passes. Chunks pay where a rendering is deep, and the
+union sort keys are the deep ones. So `show_key` is unchanged. A per-class cache like
+`sort_key`'s would suit it better, since its output is a function of the class too.
+
+At `-O1` the new compiler measured ~6% slower over three runs each; `perf` showed the same
+profile, symbol for symbol, and at `-O2` — how `mplc` is built — the two are level. Measure
+time on the `-O2` binary.

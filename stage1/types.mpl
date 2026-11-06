@@ -1048,9 +1048,47 @@ $decl t_with $func ($decl b proto_ty, $decl ps props.node) {
 
 $fwd show
 
-$decl show_tys $func ($decl xs tys.node, $decl acc "", $decl first P.boolean) $match xs (
-  $case {$prop tag "cons"} $call show_tys (xs.tail,
-      $call concat (acc, $call concat ($if first "" ",", $call show (xs.head))), false),
+// A rendering is built as chunks, newest first, and joined once (`chunks_text`). It was a
+// left fold of `concat` at every level, which copied each child's text again at every level
+// above it: a type's rendering cost its length times its depth, and a self-emit allocated
+// 107 MB to make the 1.7 MB of union sort keys it keeps (PERF.md, "Rendering a type").
+// The join is the pairwise one `tyio` and `emit` use, O(L log n): each pass copies the text
+// once, and passing the tail as a parameter keeps every call in tail position.
+$fwd ch_pass
+
+$decl ch_two $func ($decl a "", $decl t strs.node, $decl acc strs.node) $match t (
+  $case {$prop tag "cons"}
+    $call ch_pass ($call strs.val (t.tail), $call strs.cons ($call concat (a, t.head), acc)),
+  $case t ($call ch_pass (t, $call strs.cons (a, acc)))
+)
+
+$decl ch_pass $func ($decl xs strs.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} $call ch_two (xs.head, $call strs.val (xs.tail), acc),
+  $case xs acc
+)
+
+$fwd ch_all
+
+$decl ch_step $func ($decl xs strs.node, $decl a "", $decl t strs.node) $match t (
+  $case {$prop tag "cons"}
+    $call ch_all ($call strs.reverse ($call ch_pass (xs, strs.nil), strs.nil)),
+  $case t a
+)
+
+$decl ch_all $func ($decl xs strs.node) $match xs (
+  $case {$prop tag "cons"} $call ch_step (xs, xs.head, $call strs.val (xs.tail)),
+  $case xs ""
+)
+
+$decl chunks_text $func ($decl cs strs.node) $call ch_all ($call strs.reverse (cs, strs.nil))
+
+$fwd show_to
+
+$decl show_tys_to $func ($decl xs tys.node, $decl acc strs.node, $decl first P.boolean)
+    $match xs (
+  $case {$prop tag "cons"}
+    $call show_tys_to (xs.tail,
+        $call show_to (xs.head, $if first acc ($call strs.cons (",", acc))), false),
   $case xs acc
 )
 
@@ -1064,9 +1102,13 @@ $decl strs_insert $func ($decl x "", $decl xs strs.node) $match xs (
   $case xs ($call strs.cons (x, strs.nil))
 )
 
+// A member's rendering is its class's (`sort_key`): every member of a union passed through
+// it when the union was built, so a nested union's members come back from the cache rather
+// than being rendered again at each level.
+$fwd sort_key
 $decl show_sorted_add $func ($decl xs tys.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call show_sorted_add (xs.tail, $call strs_insert ($call show (xs.head),
-      acc)),
+  $case {$prop tag "cons"}
+    $call show_sorted_add (xs.tail, $call strs_insert ($call sort_key (xs.head), acc)),
   $case xs acc
 )
 
@@ -1076,13 +1118,21 @@ $decl join_strs $func ($decl xs strs.node, $decl acc "", $decl first P.boolean) 
   $case xs acc
 )
 
-$decl show_set $func ($decl xs tys.node)
-  $call join_strs ($call show_sorted_add (xs, strs.nil), "", true)
+$decl push_strs $func ($decl xs strs.node, $decl acc strs.node, $decl first P.boolean)
+    $match xs (
+  $case {$prop tag "cons"}
+    $call push_strs (xs.tail, $call strs.cons (xs.head, $if first acc ($call strs.cons (",", acc))),
+        false),
+  $case xs acc
+)
 
-$decl show_fields $func ($decl xs fields.node, $decl acc "") $match xs (
-  $case {$prop tag "cons"} $call show_fields (xs.tail,
-      $call concat (acc, $call concat (xs.head.name,
-      $call concat (":", $call concat ($call show (xs.head.ty), ","))))),
+$decl show_set_to $func ($decl xs tys.node, $decl acc strs.node)
+  $call push_strs ($call show_sorted_add (xs, strs.nil), acc, true)
+
+$decl show_fields_to $func ($decl xs fields.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} $call show_fields_to (xs.tail,
+      $call strs.cons (",", $call show_to (xs.head.ty,
+          $call strs.cons (":", $call strs.cons (xs.head.name, acc))))),
   $case xs acc
 )
 
@@ -1093,6 +1143,13 @@ $decl show_props $func ($decl xs props.node, $decl acc "") $match xs (
   $case xs acc
 )
 
+$decl show_props_to $func ($decl xs props.node, $decl acc strs.node) $match xs (
+  $case {$prop tag "cons"} $call show_props_to (xs.tail,
+      $call strs.cons (",", $call strs.cons ($call show_cv (xs.head.value),
+          $call strs.cons ("=", $call strs.cons (xs.head.name, acc))))),
+  $case xs acc
+)
+
 // §3.5: "written `&T` for frame and `&^T` for allocated *in diagnostics only*".
 $decl show_qual $func ($decl q "", $decl k "") {
   $decl amp $if ($call is_alloc (k)) "&^" "&"
@@ -1100,47 +1157,58 @@ $decl show_qual $func ($decl q "", $decl k "") {
               ($call concat (amp, $if ($call eq_str (q, "mut")) "mut " "const "))
 }.ret
 
-$decl show $func ($decl t proto_ty) $match t (
-  $case {$prop tag "int"}    "Int",
-  $case {$prop tag "float"}  "Float",
-  $case {$prop tag "str"}    "Str",
-  $case {$prop tag "true"}   "true",
-  $case {$prop tag "false"}  "false",
-  $case {$prop tag "unit"}   "()",
-  $case {$prop tag "bottom"} "!",
-  $case {$prop tag "var"}    $call concat ("v", $call int_to_str (t.id)),
-  $case {$prop tag "block"}  $call concat ("{", $call concat ($call show_fields (t.fields, ""),
-                                 $call concat ($call show_props (t.props, ""), "}"))),
-  $case {$prop tag "group"}  $call concat ("(", $call concat ($call show_tys (t.items, "", true), ")")),
+// A function's prefix, each part only when it is there.
+$decl wrap_to $func ($decl s "", $decl o "", $decl acc strs.node)
+  $if ($call eq_str (s, "")) acc ($call strs.cons (")", $call strs.cons (s,
+      $call strs.cons (o, acc))))
+
+$decl show_to $func ($decl t proto_ty, $decl acc strs.node) $match t (
+  $case {$prop tag "int"}    $call strs.cons ("Int", acc),
+  $case {$prop tag "float"}  $call strs.cons ("Float", acc),
+  $case {$prop tag "str"}    $call strs.cons ("Str", acc),
+  $case {$prop tag "true"}   $call strs.cons ("true", acc),
+  $case {$prop tag "false"}  $call strs.cons ("false", acc),
+  $case {$prop tag "unit"}   $call strs.cons ("()", acc),
+  $case {$prop tag "bottom"} $call strs.cons ("!", acc),
+  $case {$prop tag "var"}    $call strs.cons ($call concat ("v", $call int_to_str (t.id)), acc),
+  $case {$prop tag "block"}
+    $call strs.cons ("}", $call show_props_to (t.props,
+        $call show_fields_to (t.fields, $call strs.cons ("{", acc)))),
+  $case {$prop tag "group"}
+    $call strs.cons (")", $call show_tys_to (t.items, $call strs.cons ("(", acc), true)),
   $case {$prop tag "func"} {
     $decl es  $call ci_str_half ($call cints.val (t.esc), 0, "")
     $decl bs  $call ci_str_half ($call cints.val (t.esc), 1, "")
     $decl fs  $call ci_str_half ($call cints.val (t.esc), 2, "")
     $decl ns  $call ci_str_half ($call cints.val (t.esc), 3, "")
-    $decl ret $call concat ($if t.rmut "mut" "",
-        $call concat ($if ($call eq_str (es, "")) "" ($call concat ("esc(", $call concat (es, ")"))),
-        $call concat ($if ($call eq_str (bs, "")) "" ($call concat ("brw(", $call concat (bs, ")"))),
-        $call concat ($if ($call eq_str (fs, "")) "" ($call concat ("free(", $call concat (fs, ")"))),
-        $call concat ($if ($call eq_str (ns, "")) "" "nonroot",
-        $call concat ("[", $call concat ($call show_tys (t.params, "", true),
-        $call concat ("]->", $call show (t.result)))))))))
+    $decl a1  $if t.rmut ($call strs.cons ("mut", acc)) acc
+    $decl a2  $call wrap_to (fs, "free(", $call wrap_to (bs, "brw(", $call wrap_to (es, "esc(", a1)))
+    $decl a3  $if ($call eq_str (ns, "")) a2 ($call strs.cons ("nonroot", a2))
+    $decl ret $call show_to (t.result, $call strs.cons ("]->",
+                  $call show_tys_to (t.params, $call strs.cons ("[", a3), true)))
   }.ret,
-  $case {$prop tag "ref"}    $call concat ($call show_qual (t.qual, t.kind), $call show (t.inner)),
-  $case {$prop tag "array"}  $call concat ("[]", $call show (t.elem)),
-  $case {$prop tag "union"}  $call concat ("<", $call concat ($call show_set (t.members), ">")),
-  $case {$prop tag "inter"}  $call concat ("^", $call concat ($call show_set (t.members), "^")),
-  $case {$prop tag "bnd"}    $call concat ("b", $call int_to_str (t.idx)),
-  $case {$prop tag "rec"}    $call concat ("mu.", $call show (t.body)),
+  $case {$prop tag "ref"}
+    $call show_to (t.inner, $call strs.cons ($call show_qual (t.qual, t.kind), acc)),
+  $case {$prop tag "array"}  $call show_to (t.elem, $call strs.cons ("[]", acc)),
+  $case {$prop tag "union"}
+    $call strs.cons (">", $call show_set_to (t.members, $call strs.cons ("<", acc))),
+  $case {$prop tag "inter"}
+    $call strs.cons ("^", $call show_set_to (t.members, $call strs.cons ("^", acc))),
+  $case {$prop tag "bnd"}    $call strs.cons ($call concat ("b", $call int_to_str (t.idx)), acc),
+  $case {$prop tag "rec"}    $call show_to (t.body, $call strs.cons ("mu.", acc)),
   $case {$prop tag "trait"}
-    $call concat ($if ($call eq_str (t.qual, "")) "" "mut ",
-        $call concat ("trait{", $call concat ($call show_fields (t.members, ""), "}"))),
+    $call strs.cons ("}", $call show_fields_to (t.members, $call strs.cons ("trait{",
+        $if ($call eq_str (t.qual, "")) acc ($call strs.cons ("mut ", acc))))),
   $case {$prop tag "with"}
-    $call concat ($call show (t.base),
-        $call concat ("+{", $call concat ($call show_props (t.props, ""), "}"))),
-  $case {$prop tag "over"}   $call concat ("O<", $call concat ($call show_tys (t.cands, "", true), ">")),
-  $case {$prop tag "tmpl"}   $call concat ("Tmpl", $call int_to_str (t.id)),
-  $case t "?"
+    $call strs.cons ("}", $call show_props_to (t.props,
+        $call strs.cons ("+{", $call show_to (t.base, acc)))),
+  $case {$prop tag "over"}
+    $call strs.cons (">", $call show_tys_to (t.cands, $call strs.cons ("O<", acc), true)),
+  $case {$prop tag "tmpl"}   $call strs.cons ($call concat ("Tmpl", $call int_to_str (t.id)), acc),
+  $case t $call strs.cons ("?", acc)
 )
+
+$decl show $func ($decl t proto_ty) $call chunks_text ($call show_to (t, strs.nil))
 
 // ------------------------------------------- the rendering a specialisation is keyed by
 //
