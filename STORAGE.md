@@ -313,7 +313,9 @@ registered deferrals and finds no place in `none`), which a probe has to show fi
   storage of the scope the call stands in, and the call is a `$new` written there.
 - §4.15a: a constructed block's deferrals may name only its own bindings and what is global; the
   owner list's "a call that hands it back" gains the constructing call.
-- §7.3: the hidden destination, and that the function type records it.
+- §3.4 and §7.6: the function type records that it constructs, and the caller's slot and its
+  address passed to the constructor (§7.3's two-word value is untouched, since value use is
+  refused).
 - §4.9: unchanged. A value template's `$new` stays the caller's frame storage, as fixed in
   08eb63e, but the idiom for a constructor is a function.
 

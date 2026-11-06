@@ -117,7 +117,7 @@ A parameter list is matched **exactly**, not as a group (§5.1): a call passes o
 
 An omitted argument's default is the callee's **definition**'s, evaluated in the scope it was written in, so a call that leaves arguments off must name a definition: a name bound to a `$func` literal — by `$decl`, `$fwd` or `$prop` — or to another such name, a prop (§4.10, wherever the value carrying it came from), or a module's member. A function reached any other way is a **value** — a parameter, a field, storage, a call's result, an `$if`, an `$overload`'s candidate — and a value carries no defaults (§7.3: two words whatever the signature), so a call through one passes every argument; leaving one off is a compile error. A prop's `$func` is compile-time (§4.10) and has no frame to evaluate a default in, so where one of its defaults names a runtime binding of an enclosing frame — legal there, since a default is a type-only position where it is written (§5.7) — a call must pass that argument and every one before it.
 
-A function's type is `params -> result`, where `result` is the type of `body`.
+A function's type is `params -> result`, where `result` is the type of `body`. It also records whether the function constructs (§5.3a), which changes how it is called.
 
 ### 3.5 References
 
@@ -286,7 +286,7 @@ A template is a compile-time abstraction. `T` (or each name in a group) denotes 
 **Typing is memoized per argument type, and per argument value for each compile-time generic; values are not otherwise memoized.** Two specializations whose arguments have the same types, and the same values for the compile-time generics, have the same type and share the same code. A `$specialize` expression is evaluated where it stands, like a block literal written there: each evaluation evaluates the arguments once, binds them, and evaluates the body's `$decl`s in source order (§4.10), producing a new value.
 
 - **An instance is an evaluation.** Two `$specialize t Int` written in two places are two instances. One written inside a `$func` is a new instance each time that `$func` runs. One bound by a top-level `$decl` is evaluated once, in §4.10's order, and every use of that name sees the same instance.
-- **Storage belongs to the instance.** A `$new` in the body is frame storage of the scope the `$specialize` is evaluated in, and §5.3a applies to it exactly as to a block literal there. A specialization that must outlive that scope is built with `$alloc`. A `$decl $func` member's code is shared, and its environment is its own instance's (§7.3).
+- **Storage belongs to the instance.** A `$new` in the body is frame storage of the scope the `$specialize` is evaluated in, and §5.3a applies to it exactly as to a block literal there. A specialization that must outlive that scope is built with `$alloc`. A template is for making a type from an expression; a value with storage made by a function is a constructing function's (§5.3a). A `$decl $func` member's code is shared, and its environment is its own instance's (§7.3).
 - **Props are shared.** A prop is compile-time and part of the type (§4.10), so every instance with the same memo key has the same props. A prop-only body therefore has exactly one value per memo key, and how many times it is evaluated cannot be observed.
 
 **Compile-time generics.** A prop's value is part of the type (§4.10). So a generic whose value reaches a prop after specialization is a *compile-time generic*. A generic reaches a prop when it is read in an evaluated position of a `$prop` initializer anywhere in the body, at any depth, including a block literal inside a `$decl` or a `$func`. It also reaches one when it is passed as the argument for another template's compile-time generic. Its argument must be a constant expression (§4.10), and its value joins the argument types in the memo key. Given `$prop size T`, `$specialize t 5` and `$specialize t 6` are two types; without it they are one. Any other generic may be bound to any value, because only its type reaches the specialization's type. Application (`$call t args`) never infers a compile-time generic; write the `$specialize`.
@@ -459,6 +459,12 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   allocator, which runs them when the storage is freed (§7.6). Storage an arm would have
   made has no deferrals when that arm did not run, and whether a call handed storage back
   is a question about the value it answered, so it may be decided as the program runs.
+- **A constructing call** (§5.3a) is decided as if its `$new` were written at the call: at
+  the end of the caller's item the call is in. Its block's deferrals run after the
+  constructor's activation has ended, so they may name only the block's own bindings, a
+  file's top level and the root block — never a parameter or a local of the constructor;
+  anything a deferral needs, the block keeps as a field. Its field initialisers run during
+  construction and may read anything.
 - **A file's top level** — the entry file's or a module's (§4.14) — is the program's scope,
   since a file's bindings live as long as the program. So a `$defer` among a file's items,
   and the deferrals of storage a top-level `$decl` owns, run at the **program's exit**: after
@@ -561,7 +567,8 @@ together they are the whole of it:
 > a place carried *inside* a value.
 >
 > **A function's result may hold only borrowed places.** Returning a place the caller
-> passed in hands it back to its owner; returning an own one is an error.
+> passed in hands it back to its owner; returning an own one is an error — unless the
+> function **constructs** (below), when the place is its caller's from the start.
 >
 > **A tail call may not pass an own place.** A tail call ends the activation (§7.7), so
 > its own storage ends with it. Every tail call counts, whatever the backend makes of it:
@@ -586,6 +593,37 @@ is the same error as storing the `$new`.
 
 The error is reported where the place would escape. The fix: make that storage `$alloc`
 (§4.2a) and release it when done, or, for a tail call, make the call non-tail.
+
+**Constructing calls.** A function whose body *is* a `$new` — `$new e`, `$mut $new e` or
+`$const $new e` — or a tail call to such a function, **constructs**: its caller provides the
+storage, and the call is frame storage of the scope it stands in, exactly as if that `$new`
+were written at the call. Everything after follows from that: the caller's `$decl` owns the
+place or it is ephemeral (§4.15a), and the rules above treat it as the caller's own — it may be
+lent to a callee, and may not be returned unless the caller constructs too, nor passed in a
+tail call.
+
+```
+$decl mk  $func ($decl k 0) $new { $decl v k  $defer $call say (v) }
+$decl mk0 $func () $call mk (0)          // a tail call to a constructor constructs
+$decl use $func () {
+  $decl s   $call mk (1)                 // s owns the place; say (1) runs at use's end
+  $decl ret s.v
+}.ret
+```
+
+The test is the body's shape, not where its places flow. `{ $decl s $new …  $decl ret s }.ret`
+returns an own place and is the error above: were it a constructor, every function that leaked
+its frame would become one without a word. Within the shape, three things are compile errors:
+
+- a `$try` among the constructed block's items, which would leave it half built;
+- a body that chooses between constructions (`$if c ($new a) ($new b)`), which would leave the
+  caller not knowing whose deferrals to run — branch inside one block's fields instead;
+- a call to a constructing function that does not name its definition (§3.4: through a
+  parameter, a field, storage, a call's result, an `$if`), since a function value cannot say
+  it needs the storage. An alias of the definition names it, as for a short call.
+
+Whether a function constructs is in its type, since it changes how the function is called
+(§7.6), and is rendered `ctor` in diagnostics. It is read off the body, never written.
 
 **Parameters.** A parameter's type cannot say whether its argument is frame-bound: a
 closure's captures are not in its type (§7.3), and a trait object's kind is not in its
@@ -742,10 +780,13 @@ whole program, so a top-level `$new` lives as long as the program does — `$new
 same in every frame. There is no allocator, no header, no bookkeeping and no runtime
 component. Each `$new` site runs at most once per activation, since repetition is
 recursion and every step of it is an activation of its own, so its storage is simply a
-slot of the frame. It is safe because §5.3a confines places: storage never holds one, a
-function returns only places that came in, and a tail call passes none its activation
-made. Nothing is annotated; the one fact inferred — which places an activation made — is
-read off the source, by following each place to the `$new` that made it.
+slot of the frame. A constructing call (§5.3a) is such a site in its caller: the caller's
+frame holds the slot and passes its address to the constructor, whose `$new` builds there, and
+a constructor that tail-calls another passes the same address on. It is safe because §5.3a
+confines places: storage never holds one, a function returns only places that came in or
+that it constructs into its caller, and a tail call passes none its activation made.
+Nothing is annotated; the one fact inferred — which places an activation made — is read
+off the source, by following each place to the `$new` that made it.
 
 **Allocated storage** (`$alloc`) comes from `allocator`, an ordinary name resolved
 lexically and in source order (§4.10) at the point `$alloc` is written: the root block
@@ -1014,7 +1055,7 @@ These follow from stated rules and are accepted by design:
 13. An implementation is always a static table: its members are props, and a prop cannot capture (§4.10). The receiver is an implicit parameter, passed at the call, and a trait object's only runtime part is its reference.
 14. Storage that outlives the scope it was made in must be written `$alloc`, so a container returned to a caller names an allocator (§5.3a) while one used within a scope is free. The cost lands at the container, not at every use.
 15. There is no optimisation level and no canonical pass pipeline (§9.2), so `emit` must stay correct on unoptimised input and no pass may be assumed to have run. The cost of "optimisation is a library" is paid by the compiler, not by the user.
-16. Frame storage is safe by construction and allocated storage is **unsafe by declaration**: the language guarantees a frame reference never dangles, and says nothing about an allocated one after its allocator released it. There is no collector, and the one thing inferred — which places an activation made — is read off the source (§5.3a). A tail call may not pass storage its activation made, so a loop that hands storage on writes it `$alloc` and releases it.
+16. Frame storage is safe by construction and allocated storage is **unsafe by declaration**: the language guarantees a frame reference never dangles, and says nothing about an allocated one after its allocator released it. There is no collector, and the one thing inferred — which places an activation made — is read off the source (§5.3a). A tail call may not pass storage its activation made, so a loop that hands storage on writes it `$alloc` and releases it. A function hands frame storage to its caller only by constructing (§5.3a): its body is the `$new`, so whether a function does it is visible in its source.
 17. A union keeps a member that is a subtype of another (§3.6), so a value is never reduced to a supertype by being joined, and `$match` order decides which arm a subtype reaches. The price is that two types can be subtypes of each other without being one type — `A | B` with `B <: A`, and `A` — and moving between them is a re-tag rather than nothing.
 18. `()` accepts anything and keeps nothing: a value coerced to it has no data left, so a parameter defaulted to `()` can only ignore its argument. It is the type of "any value, discarded" — a callback's result, an effect's value — not a dynamic type, and `$match` on it has only the catch-all.
 
@@ -1025,6 +1066,7 @@ These follow from stated rules and are accepted by design:
 - Whether the pass-facing compiler functions should be `$template`s bounded by the node type (§9.3), so that a pass's own annotations survive a call into the compiler instead of being prefix-copied away (§7.4). It is the difference between passes carrying analysis beside the tree and inside it.
 - Whether a *library* allocator can be made safe rather than unsafe by declaration — some form of scoped allocator whose references cannot outlive it, which would be §5.3a's rule generalised from the frame to any allocator. Deliberately not attempted: it is the step from two kinds to arbitrarily many, and that is a lifetime system.
 - Variadic templates (abstraction over group arity).
+- Widening constructing calls (§5.3a): a `$try` in the constructed block (the result would say which member is the constructed place, and the caller run the deferrals only when it holds that member); arms that each call the same constructor (one set of deferrals); and a constructing function as a value (a destination passed through the call, and §6a's pending block).
 - Whether `&mut S` may widen to a prefix supertype `&mut T`. Under prefix layout a write through the narrowed view leaves `S`'s tail intact, so width (not depth) coercion looks sound; §5.3 keeps `&mut` invariant for now.
 - `$fwd (name, example)` — optional type operand, must be a group.
 - `static` — per-type mutable storage, deliberately distinct from `$prop`.
