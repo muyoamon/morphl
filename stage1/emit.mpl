@@ -414,6 +414,19 @@ $decl c_scalar $func ($decl st proto_est, $decl t T.proto_ty)
     $decl ret "int64_t"
   }.ret)))))))
 
+// A signature or layout part that was never interned: a function value and a trait object
+// have one C type whatever their type (§7.3, §6) — including a trait closed into a μ
+// (TRAITS.md, design point 7), whose members name it and so were not interned when the μ
+// was. A scalar is spelled without the table. Anything else has a struct name only the
+// table gives, and spelling it `int64_t` was a call through the wrong signature — `cc`
+// caught a block passed that way, and a union of the same size would not be caught — or
+// a union member laid out as a word (`opt_unread.mpl`), so it is reported.
+$decl miss_ctype $func ($decl st proto_est, $decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "trait"} "mpl_tobj", $case {$prop tag "func"} "mpl_fun",
+                      $case t ($call c_scalar (st, t)))
+}.ret
+
 $decl c_type $func ($decl st proto_est, $decl ts T.tys.node, $decl i 0) {
   $decl t   $call type_at (ts, i)
   $decl ret $match t (
@@ -547,7 +560,7 @@ $decl emit_fields $func ($decl st proto_est, $decl ts T.tys.node, $decl fs T.fie
   $case {$prop tag "cons"} {
     $decl f $call IR.find_ty (ts, fs.head.ty)
     $decl d $call say (st, $call concat (" ",
-        $call concat ($if f.hit ($call c_type (st, ts, f.id)) "int64_t",
+        $call concat ($if f.hit ($call c_type (st, ts, f.id)) ($call miss_ctype (st, fs.head.ty)),
         $call concat (" f", $call concat ($call int_to_str (i), ";")))))
     $decl ret $call emit_fields (st, ts, fs.tail, $call add (i, 1))
   }.ret,
@@ -559,7 +572,7 @@ $decl emit_members $func ($decl st proto_est, $decl ts T.tys.node, $decl ms T.ty
   $case {$prop tag "cons"} {
     $decl f $call IR.find_ty (ts, ms.head)
     $decl d $call say (st, $call concat (" ",
-        $call concat ($if f.hit ($call c_type (st, ts, f.id)) "int64_t",
+        $call concat ($if f.hit ($call c_type (st, ts, f.id)) ($call miss_ctype (st, ms.head)),
         $call concat (" m", $call concat ($call int_to_str (i), ";")))))
     $decl ret $call emit_members (st, ts, ms.tail, $call add (i, 1))
   }.ret,
@@ -721,7 +734,7 @@ $decl emit_gfields $func ($decl st proto_est, $decl ts T.tys.node, $decl xs T.ty
   $case {$prop tag "cons"} {
     $decl f $call IR.find_ty (ts, xs.head)
     $decl d $call say (st, $call concat (" ",
-        $call concat ($if f.hit ($call c_type (st, ts, f.id)) "int64_t",
+        $call concat ($if f.hit ($call c_type (st, ts, f.id)) ($call miss_ctype (st, xs.head)),
         $call concat (" f", $call concat ($call int_to_str (i), ";")))))
     $decl ret $call emit_gfields (st, ts, xs.tail, $call add (i, 1))
   }.ret,
@@ -763,7 +776,7 @@ $decl emit_union_struct $func ($decl st proto_est, $decl all T.tys.node,
 $decl emit_array_struct $func ($decl st proto_est, $decl all T.tys.node,
                                $decl el T.proto_ty, $decl i 0) {
   $decl f  $call IR.find_ty (all, el)
-  $decl et $if f.hit ($call c_type (st, all, f.id)) "int64_t"
+  $decl et $if f.hit ($call c_type (st, all, f.id)) ($call miss_ctype (st, el))
   $decl ret  $call say (st, $call concat ("struct ", $call concat ($call ty_name (all, i),
                $call concat (" { ", $call concat (et, " *p; int64_t n; };\n")))))
 }.ret
@@ -977,17 +990,6 @@ $decl union_members $func ($decl t0 T.proto_ty) {
 // The function-pointer type a call through a closure is cast to. §7.3 gives
 // every function the same value shape, so the signature has to come from the
 // static type at the call site — which is exactly what it is for.
-// A signature part that was never interned: a function value and a trait object have one
-// C type whatever their type (§7.3, §6) — including a trait closed into a μ (TRAITS.md, design
-// point 7), whose members name it and so were not interned when the μ was. A scalar is
-// spelled without the table. Anything else has a struct name only the table gives, and
-// spelling it `int64_t` was a call through the wrong signature — `cc` caught a block
-// passed that way, and a union of the same size would not be caught — so it is reported.
-$decl miss_ctype $func ($decl st proto_est, $decl t0 T.proto_ty) {
-  $decl t   $call T.unroll (t0)
-  $decl ret $match t ($case {$prop tag "trait"} "mpl_tobj", $case {$prop tag "func"} "mpl_fun",
-                      $case t ($call c_scalar (st, t)))
-}.ret
 
 $decl sig_params $func ($decl st proto_est, $decl ts T.tys.node, $decl ps T.tys.node,
                         $decl acc "") $match ps (

@@ -1076,11 +1076,45 @@ $decl seal_rec $func ($decl st proto_lst, $decl t T.proto_ty) {
     )
 }.ret
 
-// A function type's parameters and result, which `intern` does not reach.
+// A type and every type it is laid out from — a union's members, a block's fields, a
+// group's items, an array's element, a reference's pointee — which `intern` alone does
+// not reach. A type no lowered expression produced needs it: an intrinsic's result comes
+// from the root block, so `read_file`'s option reached the table with its members
+// missing, and a `$match` that never projected `v` laid the union out as two `int64_t`s
+// that `emit_opt_prim` then wrote a `Str` into. A `μ` stops here, since `intern` seals
+// its unrolling itself; anything else is a finite tree.
+$fwd seal_parts
+$decl seal_part_tys $func ($decl st proto_lst, $decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call seal_parts (st, xs.head)) ($call seal_part_tys (st, $call T.tys.val (xs.tail))),
+  $case xs 0
+)
+$decl seal_part_flds $func ($decl st proto_lst, $decl xs T.fields.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($call seal_parts (st, xs.head.ty))
+        ($call seal_part_flds (st, $call T.fields.val (xs.tail))),
+  $case xs 0
+)
+$decl seal_parts $func ($decl st proto_lst, $decl t T.proto_ty) $match t (
+  $case {$prop tag "union"}
+    $do ($call seal_part_tys (st, $call T.tys.val (t.members))) ($call intern (st, t)),
+  $case {$prop tag "block"}
+    $do ($call seal_part_flds (st, $call T.fields.val (t.fields))) ($call intern (st, t)),
+  $case {$prop tag "group"}
+    $do ($call seal_part_tys (st, $call T.tys.val (t.items))) ($call intern (st, t)),
+  $case {$prop tag "array"}
+    $do ($call seal_parts (st, $call T.tval (t.elem))) ($call intern (st, t)),
+  $case {$prop tag "ref"}
+    $do ($call seal_parts (st, $call T.tval (t.inner))) ($call intern (st, t)),
+  $case t ($call intern (st, t))
+)
+
+// A function type's parameters and result, which `intern` does not reach. The result
+// is sealed whole (`seal_parts`), because the backend lays out what a call answers.
 $decl seal_fn $func ($decl st proto_lst, $decl t T.proto_ty) $match t (
   $case {$prop tag "func"}
     $do ($call seal_tys (st, $call T.tys.val (t.params)))
-        ($call intern (st, $call T.tval (t.result))),
+        ($call seal_parts (st, $call T.tval (t.result))),
   $case t 0
 )
 
