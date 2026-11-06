@@ -3957,7 +3957,7 @@ $decl eff_split $func ($decl st proto_lst, $decl e benv.node, $decl xs eff_items
 )
 
 // completing `$decl` gives it — and the completing `$decl` is then skipped,
-// having already been counted. That ordering is what `with_scope` reads.
+// having already been counted. That ordering is what `later_members` reads.
 $decl file_props_at $func ($decl all Pa.nodes.node, $decl xs Pa.nodes.node,
                            $decl acc mprops.node) $match xs (
   $case {$prop tag "cons"} {
@@ -5375,35 +5375,20 @@ $decl fn_ty $func ($decl st proto_lst, $decl f IR.proto_fn) {
 // prop-only block, a `$func`, a `$template` — become `cv_opaque`, an identity
 // rather than code. So lowering keeps the source and answers from that.
 
-// What a *`$decl`* member's initializer may name. §4.10 is source order: a
-// `$decl` is visible from its own position onward, which is why `$fwd` exists
-// to reserve an earlier one — and why `types.mpl`'s `$decl isub sub` at the
-// top captures the integer intrinsic before the file's own `sub` shadows it.
-// A `$prop` is different: it is visible throughout its block regardless of
-// order, so props are bound wherever they stand.
+// What a member's initializer or body may name. §4.10 is source order: a `$decl` is
+// visible from its own position onward, which is why `$fwd` exists to reserve an earlier
+// one — and why `types.mpl`'s `$decl isub sub` at the top captures the integer intrinsic
+// before the file's own `sub` shadows it. A `$prop` is visible throughout its block
+// regardless of order.
 //
-// A `$func` member's body is resolved against `with_props`, the finished block, which
-// holds every member as a prop — and §4.1's source order (SPEC: "visible from this point
-// onward") is put back by `later_members`, the only names it changes being the root's.
-$decl with_scope $func ($decl e benv.node, $decl xs mprops.node, $decl mid 0, $decl nm "",
-                        $decl seen P.boolean) $match xs (
-  $case {$prop tag "cons"} {
-    // §3.3's effect items bind nothing, so they enter no scope — they are in
-    // the member list only to hold their position in §4.10's order.
-    $decl hit $call eq_str (xs.head.name, nm)
-    // Up to and *including* the member itself: §5.7 lets a type-only position
-    // name a declaration that is in progress, which is how a recursive type
-    // is written at all (§5.5). Only what comes after is out of scope.
-    $decl vis $if ($call eq_str (xs.head.kind, "effect")) false
-                  ($if ($call eq_str (xs.head.kind, "prop")) true ($if seen false true))
-    $decl e2  $if vis
-        ($call benv.cons ($call bind_ent6 (xs.head.name, "prop", 0, T.t_bot, mid, -1), e)) e
-    $decl sn  $if seen true hit
-    $decl ret $call with_scope (e2, xs.tail, mid, nm, sn)
-  }.ret,
-  $case xs e
-)
-
+// Both kinds of member resolve against `penv`, the finished block with every member bound,
+// made and indexed once per module, and `later_members` puts source order back. That is
+// all it has to do: a later member the root does not also bind is an unknown name to the
+// checker, so lowering never meets a reference to one, and §5.7 lets a type-only position
+// name the member in progress itself. A thunk used to build its own scope instead — every
+// member up to itself, then a fresh index trie over the lot — which is quadratic in a
+// module's members: 195 MB of a self-emit, appearing the moment `types.mpl` was imported
+// rather than compiled as the entry (PERF.md, "What grows faster than the input").
 
 // §4.1 for a `$func` member: a member after `nm` is not in scope in its body, so where
 // one shadows a root name the body reads the root's — `with_props` would hand it the
@@ -5928,8 +5913,8 @@ $decl thunk_body $func ($decl st proto_lst, $decl pe benv.node, $decl pn Pa.prot
 $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                               $decl pn Pa.proto_node, $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
-  $decl pe   $call with_index ($call with_scope (m.env, $call mprops.val (m.props), m.id, nm,
-                 ($union (false, true))))
+  $decl pe   $call later_members (st, $call mprops.val (m.props), nm, false,
+                 $call benv.val (m.penv))
   $decl chk $call no_caps (st, pe, pn)
   $decl idx $call reserve_lifted (st)
   // §5.5 again, and for the same reason as a `$prop`: a module's members are
@@ -7687,7 +7672,7 @@ $decl topfn $func ($decl f IR.proto_fn, $decl m 0, $decl tm 0)
 // §4.1 says "visible from this point onward" of a `$func` too, a `$func`'s body and
 // defaults: `diff` calling `sub` above the file's own `sub` calls the intrinsic, as the
 // checker typed it. A body that wants the later one `$fwd`s it (§4.11). Module members
-// get the same from `with_scope` and `later_members`.
+// get the same from `later_members`.
 $decl later_roots $func ($decl st proto_lst, $decl fs T.fields.node, $decl e benv.node)
     $match fs (
   $case {$prop tag "cons"} {

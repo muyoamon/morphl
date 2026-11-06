@@ -2976,3 +2976,56 @@ byte, so the corner is the recorded measurement.
 
 Time moved more than allocation (6.2s → ~8.5s on the fixed input), but single runs on this
 box spread by a second, so no time step is attributed.
+
+## What grows faster than the input
+
+Each allocation site was counted (as in "Where a self-emit's memory goes, by kind") over
+ten inputs of increasing size — stage-1 modules compiled as the entry, from `lexer.mpl`'s
+528-line closure to `compiler.mpl`'s 26,934 — and its bytes fitted against closure lines on
+a log-log scale. The whole run's slope is **1.31**; the 1.22² of the section above is the
+same thing seen across one step of source growth.
+
+| input | closure lines | allocated |
+|---|---|---|
+| lexer | 528 | 7 MB |
+| parser | 1,877 | 37 MB |
+| types | 3,967 | 120 MB |
+| tyio | 4,492 | **260 MB** |
+| ir | 4,731 | 278 MB |
+| verify | 7,163 | 345 MB |
+| infer | 11,715 | 438 MB |
+| lower | 15,203 | 607 MB |
+| compiler | 26,934 | 1,280 MB |
+
+**`tyio`'s jump was one function, and it was quadratic in a module's members.** Five
+sites — lowering's binding trie (`pt_branch` 84 MB, `pt_leaf`, `pt_add`, `ix_segment` 28 MB
+each) and `with_scope` 28 MB, ~195 MB of the self-emit — were near zero with `types.mpl` as
+the entry and 36 MB the moment `tyio` *imported* it, flat after that until more modules were
+imported. `lower_prop_thunk` built each non-function member's scope afresh: every member up
+to itself (`with_scope`), then a new ten-level index trie over the whole segment
+(`with_index`). A `$func` member already resolved against `penv`, made once per module, with
+`later_members` putting source order back, and that is all a thunk needs — a later member
+the root does not bind is an unknown name to the checker, so lowering never meets one.
+
+| self-emit | allocations | allocated | time, three runs |
+|---|---|---|---|
+| before | 23.63M | 1,286 MB | 13.2, 13.9, 12.7s |
+| thunks on `penv` | **19.45M** | **1,093 MB (−15%)** | 12.6, 13.5, 13.6s |
+
+A compiler built from the changed source emitted the committed `bootstrap/mplc.c` byte for
+byte, so nothing it lowers changed meaning.
+
+The steepest sites left with real volume are rendering and string sets, not lowering:
+
+| site | self-emit | slope |
+|---|---|---|
+| `concat` in `types.join_strs` | 40 MB | 2.77 |
+| `cons` in `types.strs_insert` | 13 MB | 2.73 |
+| `concat` in `types.kshow_fields` | 10 MB | 2.65 |
+| `concat` in `types.show_fields` | 37 MB | 2.34 |
+| `concat` in `types.show` | 28 MB | 2.30 |
+| `concat` in `lexer.scan_str` | 21 MB | 2.14 (quadratic in a literal's escapes) |
+
+The biggest single sites — `tyio`'s pair-folding join of the output (97 MB, 1.12) and the
+`reverse`-built lists (`verify.merge` 35 MB, `lexer.tokenize` 32 MB, 1.1–1.3) — grow about as
+the input does, and are constant-factor targets.
