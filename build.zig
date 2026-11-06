@@ -1228,6 +1228,37 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&fail.step);
     }
 
+    // Every library module, emitted on its own as the entry file, is C that `cc` accepts.
+    // A program uses only part of a module, so a type it lays out but never reads through
+    // is the case no fixture reaches: `ir.mpl` alone has list cells whose `tail` type
+    // nothing interned, which emit spelled `int64_t` silently and, once that was an error,
+    // refused. `-fsyntax-only` is enough: the question is whether the C is well-typed.
+    const libs_step = b.step("test-libs", "Emit each library module alone and check the C compiles");
+    for ([_][]const u8{
+        "stage1/prelude.mpl", "stage1/lexer.mpl", "stage1/parser.mpl", "stage1/types.mpl",
+        "stage1/tyio.mpl",    "stage1/ir.mpl",    "stage1/infer.mpl",  "stage1/verify.mpl",
+        "stage1/lower.mpl",   "stage1/emit.mpl",  "stage1/compiler.mpl",
+        "std/core.mpl",       "std/fmt.mpl",      "std/io.mpl",        "std/json.mpl",
+        "std/list.mpl",       "std/map.mpl",      "std/mem.mpl",       "std/result.mpl",
+        "std/seq.mpl",        "std/str.mpl",      "std/test.mpl",      "std/vec.mpl",
+    }) |src| {
+        const emit = std.Build.Step.Run.create(b, b.fmt("mplc {s} alone", .{src}));
+        emit.addFileArg(mplc_bin);
+        emit.addArgs(&.{ src, "-L", "." });
+        emit.setCwd(b.path("."));
+        emit.has_side_effects = true;
+        const c_file = emit.captureStdOut(.{ .basename = "lib.c" });
+        _ = emit.captureStdErr(.{});
+        emit.expectExitCode(0);
+        const cc = b.addSystemCommand(&.{ "cc", "-fsyntax-only", "-Wall", "-Wno-unused-function",
+            "-Wno-unused-but-set-variable", "-Werror" });
+        cc.addFileArg(c_file);
+        cc.has_side_effects = true;
+        cc.expectExitCode(0);
+        libs_step.dependOn(&cc.step);
+        test_step.dependOn(&cc.step);
+    }
+
     // ---------------------------------------------------------------- paranoid
     //
     // `T.same` answers by interned class (INTERNING.md), and a class is only right while
