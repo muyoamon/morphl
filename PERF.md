@@ -2903,3 +2903,43 @@ else changed), both compilers emitting the same source and producing byte-identi
 extra word on every compound node is inside the figure. `pa` is true wherever `pv` is, so
 this skips strictly less than the unsound version did; the two figures (−134 MB then, −147
 MB now) are from different trees and do not compare. The receiver fixtures `pv` broke pass.
+
+## Where a self-emit's memory goes, by kind (2026-11-05)
+
+Measured on the compiled compiler emitting itself (`mplc stage1/mplc.mpl`, output
+byte-identical to `bootstrap/mplc.c`), with every `mpl_alloc` call site counted and the
+runtime's string builders and `P.list`'s `cons` made `noinline` so each records its caller
+(and `cons` its caller's caller, under `-fno-omit-frame-pointer`). Reporting only; the
+instrumentation is a script over the emitted C, nothing committed.
+
+**1.29 GB requested in 23.6M allocations, 1.58 GB counting `malloc`'s own overhead, 1.51 GB
+peak RSS** — nothing is freed, so peak is total. The same compiler allocating through
+Boehm's `GC_MALLOC` instead peaks at **523 MB RSS** (heap 477 MB, 31 collections), so a
+tracing collector's bound is about a third of today's peak.
+
+| kind | count | with `malloc` overhead | share |
+|---|---|---|---|
+| `P.list` cons cells | 11.6M | 849 MB | 53.8% |
+| other `$alloc` (tries, type and IR nodes, state) | 7.8M | 352 MB | 22.3% |
+| `concat` | 3.6M | 350 MB | 22.2% |
+| `int_to_str` | 0.55M | 18 MB | 1.1% |
+| `read_file` | 141 | 8 MB | 0.5% |
+| closure environments, function boxes, trait objects, arrays | 4 | ~0 | 0% |
+
+- **`malloc`'s overhead is 18% of the total** (292 MB): 24-byte cons cells are 40 bytes
+  each once the header and rounding are counted. A bump allocator would save that alone.
+- **The hidden allocations are nothing**: the compiler makes two closure environments and
+  two arrays. What an allocator does not reach today is the strings, not the emitted code.
+- **`reverse` makes 4.8M cells** (the build-newest-first-then-reverse idiom), led by
+  `verify.merge` (58 MB), `lexer.tokenize` (39 MB), `lower.append_exprs` (25 MB) and
+  `lower.lower_args` (29 MB across two element types).
+- **`concat`'s largest callers**: `tyio`'s pair-folding joiner (`join_pass`/`join_two`,
+  100 MB — O(L log n) by design, and L is the whole emitted C), then `T.show`'s family
+  (`join_strs` 40 MB, `show_fields` 37 MB, `show` 28 MB, `kshow*` 16 MB) and
+  `lexer.scan_str` (20 MB in 16k calls, 1.2 KB each — a string literal's text appended to
+  at each escape, quadratic in its escapes).
+- **The largest non-list `$alloc`s** are lowering's tries (`pt_branch` 112 MB, `pt_leaf`
+  31 MB, `mx_branch` 25 MB, `dx_branch` 14 MB) and `types.ckey` (25 MB).
+
+"The substitution skip" above measured 768 MB requested on the tree of its day; this
+tree's 1,285 MB is the same workload counted the same way.
