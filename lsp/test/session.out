@@ -1,0 +1,21 @@
+Content-Length: 162
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":{"openClose":true,"change":1,"save":{}}},"serverInfo":{"name":"morphl-lsp","version":"0.1"}}}Content-Length: 663
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///nonexistent/ws/a%20b.mpl","diagnostics":[{"range":{"start":{"line":0,"character":8},"end":{"line":0,"character":13}},"severity":1,"source":"morphl","message":"no candidate of O<[Int,Int]->Int,[Float,Float]->Float> accepts these arguments (§4.8)"},{"range":{"start":{"line":1,"character":23},"end":{"line":1,"character":25}},"severity":1,"source":"morphl","message":"unknown name 'zz'"},{"range":{"start":{"line":2,"character":8},"end":{"line":2,"character":15}},"severity":1,"source":"morphl","message":"cannot read the file for $import \"nope\" (/nonexistent/ws/nope.mpl)"}]}}Content-Length: 129
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///nonexistent/ws/a%20b.mpl","diagnostics":[]}}Content-Length: 457
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///nonexistent/ws/a%20b.mpl","diagnostics":[{"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":0}},"severity":1,"source":"morphl","message":"unexpected end of file, expected an expression"},{"range":{"start":{"line":0,"character":18},"end":{"line":0,"character":19}},"severity":1,"source":"morphl","message":"unclosed '(' — group is missing its ')'"}]}}Content-Length: 457
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///nonexistent/ws/a%20b.mpl","diagnostics":[{"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":0}},"severity":1,"source":"morphl","message":"unexpected end of file, expected an expression"},{"range":{"start":{"line":0,"character":18},"end":{"line":0,"character":19}},"severity":1,"source":"morphl","message":"unclosed '(' — group is missing its ')'"}]}}Content-Length: 94
+
+{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"unknown method textDocument/hover"}}Content-Length: 87
+
+{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"the message is not JSON"}}Content-Length: 129
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///nonexistent/ws/a%20b.mpl","diagnostics":[]}}Content-Length: 339
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///nonexistent/ws/big.mpl","diagnostics":[{"range":{"start":{"line":7000,"character":8},"end":{"line":7000,"character":13}},"severity":1,"source":"morphl","message":"no candidate of O<[Int,Int]->Int,[Float,Float]->Float> accepts these arguments (§4.8)"}]}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":3,"result":null}

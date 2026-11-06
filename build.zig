@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
     });
     const style_run = b.addRunArtifact(style_exe);
     style_run.setCwd(b.path("."));
-    style_run.addArgs(&.{ "stage1", "stage1/fixtures", "std" });
+    style_run.addArgs(&.{ "stage1", "stage1/fixtures", "std", "lsp" });
     style_run.has_side_effects = true;
     const style_step = b.step("test-style", "Check stage 1's morphl source against STYLE.md");
     style_step.dependOn(&style_run.step);
@@ -1067,6 +1067,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "std/io_test.mpl", .want = "29\n" },
         .{ .src = "std/mem_test.mpl", .want = "10\n" },
         .{ .src = "std/result_test.mpl", .want = "10\n" },
+        .{ .src = "std/json_test.mpl", .want = "18\n" },
     }) |fx| {
         for ([_]bool{ false, true }) |asan| {
             const build_exe = std.Build.Step.Run.create(b, if (asan) "mplc std test (asan)" else "mplc std test");
@@ -1105,6 +1106,36 @@ pub fn build(b: *std.Build) void {
         run_exe.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
         std_step.dependOn(&run_exe.step);
         test_step.dependOn(&run_exe.step);
+    }
+
+    // The language server (lsp/morphl_lsp.mpl): `zig build lsp` installs `morphl-lsp`, built
+    // by `mplc` with the repository and `stage1/` as search roots — it imports the compiler
+    // as `compiler`, so the compiler's own imports resolve the same way in both passes.
+    // `test-lsp` plays a recorded session (`lsp/test/session.py` writes it) and the replies
+    // must equal `lsp/test/session.out` byte for byte. Each check runs the binary again as a
+    // child (`/proc/self/exe --check …`), so this tests the child too.
+    const lsp_step = b.step("lsp", "Build the language server, zig-out/bin/morphl-lsp");
+    const lsp_test_step = b.step("test-lsp", "Play a recorded LSP session through morphl-lsp");
+    {
+        const build_lsp = std.Build.Step.Run.create(b, "mplc lsp/morphl_lsp.mpl");
+        build_lsp.addFileArg(mplc_bin);
+        build_lsp.addArgs(&.{ "lsp/morphl_lsp.mpl", "-L", ".", "-L", "stage1", "-o" });
+        const lsp_bin = build_lsp.addOutputFileArg("morphl-lsp");
+        build_lsp.setCwd(b.path("."));
+        build_lsp.has_side_effects = true;
+        build_lsp.expectExitCode(0);
+        lsp_step.dependOn(&b.addInstallBinFile(lsp_bin, "morphl-lsp").step);
+        const session = std.Build.Step.Run.create(b, "an LSP session");
+        session.addFileArg(lsp_bin);
+        session.setStdIn(.{ .lazy_path = b.path("lsp/test/session.in") });
+        session.has_side_effects = true;
+        session.expectExitCode(0);
+        const replies = session.captureStdOut(.{ .basename = "session.out" });
+        const same = b.addSystemCommand(&.{"cmp"});
+        same.addFileArg(replies);
+        same.addFileArg(b.path("lsp/test/session.out"));
+        lsp_test_step.dependOn(&same.step);
+        test_step.dependOn(&same.step);
     }
 
     const link_step = b.step("test-link", "mplc -o builds a working executable");

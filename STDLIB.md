@@ -233,6 +233,7 @@ Proposed modules, in the order they can be written:
 | `std/mem` | an arena allocator over `raw_alloc`, as `arena.mpl` does | — |
 | `std/test` | a runner for §9's test interface | — |
 | `std/result` | `result (T, E)`: `ok`/`err` with `is_ok`, `value_or`, `unwrap` and the rest as methods; `map`, `map_err` | P15 |
+| `std/json` | JSON text read into a value (`parse`, answering `{tag err, msg, pos}` on malformed text) and written back (`text`); `get`/`at`/`str_or`/`int_or`/`bool_or` read a member as `null` or a default when it is absent or of another kind; `object`/`array_of` builders. A number keeps its text | — |
 
 Names are reached through the module's binding (`L.map`, `S.split`), so nothing in `std/`
 is global and nothing shadows a root name. A module is a block (§4.14), so this is the
