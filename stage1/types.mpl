@@ -1259,21 +1259,26 @@ $decl skipped_in $func ($decl vs cints.node, $decl n 0, $decl acc 0)
     $case vs acc))
 
 $fwd kshow
+// A child rendered with no binder skipped renders as `show_key` would, so it comes from
+// the same cache.
+$fwd show_key
+$decl kshow_v $func ($decl t proto_ty, $decl vs cints.node)
+  $if ($call cints.is_nil (vs)) ($call show_key (t)) ($call kshow (t, vs))
 $decl kshow_tys $func ($decl xs tys.node, $decl vs cints.node, $decl acc "",
                        $decl first P.boolean) $match xs (
     $case {$prop tag "cons"} $call kshow_tys (xs.tail, vs,
-        $call concat (acc, $call concat ($if first "" ",", $call kshow (xs.head, vs))), false),
+        $call concat (acc, $call concat ($if first "" ",", $call kshow_v (xs.head, vs))), false),
     $case xs acc
   )
 $decl kshow_sorted $func ($decl xs tys.node, $decl vs cints.node, $decl acc strs.node) $match xs (
   $case {$prop tag "cons"}
-    $call kshow_sorted (xs.tail, vs, $call strs_insert ($call kshow (xs.head, vs), acc)),
+    $call kshow_sorted (xs.tail, vs, $call strs_insert ($call kshow_v (xs.head, vs), acc)),
   $case xs acc
 )
 $decl kshow_fields $func ($decl xs fields.node, $decl vs cints.node, $decl acc "") $match xs (
   $case {$prop tag "cons"} $call kshow_fields (xs.tail, vs,
       $call concat (acc, $call concat (xs.head.name,
-      $call concat (":", $call concat ($call kshow (xs.head.ty, vs), ","))))),
+      $call concat (":", $call concat ($call kshow_v (xs.head.ty, vs), ","))))),
   $case xs acc
 )
 $decl kshow $func ($decl t proto_ty, $decl vs cints.node) $match t (
@@ -1292,11 +1297,11 @@ $decl kshow $func ($decl t proto_ty, $decl vs cints.node) $match t (
         $call concat ($if ($call eq_str (fs, "")) "" ($call concat ("free(", $call concat (fs, ")"))),
         $call concat ($if ($call eq_str (ns, "")) "" "nonroot",
         $call concat ("[", $call concat ($call kshow_tys (t.params, vs, "", true),
-        $call concat ("]->", $call kshow (t.result, vs)))))))))
+        $call concat ("]->", $call kshow_v (t.result, vs)))))))))
   }.ret,
   $case {$prop tag "ref"}
-    $call concat ($call show_qual (t.qual, t.kind), $call kshow (t.inner, vs)),
-  $case {$prop tag "array"}  $call concat ("[]", $call kshow (t.elem, vs)),
+    $call concat ($call show_qual (t.qual, t.kind), $call kshow_v (t.inner, vs)),
+  $case {$prop tag "array"}  $call concat ("[]", $call kshow_v (t.elem, vs)),
   $case {$prop tag "union"}
     $call concat ("<", $call concat ($call join_strs ($call kshow_sorted (t.members, vs, strs.nil),
         "", true), ">")),
@@ -1307,19 +1312,18 @@ $decl kshow $func ($decl t proto_ty, $decl vs cints.node) $match t (
     $call concat ("b", $call int_to_str ($call isub (t.idx, $call skipped_in (vs, t.idx, 0)))),
   $case {$prop tag "rec"}
     $if ($call shown_bnd (t.body, 0))
-        ($call concat ("mu.", $call kshow (t.body, $call cints.cons (0, vs))))
-        ($call kshow (t.body, $call cints.cons (1, vs))),
+        ($call concat ("mu.", $call kshow_v (t.body, $call cints.cons (0, vs))))
+        ($call kshow_v (t.body, $call cints.cons (1, vs))),
   $case {$prop tag "trait"}
     $call concat ($if ($call eq_str (t.qual, "")) "" "mut ",
         $call concat ("trait{", $call concat ($call kshow_fields (t.members, vs, ""), "}"))),
   $case {$prop tag "with"}
-    $call concat ($call kshow (t.base, vs),
+    $call concat ($call kshow_v (t.base, vs),
         $call concat ("+{", $call concat ($call show_props (t.props, ""), "}"))),
   $case {$prop tag "over"}
     $call concat ("O<", $call concat ($call kshow_tys (t.cands, vs, "", true), ">")),
   $case t ($call show (t))
 )
-$decl show_key $func ($decl t proto_ty) $call kshow (t, cints.nil)
 
 // Structural equality, without rendering.
 //
@@ -1694,6 +1698,25 @@ $decl sort_key $func ($decl t proto_ty) {
     $decl ret2 $if ($call eq_str (f, "")) {
       $decl k    $call show (t)
       $decl put  $set rtable ($call rt_add ($call rt_val (rtable), b, 0, $call rent (c, k)))
+      $decl ret3 k
+    }.ret3 f
+  }.ret2
+}.ret
+
+// `show_key`'s rendering by class, the same way: it prints what `show` prints, but for a μ
+// whose binder it never reaches, so it is a function of the class too. Both passes key
+// every specialisation use by its argument types rendered this way (`infer.memo_key`,
+// `lower.infer_key`), which rendered the same few types again at each use — 33 MB of a
+// self-emit (PERF.md, "Rendering a type").
+$decl ktable $mut $alloc rtrie
+$decl show_key $func ($decl t proto_ty) {
+  $decl c   $call cid_of (t)
+  $decl ret $if ($call lt (c, 0)) ($call kshow (t, cints.nil)) {
+    $decl b    $call mod ($call div (c, 4), 16381)
+    $decl f    $call rt_find ($call rt_val (ktable), b, c)
+    $decl ret2 $if ($call eq_str (f, "")) {
+      $decl k    $call kshow (t, cints.nil)
+      $decl put  $set ktable ($call rt_add ($call rt_val (ktable), b, 0, $call rent (c, k)))
       $decl ret3 k
     }.ret3 f
   }.ret2

@@ -3072,6 +3072,19 @@ its share of a reverse and the join's passes. Chunks pay where a rendering is de
 union sort keys are the deep ones. So `show_key` is unchanged. A per-class cache like
 `sort_key`'s would suit it better, since its output is a function of the class too.
 
+**And the per-class cache is what it wanted.** `show_key` keeps a trie by `cid` beside
+`sort_key`'s (`ktable`), and `kshow` reads a child it renders with no binder skipped from it
+too (`kshow_v`), so the types every specialisation use repeats are rendered once:
+
+| self-emit, same input | allocations | allocated |
+|---|---|---|
+| before | 19.18M | 1,047 MB |
+| the top-level call cached | 18.71M | 1,021 MB |
+| its children too | **18.62M** | **1,016 MB (−3.0%)** |
+
+The C is byte-identical, and time at `-O2` is level (five alternating runs each, means
+11.21s before and 11.15s after).
+
 At `-O1` the new compiler measured ~6% slower over three runs each; `perf` showed the same
 profile, symbol for symbol, and at `-O2` — how `mplc` is built — the two are level. Measure
 time on the `-O2` binary.
