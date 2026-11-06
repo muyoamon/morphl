@@ -2943,3 +2943,36 @@ tracing collector's bound is about a third of today's peak.
 
 "The substitution skip" above measured 768 MB requested on the tree of its day; this
 tree's 1,285 MB is the same workload counted the same way.
+
+## The 768 MB → 1,289 MB since 533b15b: mostly the input, and it scales as its square
+
+The figure above (768 MB, 533b15b) and the one before it (1,285 MB) are both a self-emit,
+but a self-emit's input is the compiler's own source, which grew. Fixing each axis in turn
+— every compiler built from its commit's `bootstrap/mplc.c` with a byte counter in
+`mpl_alloc`, at `-O1` — separates them:
+
+| bytes requested | 533b15b's source (22,118 lines) | 57ca9bd's source (27,057 lines) |
+|---|---|---|
+| 533b15b's compiler | **769 MB** | 1,148 MB |
+| 57ca9bd's compiler | 871 MB | **1,289 MB** |
+
+The old compiler on 533b15b's source reproduces that commit's `bootstrap/mplc.c` byte for
+byte, so the corner is the recorded measurement.
+
+- **The input is two thirds of it.** The compiler's closure grew 22% in lines and the same
+  compiler allocates 49% more for it: 1.22² = 1.49, so **allocation grows as the square of
+  the source**, not linearly. That is the lowering super-additivity recorded in CLAUDE.md
+  ("a module's cost belongs to the combination"), measured on allocation.
+- **The compiler is a third: +13% on a fixed input**, mostly two steps. Sampled every ten
+  commits on 533b15b's source, then bisected:
+
+| commit | allocated | step |
+|---|---|---|
+| 533b15b | 769.0 MB | |
+| `7f1ad75` §3.6's join keeps layouts, merges same-layout subtypes | 791.7 MB | **+26 MB**, +279k allocations |
+| … 55 commits of a few MB each | 821.4 MB | +30 MB over all of them |
+| `f40e444` `T.canon`: a type recursing through a group, written once | 871.0 MB | **+50 MB**, +699k allocations |
+| 57ca9bd | 871.1 MB | |
+
+Time moved more than allocation (6.2s → ~8.5s on the fixed input), but single runs on this
+box spread by a second, so no time step is attributed.
