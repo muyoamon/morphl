@@ -256,6 +256,18 @@ A constructor's deferral set is a property of the function, so the caller runs i
 `mk0`'s is `mk`'s. Without forwarding every wrapper, default or overload would repeat the
 literal.
 
+Arms forward too, when each calls the same constructor (step 7):
+
+```
+$decl pick $func ($decl c true) $if c ($call mk (1)) ($call mk (2))
+```
+
+Whichever arm ran, the caller's slot holds `mk`'s block, so its deferrals are `mk`'s and the
+caller runs them as for `mk0`. "The same" is the callee as written — a name, or a module's
+member — since a constructing call must name its definition (SPEC §3.4) and an arm's
+environment is the body's, but for a `$match` rebinding its scrutinee, which is refused when
+it is the callee's name. An alias is a second name and is refused; that errs toward refusing.
+
 ### Calling convention and type
 
 The plan was a hidden destination after `env`, `T *dst`, for the `$new` to write through. What
@@ -276,12 +288,13 @@ a value** is refused for now, for the same reason a short call must name a defin
 |---|---|---|
 | body is `$new`, `$mut $new` or `$const $new` | **constructs** | |
 | body is a bare tail call to a constructor | **constructs** | |
-| `$if`/`$match` arms, each the same constructor | refused | maybe: one deferral set |
+| `$if`/`$match` arms, each the same constructor | refused | **constructs, and forwards** (step 7) |
 | arms with different literals or storage types | refused | likely never: branch in a field |
 | a `$try` among the literal's items | refused | **constructs, and can fail** (step 6) |
 | a constructor used as a value | refused | a shim, and §6a's pending block saying it constructs |
 
-**Arms** would bring back what the shape rule removed. Two literals of one storage type have two
+**Arms of different literals** would bring back what the shape rule removed. Two literals of one
+storage type have two
 deferral sets, so the callee would have to write a drop pointer beside the slot for the caller to
 test; two storage types (`<&A, &B>`) have no single slot at all. A branch inside one literal does
 the same job with one set, the field telling the deferral what to do:
@@ -375,6 +388,15 @@ runs the registered deferrals and finds no place in `none`.
    `out` by an arm of its own. The tag read is the switch itself. `ctor_try.mpl` is the
    fixture: before and after the `$try`, forwarding, two exits, no deferral, ephemeral, an
    arm and a top-level owner, in both stages and under ASan.
+7. **Arms of one constructor.** Done. The checker's `same_ctor` answers the callee each arm of
+   an `$if` or `$match` calls, nested arms included, and `ctor_body` takes a body all of whose
+   arms agree; the refusal stays for the rest. Lowering's `ctorfwd` holds every arm's call site
+   (`fwd_sites`), and each answers its block by value in tail position, as a single forwarding
+   call does. Stage 0 already ran it right; its `keeps_ref` now reads a callee whose body is an
+   `$if` or `$match` the way it reads one that is a call. `ctor_arms.mpl` covers `$if` and
+   `$match` arms, a nested `$if`, forwarding to such a function, a default calling one, and a
+   constructor that can fail, in all three stages; `ctor_bad.mpl` refuses two constructors, and
+   one through two names.
 
 ## A. Frame storage and tail calls (decided, A4)
 

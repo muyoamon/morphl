@@ -26,4 +26,6 @@ $fwd later
 $decl fw   $func () $call later (0)
 $decl later $func ($decl k 0) $new { $decl v k }
 $decl otr  $func () { $decl s $call tr ("1")  $decl ret s }.ret
+$decl two  $func ($decl c true) $if c ($call mk (1)) ($call h (2))
+$decl mix  $func ($decl c true) $if c ($call mk (1)) ($new { $decl v 2 })
 $decl main $func () $call fine ()

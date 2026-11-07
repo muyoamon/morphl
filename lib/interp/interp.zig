@@ -1636,8 +1636,11 @@ pub const Interp = struct {
                 const c = callee orelse break :blk false;
                 if (c != .func) break :blk false;
                 const body = c.func.body;
+                // A body that forwards to a constructor — a call, or arms that each make
+                // one call to the same constructor (§5.3a) — constructs too.
                 break :blk isStorageForm(body) or
-                    (body.isForm(.call) and keepsRef(c.func.scope, body, depth - 1));
+                    ((body.isForm(.call) or body.isForm(.@"if") or body.isForm(.match)) and
+                        keepsRef(c.func.scope, body, depth - 1));
             },
             else => false,
         };

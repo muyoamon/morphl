@@ -747,11 +747,11 @@ $decl lstate $func () {
   $decl newptrs $mut $alloc strs.node
   // §5.3a's constructors lowered so far (`ctor_ent`), and the one `lower_func` just lowered
   // (`key` -1 when it was not one), which its three callers register under its index. A
-  // forwarding body's call is recognised by `ctorfwd`, its file and span, and the
-  // constructor it reached is left in `ctorhit`.
+  // forwarding body's calls — one, or one per arm — are recognised by `ctorfwd`, their files
+  // and spans, and the constructor they reached is left in `ctorhit`.
   $decl ctors    $mut $alloc ctor_list.node
   $decl ctorlast $mut $alloc proto_ctor
-  $decl ctorfwd  $mut $alloc ""
+  $decl ctorfwd  $mut $alloc strs.node
   $decl ctorhit  $mut $alloc proto_ctor
   // DEFER.md step 4's routing: for each slot of this function bound from an `$alloc`, the
   // `allocator` binding it was drawn from, as "slot|identity". `$free` checks it.
@@ -2191,6 +2191,22 @@ $decl site_key $func ($decl st proto_lst, $decl n Pa.proto_node) {
   $decl ret $call concat ($call P.sval (st.curfile), $call concat ("@",
                 $call keep_key (sp.line, sp.col)))
 }.ret
+// The calls a body may forward through: itself, or each arm of an `$if` or `$match`, which
+// inference allowed only when every arm calls one constructor (`same_ctor`).
+$fwd fwd_sites
+$decl fwd_arm_sites $func ($decl st proto_lst, $decl xs Pa.nodes.node, $decl acc strs.node)
+    $match xs (
+  $case {$prop tag "cons"}
+    $call fwd_arm_sites (st, $call Pa.nodes.val (xs.tail),
+        $call fwd_sites (st, $call op (xs.head, 1), acc)),
+  $case xs acc
+)
+$decl fwd_sites $func ($decl st proto_lst, $decl b Pa.proto_node, $decl acc strs.node)
+  $if ($call is_form (b, "call")) ($call strs.cons ($call site_key (st, b), acc))
+  ($if ($call is_form (b, "if"))
+       ($call fwd_sites (st, $call op (b, 2), $call fwd_sites (st, $call op (b, 1), acc)))
+  ($if ($call is_form (b, "match"))
+       ($call fwd_arm_sites (st, $call group_items ($call op (b, 1)), acc)) acc))
 $decl ctor_shape $func ($decl b Pa.proto_node)
   $if ($call is_form (b, "new")) true
       ($if ($call P.or ($call is_form (b, "mut"), $call is_form (b, "const")))
@@ -4853,7 +4869,7 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                      fi.fn), vft, f.mod, f.tmpl)),
                  $case fi ($call lres4 (fi, vft, f.mod, f.tmpl)))) f
   $decl cty  $if isc cr.res ty
-  $decl fwd  $if isc ($if tail ($call eq_str ($call P.sval (st.ctorfwd), $call site_key (st, n)))
+  $decl fwd  $if isc ($if tail ($call mem_str ($call strs.val (st.ctorfwd), $call site_key (st, n)))
                  false) false
   $decl cf   $if loc f2.ir ($call short_callee (st, f2, na, n))
   // DEFER.md step 5: storage its arguments made and its value does not hold is released
@@ -5502,12 +5518,12 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl reset $call take_slots (st)
   // §5.3a: a body that is a `$new` constructs — it answers the block, and the caller makes
   // the storage (`ctor_body`) — and so does one that is a tail call to a constructor, which
-  // the call recognises by `ctorfwd` and answers in `ctorhit`.
+  // the call recognises by `ctorfwd` and answers in `ctorhit` — or arms that each are one.
   $decl body0 $call op (n, 1)
   $decl cnew  $call ctor_shape (body0)
-  $decl ofw   $call P.sval (st.ctorfwd)
+  $decl ofw   $call strs.val (st.ctorfwd)
   $decl oht   $call ctor_val (st.ctorhit)
-  $decl sfw   $set st.ctorfwd ($if ($call is_form (body0, "call")) ($call site_key (st, body0)) "")
+  $decl sfw   $set st.ctorfwd ($call fwd_sites (st, body0, strs.nil))
   $decl sht   $set st.ctorhit proto_ctor
   $decl ps    $call group_items ($call op (n, 0))
   $decl ptys  $match fty ($case {$prop tag "func"} ($call T.tys.val (fty.params)), $case fty T.tys.nil)

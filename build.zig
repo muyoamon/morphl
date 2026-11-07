@@ -174,6 +174,8 @@ pub fn build(b: *std.Build) void {
         // SPEC §5.4: an argument to a parameter typed as a union with a storage member is
         // not read through, so a fallible constructor's `<&T, none>` passes as it is.
         .{ .src = "stage1/fixtures/ref_arg.mpl", .want = "1762 9" },
+        // Arms that each call one constructor: the function forwards to it.
+        .{ .src = "stage1/fixtures/ctor_arms.mpl", .want = "u1u2g3g5g62qpq 12356270" },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -828,8 +830,10 @@ pub fn build(b: *std.Build) void {
                 "ctor_bad.mpl:24:21: this calls a constructing function through an $overload",
                 "ctor_bad.mpl:27:13: this constructor is called before its type is known",
                 "ctor_bad.mpl:28:12: this function's result holds frame storage made in this call (&block)",
+                "ctor_bad.mpl:29:12: this function chooses between constructions",
+                "ctor_bad.mpl:30:12: this function chooses between constructions",
             },
-            .count = "errors: 9\n",
+            .count = "errors: 11\n",
             .stage0 = null,
         },
         .{

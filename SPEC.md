@@ -601,7 +601,8 @@ The error is reported where the place would escape. The fix: make that storage `
 (§4.2a) and release it when done, or, for a tail call, make the call non-tail.
 
 **Constructing calls.** A function whose body *is* a `$new` — `$new e`, `$mut $new e` or
-`$const $new e` — or a tail call to such a function, **constructs**: its caller provides the
+`$const $new e` — or a tail call to such a function, or an `$if` or `$match` each arm of which
+is a tail call to one such function, named the same way, **constructs**: its caller provides the
 storage, and the call is frame storage of the scope it stands in, exactly as if that `$new`
 were written at the call. Everything after follows from that: the caller's `$decl` owns the
 place or it is ephemeral (§4.15a), and the rules above treat it as the caller's own — it may be
@@ -611,6 +612,7 @@ tail call.
 ```
 $decl mk  $func ($decl k 0) $new { $decl v k  $defer $call say (v) }
 $decl mk0 $func () $call mk (0)          // a tail call to a constructor constructs
+$decl mkc $func ($decl c true) $if c ($call mk (1)) ($call mk (2))   // and so do arms of one
 $decl use $func () {
   $decl s   $call mk (1)                 // s owns the place; say (1) runs at use's end
   $decl ret s.v
@@ -639,8 +641,10 @@ $decl parse $func ($decl src "") $new {
 
 Within the shape, three things are compile errors:
 
-- a body that chooses between constructions (`$if c ($new a) ($new b)`), which would leave the
-  caller not knowing whose deferrals to run — branch inside one block's fields instead;
+- a body that chooses between constructions (`$if c ($new a) ($new b)`, or arms calling two
+  constructors, or one through two names), which would leave the caller not knowing whose
+  deferrals to run — branch inside one block's fields instead, or call one constructor in
+  every arm;
 - a call to a constructing function that does not name its definition (§3.4: through a
   parameter, a field, storage, a call's result, an `$if`), since a function value cannot say
   it needs the storage. An alias of the definition names it, as for a short call;
@@ -1095,7 +1099,7 @@ These follow from stated rules and are accepted by design:
 - Whether the pass-facing compiler functions should be `$template`s bounded by the node type (§9.3), so that a pass's own annotations survive a call into the compiler instead of being prefix-copied away (§7.4). It is the difference between passes carrying analysis beside the tree and inside it.
 - Whether a *library* allocator can be made safe rather than unsafe by declaration — some form of scoped allocator whose references cannot outlive it, which would be §5.3a's rule generalised from the frame to any allocator. Deliberately not attempted: it is the step from two kinds to arbitrarily many, and that is a lifetime system.
 - Variadic templates (abstraction over group arity).
-- Widening constructing calls (§5.3a): a `$try` in the constructed block (the result would say which member is the constructed place, and the caller run the deferrals only when it holds that member); arms that each call the same constructor (one set of deferrals); and a constructing function as a value (a destination passed through the call, and §6a's pending block).
+- Widening constructing calls (§5.3a): a constructing function as a value (a destination passed through the call, and §6a's pending block).
 - Whether `&mut S` may widen to a prefix supertype `&mut T`. Under prefix layout a write through the narrowed view leaves `S`'s tail intact, so width (not depth) coercion looks sound; §5.3 keeps `&mut` invariant for now.
 - `$fwd (name, example)` — optional type operand, must be a group.
 - `static` — per-type mutable storage, deliberately distinct from `$prop`.

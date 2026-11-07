@@ -1935,18 +1935,63 @@ $decl nonroot_res $func ($decl cx proto_ctx, $decl e env.node, $decl res T.proto
                 T.cints.nil
 }.ret
 
+// A callee as written, when it names a definition the way a constructing call must (§3.4):
+// a name, or a module's member. Anything else is "".
+$decl callee_text $func ($decl c Pa.proto_node) $match c (
+  $case {$prop tag "name"} c.text,
+  $case {$prop tag "proj_name"} {
+    $decl t    $call node_val (c.target)
+    $decl ret2 $match t (
+        $case {$prop tag "name"} ($call concat (t.text, $call concat (".", c.field))),
+        $case t "")
+  }.ret2,
+  $case c ""
+)
+// The constructor a body forwards to, as its callee is written, or "": a constructing call
+// (`ctorcalls`), or an `$if` or `$match` every arm of which forwards to the same one — so the
+// caller's storage holds that constructor's block whichever arm ran, and its deferrals are
+// that constructor's (STORAGE.md R3). A `$match` whose scrutinee is the callee's name would
+// rebind it in the arms, so it is not the same.
+$fwd same_ctor
+$decl same_ctor_arms $func ($decl cx proto_ctx, $decl xs Pa.nodes.node, $decl k "", $decl sn "")
+    $match xs (
+  $case {$prop tag "cons"} {
+    $decl a    $call same_ctor (cx, $call op (xs.head, 1))
+    $decl ok   $if ($call eq_str (a, "")) false
+                   ($if ($call eq_str (a, sn)) false
+                   ($if ($call eq_str (k, "")) true ($call eq_str (a, k))))
+    $decl ret2 $if ok ($call same_ctor_arms (cx, $call Pa.nodes.val (xs.tail), a, sn)) ""
+  }.ret2,
+  $case xs k
+)
+$decl same_ctor $func ($decl cx proto_ctx, $decl b Pa.proto_node)
+  $if ($call is_form (b, "if")) {
+    $decl a    $call same_ctor (cx, $call op (b, 1))
+    $decl ret2 $if ($call eq_str (a, $call same_ctor (cx, $call op (b, 2)))) a ""
+  }.ret2
+  ($if ($call is_form (b, "match"))
+       ($call same_ctor_arms (cx, $call group_items ($call op (b, 1)), "",
+           $call callee_text ($call node_val ($call op (b, 0)))))
+  ($if ($if ($call is_form (b, "call"))
+            ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, b))) false)
+       ($call callee_text ($call node_val ($call op (b, 0)))) ""))
+
 // §5.3a: a body that constructs — a `$new` of frame kind, through `$mut` or `$const`, or a
-// call that constructs (`ctorcalls`), which hands its caller's storage on.
+// call that constructs (`ctorcalls`), which hands its caller's storage on, or arms that each
+// call the same one (`same_ctor`).
 $decl ctor_body $func ($decl cx proto_ctx, $decl b Pa.proto_node)
   $if ($call is_form (b, "new")) true
   ($if ($call P.or ($call is_form (b, "mut"), $call is_form (b, "const")))
        ($call is_form ($call op (b, 0), "new"))
   ($if ($call is_form (b, "call"))
        ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, b)))
-       false))
+  ($if ($call P.or ($call is_form (b, "if"), $call is_form (b, "match")))
+       ($call not ($call eq_str ($call same_ctor (cx, b), "")))
+       false)))
 
-// An `$if` or `$match` some arm of which constructs: refused with its own message rather
-// than R2's, since what is wrong is the choice and not the construction.
+// An `$if` or `$match` some arm of which constructs, and not all of them through one
+// constructor: refused with its own message rather than R2's, since what is wrong is the
+// choice and not the construction.
 $decl ctor_arms $func ($decl cx proto_ctx, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"}
     $if ($call ctor_body (cx, $call op (xs.head, 1))) true
@@ -2036,7 +2081,7 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
              ($if ($call T.frame_bound (res0, 0))
                  ($if ($call owns_x (cx, own0, $call op (n, 1)))
                       ($if ($call ctor_choice (cx, $call op (n, 1)))
-                           ($call err (cx, "this function chooses between constructions, so its caller could not know whose deferrals to run; construct once and branch inside the block's fields instead (§5.3a)", n))
+                           ($call err (cx, "this function chooses between constructions, so its caller could not know whose deferrals to run; construct once and branch inside the block's fields, or call one constructor in every arm (§5.3a)", n))
                       ($call err (cx, $call concat ("this function's result holds frame storage made in this call (",
                            $call concat ($call T.show_frame ($call T.first_frame (res0, 0)),
                            "), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")), n)))
