@@ -298,6 +298,8 @@ pub fn build(b: *std.Build) void {
         // `$match` and a `$try`, which lowering typed ⊥. 321. Stage 0 keeps patterns to
         // BOOTSTRAP §1.3's syntactic three.
         .{ .src = "stage1/fixtures/pattern_proj.mpl", .want = "321\n", .stage0 = false },
+        // A block pattern that requires a field, which lowering used to read as `{}`.
+        .{ .src = "stage1/fixtures/pattern_fields.mpl", .want = "7145\n", .stage0 = false },
         // §2.3's tops as §4.7 patterns: `$case ()` covers anything, `$case {}` every block
         // member, a parameter defaulted to `()` takes any argument, and `$if c 5 ()` keeps
         // its `Int`. 654321.

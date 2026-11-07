@@ -2944,6 +2944,16 @@ $decl pat_props $func ($decl st proto_lst, $decl xs Pa.nodes.node,
   $case xs acc
 )
 
+// A block pattern read off its syntax holds props alone: a `$decl` in one is a field the
+// pattern requires, and dropping it made `{$decl v 0}` the pattern `{}`, which claims every
+// block member — the arm took `none` as well and `.v` was refused, where inference had typed
+// the whole pattern. Such a block is typed like any other pattern below.
+$decl props_only $func ($decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call is_form (xs.head, "prop")) ($call props_only ($call Pa.nodes.val (xs.tail))) false,
+  $case xs true
+)
+
 $decl pattern_ty $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) $match n (
   $case {$prop tag "int"}   T.t_int,
   $case {$prop tag "str"}   T.t_str,
@@ -2955,8 +2965,10 @@ $decl pattern_ty $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
   $case {$prop tag "bool"}  ($if n.value T.t_true T.t_false),
   $case {$prop tag "unit"}  T.t_unit,
   $case {$prop tag "block"}
-    ($call T.t_block (T.fields.nil, $call pat_props (st, $call Pa.nodes.val (n.items),
-        T.props.nil))),
+    $if ($call props_only ($call Pa.nodes.val (n.items)))
+        ($call T.t_block (T.fields.nil, $call pat_props (st, $call Pa.nodes.val (n.items),
+            T.props.nil)))
+        ($call deref_ty (($call type_only (st, e, n)).ty)),
   // §4.7's catch-all names the scrutinee, so its type is whatever that is —
   // read through, because §5.4 makes a reference transparent in a `$match`
   // scrutinee and the pattern is compared against the *value*.
