@@ -639,15 +639,35 @@ $decl parse $func ($decl src "") $new {
 }
 ```
 
-Within the shape, three things are compile errors:
+**A constructor is a value** like any function: it may be passed, held in a field or
+storage, chosen by an `$if`, and called through. Its type says it constructs, so a call
+through it constructs too, exactly as a call naming the definition does. What the type
+cannot say is *which* deferrals the block carries — two constructors of one type may differ
+in them, and a function's code is not in its type (§7.3) — so they travel with the value:
+the call answers the block and the deferrals to run, and the caller's owner runs those
+(§7.6). A function that forwards to a constructor through a value constructs as one that
+names it does.
+
+```
+$decl with $func ($decl make mk, $decl n 0) {
+  $decl r   $call make (n)                // with's storage; make's deferrals run at with's end
+  $decl ret r.v
+}.ret
+$decl a $call with (mk, 1)
+$decl b $call with (mk2, 2)                // same type as mk, different deferrals
+```
+
+A function that constructs and one that does not are not interchangeable, either way: the
+first is called differently (§7.6), so the flag is part of the type's identity and of
+subtyping (§5.1). Passing `mk` to a parameter whose default is an ordinary function with
+`mk`'s parameters and result is a type error, and so is the reverse.
+
+Within the shape, two things are compile errors:
 
 - a body that chooses between constructions (`$if c ($new a) ($new b)`, or arms calling two
   constructors, or one through two names), which would leave the caller not knowing whose
-  deferrals to run — branch inside one block's fields instead, or call one constructor in
-  every arm;
-- a call to a constructing function that does not name its definition (§3.4: through a
-  parameter, a field, storage, a call's result, an `$if`), since a function value cannot say
-  it needs the storage. An alias of the definition names it, as for a short call;
+  deferrals to run — branch inside one block's fields instead, call one constructor in
+  every arm, or call through the value the branch chooses (`$call ($if c mk mk2) (n)`);
 - a call to a constructor made before its type is known — through a `$fwd` (§4.11), or from
   its own body — since that call could not know it constructs. Define it above its callers.
 
@@ -777,7 +797,9 @@ Storage is created only by `$new` and `$alloc`. References alias; values copy. *
 
 **A closure's captures belong to its body, not to its type.** A function's type is `params -> result` (§3.4) and says nothing about what it captured; two functions of the same type are interchangeable however they were built. Every function value is therefore represented the same way — a code pointer and an environment pointer, two words — so a function-typed slot has a size, and `$set` on storage holding a function accepts any function of that type. The body it runs changes; the type does not.
 
-A capture-free `$func` has an empty environment and is one pointer plus a null. A capturing one needs its copies to live somewhere: the environment is frame storage of the scope the literal stood in, which is why the closure is frame-bound and §5.3a stops it escaping. A closure that must outlive that scope is written `$alloc` like any other storage that does.
+A capture-free `$func` has an empty environment and is one pointer plus a null. A
+constructing function's value is the same two words; what a call through it answers is
+wider than a direct call's, since it carries the block's deferrals (§7.6). A capturing one needs its copies to live somewhere: the environment is frame storage of the scope the literal stood in, which is why the closure is frame-bound and §5.3a stops it escaping. A closure that must outlive that scope is written `$alloc` like any other storage that does.
 
 ### 7.4 Coercion cost
 
@@ -815,7 +837,11 @@ slot of the frame. A constructing call (§5.3a) is such a site in its caller: th
 frame holds the slot, and the block the constructor builds is stored there, as a `$new`
 written at the call stores its operand. No address needs to cross the call, since nothing in
 a block can name its own place while it is built, and a constructor that tail-calls another
-answers what that one built. It is safe because §5.3a
+answers what that one built. A call naming the constructor's definition knows its
+deferrals already; a call through a function value is answered them beside the block — a
+code pointer to one function of the block's fields, which captures nothing, since a
+constructed block's deferrals read only its own bindings and what is global (§4.15a) — and
+the caller registers a call to it as it would the known one. It is safe because §5.3a
 confines places: storage never holds one, a function returns only places that came in or
 that it constructs into its caller, and a tail call passes none its activation made.
 Nothing is annotated; the one fact inferred — which places an activation made — is read
@@ -1099,7 +1125,6 @@ These follow from stated rules and are accepted by design:
 - Whether the pass-facing compiler functions should be `$template`s bounded by the node type (§9.3), so that a pass's own annotations survive a call into the compiler instead of being prefix-copied away (§7.4). It is the difference between passes carrying analysis beside the tree and inside it.
 - Whether a *library* allocator can be made safe rather than unsafe by declaration — some form of scoped allocator whose references cannot outlive it, which would be §5.3a's rule generalised from the frame to any allocator. Deliberately not attempted: it is the step from two kinds to arbitrarily many, and that is a lifetime system.
 - Variadic templates (abstraction over group arity).
-- Widening constructing calls (§5.3a): a constructing function as a value (a destination passed through the call, and §6a's pending block).
 - Whether `&mut S` may widen to a prefix supertype `&mut T`. Under prefix layout a write through the narrowed view leaves `S`'s tail intact, so width (not depth) coercion looks sound; §5.3 keeps `&mut` invariant for now.
 - `$fwd (name, example)` — optional type operand, must be a group.
 - `static` — per-type mutable storage, deliberately distinct from `$prop`.

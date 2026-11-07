@@ -279,8 +279,63 @@ place exists only once the `$new` has its value. So emit and §7.3's calling con
 untouched, and a forwarding body is an ordinary tail call answering what its callee answers.
 The function type still records that it constructs — a flag beside `esc`, part of identity
 and of subtyping — since the caller must make the storage. A constructing function **used as
-a value** is refused for now, for the same reason a short call must name a definition (SPEC
-§3.4): a call through a value cannot know to make it.
+a value** was refused at first, because a call through a value knows from the type that it
+must make the storage but not which deferrals the block carries; "A constructor as a value"
+below is how it is called (step 8).
+
+### A constructor as a value
+
+```
+$decl mk   $func ($decl n 0) $new { $decl v n  $defer $call say ("a") }
+$decl mk2  $func ($decl n 0) $new { $decl v n  $defer $call say ("b") }
+$decl with $func ($decl make mk, $decl n 0) {
+  $decl r   $call make (n)           // which drop? mk's or mk2's — the type cannot say
+  $decl ret r.v
+}.ret
+$decl fwd  $func ($decl make mk, $decl n 0) $call make (n)   // forwards through a value
+```
+
+`mk` and `mk2` have one type, and §7.3 keeps a function's code out of its type, so the
+deferrals have to travel with the value. Stage 0 runs all of this already (a probe answers
+each deferral at its owner's end, `fwd` included); only the checker and lowering refuse it.
+
+**Two conventions.** A constructor's call answers its block, and the caller takes the `drop`
+from the record (`st.ctors`): call it **static**. A call through a value answers a block and
+the `drop` together, `{b, d}`, `d` a function value of the block's fields: call it **dynamic**.
+The type does not say which, and does not need to — a call naming a definition reads the
+record, and a call through a value is always dynamic:
+
+- **`mk` named as a value** is the pair of a shim, `mk_dyn`, which calls `mk` (passing its own
+  environment on, so a block-local constructor's captures still reach it) and answers
+  `{b, &mk_drop}`. One shim per constructor, made when it is first named as a value. A
+  constructor that is dynamic already is its own value and needs none.
+- **`d` is never absent.** A constructor with no deferrals answers a no-op `drop` for its block
+  type, one per type, so the caller's deferral is unconditional and the value's layout is a
+  function of its type alone.
+- **`d` captures nothing**: §4.15a lets a constructed block's deferrals read only its own
+  bindings and what is global, which is what made `drop` a function of the fields. Its value is
+  a pair with a null environment.
+- **A body that forwards through a value is dynamic** — `fwd` cannot know its block's `drop`
+  either, so its record says so and its direct callers are answered `{b, d}` as a call through
+  a value is. Forwarding to a dynamic constructor by name is dynamic too, and so is
+  `$call ($if c mk mk2) (n)`, whose callee is a value.
+- **The caller** saves `{b, d}` in a slot, makes the storage from `.b`, and registers
+  `$call s.d (s.b.f0, …)` — `ctor_built` with `$cd` bound to that slot's field rather than to
+  a global. A constructor that can fail answers `{r, d}` with `r` the widened result, and the
+  switch `ctor_site` builds reads `.r`.
+- **Tail calls** need nothing new: a dynamic forwarding call answers what its callee answers, and
+  through a value in tail position it is §6a's indirect tail call, whose driver writes any
+  result through `void *out`.
+
+**The flag becomes invariant.** `sub` compares `esc` as a subset, so a plain function is
+accepted today where a constructor is expected. That was unreachable while a call through such
+a value was refused; once it is not, it would turn a function returning a borrowed reference
+into one whose result is *copied* into fresh storage. A constructor where a plain function is
+expected is wrong the other way — its call would make no storage. So `2000` must be equal on
+both sides; the other `esc` entries keep the subset rule.
+
+**An `$overload` with a constructor candidate** comes along: a call choosing a candidate goes
+through the group's value, so it is dynamic, and `ctor_bad.mpl`'s refusal goes.
 
 ### What the first cut leaves out
 
@@ -291,7 +346,7 @@ a value** is refused for now, for the same reason a short call must name a defin
 | `$if`/`$match` arms, each the same constructor | refused | **constructs, and forwards** (step 7) |
 | arms with different literals or storage types | refused | likely never: branch in a field |
 | a `$try` among the literal's items | refused | **constructs, and can fail** (step 6) |
-| a constructor used as a value | refused | a shim, and §6a's pending block saying it constructs |
+| a constructor used as a value | refused | **a dynamic call answering `{b, d}`** (step 8) |
 
 **Arms of different literals** would bring back what the shape rule removed. Two literals of one
 storage type have two
@@ -397,6 +452,20 @@ runs the registered deferrals and finds no place in `none`.
    `$match` arms, a nested `$if`, forwarding to such a function, a default calling one, and a
    constructor that can fail, in all three stages; `ctor_bad.mpl` refuses two constructors, and
    one through two names.
+8. **A constructor as a value.** Planned, as "A constructor as a value" above:
+   - *Checker*: the "through a value" and "through an `$overload`" refusals go; `2000` is
+     invariant in `sub`; a short call still names a definition (SPEC §3.4).
+   - *Lowering*: a record's mode, static or dynamic; the shim, named from the constructor as
+     `drop` is, and exported; the no-op `drop` per block type; the dynamic path in
+     `ctor_site`/`ctor_built`; a forwarding body through a value marked dynamic.
+   - *Emit*: nothing expected — the shim and the call through `d` are ordinary IR — to be
+     confirmed on the trampoline's driver.
+   - *Fixtures*: `ctor_value.mpl` — passing two constructors of one type, a field holding one,
+     `$if` choosing one, forwarding through a value and calling that by name, a block-local
+     constructor that captures, one that can fail, one with no deferrals, an overload, and a
+     tail call through a value 2,000,000 deep — in all three stages and under ASan.
+     `ctor_bad.mpl` loses its two "through a value" lines and gains a plain function where a
+     constructor is expected, and the reverse.
 
 ## A. Frame storage and tail calls (decided, A4)
 
