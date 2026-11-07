@@ -305,6 +305,11 @@ pub const Param = struct {
     /// `$mut …` or `$const …` wants storage, anything else wants a value.
     /// That matches how §5.3 says parameters are idiomatically written.
     wants_storage: bool,
+    /// Whether a reference argument is kept as it is although the parameter does not
+    /// insist on storage: its type is a union one of whose members is storage, which
+    /// §5.4 does not read through — a default that is an `$if`/`$match` with a storage
+    /// arm, or a call to a function that constructs (§5.3a). `none` may arrive too.
+    keeps_ref: bool = false,
 };
 
 pub const Template = struct {

@@ -2718,8 +2718,18 @@ $decl is_over $func ($decl t T.proto_ty) $match t ($case {$prop tag "over"} true
 
 // An argument as a parameter of type `p` sees it: storage where `p` wants storage or a
 // trait object (§5.4, §6), a value everywhere else.
+// §5.4 reads a reference through where a value is expected, and a parameter that is
+// storage does not expect one — `&T`, or a union with a storage member, which is what a
+// constructor that can fail answers (`<&T, none>`): read through, it was `<T, none>`,
+// and the parameter its own type describes refused it.
+$decl takes_ref $func ($decl p0 T.proto_ty) {
+  $decl p   $call T.unroll (p0)
+  $decl ret $match p ($case {$prop tag "ref"} true,
+                      $case {$prop tag "union"} ($call refm_any ($call T.tys.val (p.members))),
+                      $case p false)
+}.ret
 $decl arg_as $func ($decl p T.proto_ty, $decl raw T.proto_ty)
-  $if ($call or ($call is_ref (p), $call T.is_trait (p))) raw ($call deref_ty (raw))
+  $if ($call or ($call takes_ref (p), $call T.is_trait (p))) raw ($call deref_ty (raw))
 
 $fwd over_fits
 
@@ -2890,8 +2900,7 @@ $decl check_one $func ($decl cx proto_ctx, $decl e env.node, $decl p T.proto_ty,
                      ($set cx.placed ($call strs.cons ($call fn_key_of (cx, x),
                           $call strs.val (cx.placed))))
                      ($call strs.val (cx.placed)))
-                ($call note_placed (cx, x, $match p ($case {$prop tag "ref"} raw,
-                                                     $case p ($call deref_ty (raw)))))
+                ($call note_placed (cx, x, $if ($call takes_ref (p)) raw ($call deref_ty (raw))))
   $decl sr  $if tco ($set cx.slotref ($call strs.cons ($call fn_key_of (cx, x),
                                                         $call strs.val (cx.slotref))))
                 ($call strs.val (cx.slotref))

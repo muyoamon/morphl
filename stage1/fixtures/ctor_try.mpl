@@ -31,8 +31,7 @@ $decl bare  $func ($decl src "") $new {
   $prop tag "ok"
   $decl n   ($try ($call str_to_int (src)) none).v
 }
-// What a call answered, read as a value (§5.4).
-$decl n_of  $func ($decl r $union (none, { $prop tag "ok"  $decl a 0  $decl n 0 })) $match r (
+$decl n_of  $func ($decl r $call parse ("0")) $match r (
   $case {$prop tag "none"} 0,
   $case {$prop tag "ok"}   r.n
 )

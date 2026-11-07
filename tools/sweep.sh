@@ -110,6 +110,7 @@ declare -A rules=(
   [ctor_bad@lift]="this constructor's deferral reads 'say'"
   [ctor@lift]="this constructor's deferral reads 'say'"
   [ctor_try@lift]="this constructor's deferral reads 'say'"
+  [ref_arg@lift]="this constructor's deferral reads 'say'"
   [receiver@lift]="a \$prop's \$func may not capture 'ival'"
   [self_param@lift]="a \$prop's \$func may not capture 'ival'"
   [self_trait@lift]="a \$prop's \$func may not capture 'ival'"

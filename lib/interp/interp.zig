@@ -1574,6 +1574,7 @@ pub const Interp = struct {
                 .name = dops[0].data.name,
                 .default = &dops[1],
                 .wants_storage = isStorageForm(&dops[1]),
+                .keeps_ref = keepsRef(scope, &dops[1], 8),
             };
         }
 
@@ -1594,6 +1595,54 @@ pub const Interp = struct {
     /// storage is read off the *syntax* of its default, since the real rule is
     /// a type-level one. §5.3 says idiomatic code writes `$mut $new 0` or
     /// `$const $new 0` for exactly these parameters.
+    /// The storage half of a union-typed default, which `isStorageForm` does not see: an
+    /// `$if` or `$match` with an arm that is storage, a `$union` whose value is, or a call
+    /// to a function that constructs (§5.3a) — its body storage, or a call to one that is,
+    /// as far as `depth` follows. The callee is the binding in scope where the `$func` is
+    /// made, which §5.3a requires to be defined above any call to it.
+    fn keepsRef(scope: *Scope, n: *const Node, depth: u8) bool {
+        if (depth == 0 or n.data != .form) return false;
+        const f = n.data.form;
+        const ops = f.operands;
+        return switch (f.keyword) {
+            .new, .alloc, .mut, .@"const" => true,
+            .@"if" => keepsRef(scope, &ops[1], depth - 1) or keepsRef(scope, &ops[2], depth - 1),
+            .match => switch (ops[1].data) {
+                .group => |arms| for (arms) |*a| {
+                    if (a.isForm(.case) and keepsRef(scope, &a.data.form.operands[1], depth - 1)) break true;
+                } else false,
+                else => ops[1].isForm(.case) and keepsRef(scope, &ops[1].data.form.operands[1], depth - 1),
+            },
+            .@"union" => switch (ops[0].data) {
+                .group => |ms| ms.len > 0 and keepsRef(scope, &ms[0], depth - 1),
+                else => keepsRef(scope, &ops[0], depth - 1),
+            },
+            .call => blk: {
+                const callee: ?Value = switch (ops[0].data) {
+                    .name => |nm| if (find(scope, nm)) |fd| switch (fd.entry) {
+                        .value => |v| v,
+                        else => null,
+                    } else null,
+                    .proj_name => |pj| if (pj.target.data == .name) mod: {
+                        const fd = find(scope, pj.target.data.name) orelse break :mod null;
+                        const v = switch (fd.entry) {
+                            .value => |v| v.deref(),
+                            else => break :mod null,
+                        };
+                        break :mod if (v == .block) v.block.find(pj.field) else null;
+                    } else null,
+                    else => null,
+                };
+                const c = callee orelse break :blk false;
+                if (c != .func) break :blk false;
+                const body = c.func.body;
+                break :blk isStorageForm(body) or
+                    (body.isForm(.call) and keepsRef(c.func.scope, body, depth - 1));
+            },
+            else => false,
+        };
+    }
+
     fn isStorageForm(n: *const Node) bool {
         return switch (n.data) {
             .form => |f| switch (f.keyword) {
@@ -1892,6 +1941,8 @@ pub const Interp = struct {
                         if (a != .ref) return false;
                         continue;
                     }
+                    // Evaluating a constructing default to judge it would construct.
+                    if (p.keeps_ref) continue;
                     const d = (try self.eval(p.default, try self.defaultEnv(f))).deref();
                     const v = a.deref();
                     // A `Bool` parameter's default is `$union (true, false)`, whose value
@@ -1945,10 +1996,11 @@ pub const Interp = struct {
                     // §5.4: "A value is never implicitly converted to storage."
                     return self.rt.fail(span, "parameter '{s}' expects storage, found {s}; write $new at the call site", .{ p.name, v.typeName() });
                 }
-            } else {
+            } else if (!p.keeps_ref) {
                 // §5.4: a reference behaves as its pointee where a value is
                 // expected, and a call argument is such a place. An `$impl`'s
-                // props are the value's (§4.12), so they cross with it.
+                // props are the value's (§4.12), so they cross with it. A union with
+                // a storage member is not such a place (`keeps_ref`).
                 v = v.derefRefs();
             }
             const idx = try scope.reserve(p.name, span);

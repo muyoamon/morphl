@@ -678,6 +678,8 @@ at every use.
 
 A reference behaves as its pointee **wherever a value is expected**: call arguments, `$match` scrutinee, projection, `$set`'s right-hand side, `$new`'s operand, overload resolution. It stays a reference where nothing expects a value: `$decl` initializers, group elements, block fields, function results. There is no explicit dereference.
 
+A call argument expects a value only where its parameter is not storage. A parameter typed `&T`, or as a union with a storage member — `<&T, none>`, what a constructor that can fail answers (§5.3a) — takes the argument as it is, so the reference passes and a callee may hand it back.
+
 A value is never implicitly converted to storage. Passing `0` to a `&Int` parameter is an error; write `$new 0`.
 
 ### 5.5 Recursion: the knot

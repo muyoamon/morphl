@@ -171,6 +171,9 @@ pub fn build(b: *std.Build) void {
         // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
         // body's tail call, and mid-item — and a loop holding one stays in constant space.
         .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },
+        // SPEC §5.4: an argument to a parameter typed as a union with a storage member is
+        // not read through, so a fallible constructor's `<&T, none>` passes as it is.
+        .{ .src = "stage1/fixtures/ref_arg.mpl", .want = "1762 9" },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },

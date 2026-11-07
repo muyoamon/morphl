@@ -1935,9 +1935,23 @@ $decl ps_tail $func ($decl xs T.tys.node) $match xs (
 // many words: "A value is never implicitly converted to storage. Passing `0` to a
 // `&Int` parameter is an error; write `$new 0`." So transparency is a permission
 // at a value position, not an obligation at every argument.
-$decl wants_ref $func ($decl t0 T.proto_ty) {
+$decl wants_ref0 $func ($decl t0 T.proto_ty) {
   $decl t   $call T.unroll (t0)
   $decl ret $match t ($case {$prop tag "ref"} true, $case t false)
+}.ret
+$decl ref_member $func ($decl xs T.tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call wants_ref0 ($call T.tval (xs.head))) true
+        ($call ref_member ($call T.tys.val (xs.tail))),
+  $case xs false
+)
+// Storage, or a union with a storage member (`infer.mpl`'s `takes_ref`), which is not a
+// value position either.
+$decl wants_ref $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "ref"} true,
+                      $case {$prop tag "union"} ($call ref_member ($call T.tys.val (t.members))),
+                      $case t false)
 }.ret
 
 // Arguments are a value position (§5.4) — *unless* the parameter is storage,
