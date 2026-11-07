@@ -160,6 +160,11 @@ pub fn build(b: *std.Build) void {
         // A value template as an inline constructor: its `$new`'s deferral belongs to the
         // `$decl` that binds the instance, as a `$new` written there would.
         .{ .src = "stage1/fixtures/tmpl_own.mpl", .want = "213654987321112 hits=1" },
+        // SPEC §5.3a, STORAGE.md R3: a function whose body is a `$new` constructs into its
+        // caller, so the call is that `$new` and the caller's `$decl` owns it. `tmpl_own`'s
+        // cases as functions, and forwarding, an alias, `$mut`, an arm, a call that may hand
+        // it back, a local constructor, another module's, and top-level owners.
+        .{ .src = "stage1/fixtures/ctor.mpl", .want = "t 213654987032111254332112478 5 hits=1e u " },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -916,6 +921,10 @@ pub fn build(b: *std.Build) void {
             // a module registers on it from its own output.
             .{ .src = "stage1/fixtures/top_defer.mpl", .want = "tmp init main 18\nc b a e1 u2 u1\n",
                .mods = &.{"top_defer_util"} },
+            // A constructor's `drop` lives in its module's output and is called from the
+            // caller's, so it is exported.
+            .{ .src = "stage1/fixtures/ctor.mpl", .want = "t 213654987032111254332112478 5 hits=1e u ",
+               .mods = &.{"ctor_util"} },
             // An `$import` calls its module's initialiser, which another output defines.
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",
                .mods = &.{ "import_order_inner", "import_order_util" } },

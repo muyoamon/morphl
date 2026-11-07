@@ -1,8 +1,9 @@
 # §7.6 storage: design note
 
-Status: **implemented**, except §R3. All five plan steps are done; SPEC §3.5, §4.2, §4.2a,
-§5.3a, §7.6 and §10 state the result, and this note keeps the reasoning and the measurements.
-§R3, constructing calls, is decided and not yet implemented; it has its own plan.
+Status: **implemented**. All five plan steps are done; SPEC §3.5, §4.2, §4.2a, §5.3a, §7.6
+and §10 state the result, and this note keeps the reasoning and the measurements. §R3,
+constructing calls, came later with a plan of its own, and it is in too, its first cut's
+refusals included.
 
 When this was written, SPEC §7.6 described two kinds of storage and the code had neither:
 `$new` and `$alloc` both compiled to `mpl_alloc`, which is `malloc` and was never freed, and
@@ -13,7 +14,7 @@ there was no `allocator` name in either root block.
 | A0 | what a frame reference is, and where it may go | **decided**: a place, never stored |
 | R | whether a function may return a place | **decided**: R2, a result may borrow |
 | — | whether top-level `$new` is special | **decided**: no, it is the outermost frame |
-| R3 | whether a function may construct into its caller's frame | **decided**: yes, when its body *is* the `$new` |
+| R3 | whether a function may construct into its caller's frame | **implemented**: yes, when its body *is* the `$new` |
 | A | when frame storage is released, given §7.7's tail calls | **decided**: A4, a tail call may not pass its own places |
 | B | what an allocator is | **decided**: B2, with §8 raw-memory intrinsics |
 | C | whether the compiler itself uses allocators | not now (measured) |
@@ -163,7 +164,7 @@ its `$decl`s are initialised by thunks called from `mpl_init`, and a thunk's ret
 top-level frame's exit. So a `$new` at top level is allocated in the program's frame — static
 storage — rather than in the thunk's.
 
-## R3. Constructing calls (decided, not implemented)
+## R3. Constructing calls (implemented)
 
 R2 refuses case 5, `$func () $new 3`, and it is right to: the place dies with the activation
 that made it. But that leaves the language without a way to make a value with storage and
@@ -249,21 +250,25 @@ $decl mk0      $func () $call mk (0)                       // a default
 $decl from_len $func ($decl s "") $call mk ($call len (s)) // an adapter
 ```
 
-The caller of `mk0` reserves the slot and passes its address; `mk0` passes the same address to
-`mk`, and the `$new` builds into it. A4 is not involved, since the slot belongs to `mk0`'s caller.
+The caller of `mk0` holds the slot; `mk0` answers the block `mk` built, and the caller stores
+it there. A4 is not involved, since the slot belongs to `mk0`'s caller.
 A constructor's deferral set is a property of the function, so the caller runs it directly:
 `mk0`'s is `mk`'s. Without forwarding every wrapper, default or overload would repeat the
 literal.
 
 ### Calling convention and type
 
-A constructing call passes a hidden destination after `env`, `T *dst`, and the `$new` writes
-there instead of to a local of its own; the result is `dst`. A thunk's slot is `static`, as a
-top-level `$new` is. Because the convention differs, the function type records it — a flag
-beside `esc`, part of identity and of subtyping, so it needs a `ckey` row, a hash term and its
-`pv`/`pa` rules (`types.mpl`). A constructing function **used as a value** is refused for now,
-for the same reason a short call must name a definition (SPEC §3.4): a call through a value would
-need a shim (a plain function adapts by ignoring `dst`) and a destination in §6a's pending block.
+The plan was a hidden destination after `env`, `T *dst`, for the `$new` to write through. What
+was built is simpler and means the same: **the constructor answers its block by value, and the
+caller makes the storage** by wrapping the call in the `$new` node it stands for — a C local
+`n<id>`, or a thunk's `static`, exactly as a `$new` written there is. No address has to cross
+the call, because nothing in a block can name its own place while it is being built: the
+place exists only once the `$new` has its value. So emit and §7.3's calling convention are
+untouched, and a forwarding body is an ordinary tail call answering what its callee answers.
+The function type still records that it constructs — a flag beside `esc`, part of identity
+and of subtyping — since the caller must make the storage. A constructing function **used as
+a value** is refused for now, for the same reason a short call must name a definition (SPEC
+§3.4): a call through a value cannot know to make it.
 
 ### What the first cut leaves out
 
@@ -274,7 +279,7 @@ need a shim (a plain function adapts by ignoring `dst`) and a destination in §6
 | `$if`/`$match` arms, each the same constructor | refused | maybe: one deferral set |
 | arms with different literals or storage types | refused | likely never: branch in a field |
 | a `$try` among the literal's items | refused | second step |
-| a constructor used as a value | refused | a shim, and `dst` in §6a's pending block |
+| a constructor used as a value | refused | a shim, and §6a's pending block saying it constructs |
 
 **Arms** would bring back what the shape rule removed. Two literals of one storage type have two
 deferral sets, so the callee would have to write a drop pointer beside the slot for the caller to
@@ -332,15 +337,31 @@ registered deferrals and finds no place in `none`), which a probe has to show fi
    wrapper forwarding to it lost the flag and its callers accepted a dangling place
    (`cx.ctorpend`). And stage 0 pooled a call's scope that a constructed block's deferral
    still reads through: `$defer` now counts for `mayCapture`. Until step 3, lowering
-   refuses a constructor ("not lowered yet"). `ctor_bad.mpl` is the `test-reject` case.
-3. **Lowering.** A constructing call is a place-making site for `flows_form`, keyed like a
-   `$new`; its deferrals are registered in the caller as the constructor's set, lowered once
-   against the block alone; the constructor registers none; a forwarding body passes `dst` on.
-4. **Emit.** `dst` after `env`; the caller's slot is a local `n<id>` from `news_of`, `static` in a
-   thunk; the `$new` in a constructor writes `*dst`.
-5. **Fixtures.** `tmpl_own.mpl`'s seven cases written as functions, in both stages and under
-   ASan; forwarding; `test-reject` for escaping from the caller, for a deferral naming a
-   constructor local, for value use, and for `mk2`'s shape keeping R2's message.
+   refused a constructor ("not lowered yet"). `ctor_bad.mpl` is the `test-reject` case.
+3. **Lowering.** Done. A constructor's body answers the block's value (`ctor_body`), with its
+   deferrals taken off the stack: they are lifted into `drop`, a function of the block's
+   fields lowered once in the constructor's own module and environment, every field rebound
+   to a parameter (`build_drop`). The caller wraps the call in the `$new` node
+   (`ctor_site`): with deferrals, in the `$new` literal's shape — its address saved for
+   `own_inits`, a flag in an arm — and registers `drop (s.f0, s.f1, …)`, `s` the value saved
+   before the `$new` took it, tagged with the call's position, which `flows_form` answers as
+   a `$new` literal's. So the owner walk, `$try`, ephemeral release, a call that may hand it
+   back and a top-level owner (`ctor_in` beside `Pa.storage_defers`) all decide it unchanged.
+   Saving the value is what keeps stage 0's reading: a deferral reads its block's bindings as
+   they were built, and `$set` on `$mut` storage afterwards does not change them. A forwarding
+   body is recognised at its call (`ctorfwd`, the call's file and span) and answers the value
+   in tail position. Records (`st.ctors`, in the snapshot) are by global index — an alias
+   thunk of a constructor is registered as it (`ctor_alias`) — or by a block-local
+   function's `ldef_ent` id; a call to a constructor not yet lowered is refused, which
+   §5.3a's own refusal of a call before the type is known makes unreachable in practice.
+4. **Emit.** Nothing: see "Calling convention and type". `drop` is exported and named from the
+   constructor and its literal's position, since a call in any module's output may want it.
+5. **Fixtures.** Done: `ctor.mpl` (with `ctor_util.mpl`) has `tmpl_own.mpl`'s seven cases as
+   functions and the shapes R3 adds — forwarding, an alias, `$mut` set after it was built, an
+   ephemeral one, one in an arm, one through a call that may hand it back, two fields read by
+   one deferral, a block's own constructor, another module's, and top-level owners in both
+   files — in both stages, compiled, folded, split and under ASan. `ctor_bad.mpl` is the
+   `test-reject` side.
 
 ## A. Frame storage and tail calls (decided, A4)
 

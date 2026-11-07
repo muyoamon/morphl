@@ -783,8 +783,10 @@ same in every frame. There is no allocator, no header, no bookkeeping and no run
 component. Each `$new` site runs at most once per activation, since repetition is
 recursion and every step of it is an activation of its own, so its storage is simply a
 slot of the frame. A constructing call (§5.3a) is such a site in its caller: the caller's
-frame holds the slot and passes its address to the constructor, whose `$new` builds there, and
-a constructor that tail-calls another passes the same address on. It is safe because §5.3a
+frame holds the slot, and the block the constructor builds is stored there, as a `$new`
+written at the call stores its operand. No address needs to cross the call, since nothing in
+a block can name its own place while it is built, and a constructor that tail-calls another
+answers what that one built. It is safe because §5.3a
 confines places: storage never holds one, a function returns only places that came in or
 that it constructs into its caller, and a tail call passes none its activation made.
 Nothing is annotated; the one fact inferred — which places an activation made — is read
