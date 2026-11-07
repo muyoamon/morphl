@@ -613,14 +613,16 @@ $decl use $func () {
 
 The test is the body's shape, not where its places flow. `{ $decl s $new …  $decl ret s }.ret`
 returns an own place and is the error above: were it a constructor, every function that leaked
-its frame would become one without a word. Within the shape, three things are compile errors:
+its frame would become one without a word. Within the shape, four things are compile errors:
 
 - a `$try` among the constructed block's items, which would leave it half built;
 - a body that chooses between constructions (`$if c ($new a) ($new b)`), which would leave the
   caller not knowing whose deferrals to run — branch inside one block's fields instead;
 - a call to a constructing function that does not name its definition (§3.4: through a
   parameter, a field, storage, a call's result, an `$if`), since a function value cannot say
-  it needs the storage. An alias of the definition names it, as for a short call.
+  it needs the storage. An alias of the definition names it, as for a short call;
+- a call to a constructor made before its type is known — through a `$fwd` (§4.11), or from
+  its own body — since that call could not know it constructs. Define it above its callers.
 
 Whether a function constructs is in its type, since it changes how the function is called
 (§7.6), and is rendered `ctor` in diagnostics. It is read off the body, never written.

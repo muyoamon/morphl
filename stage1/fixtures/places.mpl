@@ -6,9 +6,9 @@
 $decl ival $func ($decl x 0) x
 $decl id_ref $func ($decl p $mut $new 0) p
 
-// Returned: its own `$new`, the same lent to a call that hands it back, and a closure
-// capturing it.
-$decl own  $func () $new 3
+// Returned: its own `$new` (bound first, so the function does not construct), the same
+// lent to a call that hands it back, and a closure capturing it.
+$decl own  $func () { $decl c $new 3  $decl ret c }.ret
 $decl bad  $func () { $decl c $mut $new 0  $decl ret $call id_ref (c) }.ret
 $decl clo  $func () { $decl c $mut $new 0  $decl ret $func () $call ival (c) }.ret
 

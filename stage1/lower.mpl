@@ -5335,6 +5335,13 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
                         $decl n Pa.proto_node, $decl fty T.proto_ty, $decl ev IR.ints.node,
                         $decl de benv.node) {
   $decl reset $call take_slots (st)
+  // §5.3a: inference accepts a constructor, whose `$new` builds in its caller's storage;
+  // lowered as written it would be a local of this frame, read after it returned.
+  $decl body0 $call op (n, 1)
+  $decl nctr  $if ($if ($call is_form (body0, "new")) true
+                   ($if ($call P.or ($call is_form (body0, "mut"), $call is_form (body0, "const")))
+                        ($call is_form ($call op (body0, 0), "new")) false))
+                  ($call err (st, "a constructing function (§5.3a) is not lowered yet", n)) 0
   $decl ps    $call group_items ($call op (n, 0))
   $decl ptys  $match fty ($case {$prop tag "func"} ($call T.tys.val (fty.params)), $case fty T.tys.nil)
   $decl b     $call bind_params (st, e, ps, ptys, IR.ints.nil, de)

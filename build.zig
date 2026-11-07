@@ -801,6 +801,22 @@ pub fn build(b: *std.Build) void {
             .stage0 = null,
         },
         .{
+            .src = "stage1/fixtures/ctor_bad.mpl",
+            .stage1 = &.{
+                "ctor_bad.mpl:16:48: this constructor's deferral reads 'k', which ends when the constructor returns",
+                "ctor_bad.mpl:17:36: a constructor's block may not hold a $try",
+                "ctor_bad.mpl:18:12: this function chooses between constructions",
+                "ctor_bad.mpl:19:12: this function's result holds frame storage made in this call (&block)",
+                "ctor_bad.mpl:20:12: this function's result holds frame storage made in this call (&block)",
+                "ctor_bad.mpl:21:33: this tail call passes $new storage made in this call",
+                "ctor_bad.mpl:22:31: this calls a constructing function through a value",
+                "ctor_bad.mpl:24:21: this calls a constructing function through an $overload",
+                "ctor_bad.mpl:27:13: this constructor is called before its type is known",
+            },
+            .count = "errors: 9\n",
+            .stage0 = null,
+        },
+        .{
             .src = "stage1/fixtures/owner_bad.mpl",
             .stage1 = &.{
                 "owner_bad.mpl:4:13: 'ret2' holds a place owned by this block, which ends here: an alias may not outlive its owner",

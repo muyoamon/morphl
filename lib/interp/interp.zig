@@ -625,6 +625,11 @@ pub const Interp = struct {
             .form => |f| switch (f.keyword) {
                 // A `$func` or `$template` literal keeps the chain alive (§7.3).
                 .func, .template => return true,
+                // So does a `$defer`: a constructor's block (§5.3a) runs its deferrals
+                // when the caller's owner dies, after this call has returned, and they
+                // read names through this chain. Pooled, the call's scope was handed to
+                // the next call, and a deferral read that one's bindings instead.
+                .@"defer" => return true,
                 // So does a prop that is not a literal: props are forced on
                 // first read (§4.10), which can be after this scope has gone,
                 // and its initializer reads names through the chain. A literal

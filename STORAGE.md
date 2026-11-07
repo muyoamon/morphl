@@ -322,10 +322,17 @@ registered deferrals and finds no place in `none`), which a probe has to show fi
 ### Plan
 
 1. **SPEC**, as above.
-2. **Checker.** The shape test on a `$func` body (beside `func_close`, at all three typing sites:
+2. **Checker.** Done. The shape test on a `$func` body (beside `func_close`, at all three typing sites:
    `infer_func`, `infer_rec_func`, `infer_fwd_body`); the flag on `t_func`; R2's exemption; the
    call site as an own place in `owns_form`, as `$specialize`'s is; the deferral-scope rule; and
-   the refusals in the table.
+   the refusals in the table. The flag is `2000` in `esc`, rendered `ctor`, so it joins
+   identity, hash and key the way `nonroot`'s `1000` does and changes no other type. It found
+   one more refusal the table lacked: a call to a constructor made while its type is still a
+   placeholder — through a `$fwd`, or from its own body — reads as an ordinary call, so a
+   wrapper forwarding to it lost the flag and its callers accepted a dangling place
+   (`cx.ctorpend`). And stage 0 pooled a call's scope that a constructed block's deferral
+   still reads through: `$defer` now counts for `mayCapture`. Until step 3, lowering
+   refuses a constructor ("not lowered yet"). `ctor_bad.mpl` is the `test-reject` case.
 3. **Lowering.** A constructing call is a place-making site for `flows_form`, keyed like a
    `$new`; its deferrals are registered in the caller as the constructor's set, lowered once
    against the block alone; the constructor registers none; a forwarding body passes `dst` on.

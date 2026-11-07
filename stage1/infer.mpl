@@ -397,6 +397,14 @@ $decl ctx $func () {
   // Calls whose callee's result may be storage from an allocator other than the root
   // (its type has 1000), by `fn_key_of` — `root_res` asks.
   $decl nonroot $mut $alloc strs.node
+  // §5.3a: calls to a constructing function (its type has 2000), by `fn_key_of`. Such a
+  // call is a `$new` written where it stands: own in the walk, and a constructor itself when
+  // it is a function's whole body.
+  $decl ctorcalls $mut $alloc strs.node
+  // The placeholders of functions called while still being typed (a `$fwd`, or a body
+  // naming itself): such a call cannot know the callee constructs, so a constructor that
+  // turns out to be one of them is refused (`func_close`).
+  $decl ctorpend  $mut $alloc T.cints.node
   // Whether the block being typed is a file's top level — a module's members are its items.
   $decl atfile  $mut $alloc $union (false, true)
   // How many specialisations are being typed, one inside another. §4.9: "A chain
@@ -1689,10 +1697,11 @@ $decl owns_form $func ($decl cx proto_ctx, $decl e owns.node, $decl x Pa.proto_n
       // own if the callee or an argument is: §R makes a callee's result places borrowed
       // from what it was given, never its own.
       ($if ($call eq_str (k, "call"))
+          ($if ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, x))) true
           ($if ($call placed_at (cx, x))
                ($if ($call owns_x (cx, e, $call op (x, 0))) true
                     ($call owns_args (cx, e, $call group_items ($call op (x, 1)))))
-               false)
+               false))
       ($if ($call eq_str (k, "if"))
           ($if ($call owns_x (cx, e, $call op (x, 1))) true ($call owns_x (cx, e, $call op (x, 2))))
       ($if ($call eq_str (k, "do")) ($call owns_x (cx, e, $call op (x, 1)))
@@ -1926,6 +1935,87 @@ $decl nonroot_res $func ($decl cx proto_ctx, $decl e env.node, $decl res T.proto
                 T.cints.nil
 }.ret
 
+// §5.3a: a body that constructs — a `$new` of frame kind, through `$mut` or `$const`, or a
+// call that constructs (`ctorcalls`), which hands its caller's storage on.
+$decl ctor_body $func ($decl cx proto_ctx, $decl b Pa.proto_node)
+  $if ($call is_form (b, "new")) true
+  ($if ($call P.or ($call is_form (b, "mut"), $call is_form (b, "const")))
+       ($call is_form ($call op (b, 0), "new"))
+  ($if ($call is_form (b, "call"))
+       ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, b)))
+       false))
+
+// An `$if` or `$match` some arm of which constructs: refused with its own message rather
+// than R2's, since what is wrong is the choice and not the construction.
+$decl ctor_arms $func ($decl cx proto_ctx, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call ctor_body (cx, $call op (xs.head, 1))) true
+        ($call ctor_arms (cx, $call Pa.nodes.val (xs.tail))),
+  $case xs false
+)
+$decl ctor_choice $func ($decl cx proto_ctx, $decl b Pa.proto_node)
+  $if ($call is_form (b, "if"))
+      ($if ($call ctor_body (cx, $call op (b, 1))) true ($call ctor_body (cx, $call op (b, 2))))
+  ($if ($call is_form (b, "match")) ($call ctor_arms (cx, $call group_items ($call op (b, 1))))
+       false)
+
+// The block a constructing `$new` builds, when it is a literal; anything else is a copy,
+// which carries no deferral (§4.15a).
+$decl ctor_new $func ($decl b Pa.proto_node)
+  $if ($call is_form (b, "new")) ($call op (b, 0))
+  ($if ($call P.or ($call is_form (b, "mut"), $call is_form (b, "const")))
+       ($call ctor_new ($call op (b, 0))) ($call Pa.n_unit (0, 0)))
+
+// §4.15a: a constructed block's deferrals run after the constructor has returned, so a name
+// one reads must be the block's own, a file's top level or the root block's — never a
+// parameter, nor a binding of an enclosing function's frame.
+$decl dfr_names $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.pstrs.node,
+                       $decl own Pa.pstrs.node, $decl ps Pa.pstrs.node, $decl at Pa.proto_node)
+    $match xs (
+  $case {$prop tag "cons"} {
+    $decl nm  xs.head
+    $decl ok  $if ($call Pa.mem_pstr (own, nm)) true
+                  ($if ($call Pa.mem_pstr (ps, nm)) false
+                  ($if ($call is_glob (e, nm)) true ($call root_named (e, nm))))
+    $decl r   $if ok ()
+        ($do ($call err (cx, $call concat ("this constructor's deferral reads '", $call concat (nm,
+            "', which ends when the constructor returns, before the deferral runs; keep what it needs as a field of the block (§4.15a)")), at)) ())
+    $decl ret $call dfr_names (cx, e, $call Pa.pstrs.val (xs.tail), own, ps, at)
+  }.ret,
+  $case xs ()
+)
+$decl item_names $func ($decl xs Pa.nodes.node, $decl acc Pa.pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $call item_names ($call Pa.nodes.val (xs.tail),
+        $if ($call P.or ($call is_form (xs.head, "decl"), $call is_form (xs.head, "fwd")))
+            ($call Pa.pstrs.cons ($call name_of ($call op (xs.head, 0)), acc)) acc),
+  $case xs acc
+)
+$decl ctor_dfrs $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.node,
+                       $decl own Pa.pstrs.node, $decl ps Pa.pstrs.node) $match xs (
+  $case {$prop tag "cons"}
+    $do ($if ($call is_form (xs.head, "defer"))
+             ($call dfr_names (cx, e, $call Pa.free_names ($call op (xs.head, 0), Pa.pstrs.nil),
+                 own, ps, xs.head)) ())
+        ($call ctor_dfrs (cx, e, $call Pa.nodes.val (xs.tail), own, ps)),
+  $case xs ()
+)
+$decl ctor_check $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
+                        $decl b Pa.proto_node) {
+  $decl blk $call ctor_new (b)
+  $decl ret $match blk (
+      $case {$prop tag "block"} {
+        $decl its  $call Pa.nodes.val (blk.items)
+        $decl t    $if ($call Pa.has_try (blk))
+            ($do ($call err (cx, "a constructor's block may not hold a $try, which would leave it half built in its caller's storage (§5.3a)", blk)) ())
+            ()
+        $decl ret2 $call ctor_dfrs (cx, e, its, $call item_names (its, Pa.pstrs.nil),
+                       $call param_names (ps, Pa.pstrs.nil))
+      }.ret2,
+      $case blk ()
+    )
+}.ret
+
 $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node,
     $decl ps Pa.nodes.node, $decl tys T.tys.node, $decl res0 T.proto_ty, $decl mr proto_mres,
     $decl id -1) {
@@ -1936,13 +2026,25 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   // it, and (A4) a tail call may not pass one it did. Both read the body's provenance,
   // with the parameters bound here and borrowed.
   $decl own0 $call own_params ($call param_names (ps, Pa.pstrs.nil), owns.nil)
-  $decl esc  $if ($call T.frame_bound (res0, 0))
+  // A function whose body is a `$new`, or a call to a constructor, constructs (§5.3a): its
+  // result is a place its caller provides, so R2 does not ask and the type says so.
+  $decl ctor $call ctor_body (cx, $call op (n, 1))
+  $decl cchk $if ctor ($call ctor_check (cx, e, ps, $call op (n, 1))) ()
+  $decl cpnd $if ($if ctor ($call lt (-1, id)) false)
+      ($if ($call T.ci_mem ($call T.cints.val (cx.ctorpend), id))
+           ($do ($call err (cx, "this constructor is called before its type is known — through a $fwd, or from its own body — so that call cannot know it constructs; define it above its callers (§5.3a)", n)) ())
+           ())
+      ()
+  $decl esc  $if ctor res0
+             ($if ($call T.frame_bound (res0, 0))
                  ($if ($call owns_x (cx, own0, $call op (n, 1)))
+                      ($if ($call ctor_choice (cx, $call op (n, 1)))
+                           ($call err (cx, "this function chooses between constructions, so its caller could not know whose deferrals to run; construct once and branch inside the block's fields instead (§5.3a)", n))
                       ($call err (cx, $call concat ("this function's result holds frame storage made in this call (",
                            $call concat ($call T.show_frame ($call T.first_frame (res0, 0)),
-                           "), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")), n))
+                           "), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")), n)))
                       ($do ($call note_borrows (cx, res0)) res0))
-                 ($do ($call note_borrows (cx, res0)) res0)
+                 ($do ($call note_borrows (cx, res0)) res0))
   $decl tc   $call tail_check (cx, e, own0, $call op (n, 1))
   // ...and its closure clause: a literal that captured frame storage is itself
   // frame-bound, so returning *it* is an escape too — caught one level out.
@@ -1967,7 +2069,9 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   $decl brws $call brw_take (cx, d)
   $decl frd  $call freed_take (cx, d, ps, n)
   $decl nrr  $call nonroot_res (cx, e, res, $call op (n, 1))
-  $decl all  $call T.ci_sort ($call T.ci_union (frd, $call T.ci_union (nrr, mine)), T.cints.nil)
+  $decl cfl  $if ctor ($call T.cints.cons (2000, T.cints.nil)) T.cints.nil
+  $decl all  $call T.ci_sort ($call T.ci_union (cfl, $call T.ci_union (frd,
+                 $call T.ci_union (nrr, mine))), T.cints.nil)
   $decl ret  $call T.t_func_esc (tys, res, capf, $call with_brw (all, brws),
                  $call T.keep_below (capm, lim, T.cints.nil))
 }.ret
@@ -2937,6 +3041,9 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
                        $call callee_name ($call op (n, 0)), rv.id)) rv.id -1,
             $case rv -1)
         $decl ok $call check_args (cx, e, ft.params, args, n, 1, $call T.cints.val (ft.esc), pd)
+        $decl cp $if ($call lt (-1, pd))
+            ($do ($set cx.ctorpend ($call T.cints.cons (pd, $call T.cints.val (cx.ctorpend)))) ())
+            ()
         $decl sh $call short_ok (cx, e, $call op (n, 0), $call T.tys.val (ft.params), args, n)
         // DEFER.md: a callee still being typed has no answer yet, which counts as "may".
         $decl nr0 $call T.ci_mem ($call T.cints.val (ft.esc), 1000)
@@ -2944,6 +3051,13 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
                      ($do ($set cx.nonroot ($call strs.cons ($call fn_key_of (cx, n),
                               $call strs.val (cx.nonroot))))
                           ()) ()
+        // §5.3a: a constructing call is the caller's `$new`, and only a definition says so.
+        $decl ct $if ($call T.ci_mem ($call T.cints.val (ft.esc), 2000))
+            ($if ($call names_def (e, $call op (n, 0)))
+                 ($do ($set cx.ctorcalls ($call strs.cons ($call fn_key_of (cx, n),
+                          $call strs.val (cx.ctorcalls)))) ())
+                 ($do ($call err (cx, "this calls a constructing function through a value, which cannot provide the storage it builds in; call it by its definition's name (§5.3a)", n)) ()))
+            ()
         $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
             ($call chk_cbs (cx, e, $call T.tys.val (ft.params), args)) T.t_unit
         // A `$decl` initializer keeps a reference (§5.4), and `result` is
@@ -2967,6 +3081,9 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
               $decl sh   $if pk.tmpl true
                   ($call short_ok (cx, env.nil, $call op (n, 0), $call T.tys.val (c.params),
                       args, n))
+              $decl ct   $if ($call T.ci_mem ($call T.cints.val (c.esc), 2000))
+                  ($do ($call err (cx, "this calls a constructing function through an $overload, whose candidates are values and cannot provide the storage it builds in (§5.3a)", n)) ())
+                  ()
               $decl ret3 $if ok ($call T.tval (c.result)) T.t_bot
             }.ret3,
             $case c ($call err (cx, $call concat ("no candidate of ", $call concat ($call T.show (ft),

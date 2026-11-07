@@ -832,15 +832,16 @@ $decl ci_str $func ($decl xs cints.node, $decl acc "") $match xs (
 
 // `esc` holds escapes as a parameter's index and borrows as 64 plus it (`infer.mpl`'s
 // `with_brw`); this renders one half, the borrows with the 64 taken off.
-// `band` 0 is the escapes, 1 the borrows (64 + i), 2 the parameters freed (128 + i, DEFER.md).
+// `band` 0 is the escapes, 1 the borrows (64 + i), 2 the parameters freed (128 + i, DEFER.md),
+// 3 `nonroot` (1000) and 4 `ctor` (2000): the function constructs into its caller (§5.3a).
 $decl ci_str_half $func ($decl xs cints.node, $decl band 0, $decl acc "") $match xs (
   $case {$prop tag "cons"} {
-    $decl b    $if ($call lt (999, xs.head)) 3 ($if ($call lt (127, xs.head)) 2
-                   ($if ($call lt (63, xs.head)) 1 0))
+    $decl b    $if ($call lt (1999, xs.head)) 4 ($if ($call lt (999, xs.head)) 3
+                   ($if ($call lt (127, xs.head)) 2 ($if ($call lt (63, xs.head)) 1 0)))
     $decl keep $call eq_int (b, band)
     $decl ret  $call ci_str_half ($call cints.val (xs.tail), band,
         $if keep ($call concat (acc, $call concat ($if ($call eq_str (acc, "")) "" ",",
-                      $call int_to_str ($if ($call eq_int (b, 3)) 0
+                      $call int_to_str ($if ($call lt (2, b)) 0
                           ($call isub (xs.head, $call mul (b, 64)))))))
                  acc)
   }.ret,
@@ -1181,11 +1182,13 @@ $decl show_to $func ($decl t proto_ty, $decl acc strs.node) $match t (
     $decl bs  $call ci_str_half ($call cints.val (t.esc), 1, "")
     $decl fs  $call ci_str_half ($call cints.val (t.esc), 2, "")
     $decl ns  $call ci_str_half ($call cints.val (t.esc), 3, "")
+    $decl cs  $call ci_str_half ($call cints.val (t.esc), 4, "")
     $decl a1  $if t.rmut ($call strs.cons ("mut", acc)) acc
     $decl a2  $call wrap_to (fs, "free(", $call wrap_to (bs, "brw(", $call wrap_to (es, "esc(", a1)))
     $decl a3  $if ($call eq_str (ns, "")) a2 ($call strs.cons ("nonroot", a2))
+    $decl a4  $if ($call eq_str (cs, "")) a3 ($call strs.cons ("ctor", a3))
     $decl ret $call show_to (t.result, $call strs.cons ("]->",
-                  $call show_tys_to (t.params, $call strs.cons ("[", a3), true)))
+                  $call show_tys_to (t.params, $call strs.cons ("[", a4), true)))
   }.ret,
   $case {$prop tag "ref"}
     $call show_to (t.inner, $call strs.cons ($call show_qual (t.qual, t.kind), acc)),
@@ -1291,13 +1294,15 @@ $decl kshow $func ($decl t proto_ty, $decl vs cints.node) $match t (
     $decl bs  $call ci_str_half ($call cints.val (t.esc), 1, "")
     $decl fs  $call ci_str_half ($call cints.val (t.esc), 2, "")
     $decl ns  $call ci_str_half ($call cints.val (t.esc), 3, "")
+    $decl cs  $call ci_str_half ($call cints.val (t.esc), 4, "")
     $decl ret $call concat ($if t.rmut "mut" "",
         $call concat ($if ($call eq_str (es, "")) "" ($call concat ("esc(", $call concat (es, ")"))),
         $call concat ($if ($call eq_str (bs, "")) "" ($call concat ("brw(", $call concat (bs, ")"))),
         $call concat ($if ($call eq_str (fs, "")) "" ($call concat ("free(", $call concat (fs, ")"))),
         $call concat ($if ($call eq_str (ns, "")) "" "nonroot",
+        $call concat ($if ($call eq_str (cs, "")) "" "ctor",
         $call concat ("[", $call concat ($call kshow_tys (t.params, vs, "", true),
-        $call concat ("]->", $call kshow_v (t.result, vs)))))))))
+        $call concat ("]->", $call kshow_v (t.result, vs))))))))))
   }.ret,
   $case {$prop tag "ref"}
     $call concat ($call show_qual (t.qual, t.kind), $call kshow_v (t.inner, vs)),

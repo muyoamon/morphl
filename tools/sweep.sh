@@ -95,6 +95,7 @@ declare -A refused=(
 # first, then `<name>`. Anything else refused, and any of these refused for another reason,
 # stays STRICTER — so a new checker gap is not hidden by an old fixture.
 declare -A rules=(
+  [ctor_bad]="this constructor's deferral reads 'k'"
   [dead_arm]="is no member of the scrutinee's type"
   [free_bad]="\$free needs allocated storage"
   [owner_bad]="holds a place owned by this block"
@@ -105,6 +106,8 @@ declare -A rules=(
   [tmpl_escape]="this function's result holds frame storage made in this call"
   # Lifting makes the file's globals the function's locals, so a `$func` prop naming one
   # captures it (§4.10), and a trait object over one is frame-bound (§5.3a).
+  # ...and a constructor's deferral may not read a binding of an enclosing frame (§4.15a).
+  [ctor_bad@lift]="this constructor's deferral reads 'say'"
   [receiver@lift]="a \$prop's \$func may not capture 'ival'"
   [self_param@lift]="a \$prop's \$func may not capture 'ival'"
   [self_trait@lift]="a \$prop's \$func may not capture 'ival'"

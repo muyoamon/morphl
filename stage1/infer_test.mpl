@@ -142,7 +142,9 @@ $decl a5 $call check ("...and frame storage does not go where allocated is",
 // §5.3a's first clause: "A frame-bound type may not appear in a function's
 // result." The frame it was made in is gone by the time the caller has it.
 $decl a6 $call check ("a function may not return frame storage (§5.3a)",
-  $call lt (0, $call n_errs ("$decl f $func ($decl n 0) $new n")))
+  $call lt (0, $call n_errs ("$decl f $func ($decl n 0) { $decl s $new n  $decl ret s }.ret")))
+$decl a6b $call check ("...unless its body is the $new, which constructs in its caller",
+  $call eq_int (0, $call n_errs ("$decl f $func ($decl n 0) $new n")))
 
 $decl a7 $call check ("...nor a block that merely holds some",
   $call lt (0, $call n_errs ("$decl f $func ($decl n 0) { $decl v $new n }")))
@@ -1327,7 +1329,7 @@ $decl st02 $call check_str ("...and a place reached through a parameter",
 $decl st03 $call check_str ("...and a place its enclosing function made, from a closure",
   $call errs_of ("$decl use $func () { $decl ctr { $decl n $mut $new 0 }  $decl get $func () ctr.n  $decl ret 0 }.ret"), "")
 $decl st04 $call check_str ("a result may not hold a place this call made",
-  $call errs_of ("$decl own $func () $new 3"),
+  $call errs_of ("$decl own $func () { $decl c $new 3  $decl ret c }.ret"),
   "this function's result holds frame storage made in this call (&Int), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
 $decl st05 $call check_str ("...nor one it lent to a call that hands it back",
   $call errs_of ($call concat (st_pre, "$decl bad $func () { $decl c $mut $new 0  $decl ret $call id_ref (c) }.ret")),
@@ -1448,5 +1450,18 @@ $decl sd05 $call check_str ("a function, an alias of one, local or not, a $fwd a
 $decl sd06 $call check_str ("...as is a prop read off a parameter's type (§4.10)",
   $call errs_of ("$decl pr { $prop p $func ($decl a 0, $decl b 3) a }  $decl u $func ($decl q pr) $call q.p (1)"),
   "")
+
+// §5.3a: a function whose body is a `$new`, or a call to a constructor, constructs, and its
+// type says so; one that only reads an instance does not.
+$decl ct_pre "$decl mk $func ($decl k 0) $new { $decl v k }  "
+$decl ct01 $call check_str ("a body that is a $new constructs",
+  $call field_ty (ct_pre, "mk"), "ctor[Int]->&{v:Int,}")
+$decl ct02 $call check_str ("...and so does a tail call to a constructor, and $mut $new",
+  $call field_ty ($call concat (ct_pre, "$decl m0 $func () $call mk (0)"), "m0"), "ctor[]->&{v:Int,}")
+$decl ct03 $call check_str ("...but not a function reading what it constructs",
+  $call field_ty ($call concat (ct_pre, "$decl u $func () ($call mk (1)).v"), "u"), "[]->Int")
+$decl ct04 $call check_str ("a constructor may not be returned from a function that is not one",
+  $call errs_of ($call concat (ct_pre, "$decl u $func () { $decl s $call mk (1)  $decl ret s }.ret")),
+  "this function's result holds frame storage made in this call (&block), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
 
 $decl done19 $call nl ("all borrowing tests passed")
