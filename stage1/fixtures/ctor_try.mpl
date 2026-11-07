@@ -59,8 +59,9 @@ $decl case_d $func () {
   $decl ret 0
 }.ret
 
-// E: nothing owns it, so it is released at the end of its item, when built; a failure
-// releases what was registered before the `$try`, inside the constructor. 33112
+// E: nothing owns it, so it is released where it is consumed — by `n_of`, before `say` —
+// when built; a failure releases what was registered before the `$try`, inside the
+// constructor. 31312
 $decl case_e $func () {
   $decl a   $call say ($call n_of ($call parse ("3")))
   $decl b   $call n_of ($call parse ("y"))

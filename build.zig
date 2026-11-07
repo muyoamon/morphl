@@ -167,7 +167,10 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/ctor.mpl", .want = "t 213654987032111254332112478 5 hits=1e u " },
         // A constructor with a `$try` can fail: what was registered before it runs in the
         // constructor, and the caller releases the block only if it was built.
-        .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143311269116 19u " },
+        .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143131269116 19u " },
+        // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
+        // body's tail call, and mid-item — and a loop holding one stays in constant space.
+        .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -928,7 +931,7 @@ pub fn build(b: *std.Build) void {
             // caller's, so it is exported.
             .{ .src = "stage1/fixtures/ctor.mpl", .want = "t 213654987032111254332112478 5 hits=1e u ",
                .mods = &.{"ctor_util"} },
-            .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143311269116 19u ",
+            .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143131269116 19u ",
                .mods = &.{"ctor_util"} },
             // An `$import` calls its module's initialiser, which another output defines.
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",

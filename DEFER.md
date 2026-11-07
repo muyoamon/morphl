@@ -1,11 +1,10 @@
 # `$defer`, owners and `$free`: design note
 
-Status: **steps 1–4 done; step 5 decided, not implemented.** The owner rule is enforced,
+Status: **steps 1–5 done.** The owner rule is enforced,
 `$defer` runs for scopes and plain values (SPEC §4.15a), `$new` storage's deferrals run by its
 owner — through arms, calls and the top level — and `$free` runs allocator-held deferrals,
-the root's included, and frees a parameter (§7.6). Step 5 moves an ephemeral place's
-release from the end of its block item to where it is consumed, which SPEC §4.15a now says
-and neither stage does yet.
+the root's included, and frees a parameter (§7.6). Step 5 moved an ephemeral place's
+release from the end of its block item to where it is consumed (SPEC §4.15a).
 Decided in discussion; the open points are at the end. SPEC has what is implemented (§4.15a,
 §5.3a).
 
@@ -522,7 +521,7 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      function's type is lowering's own and carries no facts.
      `stage1/fixtures/free_route.mpl` in `test-reject`.
 
-5. **An ephemeral place dies where it is consumed** — **decided, not implemented.**
+5. **An ephemeral place dies where it is consumed** — **done.**
    - **What found it.** Storage with deferrals written in a function body that is not a
      block is in no item, and its deferrals are lost:
 
@@ -557,22 +556,33 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      consumer is always strictly inside the body — and `$do`, `$if` and `$match` release
      what their first operand consumed before going on to the operand in tail position.
      The loop above releases each level's storage before it recurses: constant space again.
-   - **Plan.**
-     1. SPEC §4.15a and this note — done.
-     2. **Stage 0**: a fresh `$new` with deferrals is pending, with the evaluation depth it
-        was made at; when an evaluation returns, a pending place its value does not reach
-        (`reaches`, as `settleFresh` asks now) and that is not bound runs its deferrals
-        there — and `$do`, `$if` and `$match` settle their first operand's before going on.
-        Nothing pending costs one test per return.
-     3. **Lowering**: the release point is the node where `flows_to` stops — `finish_item`'s
-        decision made at that node instead of at the item, with `own_inits`' run-time test
-        after a call that may hand it back; a body that is not a block gets the same walk.
-        The IR shape is `with_trail`'s: the consuming node's value, then the deferrals.
-     4. **Fixtures**: the answers that pin ephemeral order re-derived from stage 0 once it
-        agrees (`defer_own`, `defer_call`, `defer_arm`, `top_defer`, `tmpl_own`, `ctor`,
-        `ctor_try` and any the suite finds), and a regression fixture with the shapes above —
-        `$do`'s first operand, a tail call's argument, an `$if` condition, a `$match`
-        scrutinee — and the loop deep enough to overflow without constant space.
+   - **How each stage does it.** Both release at the consumers themselves, rather than by a
+     test at every evaluation's return, which is what the plan first proposed — the
+     consumers are few and named, and nothing else can end a flow.
+     - **Stage 0**: `consume (mark, v)` runs, newest first, the deferrals of the storage made
+       since `mark` that `v` does not reach (`reaches`, as `settleFresh` asks) and keeps the
+       rest pending. A call and a projection consume against their value once it is
+       computed; `$do`'s first operand, `$if`'s condition (`selectIf`) and `$match`'s
+       scrutinee (`selectArm`, once the arm is chosen) against nothing; and a tail call in
+       `step` against its arguments before the jump. An item's end still decides
+       ownership (`settleFresh`) for what flowed that far.
+     - **Lowering**: `consume_at`, at the same nodes, over the storage entries pushed since
+       the node began. With nothing to hand on, every one is released after the node; a
+       call or a projection whose type holds no frame reference (`T.frame_bound`) releases
+       them all statically, and one whose type may hold one asks `own_inits`' run-time test
+       of its value here — each entry split, a copy released now and one flowing on, each
+       under its flag (`cons_sites`, `cons_split`). The IR is `with_trail`'s: the node's
+       value, then the deferrals. Flags of arm sites inside the node are cleared before it
+       (`flag_inits`), as an item clears its own, since there may be no item. A call with
+       anything to release is not a tail call; §5.3a leaves exactly one such, a root
+       intrinsic's, which A4 exempts. `finish_item` is unchanged for what reaches it.
+   - **Fixtures.** Only `ctor_try.mpl`'s answer moved (case E, "33112" → "31312": `n_of`
+     consumes the block before `say`); every other fixture pinned orders the two rules
+     agree on. `release.mpl` (123456789101323 200000) has `$do`'s first operand, a tail
+     call's argument, an `$if` condition, a `$match` scrutinee, a projection mid-item, an
+     arm's flag with no item to clear it, and a loop 200000 deep that a frame per iteration
+     would overflow at -O0. The committed compiler before this change answered
+     "246810933 0", the deferrals in bodies dropped.
 
 ## Open questions
 

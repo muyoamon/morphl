@@ -889,6 +889,34 @@ pub const Interp = struct {
         }
     }
 
+    /// DEFER.md step 5: storage made since `mark` that `v` does not reach — or all of it,
+    /// for `null` — has been consumed, and its deferrals run now, newest first. What `v`
+    /// reaches flows on, to be consumed or owned further out. `$do`'s first operand, `$if`'s
+    /// condition and `$match`'s scrutinee consume theirs before the form goes on; a call,
+    /// a projection and an item's end what their value does not hold. So a release never
+    /// stands between a function and its tail call: §5.3a keeps a place out of both.
+    fn consume(self: *Interp, mark: usize, v: ?Value) Error!void {
+        if (self.fresh.items.len == mark) return;
+        const items = try self.arena.dupe(Fresh, self.fresh.items[mark..]);
+        self.fresh.shrinkRetainingCapacity(mark);
+        var j = items.len;
+        while (j > 0) {
+            j -= 1;
+            const keep = if (v) |x| reaches(x, items[j].cell) else false;
+            if (!keep) try self.runPending(items[j].pend);
+        }
+        for (items) |f| {
+            const keep = if (v) |x| reaches(x, f.cell) else false;
+            if (keep) try self.fresh.append(self.arena, f);
+        }
+    }
+
+    /// `consume` for a tail call's arguments, which the callee takes over.
+    fn consumeArgs(self: *Interp, mark: usize, args: []const Value) Error!void {
+        if (self.fresh.items.len == mark) return;
+        return self.consume(mark, try value.groupVal(self.arena, try self.arena.dupe(Value, args)));
+    }
+
     fn runPending(self: *Interp, pending: []const Pending) Error!void {
         var i = pending.len;
         while (i > 0) {
@@ -1235,12 +1263,18 @@ pub const Interp = struct {
                 if (p.target.data == .block) {
                     return self.projectBlockLiteral(p.target.data.block, scope, p.field, node.span);
                 }
+                const mark = self.fresh.items.len;
                 const target = (try self.eval(p.target, scope)).derefRefs();
-                return self.projectName(target, p.field, node.span);
+                const r = try self.projectName(target, p.field, node.span);
+                try self.consume(mark, r);
+                return r;
             },
             .proj_index => |p| {
+                const mark = self.fresh.items.len;
                 const target = (try self.eval(p.target, scope)).deref();
-                return self.projectIndex(target, p.field, node.span);
+                const r = try self.projectIndex(target, p.field, node.span);
+                try self.consume(mark, r);
+                return r;
             },
             .form => return self.evalForm(node, scope),
         }
@@ -1316,13 +1350,18 @@ pub const Interp = struct {
             .free => self.rt.fail(node.span, "$free is outside the bootstrap subset: stage 0 has no allocators (BOOTSTRAP 1.2)", .{}),
             .func => self.makeFunc(node, scope),
             .call => blk: {
+                // DEFER.md step 5: what the arguments made and the result does not hold
+                // is consumed once the call returns.
+                const mark = self.fresh.items.len;
                 // The common case by a wide margin: a call site whose callee is
                 // an intrinsic, resolved once and remembered (`cachedPrim`).
                 if (try self.cachedPrim(&ops[0], scope)) |b| {
                     const pbase = self.arg_top;
                     defer self.arg_top = pbase;
                     const pargs = try self.evalArgs(&ops[1], scope);
-                    break :blk self.callBuiltin(b, pargs, node.span);
+                    const pr = try self.callBuiltin(b, pargs, node.span);
+                    try self.consume(mark, pr);
+                    break :blk pr;
                 }
                 const callee0 = (try self.eval(&ops[0], scope)).deref();
                 self.notePrim(&ops[0], callee0, scope);
@@ -1330,7 +1369,9 @@ pub const Interp = struct {
                 defer self.arg_top = base;
                 const args = try self.evalArgs(&ops[1], scope);
                 const callee = try self.resolveOverload(callee0, args, node.span);
-                break :blk self.callValue(callee, args, node.span);
+                const r = try self.callValue(callee, args, node.span);
+                try self.consume(mark, r);
+                break :blk r;
             },
             .match => blk: {
                 const arm = try self.selectArm(node, scope);
@@ -1341,7 +1382,9 @@ pub const Interp = struct {
                 break :blk self.eval(arm, scope);
             },
             .do => blk: {
+                const mark = self.fresh.items.len;
                 _ = try self.eval(&ops[0], scope);
+                try self.consume(mark, null);
                 break :blk self.eval(&ops[1], scope);
             },
 
@@ -1779,17 +1822,22 @@ pub const Interp = struct {
             const ops = f.operands;
             switch (f.keyword) {
                 .do => {
+                    const mark = self.fresh.items.len;
                     _ = try self.eval(&ops[0], scope);
+                    try self.consume(mark, null);
                     return .{ .tail = .{ .node = &ops[1], .scope = scope, .file = cur_file, .may_capture = true } };
                 },
                 .@"if" => return .{ .tail = .{ .node = try self.selectIf(node, scope), .scope = scope, .file = cur_file, .may_capture = true } },
                 .match => return .{ .tail = .{ .node = try self.selectArm(node, scope), .scope = scope, .file = cur_file, .may_capture = true } },
                 .call => {
+                    const mark = self.fresh.items.len;
                     if (try self.cachedPrim(&ops[0], scope)) |b| {
                         const pbase = self.arg_top;
                         defer self.arg_top = pbase;
                         const pargs = try self.evalArgs(&ops[1], scope);
-                        return .{ .value = try self.callBuiltin(b, pargs, node.span) };
+                        const pr = try self.callBuiltin(b, pargs, node.span);
+                        try self.consume(mark, pr);
+                        return .{ .value = pr };
                     }
                     const callee0 = (try self.eval(&ops[0], scope)).deref();
                     self.notePrim(&ops[0], callee0, scope);
@@ -1801,6 +1849,7 @@ pub const Interp = struct {
                     const args = try self.evalArgs(&ops[1], scope);
                     const callee = try self.resolveOverload(callee0, args, node.span);
                     if (callee == .func) {
+                        try self.consumeArgs(mark, args);
                         const callee_scope = try self.bindParams(callee.func, args, node.span);
                         return .{ .tail = .{
                             .node = callee.func.body,
@@ -1809,7 +1858,9 @@ pub const Interp = struct {
                             .may_capture = callee.func.may_capture,
                         } };
                     }
-                    return .{ .value = try self.callValue(callee, args, node.span) };
+                    const r = try self.callValue(callee, args, node.span);
+                    try self.consume(mark, r);
+                    return .{ .value = r };
                 },
                 else => {},
             }
@@ -1910,7 +1961,9 @@ pub const Interp = struct {
 
     fn selectIf(self: *Interp, node: *const Node, scope: *Scope) Error!*const Node {
         const ops = node.data.form.operands;
+        const mark = self.fresh.items.len;
         const c = (try self.eval(&ops[0], scope)).deref();
+        try self.consume(mark, null);
         if (c != .bool) {
             return self.rt.fail(ops[0].span, "$if condition must be Bool, found {s}", .{c.typeName()});
         }
@@ -1921,23 +1974,33 @@ pub const Interp = struct {
     /// §4.7: arms are tried in order, first fit.
     fn selectArm(self: *Interp, node: *const Node, scope: *Scope) Error!*const Node {
         const ops = node.data.form.operands;
+        const mark = self.fresh.items.len;
         const scrutinee = (try self.eval(&ops[0], scope)).deref();
         const arms = &ops[1];
 
         // A single-arm match has the `$case` directly, since `(e)` folds (§2.3).
-        if (arms.isForm(.case)) {
-            const c = arms.data.form.operands;
-            if (try self.patternApplies(&c[0], scrutinee, scope)) return &c[1];
-        } else if (arms.data == .group) {
-            for (arms.data.group) |*arm| {
-                if (!arm.isForm(.case)) {
-                    return self.rt.fail(arm.span, "$match arms must be $case forms", .{});
+        const chosen: ?*const Node = found: {
+            if (arms.isForm(.case)) {
+                const c = arms.data.form.operands;
+                if (try self.patternApplies(&c[0], scrutinee, scope)) break :found &c[1];
+            } else if (arms.data == .group) {
+                for (arms.data.group) |*arm| {
+                    if (!arm.isForm(.case)) {
+                        return self.rt.fail(arm.span, "$match arms must be $case forms", .{});
+                    }
+                    const c = arm.data.form.operands;
+                    if (try self.patternApplies(&c[0], scrutinee, scope)) break :found &c[1];
                 }
-                const c = arm.data.form.operands;
-                if (try self.patternApplies(&c[0], scrutinee, scope)) return &c[1];
+            } else {
+                return self.rt.fail(arms.span, "$match arms must be a group of $case forms", .{});
             }
-        } else {
-            return self.rt.fail(arms.span, "$match arms must be a group of $case forms", .{});
+            break :found null;
+        };
+        // DEFER.md step 5: the scrutinee is consumed once its arm is chosen, before the arm
+        // runs — an arm cannot name an expression scrutinee.
+        if (chosen) |arm| {
+            try self.consume(mark, null);
+            return arm;
         }
 
         // §4.7 requires exhaustiveness, which stage 0 cannot check — hence

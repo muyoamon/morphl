@@ -1875,6 +1875,8 @@ $fwd alloc_fin
 $fwd ctor_body
 $fwd ctor_site
 $fwd ctor_in
+// DEFER.md step 5: an ephemeral place released where it is consumed.
+$fwd consume_at
 // A projection onto a prop, answered from the prop's source. It needs
 // `lower_func` (a function-valued prop is lifted like any other `$func`),
 // which is far below, and `lower_name` needs it — §4.10 makes a prop visible
@@ -4449,7 +4451,11 @@ $decl lower_specialize $func ($decl st proto_lst, $decl e benv.node, $decl n pro
 $decl lower_match $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                          $decl tail P.boolean) {
   $decl sn    $call op (n, 0)
-  $decl scrut $call as_value (st, $call lower (st, e, sn, false))
+  $decl d0    $call dfr_list.val (st.defers)
+  // DEFER.md step 5: an arm cannot name an expression scrutinee, so what it made is consumed
+  // once it is evaluated.
+  $decl scrut $call lval ($call consume_at (st, d0,
+                  $call as_value (st, $call lower (st, e, sn, false)), true, ""))
   $decl items $call group_items ($call op (n, 1))
   $decl ret $if ($call T.same (scrut.ty, T.t_bool))
       ($call lower_bool_match (st, e, scrut, items, tail))
@@ -4784,6 +4790,7 @@ $decl call_through $func ($decl st proto_lst, $decl ty 0, $decl cf IR.proto_expr
 
 $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean, $decl f0 proto_lres) {
+  $decl d0   $call dfr_list.val (st.defers)
   $decl ov   $call is_over_l (f0.ty)
   $decl xs   $call group_items ($call op (n, 1))
   $decl rs   $if ov ($call lower_raws (st, e, xs, lres_list.nil)) lres_list.nil
@@ -4823,10 +4830,17 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
   $decl fwd  $if isc ($if tail ($call eq_str ($call P.sval (st.ctorfwd), $call site_key (st, n)))
                  false) false
   $decl cf   $if loc f2.ir ($call short_callee (st, f2, na, n))
+  // DEFER.md step 5: storage its arguments made and its value does not hold is released
+  // once it returns (`consume_at`), so a call that has any cannot be a tail call. §5.3a
+  // leaves one such: a root intrinsic's, which A4 exempts.
+  $decl held $call lt ($call dfr_list.length (d0, 0),
+                 $call dfr_list.length ($call dfr_list.val (st.defers), 0))
   $decl cl   $call call_through (st, $call intern (st, cty), cf, $call append_exprs (as.irs, dv),
-                 $if isc fwd tail)
-  $decl ret  $if fwd ($do ($set st.ctorhit cr) ($call lres (cl, cty)))
+                 $if isc fwd ($if held false tail))
+  $decl sp   $call P.span_of (n)
+  $decl r0   $if fwd ($do ($set st.ctorhit cr) ($call lres (cl, cty)))
                  ($if isc ($call lval ($call ctor_site (st, n, cr, cl))) ($call lres (cl, ty)))
+  $decl ret  $call lval ($call consume_at (st, d0, r0, false, $call keep_key (sp.line, sp.col)))
 }.ret
 
 // §8's `box_ptr` and `unbox`, and its arrays, bound at marker types (`T.ffi_box`)
@@ -4967,6 +4981,7 @@ $decl app_holes $func ($decl st proto_lst, $decl ss Pa.app_srcs.node, $decl rs l
 
 $decl lower_apply $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                          $decl tail P.boolean, $decl r proto_tmpl) {
+  $decl d0   $call dfr_list.val (st.defers)
   $decl xs   $call group_items ($call op (n, 1))
   $decl rs   $call lower_raws (st, e, xs, lres_list.nil)
   $decl hs   $call app_holes (st, $call Pa.app_sources (r.body, r.generics, Pa.app_srcs.nil),
@@ -4977,7 +4992,11 @@ $decl lower_apply $func ($decl st proto_lst, $decl e benv.node, $decl n proto_fo
   $decl ty   $call result_of (f.ty)
   $decl fck  $call check_freed (st, e, f.ty, xs, 0)
   $decl cf   $call short_callee (st, f, $call IR.exprs.length (as.irs, 0), n)
-  $decl ret  $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs, tail), ty)
+  $decl held $call lt ($call dfr_list.length (d0, 0),
+                 $call dfr_list.length ($call dfr_list.val (st.defers), 0))
+  $decl ret  $call lval ($call consume_at (st, d0,
+                 $call lres ($call IR.e_call ($call intern (st, ty), cf, as.irs,
+                     $if held false tail), ty), false, ""))
 }.ret
 
 // §4.12a, lowering's half of `infer.mpl`'s `infer_override`. The value case is `$impl`'s
@@ -5114,13 +5133,19 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     }.ret2
     // §4.8b, and the whole reason it exists: the second operand stays in tail
     // position, so a loop written with `$do` keeps §7.7.
+    // DEFER.md step 5: the first operand's value goes nowhere, so what it made is consumed
+    // before the second runs — which is what keeps a release ahead of a tail call there.
     ($if ($call eq_str (k, "do")) {
-      $decl a    $call lval ($call lower (st, e, $call op (n, 0), false))
+      $decl d0   $call dfr_list.val (st.defers)
+      $decl a    $call lval ($call consume_at (st, d0,
+                     $call lval ($call lower (st, e, $call op (n, 0), false)), true, ""))
       $decl b    $call lval ($call lower (st, e, $call op (n, 1), tail))
       $decl ret2 $call lres ($call IR.e_do ($call intern (st, b.ty), a.ir, b.ir), b.ty)
     }.ret2
     ($if ($call eq_str (k, "if")) {
-      $decl c    $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+      $decl d0   $call dfr_list.val (st.defers)
+      $decl c    $call lval ($call consume_at (st, d0,
+                     $call as_value (st, $call lower (st, e, $call op (n, 0), false)), true, ""))
       $decl ad   $set st.armdepth ($call add ($call P.ival (st.armdepth), 1))
       $decl a    $call lval ($call lower (st, e, $call op (n, 1), tail))
       $decl b    $call lval ($call lower (st, e, $call op (n, 2), tail))
@@ -5358,9 +5383,17 @@ $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
   $case {$prop tag "unit"}  ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit)),
   $case {$prop tag "name"}  ($call lower_name (st, e, n)),
   // A block literal projected on the spot is discarded there: a scope (§4.15a).
-  $case {$prop tag "proj_name"}
-    $do ($set st.nextscope $call is_block_ast (n.target)) ($call lower_proj (st, e, n)),
-  $case {$prop tag "proj_index"} ($call lower_projidx (st, e, n, n.target, n.index)),
+  // DEFER.md step 5: a projection consumes what its value does not hold (`consume_at`).
+  $case {$prop tag "proj_name"} {
+    $decl d0   $call dfr_list.val (st.defers)
+    $decl sc   $set st.nextscope $call is_block_ast (n.target)
+    $decl ret2 $call lval ($call consume_at (st, d0, $call lower_proj (st, e, n), false, ""))
+  }.ret2,
+  $case {$prop tag "proj_index"} {
+    $decl d0   $call dfr_list.val (st.defers)
+    $decl ret2 $call lval ($call consume_at (st, d0,
+                   $call lower_projidx (st, e, n, n.target, n.index), false, ""))
+  }.ret2,
   $case {$prop tag "block"} ($call lower_block (st, e, $call Pa.nodes.val (n.items), n)),
   $case {$prop tag "group"} ($call lower_group (st, e, $call Pa.nodes.val (n.items))),
   $case {$prop tag "form"}  ($call lower_form (st, e, n, tail)),
@@ -7437,6 +7470,85 @@ $decl flag_inits $func ($decl st proto_lst, $decl fs IR.ints.node, $decl ir IR.p
   }.ret,
   $case fs ir
 )
+
+// DEFER.md step 5: where an ephemeral place is consumed. `v` has just been lowered, and the
+// storage entries pushed since `d0` were made in it. With `all` — `$do`'s first operand,
+// `$if`'s condition, `$match`'s scrutinee, whose value goes nowhere — every one is released
+// right after `v`. Otherwise `v` is a call or a projection and releases what its value
+// cannot hold: everything, when its type holds no frame reference; or, when it may, what
+// the value turns out not to reach — the item-end test (`own_inits`) asked here, each such
+// entry split in two, one released now and one flowing on, each under its flag. `self` is
+// a constructing call's own entry, which is its value and flows on (`ctor_site`). Flags of
+// sites in `v` are cleared before it, as an item clears its own (`item_flags`), since
+// there may be no item: a function body that is not a block is consumed this way too.
+$decl cons_sites $func ($decl st proto_lst, $decl xs dfr_list.node, $decl k 0, $decl self "",
+                        $decl acc mowns.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (0, k)) {
+      $decl key  xs.head.key
+      $decl skip $if ($call eq_str (key, "")) true ($call eq_str (key, self))
+      $decl fm   $call find_mown (acc, key)
+      $decl seen $match fm ($case {$prop tag "cons"} true, $case fm false)
+      $decl acc2 $if ($if skip true seen) acc {
+        $decl bid  $call intern (st, T.t_bool)
+        $decl ret3 $call mowns.cons ($call mown (key, $call fresh_slot (st, bid),
+                       $call fresh_slot (st, bid), xs.head.flag), acc)
+      }.ret3
+      $decl ret2 $call cons_sites (st, $call dfr_list.val (xs.tail), $call sub (k, 1), self, acc2)
+    }.ret2 acc,
+  $case xs acc
+)
+// The top `k` entries split into what flows on and what is released here, each side in order.
+$decl cons_split $func ($decl xs dfr_list.node, $decl k 0, $decl all P.boolean, $decl self "",
+                        $decl ms mowns.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call lt (0, k)) {
+      $decl r    $call dpair_val ($call cons_split ($call dfr_list.val (xs.tail), $call sub (k, 1),
+                     all, self, ms))
+      $decl key  xs.head.key
+      $decl stay $if ($call eq_str (key, "")) true ($if all false ($call eq_str (key, self)))
+      $decl m    $if stay mowns.nil ($call find_mown (ms, key))
+      $decl e    $call benv.val (xs.head.env)
+      $decl ret2 $match m (
+          $case {$prop tag "cons"}
+            ($call dfr_pair (
+                $call dfr_list.cons ($call dfr_ent (xs.head.node, e, key, m.head.ow), r.sel),
+                $call dfr_list.cons ($call dfr_ent (xs.head.node, e, key, m.head.ep), r.others))),
+          $case m
+            $if stay ($call dfr_pair ($call dfr_list.cons (xs.head, r.sel), r.others))
+                     ($call dfr_pair (r.sel, $call dfr_list.cons (xs.head, r.others)))
+        )
+    }.ret2 ($call dfr_pair (dfr_list.nil, dfr_list.nil)),
+  $case xs ($call dfr_pair (dfr_list.nil, dfr_list.nil))
+)
+$decl consume_at $func ($decl st proto_lst, $decl d0 dfr_list.node, $decl v proto_lres,
+                        $decl all P.boolean, $decl self "") {
+  $decl k   $call sub ($call dfr_list.length ($call dfr_list.val (st.defers), 0),
+                $call dfr_list.length (d0, 0))
+  $decl ret $if ($call lt (0, k)) {
+    $decl xs   $call dfr_list.val (st.defers)
+    $decl ty   v.ty
+    $decl hold $if all false ($call T.frame_bound (ty, 0))
+    $decl ms   $if hold ($call cons_sites (st, xs, k, self, mowns.nil)) mowns.nil
+    $decl sp   $call cons_split (xs, k, all, self, ms)
+    $decl ret2 $if ($call dfr_list.is_nil (sp.others)) v {
+      $decl fs   $call dfr_flags (xs, k, IR.ints.nil)
+      $decl put  $set st.defers ($call dfr_join (sp.sel, d0))
+      $decl id   $call intern (st, ty)
+      $decl ir0  $call flag_inits (st, fs, v.ir, ty)
+      $decl irs0 $call lower_dfr_all (st, sp.others, IR.exprs.nil)
+      $decl bv   $if ($call mowns.is_nil (ms)) -1 ($call fresh_slot (st, id))
+      $decl irs  $if ($call lt (bv, 0)) irs0
+                     ($call IR.exprs.reverse ($call own_inits (st, ms, bv, ty, IR.exprs.nil), irs0))
+      $decl bi   $if ($call lt (bv, 0)) ir0
+          ($call IR.e_field (id, $call IR.e_block ($call intern (st, $call T.t_block (
+              $call T.fields.cons ($call T.field ("v", ty), T.fields.nil), T.props.nil)),
+              $call IR.bslots.cons ($call IR.bslot (bv, ir0), IR.bslots.nil)), 0))
+      $decl ret3 $call lres4 ($call with_trail (st, $call IR.exprs.reverse (irs, IR.exprs.nil),
+                     bi, id, ty), ty, v.mod, v.tmpl)
+    }.ret3
+  }.ret2 v
+}.ret
 
 // DEFER.md example 10: an item whose arms made storage with deferrals sets those sites'
 // flags false first — its `$decl`'s value, or its effect, the newest in `pend`.
