@@ -449,18 +449,23 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   on what the block became. For a scope — a statement, a `.r` projection, a function body —
   and for a plain value, it is the end of the block's own evaluation: the record outlives the
   block, and **a copy of a record carries no deferral**. A block that is directly the operand
-  of `$new` runs its deferrals when the storage's **owner** dies (§5.3a), decided at the end
-  of the block item the `$new` is in: if what that item's `$decl` binds reaches the storage —
-  directly, through `$mut`/`$const`/`$traitsof`, `$do`'s second operand, an `$if` or
-  `$match` arm, a call that hands it back, or as a field of a record — that `$decl` owns it, and they run when it does (at its block's end if that block
-  is a scope; with the record's owner if it is a value). Otherwise the storage was
-  **ephemeral** and they run at the end of that item, as a full expression ends a
-  temporary. A block that is directly the operand of `$alloc` hands its deferrals to the
-  allocator, which runs them when the storage is freed (§7.6). Storage an arm would have
-  made has no deferrals when that arm did not run, and whether a call handed storage back
-  is a question about the value it answered, so it may be decided as the program runs.
-- **A constructing call** (§5.3a) is decided as if its `$new` were written at the call: at
-  the end of the caller's item the call is in. Its block's deferrals run after the
+  of `$new` runs its deferrals when the storage's **owner** dies (§5.3a), and a block lives
+  no longer than what holds it. Its place **flows** outward from the `$new` — through
+  parentheses, `$mut`/`$const`/`$traitsof`, `$do`'s second operand, an `$if` or `$match`
+  arm, a call that hands it back, and as a field of a record — and the first `$decl` it
+  flows into owns it: they run when that `$decl` does (at its block's end if that block is a
+  scope; with the record's owner if it is a value). Where the flow ends before any `$decl`,
+  the storage is **ephemeral**, and they run as soon as the expression that **consumes** it
+  has been evaluated: a call it is an argument of and does not hand back, once the call
+  returns; a projection or a read of it as a value (§5.4), once that is done; and `$do`'s
+  first operand, `$if`'s condition and `$match`'s scrutinee, each before the form goes on.
+  So in `$call say ($call peek ($new { … }))` they run after `peek` and before `say`. A
+  block that is directly the operand of `$alloc` hands its deferrals to the allocator,
+  which runs them when the storage is freed (§7.6). Storage an arm would have made has no
+  deferrals when that arm did not run, and whether a call handed storage back is a question
+  about the value it answered, so it may be decided as the program runs.
+- **A constructing call** (§5.3a) is decided as if its `$new` were written at the call: its
+  place flows from the call, and is owned or consumed as above. Its block's deferrals run after the
   constructor's activation has ended, so they may name only the block's own bindings, a
   file's top level and the root block — never a parameter or a local of the constructor;
   anything a deferral needs, the block keeps as a field. Its field initialisers run during
@@ -472,13 +477,14 @@ is then, and may name only what precedes the `$defer` (§4.10). Its value is dis
   initialisation reaches it (§4.10), and they run in reverse order of registration across
   every file — so a module, initialised before its importer, runs its deferrals after the
   importer's, and every deferral can still use what it imports. Storage a top-level item
-  does not own is ephemeral and its deferrals run at the item's end, as anywhere else. A
+  does not own is ephemeral and its deferrals run where it is consumed, as anywhere else. A
   module loaded once (§4.14) registers once.
 - **Exits.** `$try` leaving a block is a return (§4.15), so it runs the deferrals registered
   before it, innermost block first, and only those. `panic` aborts (§7.8) and runs none —
   the program's exit deferrals included.
-- **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), so
-  no deferral can stand between a function and a call it ends with.
+- **Tail calls** are unaffected: a call inside a block is never in tail position (§7.7), and
+  a place's flow never reaches a function's result or a tail call's argument (§5.3a refuses
+  both), so it is consumed — and its deferrals run — before any call a function ends with.
 - **Where.** Only directly among a block's items, a file's included; anywhere else is a
   compile error.
 

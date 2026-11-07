@@ -192,8 +192,8 @@ $decl user $func () {
 ```
 
 Everything after the call follows from "a `$new` written there", and needs no rule of its own:
-the caller's `$decl` owns the place or it is ephemeral and dies at the item's end (SPEC
-§4.15a); it may be lent to a callee; R2 refuses returning it from a function that is not itself a
+the caller's `$decl` owns the place or it is ephemeral and dies where it is consumed (SPEC
+§4.15a, DEFER.md step 5); it may be lent to a callee; R2 refuses returning it from a function that is not itself a
 constructor, and A4 refuses passing it in a tail call, because it is the caller's *own* place.
 
 ### Only the syntactic shape constructs

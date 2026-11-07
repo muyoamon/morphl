@@ -1,10 +1,11 @@
 # `$defer`, owners and `$free`: design note
 
-Status: **steps 1–4 done, as far as both stages can agree** — the owner rule enforced,
-`$defer` for scopes and plain values (SPEC §4.15a), `$new` storage's deferrals run by its
-owner or at its item's end, and `$free` with allocator-held deferrals — the root's
-included — and freeing a parameter (§7.6). Arms, ownership through a call and the top
-level are not.
+Status: **steps 1–4 done; step 5 decided, not implemented.** The owner rule is enforced,
+`$defer` runs for scopes and plain values (SPEC §4.15a), `$new` storage's deferrals run by its
+owner — through arms, calls and the top level — and `$free` runs allocator-held deferrals,
+the root's included, and frees a parameter (§7.6). Step 5 moves an ephemeral place's
+release from the end of its block item to where it is consumed, which SPEC §4.15a now says
+and neither stage does yet.
 Decided in discussion; the open points are at the end. SPEC has what is implemented (§4.15a,
 §5.3a).
 
@@ -181,6 +182,13 @@ $decl main $func () {
 $decl use $func ($decl c $new { $decl k 0 }) c.k             // answers a value, not the place
 $decl x   $call use ($new { $decl k 3  $defer $call print ("tmp ") })
 $decl y   $call print ("next ")
+
+// 5a. Step 5: mid-item, before what the consuming call's value goes on to.  prints "tmp 0"
+$decl z   $call print ($call int_to_str ($call use ($new { $decl k 0  $defer $call print ("tmp ") })))
+
+// 5b. Step 5: a body with no item, before the call it ends with.         prints "tmp next"
+$decl f   $func () $do ($call use ($new { $decl k 0  $defer $call print ("tmp ") }))
+                       ($call print ("next "))
 
 // 6. Read as a value: the flow ends there.
 $decl v $call C.ival ($new 0)                                 // the place dies after ival
@@ -386,7 +394,8 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      of the block item it was made in, and are decided there: if what the item's `$decl`
      binds reaches the storage, that `$decl` owns it; otherwise it was ephemeral and they run
      at the end of the item — a full expression's end, chosen over "the innermost
-     expression consuming it" because both stages can implement it exactly. A record owns
+     expression consuming it" because both stages can implement it exactly. (Step 5
+     reverses that choice: an item's end is not defined where there is no item.) A record owns
      its fields' storage: a value block runs its own deferrals at its end and passes its
      storage's out, so they run with the record's owner (example 9, and the question example
      11 was after). Stage 1 decides from the source (`flows_to`, `finish_item`), stage 0 at
@@ -512,6 +521,58 @@ activation and must not run early; `$free` calling `defer_at`-registered functio
      named `M.f` or from inside the module (`root_callee`, mirroring `call_root`): a local
      function's type is lowering's own and carries no facts.
      `stage1/fixtures/free_route.mpl` in `test-reject`.
+
+5. **An ephemeral place dies where it is consumed** — **decided, not implemented.**
+   - **What found it.** Storage with deferrals written in a function body that is not a
+     block is in no item, and its deferrals are lost:
+
+     ```
+     $decl peek $func ($decl r $new { $decl v 0 }) r.v
+     $decl a    $func () $do ($call peek ($new { $decl v 1  $defer $call say (v) }))
+                             ($call say (2))
+     ```
+
+     Stage 0 treats the body as the item and says "21": the deferral after the tail call
+     `say (2)`. The compiled program says "2" — `lower_func` restores the deferral stack
+     after the body, dropping what was left on it. A loop of that shape is worse in stage 0:
+     every level's storage waits for the level below to return, so the recursion keeps a
+     frame per iteration and §7.7's constant space is gone without a word. And SPEC §4.15a's
+     "no deferral can stand between a function and a call it ends with" was not true of it.
+   - **Decided: a block lives no longer than what holds it.** The place flows outward from
+     the `$new` exactly as the owner walk already follows it (`flows_to`: parentheses,
+     `$mut`/`$const`/`$traitsof`, `$do`'s second operand, an arm, a record's field, a call
+     that hands it back), and the first `$decl` it reaches owns it, as before. Where the flow
+     ends first, the expression that **consumes** it releases it: a call it is an argument
+     of and does not hand back, once the call returns — decided at run time when the call
+     may hand it back, as now; a projection or a read as a value, once that is done; and
+     `$do`'s first operand, `$if`'s condition and `$match`'s scrutinee, each before the form
+     goes on. This is the model the "Owners" section above stated from the start ("dies
+     where its flow ends"), which step 3 coarsened to the item's end.
+   - **One rule, everywhere**, not only where there is no item: inside a block too, an
+     ephemeral place is released when it is consumed, not when its item ends. So
+     `$decl a $call say ($call peek ($new { $decl v 3  $defer $call say (v) }))` says "30"
+     where it said "03", and the fixtures that pin ephemeral order change their answers.
+   - **Why it cannot stand between a function and its tail call**, with no rule of its own:
+     the flow never reaches a function's result (R2) or a tail call's argument (A4), so the
+     consumer is always strictly inside the body — and `$do`, `$if` and `$match` release
+     what their first operand consumed before going on to the operand in tail position.
+     The loop above releases each level's storage before it recurses: constant space again.
+   - **Plan.**
+     1. SPEC §4.15a and this note — done.
+     2. **Stage 0**: a fresh `$new` with deferrals is pending, with the evaluation depth it
+        was made at; when an evaluation returns, a pending place its value does not reach
+        (`reaches`, as `settleFresh` asks now) and that is not bound runs its deferrals
+        there — and `$do`, `$if` and `$match` settle their first operand's before going on.
+        Nothing pending costs one test per return.
+     3. **Lowering**: the release point is the node where `flows_to` stops — `finish_item`'s
+        decision made at that node instead of at the item, with `own_inits`' run-time test
+        after a call that may hand it back; a body that is not a block gets the same walk.
+        The IR shape is `with_trail`'s: the consuming node's value, then the deferrals.
+     4. **Fixtures**: the answers that pin ephemeral order re-derived from stage 0 once it
+        agrees (`defer_own`, `defer_call`, `defer_arm`, `top_defer`, `tmpl_own`, `ctor`,
+        `ctor_try` and any the suite finds), and a regression fixture with the shapes above —
+        `$do`'s first operand, a tail call's argument, an `$if` condition, a `$match`
+        scrutinee — and the loop deep enough to overflow without constant space.
 
 ## Open questions
 
