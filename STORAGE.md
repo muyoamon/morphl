@@ -278,7 +278,7 @@ a value** is refused for now, for the same reason a short call must name a defin
 | body is a bare tail call to a constructor | **constructs** | |
 | `$if`/`$match` arms, each the same constructor | refused | maybe: one deferral set |
 | arms with different literals or storage types | refused | likely never: branch in a field |
-| a `$try` among the literal's items | refused | second step |
+| a `$try` among the literal's items | refused | **constructs, and can fail** (step 6) |
 | a constructor used as a value | refused | a shim, and §6a's pending block saying it constructs |
 
 **Arms** would bring back what the shape rule removed. Two literals of one storage type have two
@@ -293,7 +293,8 @@ $decl pick $func ($decl c true) $new {
 }
 ```
 
-**`$try`** is the case worth having next — a constructor that can fail (open, parse, allocate):
+**`$try`** was the case worth having next — a constructor that can fail (open, parse,
+allocate), and step 6 below is what it became:
 
 ```
 $decl parse $func ($decl src "") $new {
@@ -308,8 +309,8 @@ On failure the block is half built in the caller's slot, which is still alive. S
 the deferrals registered before the `$try` (`raw_free (p)`), in the constructor, and that is
 sound; the constructor answers `none`. Its result widens to `<&T, none>` (§4.15), so the type
 must say which member is constructed, and the caller runs the drop only when its owner holds
-that member — a tag read, not an address compare. Stage 0 probably agrees already (it runs the
-registered deferrals and finds no place in `none`), which a probe has to show first.
+that member — a tag read, not an address compare. Stage 0 agreed already, as a probe showed: it
+runs the registered deferrals and finds no place in `none`.
 
 ### What changes in SPEC
 
@@ -362,6 +363,18 @@ registered deferrals and finds no place in `none`), which a probe has to show fi
    one deferral, a block's own constructor, another module's, and top-level owners in both
    files — in both stages, compiled, folded, split and under ASan. `ctor_bad.mpl` is the
    `test-reject` side.
+6. **A `$try` in the block.** Done. The checker's refusal is gone, and nothing replaced it:
+   the deferral rule, R2's exemption and the caller's own-place rules hold as they were, and
+   §4.15 widens the constructor's result as any function's. Lowering's `$try` already runs
+   every deferral on the stack, and the block's are there, tagged, while it is lowered — so a
+   failure runs what was registered before it, in the constructor. The record carries what
+   the constructor answers (`res`, the block joined with each `$try`'s exit) and what the call
+   is (`out`, the reference joined with the same). A call to one that can fail is a switch
+   (`ctor_site`): the block's member goes into the `$new` and sets the flag `drop` is guarded
+   by — the arm-flag machinery, always on here — and every other member is answered into
+   `out` by an arm of its own. The tag read is the switch itself. `ctor_try.mpl` is the
+   fixture: before and after the `$try`, forwarding, two exits, no deferral, ephemeral, an
+   arm and a top-level owner, in both stages and under ASan.
 
 ## A. Frame storage and tail calls (decided, A4)
 

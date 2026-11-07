@@ -696,26 +696,6 @@ $decl storage_defers $func ($decl n proto_node) $match n (
   $case n false
 )
 
-// §5.3a: whether a `$try` stands in `n` where it would leave the function `n` is evaluated
-// in — not inside a `$func` or a `$template`, whose bodies are evaluated elsewhere. A
-// constructor's block may not hold one, since leaving would leave the block half built.
-$fwd has_try
-$decl has_try_list $func ($decl xs nodes.node) $match xs (
-  $case {$prop tag "cons"} $if ($call has_try (xs.head)) true ($call has_try_list (xs.tail)),
-  $case xs false
-)
-$decl has_try $func ($decl n proto_node) $match n (
-  $case {$prop tag "form"}
-    $if ($call eq_str (n.keyword, "try")) true
-    ($if ($call eq_str (n.keyword, "func")) false
-    ($if ($call eq_str (n.keyword, "template")) false ($call has_try_list (n.operands)))),
-  $case {$prop tag "block"}      ($call has_try_list (n.items)),
-  $case {$prop tag "group"}      ($call has_try_list (n.items)),
-  $case {$prop tag "proj_name"}  ($call has_try (n.target)),
-  $case {$prop tag "proj_index"} ($call has_try (n.target)),
-  $case n false
-)
-
 $decl bound_group_list $func ($decl xs nodes.node, $decl acc pstrs.node) $match xs (
   $case {$prop tag "cons"} {
     $decl nm $call name_text (xs.head)

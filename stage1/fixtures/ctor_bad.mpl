@@ -14,7 +14,7 @@ $decl fine $func () {
 }.ret
 
 $decl rd   $func ($decl k 0) $new { $decl v k  $defer $call say (k) }
-$decl tr   $func ($decl t "") $new { $decl v $try ($call str_to_int (t)) none }
+$decl tr   $func ($decl t "") $new { $decl v ($try ($call str_to_int (t)) none).v }
 $decl pick $func ($decl c true) $if c ($new { $decl v 1 }) ($new { $decl v 2 })
 $decl flow $func ($decl k 0) { $decl s $new { $decl v k }  $decl ret s }.ret
 $decl out  $func () { $decl s $call mk (1)  $decl ret s }.ret
@@ -25,4 +25,5 @@ $decl ov   $func () $call over (1)
 $fwd later
 $decl fw   $func () $call later (0)
 $decl later $func ($decl k 0) $new { $decl v k }
+$decl otr  $func () { $decl s $call tr ("1")  $decl ret s }.ret
 $decl main $func () $call fine ()

@@ -165,6 +165,9 @@ pub fn build(b: *std.Build) void {
         // cases as functions, and forwarding, an alias, `$mut`, an arm, a call that may hand
         // it back, a local constructor, another module's, and top-level owners.
         .{ .src = "stage1/fixtures/ctor.mpl", .want = "t 213654987032111254332112478 5 hits=1e u " },
+        // A constructor with a `$try` can fail: what was registered before it runs in the
+        // constructor, and the caller releases the block only if it was built.
+        .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143311269116 19u " },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -809,7 +812,6 @@ pub fn build(b: *std.Build) void {
             .src = "stage1/fixtures/ctor_bad.mpl",
             .stage1 = &.{
                 "ctor_bad.mpl:16:48: this constructor's deferral reads 'k', which ends when the constructor returns",
-                "ctor_bad.mpl:17:36: a constructor's block may not hold a $try",
                 "ctor_bad.mpl:18:12: this function chooses between constructions",
                 "ctor_bad.mpl:19:12: this function's result holds frame storage made in this call (&block)",
                 "ctor_bad.mpl:20:12: this function's result holds frame storage made in this call (&block)",
@@ -817,6 +819,7 @@ pub fn build(b: *std.Build) void {
                 "ctor_bad.mpl:22:31: this calls a constructing function through a value",
                 "ctor_bad.mpl:24:21: this calls a constructing function through an $overload",
                 "ctor_bad.mpl:27:13: this constructor is called before its type is known",
+                "ctor_bad.mpl:28:12: this function's result holds frame storage made in this call (&block)",
             },
             .count = "errors: 9\n",
             .stage0 = null,
@@ -924,6 +927,8 @@ pub fn build(b: *std.Build) void {
             // A constructor's `drop` lives in its module's output and is called from the
             // caller's, so it is exported.
             .{ .src = "stage1/fixtures/ctor.mpl", .want = "t 213654987032111254332112478 5 hits=1e u ",
+               .mods = &.{"ctor_util"} },
+            .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143311269116 19u ",
                .mods = &.{"ctor_util"} },
             // An `$import` calls its module's initialiser, which another output defines.
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",

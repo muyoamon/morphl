@@ -613,9 +613,26 @@ $decl use $func () {
 
 The test is the body's shape, not where its places flow. `{ $decl s $new …  $decl ret s }.ret`
 returns an own place and is the error above: were it a constructor, every function that leaked
-its frame would become one without a word. Within the shape, four things are compile errors:
+its frame would become one without a word.
 
-- a `$try` among the constructed block's items, which would leave it half built;
+**A constructor may fail.** A `$try` among the constructed block's items (§4.15) returns from
+the constructor, so the block is left half built: the deferrals registered before the `$try`
+run there, in the constructor, as they would for any `$try`, and the constructor answers what
+the `$try` matched. Its result widens as §4.15 widens any function's, so the call is the
+constructed reference or the failure — `<&T, none>` — and the caller's owner runs the block's
+deferrals only if it holds the reference, that is, only if the block was built.
+
+```
+$decl parse $func ($decl src "") $new {
+  $prop tag "ok"
+  $decl p   $call raw_alloc (16)
+  $defer    $call raw_free (p)                       // runs in parse if the $try leaves
+  $decl n   ($try ($call str_to_int (src)) none).v
+}
+```
+
+Within the shape, three things are compile errors:
+
 - a body that chooses between constructions (`$if c ($new a) ($new b)`), which would leave the
   caller not knowing whose deferrals to run — branch inside one block's fields instead;
 - a call to a constructing function that does not name its definition (§3.4: through a

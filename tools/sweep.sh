@@ -109,6 +109,7 @@ declare -A rules=(
   # ...and a constructor's deferral may not read a binding of an enclosing frame (§4.15a).
   [ctor_bad@lift]="this constructor's deferral reads 'say'"
   [ctor@lift]="this constructor's deferral reads 'say'"
+  [ctor_try@lift]="this constructor's deferral reads 'say'"
   [receiver@lift]="a \$prop's \$func may not capture 'ival'"
   [self_param@lift]="a \$prop's \$func may not capture 'ival'"
   [self_trait@lift]="a \$prop's \$func may not capture 'ival'"

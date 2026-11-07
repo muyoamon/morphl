@@ -2006,9 +2006,6 @@ $decl ctor_check $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.
   $decl ret $match blk (
       $case {$prop tag "block"} {
         $decl its  $call Pa.nodes.val (blk.items)
-        $decl t    $if ($call Pa.has_try (blk))
-            ($do ($call err (cx, "a constructor's block may not hold a $try, which would leave it half built in its caller's storage (§5.3a)", blk)) ())
-            ()
         $decl ret2 $call ctor_dfrs (cx, e, its, $call item_names (its, Pa.pstrs.nil),
                        $call param_names (ps, Pa.pstrs.nil))
       }.ret2,
