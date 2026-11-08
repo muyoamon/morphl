@@ -212,6 +212,9 @@ pub fn build(b: *std.Build) void {
         // typed from its own arguments (STDLIB.md, P3). 5012.
         .{ .src = "stage1/fixtures/arrays_any.mpl", .want = "5012\n" },
         .{ .src = "stage1/fixtures/write.mpl", .want = "161\n" },
+        // §8's `concat_all`: none, one and several pieces, multi-byte and empty ones, a million,
+        // and the intrinsic as a value, aliased and passed (STRINGS.md).
+        .{ .src = "stage1/fixtures/concat_all.mpl", .want = "[] [one] [a,b,c] [ü€😀] [xy] 3000000 abc|abc 6 a-b-c" },
         .{ .src = "stage1/fixtures/fwd_init.mpl", .want = "126\n" },
         .{ .src = "stage1/fixtures/fwd_local.mpl", .want = "1048\n" },
         .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n" },

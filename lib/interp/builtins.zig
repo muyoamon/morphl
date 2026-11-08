@@ -269,6 +269,28 @@ fn concatFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     return value.strVal(rt.arena, out);
 }
 
+/// §8's `concat_all (parts)`: the pieces of a `[Str]` in order, in one allocation of their
+/// total length — what text built from many pieces is built with (STRINGS.md).
+fn concatAllFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
+    const a = switch (args[0]) {
+        .array => |x| x,
+        else => return rt.fail(span, "concat_all expects an array, found {s}", .{args[0].typeName()}),
+    };
+    var n: usize = 0;
+    for (a.elems) |cell| n += switch (cell.value) {
+        .str => |s| s.bytes.len,
+        else => return rt.fail(span, "concat_all expects an array of Str", .{}),
+    };
+    const out = try rt.arena.alloc(u8, n);
+    var i: usize = 0;
+    for (a.elems) |cell| {
+        const b = cell.value.str.bytes;
+        @memcpy(out[i .. i + b.len], b);
+        i += b.len;
+    }
+    return value.strVal(rt.arena, out);
+}
+
 /// §8: `len` counts **bytes**.
 fn lenFn(rt: *Runtime, args: []const Value, span: Span) Error!Value {
     const s = try wantStr(rt, args, 0, "len", span);
@@ -542,6 +564,7 @@ const table = [_]value.Builtin{
     .{ .name = "eq_int", .arity = 2, .func = eqIntFn },
     .{ .name = "eq_str", .arity = 2, .func = eqStrFn },
     .{ .name = "concat", .arity = 2, .func = concatFn },
+    .{ .name = "concat_all", .arity = 1, .func = concatAllFn },
     .{ .name = "len", .arity = 1, .func = lenFn },
     .{ .name = "slice", .arity = 3, .func = sliceFn },
     .{ .name = "byte", .arity = 2, .func = byteFn },
@@ -584,7 +607,7 @@ test "the root block is complete per BOOTSTRAP 2" {
         "eq",         "to_float",   "to_int", "to_str",
         "add_wrap",   "sub_wrap",   "mul_wrap", "add_sat", "sub_sat", "mul_sat",
         "band",       "bor",        "bxor",  "shl",  "shr",
-        "eq_int",     "eq_str",     "concat", "len", "slice", "byte",
+        "eq_int",     "eq_str",     "concat", "concat_all", "len", "slice", "byte",
         "int_to_str", "str_to_int", "from_code", "array", "at", "alen", "panic",
         // Shapes (§4.15) and platform.
         "err",        "none",       "print", "eprint", "read_file", "write_file", "args",

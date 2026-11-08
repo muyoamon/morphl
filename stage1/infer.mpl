@@ -795,6 +795,8 @@ $decl rdefer_t $call T.t_func ($call T.tys.cons (T.t_int, $call T.tys.cons (
 // not be started.
 $decl run_t   $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), opt_int)
 $decl errno_t $call T.t_func (T.tys.nil, T.t_int)
+// §8's `concat_all (parts)`: the pieces of a `[Str]` joined in one allocation (STRINGS.md).
+$decl catall_t $call T.t_func ($call T.tys.cons (arr_str, T.tys.nil), T.t_str)
 
 $decl root_env
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
@@ -807,7 +809,7 @@ $decl root_env
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
   $call bind ($call bind ($call bind ($call bind ($call bind ($call bind (
-  $call bind ($call bind (env.nil,
+  $call bind ($call bind ($call bind (env.nil,
     "add", num2), "sub", num2), "mul", num2), "div", num2), "mod", num2), "neg", num1),
     "lt", cmp2), "eq", eq4), "to_float", i_f), "to_int", toint), "to_str", tostr),
     "str_ptr", s_i), "str_from_ptr", strf_t), "array_ptr", T.ffi_aptr), "box_ptr", T.ffi_box), "unbox", T.ffi_unbox),
@@ -815,7 +817,7 @@ $decl root_env
     "add_wrap", ii_i), "sub_wrap", ii_i), "mul_wrap", ii_i),
     "add_sat", ii_i), "sub_sat", ii_i), "mul_sat", ii_i),
     "band", ii_i), "bor", ii_i), "bxor", ii_i), "shl", ii_i), "shr", ii_i),
-    "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "len", s_i),
+    "eq_int", ii_b), "eq_str", ss_b), "concat", ss_s), "concat_all", catall_t), "len", s_i),
     "slice", sii_s), "byte", si_i), "int_to_str", i_s),
     "str_to_int", $call T.t_func ($call T.tys.cons (T.t_str, T.tys.nil), opt_int)),
     "from_code", $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), opt_str)),

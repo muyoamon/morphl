@@ -1,13 +1,13 @@
 # Strings: design note
 
-Status: **decided, not implemented**. SPEC §8 and BOOTSTRAP §2 name `concat_all`; this note
+Status: **decided; the intrinsic is in** (step 2). SPEC §8 and BOOTSTRAP §2 name `concat_all`; this note
 keeps the reasoning, the measurements and the plan. STDLIB.md's D6 (the builder) is the
 library half and changes with step 5.
 
 | | question | status |
 |---|---|---|
 | S1 | what a `Str` is | **settled by SPEC §3.1**: immutable bytes, pointer + length, always UTF-8 |
-| S2 | how text is built from many pieces | **decided**: one primitive, `concat_all`, O(L) |
+| S2 | how text is built from many pieces | **implemented**: one primitive, `concat_all`, O(L) |
 | S3 | whether there is a mutable byte buffer | **decided**: no — S2 makes it unnecessary |
 | S4 | the compiler's own string building | **decided**: one joiner, over S2 (steps 3–4) |
 
@@ -121,13 +121,16 @@ copies it once.
 ## Plan
 
 1. **Documents** — this note, SPEC §8's Strings row, BOOTSTRAP §2's table. Done.
-2. **The intrinsic**, in every place a root name lands (CLAUDE.md, "Adding a root-block
-   name"): stage 0's `builtins.zig` and its test list, `infer.mpl`'s `root_env`, `emit.mpl`'s
-   `prim_fn` and runtime (`mpl_concat_all`: sum the lengths, one `mpl_alloc`, `memcpy` each),
-   and the root-block agreement test. Nothing in the compiler calls it yet, so this is an
-   ordinary regeneration, and the committed `mplc` knows the name before step 3 needs it.
-   Fixture `concat_all.mpl`: empty, one piece, many, multi-byte pieces, empty pieces, and a
-   million pieces, in both stages and the differential set.
+2. **The intrinsic.** Done, in every place a root name lands (CLAUDE.md, "Adding a
+   root-block name"): stage 0's `concatAllFn` and its test list, `infer.mpl`'s `root_env`
+   (`catall_t`), and `emit.mpl`'s `prim_fn` and runtime — `mpl_concat_all (const mpl_str *,
+   int64_t)` sums the lengths, makes one `mpl_alloc` and copies each piece, and is handed the
+   array's `.p` and `.n` as `run` is, since the runtime cannot name a content-derived array
+   struct. As a value it gets emit's generated wrapper, like any intrinsic with none written
+   by hand. Nothing in the compiler calls it yet, so it regenerated in the ordinary way, and
+   the committed `mplc` knows the name before step 3 needs it. `concat_all.mpl` covers none,
+   one and several pieces, multi-byte and empty ones, a million, and the intrinsic aliased
+   and passed as a value, in both stages, compiled and under ASan.
 3. **The prelude's joiner**, and `emit`, `tyio` and `types.show` on it. The emitted C must
    not change by a byte; measured as above.
 4. **`scan_str`** on pieces.
