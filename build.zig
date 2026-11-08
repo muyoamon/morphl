@@ -178,6 +178,9 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/ctor_arms.mpl", .want = "u1u2g3g5g62qpq 12356270" },
         // A constructor as a value: a call through one answers its `drop` beside the block.
         .{ .src = "stage1/fixtures/ctor_value.mpl", .want = "wawbkbuaubwawtptoawdawb 12344567068119" },
+        // A top-level item calling a constructor through a value is the program's to own: its
+        // deferral runs after `main`, the entry's newest first, then its module's.
+        .{ .src = "stage1/fixtures/ctor_top.mpl", .want = "e init main 11\na3 a2 b1 c5\n" },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -958,6 +961,8 @@ pub fn build(b: *std.Build) void {
             // entry's, so it is exported, as the `drop` it answers is.
             .{ .src = "stage1/fixtures/ctor_value.mpl", .want = "wawbkbuaubwawtptoawdawb 12344567068119",
                .mods = &.{"ctor_value_util"} },
+            .{ .src = "stage1/fixtures/ctor_top.mpl", .want = "e init main 11\na3 a2 b1 c5\n",
+               .mods = &.{"ctor_top_util"} },
             // An `$import` calls its module's initialiser, which another output defines.
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",
                .mods = &.{ "import_order_inner", "import_order_util" } },

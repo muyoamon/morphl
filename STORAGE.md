@@ -472,7 +472,11 @@ runs the registered deferrals and finds no place in `none`.
      The record decides whether a name is a constructor, not its type: a module member's and a
      block function's types are derived from the lowered function, whose result is the block
      by value and which carries no flag, so a shim's value is given the reference result
-     and the flag (`with_out`).
+     and the flag (`with_out`). A top-level item whose callee resolves to no global or member
+     — a block's field, an `$if` — has no record to tell `ctor_in` it constructs, so inference
+     hands each constructing call's site across beside `ualloc`'s keys (`note_ctor`,
+     `"c:<sctx>|<file>:<line>:<col>"`) and `ctor_named` asks it. Without that, such an item
+     was lowered as an ordinary thunk and its deferral never ran.
    - *Emit*: nothing. The trampoline's driver writes `{b, d}` through `void *out` as any result.
    - *Left out*: a **block's local constructor used as a value** is refused by lowering
      (`ctor_local.mpl`, `test-reject`): its value is a closure, whose shim would have to take
@@ -482,7 +486,9 @@ runs the registered deferrals and finds no place in `none`.
      function, an alias, one with no deferrals, one that can fail, an overload's candidate,
      another module's member, a top-level `$decl` holding one, and forwarding through a
      value 2,000,000 deep, in both stages, compiled, split and under ASan. A self-emit
-     measured level with the committed compiler.
+     measured level with the committed compiler. `ctor_top.mpl` (with `ctor_top_util.mpl`)
+     is the top level: through a holder, a block's field, an `$if` callee, an item binding
+     nothing, and a module member through its block's field.
 
 ## A. Frame storage and tail calls (decided, A4)
 

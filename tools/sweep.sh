@@ -82,7 +82,8 @@ if [ $lift = 1 ]; then
   done
 fi
 
-# Programs mplc must refuse after the checker accepts them, and why. A lifted copy is the same.
+# Programs mplc must refuse after the checker accepts them, and why. A lifted copy is the same,
+# unless `<name>@lift` names one only the lifted copy is refused for.
 declare -A refused=(
   [emit_err]="test-stage2: mplc fails on an emit error"
   [override_diag]="test-reject: lowering's diagnostics, mapped back from an \$override"
@@ -90,6 +91,7 @@ declare -A refused=(
   [override2_dmid]="override2_diag's middle module"
   [override_diag_util]="override_diag's module, whose \$specialize specialises itself"
   [ctor_local]="test-reject: lowering refuses a block's local constructor as a value"
+  [ctor_top@lift]="lifted, its constructors are a block's local ones, refused as values"
 )
 # Programs the checker must refuse although stage 0 runs them, and the text its first
 # diagnostic carries: a rule only the checker has. A lifted copy looks up `<name>@lift`
@@ -171,7 +173,9 @@ for f in "${files[@]}"; do
     [ "$runrc" = 134 ] || { cls=MISCOMPILE; why="stage 0 ${s0p#error: }, compiled exit $runrc: $out"; }
   elif [ "$tcn" = 0 ] && [ $mcrc -ne 0 ]; then
     cls=NOT-COMPILED; why=$mcl
-    r=${refused[$(orig_name "$f")]}; [ -n "$r" ] && { cls=REFUSED; why=$r; }
+    r=""; is_lifted "$f" && r=${refused[$(orig_name "$f")@lift]}
+    [ -z "$r" ] && r=${refused[$(orig_name "$f")]}
+    [ -n "$r" ] && { cls=REFUSED; why=$r; }
   elif [ $mcrc -eq 0 ] && [ "$ccrc" = 1 ]; then
     cls=BAD-C; why=$(grep -m1 error "$b".ccerr)
   elif [ "$ccrc" = 2 ]; then cls=UNLINKED; why=$(grep -m1 'undefined reference' "$b".ccerr)

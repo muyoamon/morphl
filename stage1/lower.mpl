@@ -7237,30 +7237,42 @@ $decl member_idx $func ($decl st proto_lst, $decl mid 0, $decl nm "") {
       }.ret2,
       $case ms -1)
 }.ret
-$decl ctor_named $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_node) {
-  $decl k   $match c (
-      // A global, or — in a module's own body — a sibling member.
-      $case {$prop tag "name"} {
-        $decl b    $call lookup (e, c.text)
-        $decl ret2 $if ($call not (b.hit)) -1
-            ($if ($call eq_str (b.bnd.kind, "global")) b.bnd.slot
-            ($if ($call eq_str (b.bnd.kind, "prop")) ($call member_idx (st, b.bnd.mod, c.text))
-                 -1))
-      }.ret2,
-      $case {$prop tag "proj_name"} {
-        $decl t    c.target
-        $decl tn   $match t ($case {$prop tag "name"} t.text, $case t "")
-        $decl b    $call lookup (e, tn)
-        $decl ret2 $if b.hit ($call member_idx (st, b.bnd.mod, c.field)) -1
-      }.ret2,
-      $case c -1)
-  $decl ret $if ($call lt (k, 0)) false
+// The global or module member a callee names, or -1.
+$decl callee_idx $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_node) $match c (
+  // A global, or — in a module's own body — a sibling member.
+  $case {$prop tag "name"} {
+    $decl b    $call lookup (e, c.text)
+    $decl ret2 $if ($call not (b.hit)) -1
+        ($if ($call eq_str (b.bnd.kind, "global")) b.bnd.slot
+        ($if ($call eq_str (b.bnd.kind, "prop")) ($call member_idx (st, b.bnd.mod, c.text))
+             -1))
+  }.ret2,
+  $case {$prop tag "proj_name"} {
+    $decl t    c.target
+    $decl tn   $match t ($case {$prop tag "name"} t.text, $case t "")
+    $decl b    $call lookup (e, tn)
+    $decl ret2 $if b.hit ($call member_idx (st, b.bnd.mod, c.field)) -1
+  }.ret2,
+  $case c -1)
+// Whether call `n` constructs through a constructor with deferrals: a named one by its record;
+// any other callee is a value, and whether the call constructs is inference's answer
+// (`note_ctor`), since its value may answer a `drop` with deferrals.
+$decl ctor_named $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) {
+  $decl k   $call callee_idx (st, e, $call op (n, 0))
+  $decl ret $if ($call lt (k, 0)) {
+      $decl sp   $call P.span_of (n)
+      $decl key  $call concat ("c:", $call concat ($call P.sval (st.isctx), $call concat ("|",
+                     $call concat ($call fshort (st, $call P.sval (st.curfile)), $call concat (":",
+                     $call concat ($call int_to_str (sp.line), $call concat (":",
+                     $call int_to_str (sp.col))))))))
+      $decl ret2 $call mem_strs ($call strs.val (st.ualloc), key)
+    }.ret2
       ($call lt (-1, ($call find_ctor ($call ctor_list.val (st.ctors), k)).drop))
 }.ret
 $decl ctor_in $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node) $match n (
   $case {$prop tag "form"}
     $if ($call P.or ($call eq_str (n.keyword, "func"), $call eq_str (n.keyword, "template"))) false
-    ($if ($if ($call eq_str (n.keyword, "call")) ($call ctor_named (st, e, $call op (n, 0))) false)
+    ($if ($if ($call eq_str (n.keyword, "call")) ($call ctor_named (st, e, n)) false)
          true ($call ctor_in_list (st, e, $call Pa.nodes.val (n.operands)))),
   $case {$prop tag "block"}      ($call ctor_in_list (st, e, $call Pa.nodes.val (n.items))),
   $case {$prop tag "group"}      ($call ctor_in_list (st, e, $call Pa.nodes.val (n.items))),

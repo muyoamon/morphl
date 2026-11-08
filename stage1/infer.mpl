@@ -3079,6 +3079,17 @@ $decl pick_val  $func ($decl x pick_none) x
 // Below `infer_apply`, whose pieces it shares.
 $fwd pick_cx
 $fwd note_over
+// §5.3a: a call that constructs, handed to lowering as "c:<sctx>|<file>:<line>:<col>". A
+// top-level item holding one is the program's to own (lowering's `ctor_in`), and when the
+// callee is a value lowering has no type to ask until it lowers the item.
+$decl note_ctor $func ($decl cx proto_ctx, $decl n Pa.proto_node) {
+  $decl sp  $call P.span_of (n)
+  $decl key $call concat ("c:", $call concat ($call sval (cx.sctx), $call concat ("|",
+                $call concat ($call short_of ($call sval (cx.file)), $call concat (":",
+                $call concat ($call int_to_str (sp.line), $call concat (":",
+                $call int_to_str (sp.col))))))))
+  $decl ret $set cx.ualloc ($call strs.cons (key, $call strs.val (cx.ualloc)))
+}.ret
 
 $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl ft   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
@@ -3106,7 +3117,7 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
         // or goes through a value — the value answers the deferrals beside the block.
         $decl ct $if ($call T.ci_mem ($call T.cints.val (ft.esc), 2000))
             ($do ($set cx.ctorcalls ($call strs.cons ($call fn_key_of (cx, n),
-                     $call strs.val (cx.ctorcalls)))) ())
+                     $call strs.val (cx.ctorcalls)))) ($do ($call note_ctor (cx, n)) ()))
             ()
         $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
             ($call chk_cbs (cx, e, $call T.tys.val (ft.params), args)) T.t_unit
@@ -3134,7 +3145,7 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
               // §5.3a: a constructor candidate is called through the group's value.
               $decl ct   $if ($call T.ci_mem ($call T.cints.val (c.esc), 2000))
                   ($do ($set cx.ctorcalls ($call strs.cons ($call fn_key_of (cx, n),
-                           $call strs.val (cx.ctorcalls)))) ())
+                           $call strs.val (cx.ctorcalls)))) ($do ($call note_ctor (cx, n)) ()))
                   ()
               $decl ret3 $if ok ($call T.tval (c.result)) T.t_bot
             }.ret3,
