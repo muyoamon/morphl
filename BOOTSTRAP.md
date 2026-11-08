@@ -110,7 +110,7 @@ Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(
 | Int arithmetic, explicit | `add_wrap sub_wrap mul_wrap add_sat sub_sat mul_sat` — as §8 |
 | Bitwise | `band bor bxor shl shr` — as §8; a shift count outside 0..63 panics |
 | Comparison | `eq` (`Int`, `Str`, `Bool`), and the monomorphic `eq_int eq_str` |
-| Strings | `concat len slice byte` — byte units, as §8 |
+| Strings | `concat concat_all len slice byte` — byte units, as §8; `concat_all` takes a `[Str]` |
 | Conversion | `int_to_str` , `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works; `to_str` (from `Int`) and `to_int` (from `Str`) are the same at stage 0, and `to_float` refuses |
 | Characters | `from_code (cp)` → `none \| some Str`. **An addition to §8, not an implementation of it** — see §7 |
 | Arrays | `array at alen` — as §8, over any element type (the example fixes it); `at` returns a reference into the elements. `args` and `run` keep `[Str]` |

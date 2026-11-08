@@ -20,7 +20,7 @@ for the decisions that shape it.
 | D3a | containers that differ by element type | an `$overload` of templates over a shared base, derived with a new `$override` |
 | D4 | equality and formatting of blocks | a trait, written per type, generated at build time later |
 | D5 | which allocator containers draw from | the root's; an `_in` variant only when measured to matter |
-| D6 | how strings are built | a builder, joined pairwise |
+| D6 | how strings are built | a builder, joined pairwise; then by `concat_all` (STRINGS.md) |
 | D7 | how failure is reported | `option` and `result` shapes `$try` already matches |
 | D8 | how it is tested | compiled-only, through §9's test interface |
 | D9 | how containers compose | values carrying their methods; type-changing operations as `std/seq` algorithms over capabilities |
@@ -225,7 +225,7 @@ Proposed modules, in the order they can be written:
 |---|---|---|
 | `std/core` | `max`, `min`, `option` and `result` helpers (`some`, `ok`, `fail`, `or_else`, `map_opt`) | P1 |
 | `std/list` | `list T` with `map`, `filter`, `fold`, `find`, `any`, `all`, `zip`, `append`, `take`, `drop`, `sort` | P1; P2 for `sort` |
-| `std/str` | a builder, `join`, `split`, `find`, `starts_with`, `trim`, code-point iteration | P3 for the byte buffer |
+| `std/str` | a builder, `join`, `split`, `find`, `starts_with`, `trim`, code-point iteration | `concat_all` for the builder (STRINGS.md) |
 | `std/fmt` | formatting `Int`, `Float`, `Str` and anything with a `show` member into a builder | done |
 | `std/io` | `print_line`, reading and writing whole files and lines, over the platform group; streams — `stdin`/`stdout`/`stderr`, files (`open_read`, `open_write`, `open_append`, `close`), in-memory readers and writers, `line_reader`'s `read_line` over any reader (optionally dropping a `\r` before the newline), `write_line`, `read_all` and `copy` as bounded templates, `writer`/`reader` trait objects for a choice made at run time | — |
 | `std/vec` | a growable vector over `array` | P3 |
@@ -411,8 +411,9 @@ exactly why a container wanting a caller's arena needs the allocator as a generi
 "never build a string by appending to an accumulator", learned from `emit.mpl`'s `say`. The
 library's answer is a **builder**: chunks collected newest-first and joined by folding adjacent
 pairs, O(L log n), which is exactly what the emitter does. `std/fmt` writes into one, and
-`S.build` turns it into a `Str`. With P3, a builder over a growable byte array is better still
-and is the second version.
+`S.build` turns it into a `Str`. The second version joins with §8's `concat_all` in one
+allocation, O(L) — not a growable byte array, which copies the text about twice as it doubles
+(STRINGS.md, S3).
 
 §3.1 makes a `Str` UTF-8 and its operations byte-indexed; code-point iteration is library
 (§8), and `std/str` provides it, decoding as `from_code` encodes.
@@ -435,7 +436,7 @@ and is the second version.
   walked, nothing stored but the string and the offset — so `std/seq` counts, maps and
   collects them; `code_at` and `width` are the decoding.
 
-The byte-buffer builder waits for `std/vec`.
+The second version waits for `concat_all` (STRINGS.md's plan, step 5).
 
 ## D7. Reporting failure
 
@@ -607,9 +608,9 @@ So a list stays a value — `push` answers a new list — and a container that c
    equal one out; there is no `set` and no `push`. Its `search` therefore needs no
    precondition — the same scrambled 0 .. 999 inserted, all 1000 are found — and it is an
    `indexed_of` too, so `std/seq`'s `search` works on it. `insert`/`remove` are O(n), and
-   `search`, `get`, `min` and `max` O(log n) or better. `std/vec_test.mpl` is 26 now. A byte-buffer builder for `std/str` would need
-   `str_from_ptr` over `array_ptr` (§4.16) to turn bytes into a `Str`; the pairwise join is
-   O(L log n) already, so it waits for a measurement.
+   `search`, `get`, `min` and `max` O(log n) or better. `std/vec_test.mpl` is 26 now. The measurement came (STRINGS.md): the
+   pairwise join is 106 MB of a self-emit, and the answer is §8's `concat_all`, not a byte
+   buffer — nothing writes a byte to memory, and `str_from_ptr` is FFI, which stage 0 lacks.
 4. **P2, bounds**, then **`std/fmt`**, **`std/map`**, and `sort`. **`std/fmt` is done**
    (`std/fmt_test.mpl`, 27): every writer takes a builder first and answers unit — `int`,
    `float` (§8's shortest round-trip `to_str`), `str`, `bool`, `code` (U+FFFD for what
