@@ -104,65 +104,80 @@ $decl need $func ($decl st proto_vst, $decl cx proto_vcx, $decl id 0,
 //
 // Bottom-up mergesort over the list: `n log n` and tail-recursive throughout,
 // where the obvious insert-and-scan is quadratic in the node count — which for
-// a whole file is tens of thousands.
+// a whole file is tens of thousands. It merges the runs the list already has
+// (`runs`): the walk pushes a node before its children, and a node's children
+// were built before it, so the indices arrive mostly in order and the runs are long.
 
 $decl ilists $specialize P.list IR.ints.node
 
-// The merged prefix accumulates newest-first, so what is left of whichever
-// list survives is pushed onto it in order (that is what `reverse` does) and
-// the whole thing reversed once at the end.
-$decl merge_rev $func ($decl a IR.ints.node, $decl b IR.ints.node, $decl acc IR.ints.node)
+// Two runs merged, both descending when `desc` (the larger taken first) and both
+// ascending otherwise. The merged prefix accumulates newest-first, so it comes out the
+// other way round, which is what the next round merges — nothing is reversed. What is
+// left of whichever run survives is pushed onto it in order (that is what `reverse`
+// does).
+$decl merge_rev $func ($decl a IR.ints.node, $decl b IR.ints.node, $decl acc IR.ints.node,
+                       $decl desc P.boolean)
   $match a (
     $case {$prop tag "cons"} $match b (
       $case {$prop tag "cons"}
-        $if ($call lt (b.head, a.head))
-            ($call merge_rev (a, $call IR.ints.val (b.tail), $call IR.ints.cons (b.head, acc)))
-            ($call merge_rev ($call IR.ints.val (a.tail), b, $call IR.ints.cons (a.head, acc))),
+        $if ($if desc ($call lt (a.head, b.head)) ($call lt (b.head, a.head)))
+            ($call merge_rev (a, $call IR.ints.val (b.tail), $call IR.ints.cons (b.head, acc),
+                 desc))
+            ($call merge_rev ($call IR.ints.val (a.tail), b, $call IR.ints.cons (a.head, acc),
+                 desc)),
       $case b ($call IR.ints.reverse (a, acc))),
     $case a ($call IR.ints.reverse (b, acc))
   )
 
-$decl merge $func ($decl a IR.ints.node, $decl b IR.ints.node)
-  $call IR.ints.reverse ($call merge_rev (a, b, IR.ints.nil), IR.ints.nil)
-
 // One bottom-up round: merge the runs pairwise. `pend` holds a run waiting for
 // its partner, which is a pair of arguments rather than a look at `ls.tail` —
 // matching on a boxed tail needs a block, and a block here would cost a frame
-// per run (§7.7: a call inside a block is never in tail position).
+// per run (§7.7: a call inside a block is never in tail position). A run left
+// without one is reversed, so every run of the next round faces the same way.
 $decl mpass $func ($decl ls ilists.node, $decl pend IR.ints.node, $decl has P.boolean,
-                   $decl acc ilists.node)
+                   $decl desc P.boolean, $decl acc ilists.node)
   $match ls (
     $case {$prop tag "cons"}
-      $if has ($call mpass (ls.tail, IR.ints.nil, bfalse,
-                   $call ilists.cons ($call merge (pend, ls.head), acc)))
-              ($call mpass (ls.tail, ls.head, true, acc)),
-    $case ls ($if has ($call ilists.cons (pend, acc)) acc)
+      $if has ($call mpass (ls.tail, IR.ints.nil, bfalse, desc,
+                   $call ilists.cons ($call merge_rev (pend, ls.head, IR.ints.nil, desc), acc)))
+              ($call mpass (ls.tail, ls.head, true, desc, acc)),
+    $case ls ($if has ($call ilists.cons ($call IR.ints.reverse (pend, IR.ints.nil), acc)) acc)
   )
 
 // The rounds themselves: `log n` of them, so the block a two-deep match needs
-// costs `log n` frames rather than `n`.
-$decl msort_loop $func ($decl ls ilists.node) $match ls (
+// costs `log n` frames rather than `n`. Each round turns the runs round.
+$decl msort_loop $func ($decl ls ilists.node, $decl desc P.boolean) $match ls (
   $case {$prop tag "cons"} {
     $decl t   $call ilists.val (ls.tail)
     $decl ret $match t (
       $case {$prop tag "cons"}
-        $call msort_loop ($call mpass (ls, IR.ints.nil, bfalse, ilists.nil)),
+        $call msort_loop ($call mpass (ls, IR.ints.nil, bfalse, desc, ilists.nil),
+            $call not (desc)),
       $case t ls.head)
   }.ret,
   $case ls IR.ints.nil
 )
 
-$decl singles $func ($decl xs IR.ints.node, $decl acc ilists.node) $match xs (
-  $case {$prop tag "cons"}
-    $call singles ($call IR.ints.val (xs.tail),
-        $call ilists.cons ($call IR.ints.cons (xs.head, IR.ints.nil), acc)),
-  $case xs acc
-)
+// The list's non-decreasing runs, each pushed newest-first and so descending: `cur` is
+// the run being read.
+$decl runs $func ($decl xs IR.ints.node, $decl cur IR.ints.node, $decl acc ilists.node)
+  $match xs (
+    $case {$prop tag "cons"} $match cur (
+      $case {$prop tag "cons"}
+        $if ($call lt (xs.head, cur.head))
+            ($call runs ($call IR.ints.val (xs.tail), $call IR.ints.cons (xs.head, IR.ints.nil),
+                 $call ilists.cons (cur, acc)))
+            ($call runs ($call IR.ints.val (xs.tail), $call IR.ints.cons (xs.head, cur), acc)),
+      $case cur ($call runs ($call IR.ints.val (xs.tail),
+                     $call IR.ints.cons (xs.head, IR.ints.nil), acc))),
+    $case xs $match cur ($case {$prop tag "cons"} ($call ilists.cons (cur, acc)), $case cur acc)
+  )
 
-$decl msort $func ($decl xs IR.ints.node) $call msort_loop ($call singles (xs, ilists.nil))
+// The indices sorted, in one direction or the other: what is wanted of them is that
+// equal ones sit together (`first_dup`).
+$decl msort $func ($decl xs IR.ints.node)
+  $call msort_loop ($call runs (xs, IR.ints.nil, ilists.nil), true)
 
-// The first repeated index in a sorted list, or -1. Indices start at 0, so -1
-// is not one of them.
 $decl first_dup $func ($decl xs IR.ints.node, $decl prev 0, $decl have P.boolean) $match xs (
   $case {$prop tag "cons"}
     $if ($call and (have, $call eq_int (prev, xs.head))) xs.head

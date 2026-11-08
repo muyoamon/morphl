@@ -2117,18 +2117,20 @@ $decl resolve_call $func ($decl st proto_lst, $decl f proto_lres, $decl cs T.tys
   $case cs f
 )
 
+// Built in order rather than reversed at the end: an argument list is short, so a frame
+// per argument costs nothing, and the head is lowered before the rest, left to right.
+// `args_val` is the identity at the result's type, which is §5.5's placeholder inside.
+$decl args_none $call args_res (IR.exprs.nil, T.tys.nil)
+$decl args_val  $func ($decl x args_none) x
 $decl lower_args $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
-                        $decl acc IR.exprs.node, $decl tys T.tys.node,
-                        $decl ps  T.tys.node) $match xs (
+                        $decl ps T.tys.node) $match xs (
   $case {$prop tag "cons"} {
     $decl r   $call finish_arg (st, $call lower (st, e, xs.head, false), xs.head,
                   $call ps_head (ps))
-    $decl ret $call lower_args (st, e, xs.tail,
-        $call IR.exprs.cons (r.ir, acc), $call T.tys.cons (r.ty, tys),
-        $call ps_tail (ps))
+    $decl rs  $call args_val ($call lower_args (st, e, xs.tail, $call ps_tail (ps)))
+    $decl ret $call args_res ($call IR.exprs.cons (r.ir, rs.irs), $call T.tys.cons (r.ty, rs.tys))
   }.ret,
-  $case xs ($call args_res ($call IR.exprs.reverse (acc, IR.exprs.nil),
-                            $call T.tys.reverse (tys, T.tys.nil)))
+  $case xs args_none
 )
 
 $decl op $func ($decl n Pa.proto_node, $decl i 0) $match n (
@@ -4626,8 +4628,11 @@ $decl nodes_drop $func ($decl xs Pa.nodes.node, $decl k 0)
 $decl ts_drop $func ($decl xs T.tys.node, $decl k 0)
   $if ($call eq_int (k, 0)) xs ($call ts_drop ($call ps_tail (xs), $call isub (k, 1)))
 
-$decl append_exprs $func ($decl xs IR.exprs.node, $decl ys IR.exprs.node)
-  $call IR.exprs.reverse ($call IR.exprs.reverse (xs, IR.exprs.nil), ys)
+// Nothing to append is the usual case (a call's omitted defaults), and costs no copy.
+$decl append_exprs $func ($decl xs IR.exprs.node, $decl ys IR.exprs.node) $match ys (
+  $case {$prop tag "cons"} ($call IR.exprs.reverse ($call IR.exprs.reverse (xs, IR.exprs.nil), ys)),
+  $case ys xs
+)
 
 $decl ints_of_tys $func ($decl st proto_lst, $decl ts T.tys.node,
     $decl acc IR.ints.node) $match ts (
@@ -4866,7 +4871,7 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
   $decl f    $if ov ($call resolve_call (st, f0, $call over_cands (f0.ty), rs, 0)) f0
   $decl ps   $call params_of (f.ty)
   $decl as   $if ov ($call finish_raws (st, rs, xs, ps, IR.exprs.nil, T.tys.nil))
-                    ($call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps))
+                    ($call lower_args (st, e, xs, ps))
   $decl ty   $call result_of (f.ty)
   $decl fck  $call check_freed (st, e, f.ty, xs, 0)
   $decl na   $call IR.exprs.length (as.irs, 0)
@@ -4952,7 +4957,7 @@ $decl lower_ffi $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form
   $decl box $call eq_str (w, "box_ptr")
   // A parameter typed as storage is what keeps `lower_args` from reading through.
   $decl ps  $if box ($call T.tys.cons ($call T.t_ref ("", T.t_int), T.tys.nil)) T.tys.nil
-  $decl as  $call lower_args (st, e, xs, IR.exprs.nil, T.tys.nil, ps)
+  $decl as  $call lower_args (st, e, xs, ps)
   $decl a0  $call ps_head (as.tys)
   $decl a1  $call ps_head ($call ps_tail (as.tys))
   $decl ty  $if box T.t_int

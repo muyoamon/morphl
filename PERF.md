@@ -3088,3 +3088,33 @@ The C is byte-identical, and time at `-O2` is level (five alternating runs each,
 At `-O1` the new compiler measured ~6% slower over three runs each; `perf` showed the same
 profile, symbol for symbol, and at `-O2` — how `mplc` is built — the two are level. Measure
 time on the `-O2` binary.
+
+## Three lists that were reversed for nothing (2026-11-08)
+
+Bytes requested through `mpl_alloc`, counted in the emitted C (the method above), the
+committed compiler against the changed one, both compiling the **same** source — HEAD's
+tree, so the input does not move with the change — and emitting identical C:
+
+| self-emit, fixed input | allocations | allocated |
+|---|---|---|
+| before | 20.10M | 1,078.5 MB |
+| `verify`'s sort merges the runs the list has | 18.44M | 1,037.4 MB (−41 MB) |
+| `lower_args` in order, `append_exprs` of nothing | **17.76M** | **987.9 MB (−8.4%)** |
+
+- **`verify.msort`** split the node indices into singletons and reversed every merge. It
+  now merges the list's own non-decreasing runs and alternates direction by round, so no
+  merge reverses: the walk pushes a node before its children, which were built before it,
+  so the indices arrive mostly in order. `first_dup` reads adjacent pairs and does not care
+  which way the result faces.
+- **`append_exprs (xs, ys)`** reversed `xs` twice even when `ys` was empty, which is every
+  call with no omitted default.
+- **`lower_args`** reversed both accumulators at the end. An argument list is short, so it
+  is built in order by plain recursion — head lowered first, as before.
+
+Time at `-O2`, four alternating runs each: 12.92s before, 12.31s after.
+
+What is left of the list items PERF.md named: `lexer.tokenize`'s reverse copies every token
+once, and nothing in the language builds a list in order without one (tails are immutable;
+a growable array copies more). The output join (`tyio`'s and `emit`'s pairwise fold,
+~97 MB) is O(L log n) by construction and needs a primitive that joins many strings in one
+allocation to do better.
