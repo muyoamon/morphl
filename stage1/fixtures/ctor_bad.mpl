@@ -33,4 +33,5 @@ $decl wm   $func ($decl f mk) 0
 $decl wa   $func ($decl f fa) 0
 $decl bad1 $func () $call wm (fa)
 $decl bad2 $func () $call wa (mk)
+$decl rb   $func () $match h ($case h ($call h (1)))
 $decl main $func () $call fine ()

@@ -183,6 +183,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/ctor_top.mpl", .want = "e init main 11\na3 a2 b1 c5\n" },
         // A block's local constructor as a value: its shim is a closure capturing it.
         .{ .src = "stage1/fixtures/ctor_local.mpl", .want = "wawbkcpwpzuptqt 57739470" },
+        // Arms that call one constructor through different names forward to it.
+        .{ .src = "stage1/fixtures/ctor_alias.mpl", .want = "uauaxafagaga 2 31" },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -835,10 +837,10 @@ pub fn build(b: *std.Build) void {
                 "ctor_bad.mpl:21:33: this tail call passes $new storage made in this call",
                 "ctor_bad.mpl:27:13: this constructor is called before its type is known",
                 "ctor_bad.mpl:28:12: this function's result holds frame storage made in this call (&block)",
-                "ctor_bad.mpl:29:12: this function chooses between constructions",
                 "ctor_bad.mpl:30:12: this function chooses between constructions",
                 "ctor_bad.mpl:34:31: argument 1 is [Int]->&^{v:Int,}, expected ctor[Int]->&{v:Int,}",
                 "ctor_bad.mpl:35:31: argument 1 is ctor[Int]->&{v:Int,}, expected [Int]->&^{v:Int,}",
+                "ctor_bad.mpl:36:12: this function chooses between constructions",
             },
             .count = "errors: 11\n",
             .stage0 = null,
@@ -955,6 +957,8 @@ pub fn build(b: *std.Build) void {
                .mods = &.{"ctor_value_util"} },
             .{ .src = "stage1/fixtures/ctor_top.mpl", .want = "e init main 11\na3 a2 b1 c5\n",
                .mods = &.{"ctor_top_util"} },
+            .{ .src = "stage1/fixtures/ctor_alias.mpl", .want = "uauaxafagaga 2 31",
+               .mods = &.{"ctor_alias_util"} },
             // An `$import` calls its module's initialiser, which another output defines.
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",
                .mods = &.{ "import_order_inner", "import_order_util" } },

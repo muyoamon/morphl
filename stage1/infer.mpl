@@ -1947,61 +1947,86 @@ $decl callee_text $func ($decl c Pa.proto_node) $match c (
   }.ret2,
   $case c ""
 )
-// The constructor a body forwards to, as its callee is written, or "": a constructing call
+// `$decl h mk` names what `mk` names: a hidden `$al:h=<target>` entry after `h`, the target
+// already followed through any alias it is, which the first of the two a walk meets answers
+// — as `$k:` does, so a binding of `h` in between hides it. A module's member is followed
+// only in its own module, so `U.h` and `U.mk` stay two.
+$decl alias_mark $func ($decl nm "", $decl tg "") $call concat ("$al:", $call concat (nm,
+    $call concat ("=", tg)))
+$decl alias_of $func ($decl e env.node, $decl tx "") $match e (
+  $case {$prop tag "cons"} {
+    $decl nm   e.head.name
+    $decl pre  $call concat ("$al:", $call concat (tx, "="))
+    $decl k    $call len (pre)
+    $decl hit  $if ($call lt ($call len (nm), k)) false
+                   ($call eq_str ($call slice (nm, 0, k), pre))
+    $decl ret2 $if ($call eq_str (nm, tx)) tx
+        ($if hit ($call slice (nm, k, $call len (nm))) ($call alias_of (e.tail, tx)))
+  }.ret2,
+  $case e tx
+)
+// The constructor a body forwards to, as its callee is written with any alias followed
+// (`alias_of`), or "": a constructing call
 // (`ctorcalls`), or an `$if` or `$match` every arm of which forwards to the same one — so the
 // caller's storage holds that constructor's block whichever arm ran, and its deferrals are
 // that constructor's (STORAGE.md R3). A `$match` whose scrutinee is the callee's name would
 // rebind it in the arms, so it is not the same.
 $fwd same_ctor
-$decl same_ctor_arms $func ($decl cx proto_ctx, $decl xs Pa.nodes.node, $decl k "", $decl sn "")
+$decl same_ctor_arms $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.node,
+    $decl k "", $decl sn "")
     $match xs (
   $case {$prop tag "cons"} {
-    $decl a    $call same_ctor (cx, $call op (xs.head, 1))
+    $decl a    $call same_ctor (cx, e, $call op (xs.head, 1))
     $decl ok   $if ($call eq_str (a, "")) false
                    ($if ($call eq_str (a, sn)) false
                    ($if ($call eq_str (k, "")) true ($call eq_str (a, k))))
-    $decl ret2 $if ok ($call same_ctor_arms (cx, $call Pa.nodes.val (xs.tail), a, sn)) ""
+    $decl ret2 $if ok ($call same_ctor_arms (cx, e, $call Pa.nodes.val (xs.tail), a, sn)) ""
   }.ret2,
   $case xs k
 )
-$decl same_ctor $func ($decl cx proto_ctx, $decl b Pa.proto_node)
+$decl same_ctor $func ($decl cx proto_ctx, $decl e env.node, $decl b Pa.proto_node)
   $if ($call is_form (b, "if")) {
-    $decl a    $call same_ctor (cx, $call op (b, 1))
-    $decl ret2 $if ($call eq_str (a, $call same_ctor (cx, $call op (b, 2)))) a ""
+    $decl a    $call same_ctor (cx, e, $call op (b, 1))
+    $decl ret2 $if ($call eq_str (a, $call same_ctor (cx, e, $call op (b, 2)))) a ""
   }.ret2
-  ($if ($call is_form (b, "match"))
-       ($call same_ctor_arms (cx, $call group_items ($call op (b, 1)), "",
-           $call callee_text ($call node_val ($call op (b, 0)))))
+  ($if ($call is_form (b, "match")) {
+    // The arms rebind the scrutinee's name, so an alias of that name is not followed there.
+    $decl sn   $call callee_text ($call node_val ($call op (b, 0)))
+    $decl ea   $if ($call eq_str (sn, "")) e ($call bind (e, sn, T.t_unit))
+    $decl ret2 $call same_ctor_arms (cx, ea, $call group_items ($call op (b, 1)), "", sn)
+  }.ret2
   ($if ($if ($call is_form (b, "call"))
             ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, b))) false)
-       ($call callee_text ($call node_val ($call op (b, 0)))) ""))
+       ($call alias_of (e, $call callee_text ($call node_val ($call op (b, 0))))) ""))
 
 // §5.3a: a body that constructs — a `$new` of frame kind, through `$mut` or `$const`, or a
 // call that constructs (`ctorcalls`), which hands its caller's storage on, or arms that each
 // call the same one (`same_ctor`).
-$decl ctor_body $func ($decl cx proto_ctx, $decl b Pa.proto_node)
+$decl ctor_body $func ($decl cx proto_ctx, $decl e env.node, $decl b Pa.proto_node)
   $if ($call is_form (b, "new")) true
   ($if ($call P.or ($call is_form (b, "mut"), $call is_form (b, "const")))
        ($call is_form ($call op (b, 0), "new"))
   ($if ($call is_form (b, "call"))
        ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, b)))
   ($if ($call P.or ($call is_form (b, "if"), $call is_form (b, "match")))
-       ($call not ($call eq_str ($call same_ctor (cx, b), "")))
+       ($call not ($call eq_str ($call same_ctor (cx, e, b), "")))
        false)))
 
 // An `$if` or `$match` some arm of which constructs, and not all of them through one
 // constructor: refused with its own message rather than R2's, since what is wrong is the
 // choice and not the construction.
-$decl ctor_arms $func ($decl cx proto_ctx, $decl xs Pa.nodes.node) $match xs (
+$decl ctor_arms $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.node)
+    $match xs (
   $case {$prop tag "cons"}
-    $if ($call ctor_body (cx, $call op (xs.head, 1))) true
-        ($call ctor_arms (cx, $call Pa.nodes.val (xs.tail))),
+    $if ($call ctor_body (cx, e, $call op (xs.head, 1))) true
+        ($call ctor_arms (cx, e, $call Pa.nodes.val (xs.tail))),
   $case xs false
 )
-$decl ctor_choice $func ($decl cx proto_ctx, $decl b Pa.proto_node)
+$decl ctor_choice $func ($decl cx proto_ctx, $decl e env.node, $decl b Pa.proto_node)
   $if ($call is_form (b, "if"))
-      ($if ($call ctor_body (cx, $call op (b, 1))) true ($call ctor_body (cx, $call op (b, 2))))
-  ($if ($call is_form (b, "match")) ($call ctor_arms (cx, $call group_items ($call op (b, 1))))
+      ($if ($call ctor_body (cx, e, $call op (b, 1))) true
+           ($call ctor_body (cx, e, $call op (b, 2))))
+  ($if ($call is_form (b, "match")) ($call ctor_arms (cx, e, $call group_items ($call op (b, 1))))
        false)
 
 // The block a constructing `$new` builds, when it is a literal; anything else is a copy,
@@ -2070,7 +2095,7 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   $decl own0 $call own_params ($call param_names (ps, Pa.pstrs.nil), owns.nil)
   // A function whose body is a `$new`, or a call to a constructor, constructs (§5.3a): its
   // result is a place its caller provides, so R2 does not ask and the type says so.
-  $decl ctor $call ctor_body (cx, $call op (n, 1))
+  $decl ctor $call ctor_body (cx, e, $call op (n, 1))
   $decl cchk $if ctor ($call ctor_check (cx, e, ps, $call op (n, 1))) ()
   $decl cpnd $if ($if ctor ($call lt (-1, id)) false)
       ($if ($call T.ci_mem ($call T.cints.val (cx.ctorpend), id))
@@ -2080,7 +2105,7 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
   $decl esc  $if ctor res0
              ($if ($call T.frame_bound (res0, 0))
                  ($if ($call owns_x (cx, own0, $call op (n, 1)))
-                      ($if ($call ctor_choice (cx, $call op (n, 1)))
+                      ($if ($call ctor_choice (cx, e, $call op (n, 1)))
                            ($call err (cx, "this function chooses between constructions, so its caller could not know whose deferrals to run; construct once and branch inside the block's fields, or call one constructor in every arm (§5.3a)", n))
                       ($call err (cx, $call concat ("this function's result holds frame storage made in this call (",
                            $call concat ($call T.show_frame ($call T.first_frame (res0, 0)),
@@ -4798,8 +4823,13 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   $decl glob  $if ($call bval (cx.atfile)) true
                   ($if ($call eq_str (an, "")) false ($call is_glob (s.env, an)))
   $decl rt    $if ($call eq_str (an, "")) false ($call root_named (s.env, an))
+  // §5.3a: another name for a definition is followed when arms are compared (`same_ctor`).
+  $decl atx   $if isd ($call callee_text ($call node_val (init))) ""
+  $decl e1    $call bind_if (s.env, nm, ty, isd)
+  $decl e2    $if ($call eq_str (atx, "")) e1
+                  ($call bind (e1, $call alias_mark (nm, $call alias_of (s.env, atx)), T.t_unit))
   $decl bound $set s.env ($call bind_cf ($call bind_prov ($call bind_glob ($call bind_root (
-                 $call bind_if (s.env, nm, ty, isd), nm, rt), nm, glob), nm, pv,
+                 e2, nm, rt), nm, glob), nm, pv,
                  $call ival (cx.fdepth)), nm, $call is_form (init, "func"), cfi))
   // A `$fwd` already reserved this slot at its own position (§4.11), so
   // complete that one rather than appending a second.

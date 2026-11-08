@@ -450,8 +450,18 @@ runs the registered deferrals and finds no place in `none`.
    call does. Stage 0 already ran it right; its `keeps_ref` now reads a callee whose body is an
    `$if` or `$match` the way it reads one that is a call. `ctor_arms.mpl` covers `$if` and
    `$match` arms, a nested `$if`, forwarding to such a function, a default calling one, and a
-   constructor that can fail, in all three stages; `ctor_bad.mpl` refuses two constructors, and
-   one through two names.
+   constructor that can fail, in all three stages; `ctor_bad.mpl` refuses two constructors.
+   **Another name is the same constructor**: `$decl h mk` leaves a hidden `$al:h=mk` entry after
+   `h`, its target followed through any alias it is, and `same_ctor` compares callees through
+   it (`alias_of`), so a binding of `h` in between hides it as it hides `$k:`. A `$match` on the
+   callee's own name binds that name in front for its arms, which rebind it, so it is still
+   refused (`ctor_bad.mpl:36`). A module's alias is followed only in its own module. In
+   lowering a forwarding function's record is called as itself (`fn` -1): it copied `fn` from
+   the record it forwards to, and an alias thunk's names the constructor it aliases, so
+   `$decl f $func (n) $call h (n)` called `mk` with `f`'s arguments — `verify` refused it.
+   `ctor_alias.mpl` (with `ctor_alias_util.mpl`) covers `$if` and `$match` arms, an alias
+   alone, an alias of an alias, another module's member and its alias, and a block's local
+   constructor with its local alias.
 8. **A constructor as a value.** Done, as "A constructor as a value" above:
    - *Checker*: the "through a value" and "through an `$overload`" refusals are gone, and
      such a call joins `ctorcalls`, so it is the caller's own place and a body that is one

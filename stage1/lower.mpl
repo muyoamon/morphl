@@ -5617,8 +5617,10 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl nsp  $call P.span_of (n)
   $decl cin1 $if cnew ($call ctor_ent (cinf.key, cinf.drop, cinf.dty, cinf.vty, cinf.rty,
                  $call join_exits (cinf.vty, exits), $call join_exits (cinf.rty, exits))) cinf
+  // It is called as itself: `fn` redirects a thunk's or a shim's call, and the record a
+  // body forwards to (`ctorhit`) may be an alias thunk's, naming the constructor it aliases.
   $decl cin2 $call ctor_ent (cin1.key, cin1.drop, cin1.dty, cin1.vty, cin1.rty, cin1.res,
-                 cin1.out, cin1.fn, cin1.dyn,
+                 cin1.out, -1, cin1.dyn,
                  $call concat ($if ($call eq_str (md, "")) "e" md, $call concat ("_", nm)),
                  $call P.sval (st.curfile), $call add ($call mul (nsp.line, 1000), nsp.col))
   // A dynamic one — forwarding through a value — answers `{b, d}`, as a call through one does.

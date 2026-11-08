@@ -1,7 +1,8 @@
 // §5.3a: a body whose arms each call one constructor constructs, and forwards to it — the
 // caller's storage holds that constructor's block whichever arm ran, so its deferrals are
 // that constructor's (STORAGE.md R3). It used to be refused as a choice between
-// constructions; arms calling two constructors, or one through two names, still are.
+// constructions; arms calling two constructors still are. One reached through an alias is
+// the same one (`ctor_alias.mpl`).
 //
 // u1u2g3g5g62qpq 12356270:
 //   u1 u2       `pick`'s `$if` arms; each block's deferral runs where `use` ends, after "u";
