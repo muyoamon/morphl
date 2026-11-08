@@ -7182,6 +7182,43 @@ $decl ctor_shim $func ($decl st proto_lst, $decl g 0, $decl c proto_ctor, $decl 
   }.ret2
 }.ret
 
+// The shim of a block's local constructor, whose `ldef` record is `c` under `key`, its value
+// of type `vty` and as a constructor `fty`: the same as `ctor_shim`'s, but a closure capturing
+// the constructor's own pair and calling through it, since a local function is a closure. The
+// `drop` reads no frame (`build_drop`), so it is called as ever. Memoised per constructor
+// under `-3`, apart from `noop_drop`'s keys, which share the range of `ldef` ids.
+$decl ctor_lshim $func ($decl st proto_lst, $decl key 0, $decl c proto_ctor,
+                        $decl fty T.proto_ty, $decl vty T.proto_ty) {
+  $decl hit $call find_wrap ($call wrap_list.val (st.wraps), key, -3)
+  $decl ret $if ($call lt (-1, hit)) hit {
+    $decl tr    $call ctor_of_ty (fty)
+    $decl dt    $call dyn_ty (tr)
+    $decl dv    $if ($call lt (-1, c.drop)) c.drop ($call noop_drop (st, tr))
+    $decl lid   $call intern (st, vty)
+    $decl outer $call take_slots (st)
+    $decl ps    $call params_of (fty)
+    $decl pv    $call wrap_params (st, ps, 0, IR.ints.nil, IR.exprs.nil)
+    $decl call  $call IR.e_call ($call intern (st, c.res), $call IR.e_capture (lid, 0), pv.irs,
+                    false)
+    $decl bv    $if ($call T.same (c.res, tr.res)) call ($call IR.e_copy ($call intern (st, tr.res),
+                    call))
+    $decl sb    $call fresh_slot (st, $call intern (st, tr.res))
+    $decl sd    $call fresh_slot (st, $call intern (st, tr.dty))
+    $decl body  $call IR.e_block ($call intern (st, dt), $call IR.bslots.cons ($call IR.bslot (sb,
+                    bv), $call IR.bslots.cons ($call IR.bslot (sd, $call IR.e_global ($call intern (
+                    st, tr.dty), dv)), IR.bslots.nil)))
+    $decl f     $call IR.fn_p ("ctor_dyn", $call ints_of_tys (st, ps, IR.ints.nil),
+                    $call intern (st, dt), $call take_slots (st), body, false, false,
+                    $call IR.ints.cons (lid, IR.ints.nil), c.file, c.at, false,
+                    $call concat (c.name, "_dyn"))
+    $decl back  $call restore_slots (st, outer)
+    $decl idx   $call add_lifted (st, f)
+    $decl m     $set st.wraps ($call wrap_list.cons ($call wrap_ent (key, -3, idx, fty,
+                    $call Pa.n_unit (0, 0)), st.wraps))
+    $decl ret2  idx
+  }.ret2
+}.ret
+
 // A constructor's type as its value has it: the result `r`, and the flag that says it
 // constructs. A module member's type is derived from its lowered function (`fn_ty`), whose
 // result is the block by value and which carries no flag; its value is called at the
@@ -7201,8 +7238,8 @@ $decl with_out $func ($decl t0 T.proto_ty, $decl r T.proto_ty) {
 
 // A name or projection that is a constructor, as a value: its shim. Left as it is when it
 // is no constructor, already a shim or a thunk holding one (`fn` set), or dynamic, whose own
-// code answers `{b, d}` already. A block's local constructor has a closure, which no shim is
-// written for yet, so it is refused rather than called at the wrong signature.
+// code answers `{b, d}` already. A block's local constructor is a closure, and so is its shim
+// (`ctor_lshim`), which carries no `ldef` mark: it is a value, called dynamically.
 $decl ctor_value $func ($decl st proto_lst, $decl r proto_lres, $decl n Pa.proto_node) {
   // Asked of every name, so nothing here walks a type: a record decides, not the type — a
   // module member's or a block function's derived type has no flag.
@@ -7210,12 +7247,14 @@ $decl ctor_value $func ($decl st proto_lst, $decl r proto_lres, $decl n Pa.proto
   $decl g   $match x ($case {$prop tag "global"} x.fn, $case x -1)
   $decl c   $if ($call lt (-1, g)) ($call find_ctor ($call ctor_list.val (st.ctors), g))
                 proto_ctor
-  $decl loc $if ($call lt (r.tmpl, -1))
-                ($call not ($call eq_int (($call find_ctor ($call ctor_list.val (st.ctors),
-                    r.tmpl)).key, -1))) false
-  $decl ret $if loc ($call lres ($call IR.e_unit ($call err (st,
-          "a block's local constructor used as a value is not lowered yet (§5.3a); define it at a file's top level, or call it by name",
-          n)), r.ty))
+  $decl lc  $if ($call lt (r.tmpl, -1)) ($call find_ctor ($call ctor_list.val (st.ctors), r.tmpl))
+                proto_ctor
+  $decl ret $if ($call not ($call eq_int (lc.key, -1))) {
+         $decl vt   $call with_out (r.ty, lc.out)
+         $decl ret2 $call lres4 ($call IR.e_closure ($call intern (st, vt),
+                        $call ctor_lshim (st, r.tmpl, lc, vt, r.ty),
+                        $call IR.exprs.cons (r.ir, IR.exprs.nil)), vt, r.mod, -1)
+       }.ret2
       ($if ($if ($call eq_int (c.key, -1)) true ($if c.dyn true ($call lt (-1, c.fn)))) r {
          $decl vt   $call with_out (r.ty, c.out)
          $decl ret2 $call lres4 ($call IR.e_global ($call intern (st, vt),

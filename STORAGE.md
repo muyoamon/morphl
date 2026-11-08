@@ -308,7 +308,7 @@ record, and a call through a value is always dynamic:
 - **`mk` named as a value** is the pair of a shim, `mk_dyn`, which calls `mk` and answers
   `{b, &mk_drop}`. One shim per constructor, made when it is first named as a value. A
   constructor that is dynamic already is its own value and needs none. A block's local
-  constructor would need a shim taking its closure's environment on, and is refused for now.
+  constructor is a closure, and its shim is a closure capturing it, which calls through it.
 - **`d` is never absent.** A constructor with no deferrals answers a no-op `drop` for its block
   type, one per type, so the caller's deferral is unconditional and the value's layout is a
   function of its type alone.
@@ -476,11 +476,13 @@ runs the registered deferrals and finds no place in `none`.
      — a block's field, an `$if` — has no record to tell `ctor_in` it constructs, so inference
      hands each constructing call's site across beside `ualloc`'s keys (`note_ctor`,
      `"c:<sctx>|<file>:<line>:<col>"`) and `ctor_named` asks it. Without that, such an item
-     was lowered as an ordinary thunk and its deferral never ran.
+     was lowered as an ordinary thunk and its deferral never ran. A **block's local
+     constructor** is a closure, so its shim is one too (`ctor_lshim`): it captures the
+     constructor's own pair and calls through it, and its `drop` is the constructor's as ever,
+     since `build_drop` reads only the block's fields. The value carries no `ldef` mark, so a
+     call through it is dynamic. Memoised per constructor under `-3` in `wraps`, apart from
+     `noop_drop`'s `-2 - tid` keys, which share the range of `ldef` ids.
    - *Emit*: nothing. The trampoline's driver writes `{b, d}` through `void *out` as any result.
-   - *Left out*: a **block's local constructor used as a value** is refused by lowering
-     (`ctor_local.mpl`, `test-reject`): its value is a closure, whose shim would have to take
-     the closure's environment on. The checker accepts it and stage 0 runs it.
    - *Fixtures*: `ctor_value.mpl` (with `ctor_value_util.mpl`) covers two constructors of one
      type passed, one in a field, an `$if` choosing one and called through by a forwarding
      function, an alias, one with no deferrals, one that can fail, an overload's candidate,
@@ -488,7 +490,9 @@ runs the registered deferrals and finds no place in `none`.
      value 2,000,000 deep, in both stages, compiled, split and under ASan. A self-emit
      measured level with the committed compiler. `ctor_top.mpl` (with `ctor_top_util.mpl`)
      is the top level: through a holder, a block's field, an `$if` callee, an item binding
-     nothing, and a module member through its block's field.
+     nothing, and a module member through its block's field. `ctor_local.mpl` is a block's
+     local constructors: passed, capturing its frame, with no deferrals in a field, a local
+     alias called by name, passed by a `$func` capturing it, and one that can fail.
 
 ## A. Frame storage and tail calls (decided, A4)
 

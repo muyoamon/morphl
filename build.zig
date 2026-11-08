@@ -181,6 +181,8 @@ pub fn build(b: *std.Build) void {
         // A top-level item calling a constructor through a value is the program's to own: its
         // deferral runs after `main`, the entry's newest first, then its module's.
         .{ .src = "stage1/fixtures/ctor_top.mpl", .want = "e init main 11\na3 a2 b1 c5\n" },
+        // A block's local constructor as a value: its shim is a closure capturing it.
+        .{ .src = "stage1/fixtures/ctor_local.mpl", .want = "wawbkcpwpzuptqt 57739470" },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -776,16 +778,6 @@ pub fn build(b: *std.Build) void {
             },
             .count = "check errors: 2\n",
             .stage0 = "$override is outside the bootstrap subset",
-            .driver = "stage1/lower_dump.mpl",
-        },
-        // §5.3a: a block's local constructor as a value, which lowering refuses for now.
-        .{
-            .src = "stage1/fixtures/ctor_local.mpl",
-            .stage1 = &.{
-                "ctor_local.mpl:9:25: a block's local constructor used as a value is not lowered yet",
-            },
-            .count = "check errors: 1\n",
-            .stage0 = null,
             .driver = "stage1/lower_dump.mpl",
         },
         // Two `$override`s deep: one shift down is the template overridden, two is the base.

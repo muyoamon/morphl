@@ -90,8 +90,6 @@ declare -A refused=(
   [override2_diag]="test-reject: the same, two overrides down"
   [override2_dmid]="override2_diag's middle module"
   [override_diag_util]="override_diag's module, whose \$specialize specialises itself"
-  [ctor_local]="test-reject: lowering refuses a block's local constructor as a value"
-  [ctor_top@lift]="lifted, its constructors are a block's local ones, refused as values"
 )
 # Programs the checker must refuse although stage 0 runs them, and the text its first
 # diagnostic carries: a rule only the checker has. A lifted copy looks up `<name>@lift`
@@ -116,6 +114,7 @@ declare -A rules=(
   [ref_arg@lift]="this constructor's deferral reads 'say'"
   [ctor_arms@lift]="this constructor's deferral reads 'say'"
   [ctor_value@lift]="this constructor's deferral reads 'say'"
+  [ctor_local@lift]="this constructor's deferral reads 'say'"
   [receiver@lift]="a \$prop's \$func may not capture 'ival'"
   [self_param@lift]="a \$prop's \$func may not capture 'ival'"
   [self_trait@lift]="a \$prop's \$func may not capture 'ival'"
