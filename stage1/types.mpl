@@ -3091,8 +3091,14 @@ $decl sub_step $func ($decl a proto_ty, $decl b proto_ty, $decl st proto_actx) $
                 // does not is expected — its callers may pass that one frame-bound.
                 ($if ($call not ($call ci_subset ($call cints.val (a.esc),
                          $call cints.val (b.esc)))) false
+                // ...and one that constructs (2000) is called differently from one that does
+                // not, so neither stands for the other: a plain function's borrowed result
+                // would be copied into fresh storage, and a constructor's call would make none.
+                ($if ($if ($call ci_mem ($call cints.val (a.esc), 2000))
+                          ($call not ($call ci_mem ($call cints.val (b.esc), 2000)))
+                          ($call ci_mem ($call cints.val (b.esc), 2000))) false
                 ($if ($call subs_zip_flipped (a.params, b.params, st))
-                     ($call sub_seen (a.result, b.result, st)) false)),
+                     ($call sub_seen (a.result, b.result, st)) false))),
               $case b false
             ),
           $case {$prop tag "ref"} $match b (

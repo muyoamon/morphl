@@ -176,6 +176,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/ref_arg.mpl", .want = "1762 9" },
         // Arms that each call one constructor: the function forwards to it.
         .{ .src = "stage1/fixtures/ctor_arms.mpl", .want = "u1u2g3g5g62qpq 12356270" },
+        // A constructor as a value: a call through one answers its `drop` beside the block.
+        .{ .src = "stage1/fixtures/ctor_value.mpl", .want = "wawbkbuaubwawtptoawdawb 12344567068119" },
         // A `$new` with a deferral in a parameter default, a type-only position: its
         // deferral was left on the enclosing frame and named captures it did not have.
         .{ .src = "stage1/fixtures/default_defer.mpl", .want = "421\n" },
@@ -773,6 +775,16 @@ pub fn build(b: *std.Build) void {
             .stage0 = "$override is outside the bootstrap subset",
             .driver = "stage1/lower_dump.mpl",
         },
+        // §5.3a: a block's local constructor as a value, which lowering refuses for now.
+        .{
+            .src = "stage1/fixtures/ctor_local.mpl",
+            .stage1 = &.{
+                "ctor_local.mpl:9:25: a block's local constructor used as a value is not lowered yet",
+            },
+            .count = "check errors: 1\n",
+            .stage0 = null,
+            .driver = "stage1/lower_dump.mpl",
+        },
         // Two `$override`s deep: one shift down is the template overridden, two is the base.
         .{
             .src = "stage1/fixtures/override2_diag.mpl",
@@ -826,12 +838,12 @@ pub fn build(b: *std.Build) void {
                 "ctor_bad.mpl:19:12: this function's result holds frame storage made in this call (&block)",
                 "ctor_bad.mpl:20:12: this function's result holds frame storage made in this call (&block)",
                 "ctor_bad.mpl:21:33: this tail call passes $new storage made in this call",
-                "ctor_bad.mpl:22:31: this calls a constructing function through a value",
-                "ctor_bad.mpl:24:21: this calls a constructing function through an $overload",
                 "ctor_bad.mpl:27:13: this constructor is called before its type is known",
                 "ctor_bad.mpl:28:12: this function's result holds frame storage made in this call (&block)",
                 "ctor_bad.mpl:29:12: this function chooses between constructions",
                 "ctor_bad.mpl:30:12: this function chooses between constructions",
+                "ctor_bad.mpl:34:31: argument 1 is [Int]->&^{v:Int,}, expected ctor[Int]->&{v:Int,}",
+                "ctor_bad.mpl:35:31: argument 1 is ctor[Int]->&{v:Int,}, expected [Int]->&^{v:Int,}",
             },
             .count = "errors: 11\n",
             .stage0 = null,
@@ -942,6 +954,10 @@ pub fn build(b: *std.Build) void {
                .mods = &.{"ctor_util"} },
             .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143131269116 19u ",
                .mods = &.{"ctor_util"} },
+            // A member constructor's shim lives in its module's output and is named from the
+            // entry's, so it is exported, as the `drop` it answers is.
+            .{ .src = "stage1/fixtures/ctor_value.mpl", .want = "wawbkbuaubwawtptoawdawb 12344567068119",
+               .mods = &.{"ctor_value_util"} },
             // An `$import` calls its module's initialiser, which another output defines.
             .{ .src = "stage1/fixtures/import_order.mpl", .want = "e1 m1 i m2 e2 5\nde2 dm di de1 ",
                .mods = &.{ "import_order_inner", "import_order_util" } },

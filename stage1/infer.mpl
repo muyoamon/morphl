@@ -3102,12 +3102,11 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
                      ($do ($set cx.nonroot ($call strs.cons ($call fn_key_of (cx, n),
                               $call strs.val (cx.nonroot))))
                           ()) ()
-        // §5.3a: a constructing call is the caller's `$new`, and only a definition says so.
+        // §5.3a: a constructing call is the caller's `$new`, whether it names the definition
+        // or goes through a value — the value answers the deferrals beside the block.
         $decl ct $if ($call T.ci_mem ($call T.cints.val (ft.esc), 2000))
-            ($if ($call names_def (e, $call op (n, 0)))
-                 ($do ($set cx.ctorcalls ($call strs.cons ($call fn_key_of (cx, n),
-                          $call strs.val (cx.ctorcalls)))) ())
-                 ($do ($call err (cx, "this calls a constructing function through a value, which cannot provide the storage it builds in; call it by its definition's name (§5.3a)", n)) ()))
+            ($do ($set cx.ctorcalls ($call strs.cons ($call fn_key_of (cx, n),
+                     $call strs.val (cx.ctorcalls)))) ())
             ()
         $decl cb $if ($call extern_callee (cx, $call op (n, 0)))
             ($call chk_cbs (cx, e, $call T.tys.val (ft.params), args)) T.t_unit
@@ -3132,8 +3131,10 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
               $decl sh   $if pk.tmpl true
                   ($call short_ok (cx, env.nil, $call op (n, 0), $call T.tys.val (c.params),
                       args, n))
+              // §5.3a: a constructor candidate is called through the group's value.
               $decl ct   $if ($call T.ci_mem ($call T.cints.val (c.esc), 2000))
-                  ($do ($call err (cx, "this calls a constructing function through an $overload, whose candidates are values and cannot provide the storage it builds in (§5.3a)", n)) ())
+                  ($do ($set cx.ctorcalls ($call strs.cons ($call fn_key_of (cx, n),
+                           $call strs.val (cx.ctorcalls)))) ())
                   ()
               $decl ret3 $if ok ($call T.tval (c.result)) T.t_bot
             }.ret3,

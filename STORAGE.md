@@ -305,10 +305,10 @@ the `drop` together, `{b, d}`, `d` a function value of the block's fields: call 
 The type does not say which, and does not need to — a call naming a definition reads the
 record, and a call through a value is always dynamic:
 
-- **`mk` named as a value** is the pair of a shim, `mk_dyn`, which calls `mk` (passing its own
-  environment on, so a block-local constructor's captures still reach it) and answers
+- **`mk` named as a value** is the pair of a shim, `mk_dyn`, which calls `mk` and answers
   `{b, &mk_drop}`. One shim per constructor, made when it is first named as a value. A
-  constructor that is dynamic already is its own value and needs none.
+  constructor that is dynamic already is its own value and needs none. A block's local
+  constructor would need a shim taking its closure's environment on, and is refused for now.
 - **`d` is never absent.** A constructor with no deferrals answers a no-op `drop` for its block
   type, one per type, so the caller's deferral is unconditional and the value's layout is a
   function of its type alone.
@@ -452,20 +452,37 @@ runs the registered deferrals and finds no place in `none`.
    `$match` arms, a nested `$if`, forwarding to such a function, a default calling one, and a
    constructor that can fail, in all three stages; `ctor_bad.mpl` refuses two constructors, and
    one through two names.
-8. **A constructor as a value.** Planned, as "A constructor as a value" above:
-   - *Checker*: the "through a value" and "through an `$overload`" refusals go; `2000` is
-     invariant in `sub`; a short call still names a definition (SPEC §3.4).
-   - *Lowering*: a record's mode, static or dynamic; the shim, named from the constructor as
-     `drop` is, and exported; the no-op `drop` per block type; the dynamic path in
-     `ctor_site`/`ctor_built`; a forwarding body through a value marked dynamic.
-   - *Emit*: nothing expected — the shim and the call through `d` are ordinary IR — to be
-     confirmed on the trampoline's driver.
-   - *Fixtures*: `ctor_value.mpl` — passing two constructors of one type, a field holding one,
-     `$if` choosing one, forwarding through a value and calling that by name, a block-local
-     constructor that captures, one that can fail, one with no deferrals, an overload, and a
-     tail call through a value 2,000,000 deep — in all three stages and under ASan.
-     `ctor_bad.mpl` loses its two "through a value" lines and gains a plain function where a
-     constructor is expected, and the reverse.
+8. **A constructor as a value.** Done, as "A constructor as a value" above:
+   - *Checker*: the "through a value" and "through an `$overload`" refusals are gone, and
+     such a call joins `ctorcalls`, so it is the caller's own place and a body that is one
+     forwards; `2000` is invariant in `sub`.
+   - *Lowering*: the record carries `dyn`, `fn` (what a call naming it makes: a shim's or an
+     alias thunk's constructor), and the constructor's name, file and position. A call
+     through a value with no record is dynamic, its record read off the type
+     (`ctor_of_ty`) and its callee read back out of a slot at the `{b, d}` signature
+     (`at_dyn`), since emit takes an indirect call's C signature from the callee's type;
+     `ctor_dyn_site` saves `{b, d}`, keeps `d` in a slot `ctor_built` binds `$cd` to, and
+     makes the storage from `b`. A constructor named anywhere but as a callee is its shim
+     (`ctor_value`, from `lower`'s name and projection cases and a module record's
+     members; `lower_callee` leaves a callee alone), memoised in `wraps` and registered
+     under its own index with `fn` naming the constructor; a constructor with no deferrals
+     answers a `nodrop` per `drop` type. A thunk holding a constructor value that is no
+     alias (`$decl pick $if c mk mk2`) is registered dynamic (`ctor_alias`), so a call naming
+     it is dynamic, and a body forwarding through a value is dynamic and answers `{b, d}`.
+     The record decides whether a name is a constructor, not its type: a module member's and a
+     block function's types are derived from the lowered function, whose result is the block
+     by value and which carries no flag, so a shim's value is given the reference result
+     and the flag (`with_out`).
+   - *Emit*: nothing. The trampoline's driver writes `{b, d}` through `void *out` as any result.
+   - *Left out*: a **block's local constructor used as a value** is refused by lowering
+     (`ctor_local.mpl`, `test-reject`): its value is a closure, whose shim would have to take
+     the closure's environment on. The checker accepts it and stage 0 runs it.
+   - *Fixtures*: `ctor_value.mpl` (with `ctor_value_util.mpl`) covers two constructors of one
+     type passed, one in a field, an `$if` choosing one and called through by a forwarding
+     function, an alias, one with no deferrals, one that can fail, an overload's candidate,
+     another module's member, a top-level `$decl` holding one, and forwarding through a
+     value 2,000,000 deep, in both stages, compiled, split and under ASan. A self-emit
+     measured level with the committed compiler.
 
 ## A. Frame storage and tail calls (decided, A4)
 

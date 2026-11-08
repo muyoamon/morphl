@@ -28,4 +28,9 @@ $decl later $func ($decl k 0) $new { $decl v k }
 $decl otr  $func () { $decl s $call tr ("1")  $decl ret s }.ret
 $decl two  $func ($decl c true) $if c ($call mk (1)) ($call h (2))
 $decl mix  $func ($decl c true) $if c ($call mk (1)) ($new { $decl v 2 })
+$decl fa   $func ($decl k 0) $alloc { $decl v k }
+$decl wm   $func ($decl f mk) 0
+$decl wa   $func ($decl f fa) 0
+$decl bad1 $func () $call wm (fa)
+$decl bad2 $func () $call wa (mk)
 $decl main $func () $call fine ()

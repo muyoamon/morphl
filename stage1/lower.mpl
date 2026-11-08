@@ -557,14 +557,29 @@ $decl dfr_list  $specialize P.list proto_dfr
 // unbuilt (§4.15): `res` is what the constructor answers, `vty` joined with what each `$try`
 // returns, and `out` what the call is, `rty` joined with the same — both `vty` and `rty`
 // when there is no `$try`.
+//
+// A call through a constructor's value is **dynamic** (SPEC §5.3a, STORAGE.md "A constructor
+// as a value"): it answers `{b, d}`, `res` and the block's `drop` together, so `dyn` says so
+// and `drop` is then the caller's slot holding `d`. `fn` is the function a call by name
+// makes, when it is not `key` itself: a constructor's shim and a thunk naming the shim are
+// registered under their own indices and call the constructor. `name` and `file` are the
+// constructor's, for naming its shim, and `at` its position.
 $decl ctor_ent $func ($decl k 0, $decl d 0, $decl dt T.proto_ty, $decl vt T.proto_ty,
-                      $decl rt T.proto_ty, $decl rs T.proto_ty, $decl ot T.proto_ty) {
+                      $decl rt T.proto_ty, $decl rs T.proto_ty, $decl ot T.proto_ty,
+                      $decl f -1, $decl dn $union (false, true), $decl nm "", $decl fl "",
+                      $decl sp 0) {
   $decl key k  $decl drop d  $decl dty dt  $decl vty vt  $decl rty rt  $decl res rs  $decl out ot
+  $decl fn f  $decl dyn dn  $decl name nm  $decl file fl  $decl at sp
 }
 $decl proto_ctor $call ctor_ent (-1, -1, T.t_bot, T.t_bot, T.t_bot, T.t_bot, T.t_bot)
 // `c` under another key.
 $decl ctor_as $func ($decl c proto_ctor, $decl k 0)
-  $call ctor_ent (k, c.drop, c.dty, c.vty, c.rty, c.res, c.out)
+  $call ctor_ent (k, c.drop, c.dty, c.vty, c.rty, c.res, c.out, c.fn, c.dyn, c.name, c.file,
+      c.at)
+// `c` with `drop` replaced.
+$decl ctor_drop $func ($decl c proto_ctor, $decl d 0)
+  $call ctor_ent (c.key, d, c.dty, c.vty, c.rty, c.res, c.out, c.fn, c.dyn, c.name, c.file,
+      c.at)
 $decl ctor_list  $specialize P.list proto_ctor
 
 // §3.4's defaults, which a short call needs. A known function's definition context —
@@ -1875,6 +1890,12 @@ $fwd alloc_fin
 $fwd ctor_body
 $fwd ctor_site
 $fwd ctor_in
+// ...and a constructor as a value (SPEC §5.3a): its shim, a call through one, and its types.
+$fwd ctor_value
+$fwd ctor_dyn_site
+$fwd ctor_of_ty
+$fwd dyn_ty
+$fwd at_dyn
 // DEFER.md step 5: an ephemeral place released where it is consumed.
 $fwd consume_at
 // A projection onto a prop, answered from the prop's source. It needs
@@ -2178,10 +2199,14 @@ $decl ctor_reg $func ($decl st proto_lst, $decl k 0) {
       ($do ($set st.ctors ($call ctor_list.cons ($call ctor_as (c, k), st.ctors))) 0) 0
 }.ret
 // A thunk `k` whose value is a constructor named again — `$decl h mk` — is that constructor
-// to a call through it, as `collect_aliases` makes it the same function to emit.
-$decl ctor_alias $func ($decl st proto_lst, $decl k 0, $decl x IR.proto_expr) {
+// to a call through it, as `collect_aliases` makes it the same function to emit. Any other
+// thunk of constructing type `t` — `$decl pick $if c mk mk2` — holds a value, so a call naming
+// it is dynamic (`ctor_of_ty`), as a call through any value is.
+$decl ctor_alias $func ($decl st proto_lst, $decl k 0, $decl x IR.proto_expr, $decl t T.proto_ty) {
   $decl g   $match x ($case {$prop tag "global"} x.fn, $case x -1)
-  $decl c   $if ($call lt (g, 0)) proto_ctor ($call find_ctor ($call ctor_list.val (st.ctors), g))
+  $decl c0  $if ($call lt (g, 0)) proto_ctor ($call find_ctor ($call ctor_list.val (st.ctors), g))
+  $decl c   $call ctor_val ($if ($call eq_int (c0.key, -1))
+                ($if ($call ctor_ty (t)) ($call ctor_of_ty (t)) c0) c0)
   $decl ret $if ($call not ($call eq_int (c.key, -1)))
       ($do ($set st.ctors ($call ctor_list.cons ($call ctor_as (c, k), st.ctors))) 0) 0
 }.ret
@@ -4253,8 +4278,10 @@ $decl rec_build $func ($decl st proto_lst, $decl ds mdones.node, $decl xs mprops
       $decl ok $call not ($call T.has_var (t, 0))
       $decl ti $if ok ($call intern (st, t)) ($call intern (st, T.t_unit))
       $decl sl $call fresh_slot (st, ti)
-      $decl ret2  $call racc ($call IR.bslots.cons ($call IR.bslot (sl, $call member_ir (ds, m.name,
-          ti)),
+      // A constructor member's value is its shim (`ctor_value`), as a name's is.
+      $decl mv $call lval ($call ctor_value (st, $call lres ($call member_ir (ds, m.name, ti), t),
+                   m.node))
+      $decl ret2  $call racc ($call IR.bslots.cons ($call IR.bslot (sl, mv.ir),
                                                  $call IR.bslots.val (a.slots)),
                    $call T.fields.cons ($call T.field (m.name, t), $call T.fields.val (a.flds)),
                    $call T.props.val (a.prps),
@@ -4858,17 +4885,23 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
   // §5.3a: a call to a constructor answers its block (`ctor_body`), and is the `$new` the
   // caller would have written (`ctor_site`) — or, as a constructor's whole body, the block
   // it forwards (`ctorfwd`).
-  $decl cr   $call ctor_of (st, f)
+  // A call through a constructor's value has no record to read: it is dynamic, and what it
+  // answers is read off the type (`ctor_of_ty`) — `{b, d}`, at the callee's own signature.
+  $decl cr0  $call ctor_of (st, f)
+  $decl fi   f.ir
+  $decl isg  $match fi ($case {$prop tag "global"} true, $case fi false)
+  $decl isv  $if ($call eq_int (cr0.key, -1)) ($if isg false ($call ctor_ty (f.ty))) false
+  $decl cr   $call ctor_val ($if isv ($call ctor_of_ty (f.ty)) cr0)
   $decl isc  $call not ($call eq_int (cr.key, -1))
   $decl miss $if isc 0 ($if ($call ctor_ty (f.ty)) ($call err (st,
       "this calls a constructing function (§5.3a) lowered after the call, which cannot know how to build it; define it above its callers", n)) 0)
-  $decl vft  $if isc ($call T.t_func (ps, cr.res)) f.ty
-  $decl fi   f.ir
-  $decl f2   $if isc ($match fi (
+  $decl cres $if cr.dyn ($call dyn_ty (cr)) cr.res
+  $decl vft  $if isc ($call T.t_func (ps, cres)) f.ty
+  $decl f2   $if isv ($call lval ($call at_dyn (st, f, vft))) ($if isc ($match fi (
                  $case {$prop tag "global"} ($call lres4 ($call IR.e_global ($call intern (st, vft),
-                     fi.fn), vft, f.mod, f.tmpl)),
-                 $case fi ($call lres4 (fi, vft, f.mod, f.tmpl)))) f
-  $decl cty  $if isc cr.res ty
+                     $if ($call lt (-1, cr.fn)) cr.fn fi.fn), vft, f.mod, f.tmpl)),
+                 $case fi ($call lres4 (fi, vft, f.mod, f.tmpl)))) f)
+  $decl cty  $if isc cres ty
   $decl fwd  $if isc ($if tail ($call mem_str ($call strs.val (st.ctorfwd), $call site_key (st, n)))
                  false) false
   $decl cf   $if loc f2.ir ($call short_callee (st, f2, na, n))
@@ -4881,7 +4914,9 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                  $if isc fwd ($if held false tail))
   $decl sp   $call P.span_of (n)
   $decl r0   $if fwd ($do ($set st.ctorhit cr) ($call lres (cl, cty)))
-                 ($if isc ($call lval ($call ctor_site (st, n, cr, cl))) ($call lres (cl, ty)))
+                 ($if isc ($call lval ($if cr.dyn ($call ctor_dyn_site (st, n, cr, cl))
+                                           ($call ctor_site (st, n, cr, cl))))
+                      ($call lres (cl, ty)))
   $decl ret  $call lval ($call consume_at (st, d0, r0, false, $call keep_key (sp.line, sp.col)))
 }.ret
 
@@ -5097,6 +5132,24 @@ $decl lower_override $func ($decl st proto_lst, $decl e benv.node, $decl n proto
       }.ret2
     )
 }.ret
+
+// A projection by name. A block literal projected on the spot is discarded there: a scope
+// (§4.15a). DEFER.md step 5: a projection consumes what its value does not hold (`consume_at`).
+$decl lower_projn $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
+  $decl d0   $call dfr_list.val (st.defers)
+  $decl sc   $set st.nextscope $call is_block_ast (n.target)
+  $decl ret  $call lval ($call consume_at (st, d0, $call lower_proj (st, e, n), false, ""))
+}.ret
+
+// A call's callee. A constructor named here is called (§5.3a), so it stays the constructor —
+// `lower_call` reads its record — where named anywhere else it is its shim (`ctor_value`).
+// Only the callee node itself: an `$if` choosing a constructor is a value, and its arms are
+// lowered by `lower`.
+$decl lower_callee $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_node) $match c (
+  $case {$prop tag "name"}      ($call lower_name (st, e, c)),
+  $case {$prop tag "proj_name"} ($call lower_projn (st, e, c)),
+  $case c ($call lower (st, e, c, false))
+)
 
 $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_form,
                         $decl tail P.boolean) {
@@ -5382,7 +5435,7 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
     // arguments lowered first, as they stand, then made what that candidate's parameters
     // want; lowering them twice could lift a `$func` literal twice.
     ($if ($call eq_str (k, "call")) {
-      $decl f0   $call as_value (st, $call lower (st, e, $call op (n, 0), false))
+      $decl f0   $call as_value (st, $call lower_callee (st, e, $call op (n, 0)))
       $decl fw   $call ffi_l (f0)
       $decl ts   $if ($call lt (f0.tmpl, 0)) tmpls_list.nil ($call find_tmpl (st.tmpls, f0.tmpl))
       $decl ret2 $match ts (
@@ -5423,14 +5476,10 @@ $decl lower $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_node,
     ($call lres ($call IR.e_bool ($call intern (st, $if n.value T.t_true T.t_false), n.value),
                  $if n.value T.t_true T.t_false)),
   $case {$prop tag "unit"}  ($call lres ($call IR.e_unit ($call intern (st, T.t_unit)), T.t_unit)),
-  $case {$prop tag "name"}  ($call lower_name (st, e, n)),
-  // A block literal projected on the spot is discarded there: a scope (§4.15a).
-  // DEFER.md step 5: a projection consumes what its value does not hold (`consume_at`).
-  $case {$prop tag "proj_name"} {
-    $decl d0   $call dfr_list.val (st.defers)
-    $decl sc   $set st.nextscope $call is_block_ast (n.target)
-    $decl ret2 $call lval ($call consume_at (st, d0, $call lower_proj (st, e, n), false, ""))
-  }.ret2,
+  // §5.3a: a constructor named as a value is its shim (`ctor_value`); a callee is lowered by
+  // `lower_callee`, which leaves it the constructor.
+  $case {$prop tag "name"}  ($call ctor_value (st, $call lower_name (st, e, n), n)),
+  $case {$prop tag "proj_name"} ($call ctor_value (st, $call lower_projn (st, e, n), n)),
   $case {$prop tag "proj_index"} {
     $decl d0   $call dfr_list.val (st.defers)
     $decl ret2 $call lval ($call consume_at (st, d0,
@@ -5563,9 +5612,18 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   // A `$try` in its block leaves with what it matched (`st.tryx`), so the block is one member
   // of what it answers and the reference one member of what its call is.
   $decl ctr  $call not ($call eq_int (cinf.key, -1))
-  $decl cin2 $if cnew ($call ctor_ent (cinf.key, cinf.drop, cinf.dty, cinf.vty, cinf.rty,
+  // Named for its shim (`ctor_shim`) from this function, wherever its record came from.
+  $decl md   $call P.sval (st.curmod)
+  $decl nsp  $call P.span_of (n)
+  $decl cin1 $if cnew ($call ctor_ent (cinf.key, cinf.drop, cinf.dty, cinf.vty, cinf.rty,
                  $call join_exits (cinf.vty, exits), $call join_exits (cinf.rty, exits))) cinf
-  $decl rty0 $if ctr cin2.res ($match fty ($case {$prop tag "func"} ($call T.tval (fty.result)),
+  $decl cin2 $call ctor_ent (cin1.key, cin1.drop, cin1.dty, cin1.vty, cin1.rty, cin1.res,
+                 cin1.out, cin1.fn, cin1.dyn,
+                 $call concat ($if ($call eq_str (md, "")) "e" md, $call concat ("_", nm)),
+                 $call P.sval (st.curfile), $call add ($call mul (nsp.line, 1000), nsp.col))
+  // A dynamic one — forwarding through a value — answers `{b, d}`, as a call through one does.
+  $decl rty0 $if ctr ($if cin2.dyn ($call dyn_ty (cin2)) cin2.res)
+                 ($match fty ($case {$prop tag "func"} ($call T.tval (fty.result)),
                  $case fty ($call join_exits (body.ty, exits))))
   $decl rty  $call intern (st, rty0)
   $decl ret   $call IR.fn_p (nm, b.tys, rty, $call take_slots (st), body.ir, false, false,
@@ -6177,7 +6235,7 @@ $decl lower_prop_thunk $func ($decl st proto_lst, $decl m proto_mod, $decl nm ""
                   false, true, IR.ints.nil, $call P.sval (st.curfile),
                   $call prop_rank (m.props, nm, 0), true, $call P.sval (st.curmod))
   $decl put   $call put_lifted (st, idx, f)
-  $decl cg    $call ctor_alias (st, idx, bd.val.ir)
+  $decl cg    $call ctor_alias (st, idx, bd.val.ir, t)
   $decl ret   $call lres4 ($call IR.e_global (vty, idx), t, bd.val.mod, bd.val.tmpl)
   $decl mrest $call leave_mod (st, msave)
 }.ret
@@ -6929,8 +6987,10 @@ $decl ctor_built $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr prot
                    T.props.nil)
     $decl ob   $call IR.e_field (rid, $call IR.e_block ($call intern (st, oty),
                    $call IR.bslots.cons ($call IR.bslot (pp, nw), IR.bslots.nil)), 0)
-    // `$cd ($cs.f0, $cs.f1, …)`, through names no identifier can be (§2.1).
-    $decl en   $call benv.cons ($call bind_ent ("$cd", "global", cr.drop, cr.dty),
+    // `$cd ($cs.f0, $cs.f1, …)`, through names no identifier can be (§2.1). A dynamic call's
+    // `drop` is the slot it saved `d` in (`ctor_dyn_site`).
+    $decl en   $call benv.cons ($call bind_ent ("$cd", $if cr.dyn "local" "global", cr.drop,
+                   cr.dty),
                    $call benv.cons ($call bind_ent ("$cs", "local", ss, cr.vty), benv.nil))
     $decl as   $call drop_args ($call blk_fields (cr.vty), sp, Pa.nodes.nil)
     $decl dn   $call Pa.n_form ("call", $call Pa.nodes.cons ($call Pa.n_name ("$cd", sp.line, sp.col),
@@ -6984,6 +7044,184 @@ $decl ctor_site $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr proto
     $decl ret2 $call lres ($call IR.e_switch ($call intern (st, cr.out), call,
                    $call IR.arms.cons (a0, as), $call IR.e_unit (uid)), cr.out)
   }.ret2
+
+// ------------------------------------------------------ a constructor as a value
+//
+// SPEC §5.3a, STORAGE.md "A constructor as a value". A call naming a constructor reads its
+// `drop` off the record; a call through a value cannot, since two constructors of one type
+// may differ in their deferrals and a function's code is not in its type (§7.3). So such a
+// call is **dynamic**: it answers `{b, d}`, what the static call answers and the block's
+// `drop`, and the caller registers `d`. A constructor named as a value is the pair of a shim
+// that calls it and answers that.
+
+// The reference member of a constructor's result: the result, or — when it can fail — the one
+// reference among the union's members.
+$decl ref_in $func ($decl ms T.tys.node) $match ms (
+  $case {$prop tag "cons"} {
+    $decl m    $call T.unroll (ms.head)
+    $decl ret2 $match m ($case {$prop tag "ref"} m,
+                         $case m ($call ref_in ($call T.tys.val (ms.tail))))
+  }.ret2,
+  $case ms T.t_bot
+)
+$decl ctor_ref $func ($decl t0 T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t ($case {$prop tag "union"} ($call ref_in ($call T.tys.val (t.members))),
+                      $case t t)
+}.ret
+
+// A dynamic call's record, read off the callee's type `fty` alone: the block is the reference
+// member's pointee, `drop` a function of its fields, and `res` the result read through (§5.4),
+// as a call by name would answer. Built the same way on both sides — at the call and in the
+// shim — so the two agree on `{b, d}`.
+$decl ctor_of_ty $func ($decl fty T.proto_ty) {
+  $decl r   $call result_of (fty)
+  $decl rf  $call ctor_ref (r)
+  $decl vt  $call deref_ty (rf)
+  $decl dt  $call T.t_func ($call fld_tys0 ($call blk_fields (vt), T.tys.nil), T.t_unit)
+  $decl ret $call ctor_ent (0, 0, dt, vt, rf, $call deref_ty (r), r, -1, true)
+}.ret
+// What a dynamic call answers.
+$decl dyn_ty $func ($decl c proto_ctor)
+  $call T.t_block ($call T.fields.cons ($call T.field ("b", c.res),
+      $call T.fields.cons ($call T.field ("d", c.dty), T.fields.nil)), T.props.nil)
+
+// `x` stored in slot `sl` and answered: `ctor_built`'s snapshot, as one expression.
+$decl save_in $func ($decl st proto_lst, $decl sl 0, $decl t T.proto_ty, $decl x IR.proto_expr) {
+  $decl id  $call intern (st, t)
+  $decl sty $call T.t_block ($call T.fields.cons ($call T.field ("s", t), T.fields.nil),
+                T.props.nil)
+  $decl ret $call IR.e_field (id, $call IR.e_block ($call intern (st, sty),
+                $call IR.bslots.cons ($call IR.bslot (sl, x), IR.bslots.nil)), 0)
+}.ret
+
+// A function value at the signature `vft` a dynamic call is made at. It is the same two words
+// (§7.3), but emit takes an indirect call's C signature from its callee's type, so the value is
+// saved in a slot and read back through a node of that type.
+$decl at_dyn $func ($decl st proto_lst, $decl f proto_lres, $decl vft T.proto_ty) {
+  $decl sl  $call fresh_slot (st, $call intern (st, f.ty))
+  $decl vid $call intern (st, vft)
+  $decl ret $call lres4 ($call IR.e_do (vid, $call save_in (st, sl, f.ty, f.ir),
+                $call IR.e_local (vid, sl)), vft, f.mod, f.tmpl)
+}.ret
+
+// The caller's half of a dynamic call: `{b, d}` saved, `d` in a slot of its own for the
+// deferral to call (`ctor_built` binds `$cd` to it), and `b` made into the storage as a call by
+// name's block is.
+$decl ctor_dyn_site $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr proto_ctor,
+                           $decl call IR.proto_expr) {
+  $decl dt   $call dyn_ty (cr)
+  $decl did  $call intern (st, dt)
+  $decl tid  $call intern (st, cr.dty)
+  $decl sd   $call fresh_slot (st, did)
+  $decl dd   $call fresh_slot (st, tid)
+  $decl s1   $call save_in (st, sd, dt, call)
+  $decl s2   $call save_in (st, dd, cr.dty, $call IR.e_field (tid, $call IR.e_local (did, sd), 1))
+  $decl b    $call IR.e_field ($call intern (st, cr.res), $call IR.e_local (did, sd), 0)
+  $decl site $call lval ($call ctor_site (st, n, $call ctor_drop (cr, dd), b))
+  $decl oid  $call intern (st, site.ty)
+  $decl ret  $call lres ($call IR.e_do (oid, s1, $call IR.e_do (oid, s2, site.ir)), site.ty)
+}.ret
+
+// A constructor with no deferrals still answers a `drop` from its value, so the caller's is
+// unconditional: one that does nothing, per `drop` type, memoised in `wraps` under a key no
+// function index can be.
+$decl noop_drop $func ($decl st proto_lst, $decl c proto_ctor) {
+  $decl tid $call intern (st, c.dty)
+  $decl key $call sub (-2, tid)
+  $decl hit $call find_wrap ($call wrap_list.val (st.wraps), key, -1)
+  $decl ret $if ($call lt (-1, hit)) hit {
+    $decl outer $call take_slots (st)
+    $decl ps    $call params_of (c.dty)
+    $decl pv    $call wrap_params (st, ps, 0, IR.ints.nil, IR.exprs.nil)
+    $decl uid   $call intern (st, T.t_unit)
+    $decl f     $call IR.fn_p ("nodrop", $call ints_of_tys (st, ps, IR.ints.nil), uid,
+                    $call take_slots (st), $call IR.e_unit (uid), false, false, IR.ints.nil,
+                    $call P.sval (st.curfile), tid, true, "nodrop")
+    $decl back  $call restore_slots (st, outer)
+    $decl idx   $call add_lifted (st, f)
+    $decl m     $set st.wraps ($call wrap_list.cons ($call wrap_ent (key, -1, idx, c.dty,
+                    $call Pa.n_unit (0, 0)), st.wraps))
+    $decl ret2  idx
+  }.ret2
+}.ret
+
+// The shim of constructor `g`, whose record is `c` and type `fty`: it takes `g`'s parameters,
+// calls it, and answers `{b, d}`. Once per constructor, in its own file and named from it, as
+// `drop` is; registered as a constructor itself, calling `g`, so a call naming the shim — a
+// thunk `$decl h mk` holds it — is still a static call.
+$decl ctor_shim $func ($decl st proto_lst, $decl g 0, $decl c proto_ctor, $decl fty T.proto_ty) {
+  $decl hit $call find_wrap ($call wrap_list.val (st.wraps), g, -1)
+  $decl ret $if ($call lt (-1, hit)) hit {
+    $decl tr    $call ctor_of_ty (fty)
+    $decl dt    $call dyn_ty (tr)
+    $decl dv    $if ($call lt (-1, c.drop)) c.drop ($call noop_drop (st, tr))
+    $decl sfn   $if ($call lt (-1, c.fn)) c.fn g
+    $decl outer $call take_slots (st)
+    $decl ps    $call params_of (fty)
+    $decl pv    $call wrap_params (st, ps, 0, IR.ints.nil, IR.exprs.nil)
+    $decl call  $call IR.e_call ($call intern (st, c.res), $call IR.e_global ($call intern (st,
+                    $call T.t_func (ps, c.res)), sfn), pv.irs, false)
+    $decl bv    $if ($call T.same (c.res, tr.res)) call ($call IR.e_copy ($call intern (st, tr.res),
+                    call))
+    $decl sb    $call fresh_slot (st, $call intern (st, tr.res))
+    $decl sd    $call fresh_slot (st, $call intern (st, tr.dty))
+    $decl body  $call IR.e_block ($call intern (st, dt), $call IR.bslots.cons ($call IR.bslot (sb,
+                    bv), $call IR.bslots.cons ($call IR.bslot (sd, $call IR.e_global ($call intern (
+                    st, tr.dty), dv)), IR.bslots.nil)))
+    $decl f     $call IR.fn_p ("ctor_dyn", $call ints_of_tys (st, ps, IR.ints.nil),
+                    $call intern (st, dt), $call take_slots (st), body, false, false, IR.ints.nil,
+                    c.file, c.at, true, $call concat (c.name, "_dyn"))
+    $decl back  $call restore_slots (st, outer)
+    $decl idx   $call add_lifted (st, f)
+    $decl m     $set st.wraps ($call wrap_list.cons ($call wrap_ent (g, -1, idx, fty,
+                    $call Pa.n_unit (0, 0)), st.wraps))
+    $decl r     $set st.ctors ($call ctor_list.cons ($call ctor_ent (idx, c.drop, c.dty, c.vty,
+                    c.rty, c.res, c.out, sfn, false, c.name, c.file, c.at), st.ctors))
+    $decl ret2  idx
+  }.ret2
+}.ret
+
+// A constructor's type as its value has it: the result `r`, and the flag that says it
+// constructs. A module member's type is derived from its lowered function (`fn_ty`), whose
+// result is the block by value and which carries no flag; its value is called at the
+// reference, as inference types it (`c.out`).
+$decl with_out $func ($decl t0 T.proto_ty, $decl r T.proto_ty) {
+  $decl t   $call T.unroll (t0)
+  $decl ret $match t (
+      $case {$prop tag "func"} {
+        $decl es   $call T.cints.val (t.esc)
+        $decl es2  $if ($call T.ci_mem (es, 2000)) es ($call T.ci_sort ($call T.cints.cons (2000,
+                       es), T.cints.nil))
+        $decl ret2 $call T.t_func_x ($call T.tys.val (t.params), r, t.frame, t.rmut, es2,
+                       $call T.cints.val (t.marks))
+      }.ret2,
+      $case t t)
+}.ret
+
+// A name or projection that is a constructor, as a value: its shim. Left as it is when it
+// is no constructor, already a shim or a thunk holding one (`fn` set), or dynamic, whose own
+// code answers `{b, d}` already. A block's local constructor has a closure, which no shim is
+// written for yet, so it is refused rather than called at the wrong signature.
+$decl ctor_value $func ($decl st proto_lst, $decl r proto_lres, $decl n Pa.proto_node) {
+  // Asked of every name, so nothing here walks a type: a record decides, not the type — a
+  // module member's or a block function's derived type has no flag.
+  $decl x   r.ir
+  $decl g   $match x ($case {$prop tag "global"} x.fn, $case x -1)
+  $decl c   $if ($call lt (-1, g)) ($call find_ctor ($call ctor_list.val (st.ctors), g))
+                proto_ctor
+  $decl loc $if ($call lt (r.tmpl, -1))
+                ($call not ($call eq_int (($call find_ctor ($call ctor_list.val (st.ctors),
+                    r.tmpl)).key, -1))) false
+  $decl ret $if loc ($call lres ($call IR.e_unit ($call err (st,
+          "a block's local constructor used as a value is not lowered yet (§5.3a); define it at a file's top level, or call it by name",
+          n)), r.ty))
+      ($if ($if ($call eq_int (c.key, -1)) true ($if c.dyn true ($call lt (-1, c.fn)))) r {
+         $decl vt   $call with_out (r.ty, c.out)
+         $decl ret2 $call lres4 ($call IR.e_global ($call intern (st, vt),
+                        $call ctor_shim (st, g, c, vt)), vt, r.mod, r.tmpl)
+       }.ret2)
+}.ret
 
 // Whether `n` constructs, where it is evaluated, through a constructor with deferrals: a
 // top-level item that does is the program's to own (`top_item`), as storage written there
@@ -8289,7 +8527,7 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
                           ($call lval ($call lower (st, et, init, true)))
           $decl rb    $call recv_put (st, rs)
           $decl vty   $call intern (st, v.ty)
-          $decl cg    $call ctor_alias (st, $call IR.fns.length (acc, 0), v.ir)
+          $decl cg    $call ctor_alias (st, $call IR.fns.length (acc, 0), v.ir, v.ty)
           $decl ret2     $call topfn ($call IR.fn_p (nm, IR.ints.nil, vty, $call take_slots (st),
                               v.ir, false, true, IR.ints.nil,
                               $call P.sval (st.curfile), $call next_rank (st), false,
