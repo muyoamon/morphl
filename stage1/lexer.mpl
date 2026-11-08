@@ -324,40 +324,44 @@ $decl lex_unicode $func ($decl cu proto_cursor)
 
 // Accumulates whole runs between escapes rather than one byte at a time: a
 // single byte of a multi-byte code point is not a valid `Str`, and §8's
-// `slice` panics rather than let one be built (§3.1).
-$decl scan_str $func ($decl cu proto_cursor, $decl acc "", $decl seg 0, $decl l 0, $decl c 0)
+// `slice` panics rather than let one be built (§3.1). The runs and escapes are
+// pieces, newest first, joined once at the closing quote (`P.join_chunks`):
+// appending at each escape copied the literal once per escape, which made
+// `emit.mpl`'s runtime text, hundreds of escapes long, 20 MB of a self-emit.
+$decl scan_str $func ($decl cu proto_cursor, $decl acc P.strs.node, $decl seg 0, $decl l 0,
+                      $decl c 0)
   // Refusing a raw newline keeps a missing close quote from swallowing the
   // rest of the file; the span stays on the opening quote.
   $if ($call or ($call at_end (cu), $call eq_int ($call peek (cu), c_nl)))
       ($call bad ("unterminated string literal", l, c))
   ($if ($call eq_int ($call peek (cu), c_quote)) {
-    $decl text  $call concat (acc, $call slice (cu.src, seg, cu.pos))
+    $decl text  $call P.join_chunks ($call P.strs.cons ($call slice (cu.src, seg, cu.pos), acc))
     $decl close $call advance (cu)
     $decl ret   $call token ("str", text, 0, l, c)
   }.ret
   ($if ($call eq_int ($call peek (cu), c_bslash)) {
-    $decl head  $call concat (acc, $call slice (cu.src, seg, cu.pos))
+    $decl head  $call P.strs.cons ($call slice (cu.src, seg, cu.pos), acc)
     $decl slash $call advance (cu)
     $decl e     $call peek (cu)
     $decl ret $if ($call eq_int (e, c_u)) {
       $decl u $call advance (cu)
       $decl r $call lex_unicode (cu)
       $decl ret2 $if ($call eq_str (r.msg, ""))
-          ($call scan_str (cu, $call concat (head, r.s), $call ival (cu.pos), l, c))
+          ($call scan_str (cu, $call P.strs.cons (r.s, head), $call ival (cu.pos), l, c))
           ($call bad (r.msg, l, c))
     }.ret2 {
       $decl s $call escape_str (e)
       $decl ret2 $if ($call eq_str (s, ""))
           ($call bad ("unknown escape: morphl has \\n \\t \\\\ \\\" and \\u{...}", l, c))
           ($do ($call advance (cu))
-               ($call scan_str (cu, $call concat (head, s), $call ival (cu.pos), l, c)))
+               ($call scan_str (cu, $call P.strs.cons (s, head), $call ival (cu.pos), l, c)))
     }.ret2
   }.ret
   ($do ($call advance (cu)) ($call scan_str (cu, acc, seg, l, c)))))
 
 $decl lex_string $func ($decl cu proto_cursor, $decl l 0, $decl c 0) {
   $decl open $call advance (cu)
-  $decl ret  $call scan_str (cu, "", cu.pos, l, c)
+  $decl ret  $call scan_str (cu, P.strs.nil, cu.pos, l, c)
 }.ret
 
 $decl lex_simple $func ($decl cu proto_cursor, $decl ch 0, $decl l 0, $decl c 0) {

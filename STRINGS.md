@@ -1,6 +1,6 @@
 # Strings: design note
 
-Status: **decided; the intrinsic is in** (step 2). SPEC §8 and BOOTSTRAP §2 name `concat_all`; this note
+Status: **decided; steps 2–4 are in**, `std/str` (step 5) is left. SPEC §8 and BOOTSTRAP §2 name `concat_all`; this note
 keeps the reasoning, the measurements and the plan. STDLIB.md's D6 (the builder) is the
 library half and changes with step 5.
 
@@ -9,7 +9,7 @@ library half and changes with step 5.
 | S1 | what a `Str` is | **settled by SPEC §3.1**: immutable bytes, pointer + length, always UTF-8 |
 | S2 | how text is built from many pieces | **implemented**: one primitive, `concat_all`, O(L) |
 | S3 | whether there is a mutable byte buffer | **decided**: no — S2 makes it unnecessary |
-| S4 | the compiler's own string building | **decided**: one joiner, over S2 (steps 3–4) |
+| S4 | the compiler's own string building | **implemented**: one joiner, over S2 (steps 3–4) |
 
 ## What §3.1 and §8 give
 
@@ -131,8 +131,23 @@ copies it once.
    the committed `mplc` knows the name before step 3 needs it. `concat_all.mpl` covers none,
    one and several pieces, multi-byte and empty ones, a million, and the intrinsic aliased
    and passed as a value, in both stages, compiled and under ASan.
-3. **The prelude's joiner**, and `emit`, `tyio` and `types.show` on it. The emitted C must
-   not change by a byte; measured as above.
-4. **`scan_str`** on pieces.
+3. **The prelude's joiner.** Done: `P.join_chunks` (pieces newest first, the array filled
+   from the far end, so nothing is reversed) and `P.join_strs` (in order), each answering a
+   single piece as itself, uncopied. `emit`'s output and its `c_bytes`, `tyio`'s output,
+   `types.show` and `compiler.mpl`'s `sole_text` use it, and the three pairwise joiners are
+   gone.
+4. **`scan_str`** on pieces. Done: runs and escapes are pieces, joined at the closing quote,
+   and a literal with no escape is the slice of the source itself.
+
+   Measured on a fixed input (HEAD's tree, compiled by the committed compiler and by this
+   one, the output identical and equal to `bootstrap/mplc.c`):
+
+   | self-emit | allocations | allocated |
+   |---|---|---|
+   | before | 17.79M | 990.6 MB |
+   | steps 3–4 | **16.37M** | **835.4 MB (−15.7%)** |
+
+   More than the −130 MB expected: the passes' list cells went with the copies, and an
+   escape-free literal is no longer copied at all.
 5. **`std/str`**: `concat_all`, `join` and the builder's `build` over the intrinsic;
    STDLIB.md's D6 updated.

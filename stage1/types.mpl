@@ -1053,35 +1053,8 @@ $fwd show
 // left fold of `concat` at every level, which copied each child's text again at every level
 // above it: a type's rendering cost its length times its depth, and a self-emit allocated
 // 107 MB to make the 1.7 MB of union sort keys it keeps (PERF.md, "Rendering a type").
-// The join is the pairwise one `tyio` and `emit` use, O(L log n): each pass copies the text
-// once, and passing the tail as a parameter keeps every call in tail position.
-$fwd ch_pass
-
-$decl ch_two $func ($decl a "", $decl t strs.node, $decl acc strs.node) $match t (
-  $case {$prop tag "cons"}
-    $call ch_pass ($call strs.val (t.tail), $call strs.cons ($call concat (a, t.head), acc)),
-  $case t ($call ch_pass (t, $call strs.cons (a, acc)))
-)
-
-$decl ch_pass $func ($decl xs strs.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call ch_two (xs.head, $call strs.val (xs.tail), acc),
-  $case xs acc
-)
-
-$fwd ch_all
-
-$decl ch_step $func ($decl xs strs.node, $decl a "", $decl t strs.node) $match t (
-  $case {$prop tag "cons"}
-    $call ch_all ($call strs.reverse ($call ch_pass (xs, strs.nil), strs.nil)),
-  $case t a
-)
-
-$decl ch_all $func ($decl xs strs.node) $match xs (
-  $case {$prop tag "cons"} $call ch_step (xs, xs.head, $call strs.val (xs.tail)),
-  $case xs ""
-)
-
-$decl chunks_text $func ($decl cs strs.node) $call ch_all ($call strs.reverse (cs, strs.nil))
+// The join is the prelude's, one `concat_all` (STRINGS.md).
+$decl chunks_text $func ($decl cs strs.node) $call P.join_chunks (cs)
 
 $fwd show_to
 

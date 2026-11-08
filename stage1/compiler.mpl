@@ -79,7 +79,7 @@ $decl proto_emitted $call emitted (IR.ofiles.nil, Pa.diags.nil)
 // than reaching into the list, so a driver written before §9.1 answered a list keeps
 // working after it: the outputs are emitted in an order that is valid to concatenate,
 // declarations before the code that uses them.
-// The outputs' texts, newest first, joined by `emit`'s balanced join: appending each to
+// The outputs' texts, newest first, joined by the prelude's `concat_all`: appending each to
 // an accumulator copied everything before it once per file (CLAUDE.md, "Writing morphl").
 $decl file_texts $func ($decl fs IR.ofiles.node, $decl acc E.strs.node) $match fs (
   $case {$prop tag "cons"}
@@ -88,8 +88,7 @@ $decl file_texts $func ($decl fs IR.ofiles.node, $decl acc E.strs.node) $match f
 )
 
 $decl sole_text $func ($decl e proto_emitted)
-  $call E.join_all ($call E.strs.reverse ($call file_texts ($call IR.ofiles.val (e.files),
-      E.strs.nil), E.strs.nil))
+  $call P.join_chunks ($call file_texts ($call IR.ofiles.val (e.files), E.strs.nil))
 
 $decl artifact $func ($decl p "", $decl d Pa.diags.node)
   { $decl path p  $decl diagnostics d }

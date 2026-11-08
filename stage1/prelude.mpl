@@ -93,6 +93,41 @@ $decl list $template T {
   )
 }
 
+// Text from pieces, joined once by §8's `concat_all` (STRINGS.md): the pieces go into an
+// array of their count and are copied into one allocation of their total length. A fold over
+// `concat` copies the text once per step, and folding pairs, which this replaced in three
+// modules, still copies it log₂ n times. `join_chunks` takes the pieces newest first, as an
+// accumulator holds them, and fills the array from the far end, so nothing is reversed.
+$decl strs $specialize list ""
+$decl fill_back $func ($decl a $call array (0, ""), $decl xs strs.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $do ($set ($call at (a, i)) xs.head) ($call fill_back (a, xs.tail, $call sub (i, 1))),
+  $case xs a
+)
+$decl fill_fwd $func ($decl a $call array (0, ""), $decl xs strs.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $do ($set ($call at (a, i)) xs.head) ($call fill_fwd (a, xs.tail, $call add (i, 1))),
+  $case xs a
+)
+$decl join_back $func ($decl cs strs.node) {
+  $decl n   $call strs.length (cs, 0)
+  $decl ret $call concat_all ($call fill_back ($call array (n, ""), cs, $call sub (n, 1)))
+}.ret
+$decl join_fwd $func ($decl xs strs.node) {
+  $decl n   $call strs.length (xs, 0)
+  $decl ret $call concat_all ($call fill_fwd ($call array (n, ""), xs, 0))
+}.ret
+// One piece is itself, uncopied — a slice of source text stays one.
+$decl join_chunks $func ($decl cs strs.node) $match cs (
+  $case {$prop tag "cons"} $if ($call strs.is_nil (cs.tail)) cs.head ($call join_back (cs)),
+  $case cs ""
+)
+// The pieces in order.
+$decl join_strs $func ($decl xs strs.node) $match xs (
+  $case {$prop tag "cons"} $if ($call strs.is_nil (xs.tail)) xs.head ($call join_fwd (xs)),
+  $case xs ""
+)
+
 // A span, and a reader for it.
 //
 // §5.1 matches blocks by ordered prefix, and every token and every AST node

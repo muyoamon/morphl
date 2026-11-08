@@ -3118,3 +3118,24 @@ once, and nothing in the language builds a list in order without one (tails are 
 a growable array copies more). The output join (`tyio`'s and `emit`'s pairwise fold,
 ~97 MB) is O(L log n) by construction and needs a primitive that joins many strings in one
 allocation to do better.
+
+## The output joined once (2026-11-08)
+
+STRINGS.md has the attribution: `concat` was 171 MB of a self-emit, and 138 MB of it was
+the pairwise joins (`emit`'s output 106 MB, `show`'s 12 MB) and `lexer.scan_str`, quadratic
+in a literal's escapes. With §8's `concat_all`, the prelude's `join_chunks` replaces the
+three pairwise joiners, and `scan_str` joins its pieces once. Counted as above, on HEAD's tree
+compiled by the committed compiler and by the changed one, the output identical:
+
+| self-emit, fixed input | allocations | allocated |
+|---|---|---|
+| before | 17.79M | 990.6 MB |
+| after | **16.37M** | **835.4 MB (−15.7%)** |
+
+Time at `-O2`, four alternating runs each: 12.23s before, 12.11s after — level. Since the
+first entry in this file's memory sections (1.29 GB, 23.6M allocations, 2026-11-05) a
+self-emit has come down by about a third.
+
+A joiner must not answer through `P.list`'s `nth`: its `panic` arm leaves a set-but-unused
+temporary, which the fixtures' `-Werror` without `-Wno-unused-but-set-variable` refuses, and
+every program importing the prelude pulls it in. `join_chunks` matches the head instead.

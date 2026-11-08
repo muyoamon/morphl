@@ -102,44 +102,8 @@ $decl note_ty $func ($decl st proto_cst, $decl t T.proto_ty) {
   $decl ret i
 }.ret
 
-// **Split in four so that every recursive call is a tail call (§7.7).** Reading
-// `xs.tail` twice needs a `$decl` to bind it, and a block around a recursive call is
-// a real frame — which at half the chunk count per pass is thousands of them. The
-// first cut here did exactly that and died on `types.mpl` with "call depth limit
-// exceeded at 8799 nested calls"; `emit.mpl`'s joiner is split this way for the same
-// reason and the comment there says so.
-//
-// Each pass copies the output once and there are log2(n) of them, so joining n chunks
-// totalling L bytes costs O(L log n) against a left fold's O(L n).
-$fwd join_pass
-
-$decl join_two $func ($decl a "", $decl t strs.node, $decl acc strs.node) $match t (
-  $case {$prop tag "cons"}
-    $call join_pass ($call strs.val (t.tail), $call strs.cons ($call concat (a, t.head), acc)),
-  $case t ($call join_pass (t, $call strs.cons (a, acc)))
-)
-
-$decl join_pass $func ($decl xs strs.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call join_two (xs.head, $call strs.val (xs.tail), acc),
-  $case xs acc
-)
-
-$fwd join_all
-
-$decl join_step $func ($decl xs strs.node, $decl a "", $decl t strs.node) $match t (
-  $case {$prop tag "cons"}
-    $call join_all ($call strs.reverse ($call join_pass (xs, strs.nil), strs.nil)),
-  $case t a
-)
-
-$decl join_all $func ($decl xs strs.node) $match xs (
-  $case {$prop tag "cons"} $call join_step (xs, xs.head, $call strs.val (xs.tail)),
-  $case xs ""
-)
-
-// Newest-first, so the chunks are reversed before joining.
-$decl out_of $func ($decl cs strs.node)
-  $call join_all ($call strs.reverse (cs, strs.nil))
+// The output, newest first, joined once by the prelude's `concat_all` (STRINGS.md).
+$decl out_of $func ($decl cs strs.node) $call P.join_chunks (cs)
 
 $decl put $func ($decl st proto_cst, $decl x "") {
   $decl a   $set st.out ($call strs.cons (x, $call strs.val (st.out)))

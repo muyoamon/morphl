@@ -159,51 +159,14 @@ $decl eval_diags $func ($decl x Pa.diags.node) x
 $decl emit_errs  $func ($decl st proto_est) $call eval_diags (st.errs)
 $decl emit_notes $func ($decl st proto_est) $call eval_diags (st.notes)
 
-// Fold each adjacent pair of chunks into one, halving the list. The result
-// comes out reversed, which is why `join_step` reverses between passes —
-// pointer work, where getting the order wrong would concatenate backwards.
-//
-// Split in two so that every recursive call is a *tail* call (§7.7): reading
-// `xs.tail` twice would need a `$decl` to bind it, and a block around a
-// recursive call is a real frame (§7.7 again), which at half the chunk count
-// per pass is thousands of them.
-$fwd join_pass
-
-$decl join_two $func ($decl a "", $decl t strs.node, $decl acc strs.node) $match t (
-  $case {$prop tag "cons"}
-    $call join_pass (t.tail, $call strs.cons ($call concat (a, t.head), acc)),
-  $case t ($call join_pass (t, $call strs.cons (a, acc)))
-)
-
-$decl join_pass $func ($decl xs strs.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call join_two (xs.head, xs.tail, acc),
-  $case xs acc
-)
-
-$fwd join_all
-
-// `a` is the first chunk and `t` the rest. One chunk left and the join is
-// done; otherwise fold the pairs and go round again. Each pass copies the
-// output once and there are log2(n) of them, so joining n chunks totalling L
-// bytes costs O(L log n) against a left fold's O(L n).
-$decl join_step $func ($decl xs strs.node, $decl a "", $decl t strs.node) $match t (
-  $case {$prop tag "cons"}
-    $call join_all ($call strs.reverse ($call join_pass (xs, strs.nil), strs.nil)),
-  $case t a
-)
-
-$decl join_all $func ($decl xs strs.node) $match xs (
-  $case {$prop tag "cons"} $call join_step (xs, xs.head, xs.tail),
-  $case xs ""
-)
-
-$decl out_of $func ($decl st proto_est)
-  $call join_all ($call strs.reverse (st.out, strs.nil))
+// The chunks `say` appended, newest first, joined once by the prelude's `concat_all`
+// (STRINGS.md). Folding pairs, which this replaced, copied the output once per pass — 18
+// passes over a self-emit's 5.4 MB, 106 MB in all.
+$decl out_of $func ($decl st proto_est) $call P.join_chunks ($call strs.val (st.out))
 
 // Take what has been said so far and start a fresh output. §9.1 makes `emit` answer a
 // *list* of files, and this is how one accumulator serves all of them: the chunks are
-// joined once per file, so the O(L log n) join of `out_of` is paid per file rather than
-// once over everything.
+// joined once per file.
 $decl cut_out $func ($decl st proto_est) {
   $decl t   $call out_of (st)
   $decl c   $set st.out strs.nil
@@ -933,12 +896,12 @@ $decl oct3 $func ($decl b 0)
       $call concat ($call int_to_str ($call mod ($call div (b, 8), 8)),
                     $call int_to_str ($call mod (b, 8)))))
 
-// Collected and joined in pairs (`join_all`), never appended: a left fold over `concat`
+// Collected and joined once (`P.join_chunks`), never appended: a left fold over `concat`
 // copies O(L n) for an L-byte literal, and the runtime's own text is one, so this was
 // 116 MB of a self-emit's 2.5 GB (PERF.md).
 $decl c_bytes $func ($decl s "", $decl i 0, $decl acc strs.node)
   $if ($call not ($call lt (i, $call len (s))))
-      ($call join_all ($call strs.reverse (acc, strs.nil)))
+      ($call P.join_chunks (acc))
       ($call c_bytes (s, $call add (i, 1), $call strs.cons ($call oct3 ($call byte (s, i)), acc)))
 
 $decl c_str_lit $func ($decl s "")
