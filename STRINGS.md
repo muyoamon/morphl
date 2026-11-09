@@ -2,7 +2,9 @@
 
 Status: **done; every step is in.** SPEC §8 and BOOTSTRAP §2 name `concat_all`; this note
 keeps the reasoning, the measurements and the plan. STDLIB.md's D6 (the builder) is the
-library half, updated with step 5.
+library half, updated with step 5. Who owns the bytes, and when they are released, is
+TEXT.md's: it moves the allocating operations behind `$primitives` and revisits S3 for the
+library.
 
 | | question | status |
 |---|---|---|
