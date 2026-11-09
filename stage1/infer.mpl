@@ -25,6 +25,11 @@ $decl Pa $import "parser"
 $decl Y  $import "tyio"
 $decl P  $import "prelude"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+$decl read_file  $primitives.read_file
+
 $decl not P.not
 $decl and P.and
 $decl or  P.or
@@ -942,7 +947,33 @@ $decl is_block_node $func ($decl n Pa.proto_node)
 $fwd owner_check
 
 // §7.6: the root `allocator`'s members are §8's raw-memory intrinsics.
-$decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_projn) {
+// §8's `$primitives`: the members a projection off the keyword may name, each typed as the
+// root block's binding of that name — `root_env` itself, so no binding between here and the
+// root stands in for it (§2.1: a keyword cannot be shadowed). Stage 0's
+// `builtins.primitives` must list the same names, which a Zig test checks.
+$decl prim_members $call strs.cons ("concat", $call strs.cons ("concat_all",
+    $call strs.cons ("to_str", $call strs.cons ("int_to_str", $call strs.cons ("from_code",
+    $call strs.cons ("read_file", strs.nil))))))
+$decl prim_member $func ($decl xs strs.node, $decl n "") $match xs (
+  $case {$prop tag "cons"} $if ($call eq_str (xs.head, n)) true ($call prim_member (xs.tail, n)),
+  $case xs false
+)
+$decl is_primitives $func ($decl x Pa.proto_node) $match x (
+  $case {$prop tag "form"} $call eq_str (x.keyword, "primitives"),
+  $case x false
+)
+$decl infer_primitive $func ($decl cx proto_ctx, $decl n proto_projn) {
+  $decl f   $call lookup (root_env, n.field)
+  $decl ret $if ($if f.ok ($call prim_member (prim_members, n.field)) false) f.ty
+      ($call err (cx, $call concat ("'", $call concat (n.field,
+          "' is not one of $primitives' members (§8)")), n))
+}.ret
+
+$fwd infer_proj_rest
+$decl infer_proj_name $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_projn)
+  $if ($call is_primitives (n.target)) ($call infer_primitive (cx, n))
+      ($call infer_proj_rest (cx, e, n))
+$decl infer_proj_rest $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_projn) {
   $decl t   $call deref_ty ($call infer (cx, e, n.target))
   $decl oc  $call owner_check (cx, n)
   $decl ret $if ($call T.same (t, T.ffi_alloc))
@@ -5591,8 +5622,11 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "overload"))   ($call infer_overload (cx, e, n))
     ($if ($call eq_str (k, "defer"))
          ($call err (cx, "$defer is a block item: it belongs directly in a block's items (§4.15a)", n))
+    // §2.2: there is no value of the whole set, only its members.
+    ($if ($call eq_str (k, "primitives"))
+         ($call err (cx, "$primitives is only the target of a projection, as in $primitives.concat (§8)", n))
          ($call err (cx, $call concat ("typing $", $call concat (k, " is not implemented yet")), n))
-    )))))))))))))))))))))
+    ))))))))))))))))))))))
 }.ret
 
 $decl infer $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_node) $match n (

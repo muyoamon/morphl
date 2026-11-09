@@ -35,6 +35,10 @@ $decl T  $import "types"
 $decl Pa $import "parser"
 $decl IR $import "ir"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+
 $decl not P.not
 $decl and P.and
 

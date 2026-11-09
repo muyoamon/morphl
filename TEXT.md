@@ -1,8 +1,8 @@
 # Owned text: design note
 
-Status: **decided; step 1 is in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
-BOOTSTRAP (§1, §2) say what is decided, and SPEC §11 says it is being implemented. Nothing
-in the compilers has changed yet. The plan is at the end. STRINGS.md made text cheap to build
+Status: **decided; steps 1–2 are in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
+BOOTSTRAP (§1, §2) say what is decided, SPEC §11 says it is being implemented, and both
+stages have `$primitives`, which the compiler builds its text through. The plan is at the end. STRINGS.md made text cheap to build
 (one `concat_all`, O(L)); this note is about who owns the bytes and when they are released.
 
 | | question | decided |
@@ -293,13 +293,18 @@ without a new form, and widening types belongs to a different design.
 ## Plan
 
 1. **This note**, and the SPEC and BOOTSTRAP text. Done.
-2. **`$primitives`.** Both parsers' arity tables, stage 0's evaluator, inference (the block of
-   the intrinsics' types), lowering (a projection is the intrinsic's `prim` node, so the
-   emitted C is unchanged, and `collect_aliases` already makes an alias of one a direct call).
-   The compiler moves onto it with one alias per module (`$decl concat $primitives.concat`),
-   which keeps its ~1,590 call sites as they are. The root keeps the old names for this step,
-   so it is one commit. The committed `mplc` cannot parse the keyword, so this is the two-step
-   bootstrap (CLAUDE.md, "Adding a root-block name").
+2. **`$primitives`.** Done, for the six members that build strings (`concat`, `concat_all`,
+   `to_str`, `int_to_str`, `from_code`, `read_file`); the FFI group, the byte type and `view`
+   join in step 4. Each stage keeps the member list (`builtins.primitives`, `infer.mpl`'s
+   `prim_members`) and a Zig test checks they agree. A member resolves in the root itself —
+   stage 0's root scope, inference's `root_env`, lowering's `st.rootenv` — so a file's own
+   `concat`, even one calling the member, does not stand in for it, and it lowers to the
+   `prim` node a root name does: the compiler's C still calls `mpl_concat` directly at every
+   site. `$primitives` alone and a non-member are refused in both stages. Each compiler
+   module aliases what it calls after its imports (`$decl concat $primitives.concat`), which
+   left its ~1,590 call sites as they were and cost the emitted compiler one thunk per alias
+   (5,383,402 → 5,397,774 bytes). Two regenerations: the keyword first, then its uses.
+   `primitives.mpl` and the `test-reject` case `primitives_bad.mpl` are the fixtures.
 3. **`$alloc` of a constructing call**, in inference and lowering, with fixtures: a frame text
    and a heap text from one constructor, `$free` running its deferral, an arena releasing it,
    and the fallible case.

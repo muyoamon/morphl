@@ -1258,6 +1258,11 @@ pub const Interp = struct {
             },
             .block => |exprs| return self.evalBlockExprs(exprs, scope, node.span),
             .proj_name => |p| {
+                // §8: `$primitives.name` is the primitive, whatever the scopes between
+                // here and the root bind — a keyword cannot be shadowed (§2.1).
+                if (p.target.data == .form and p.target.data.form.keyword == .primitives) {
+                    return self.primitive(p.field, node.span);
+                }
                 // A block literal in projection position is never built — see
                 // `projectBlockLiteral`.
                 if (p.target.data == .block) {
@@ -1434,7 +1439,24 @@ pub const Interp = struct {
             .traitsof => self.eval(&node.data.form.operands[0], scope),
             .@"extern" => self.outOfSubset(node.span, "$extern", "stage 0 provides the platform as builtins instead (BOOTSTRAP.md §2)"),
             .override => self.outOfSubset(node.span, "$override", "nothing stage 1 runs uses it, and the library's tests are compiled (STDLIB.md, P8)"),
+            // §2.2: there is no value of the whole set, only its members.
+            .primitives => self.rt.fail(node.span, "$primitives is only the target of a projection, as in $primitives.concat", .{}),
         };
+    }
+
+    /// §8's `$primitives.name`: the root block's builtin of that name, looked up in the
+    /// root itself so that no binding in between can stand in for it. Until TEXT.md's
+    /// step 6 the root still binds these names too; `builtins.primitives` is the set.
+    fn primitive(self: *Interp, name: []const u8, span: Span) Error!Value {
+        for (builtins.primitives) |m| {
+            if (std.mem.eql(u8, m, name)) {
+                if (self.root.findLocal(name)) |e| switch (e) {
+                    .value => |v| return v,
+                    else => {},
+                };
+            }
+        }
+        return self.rt.fail(span, "'{s}' is not one of $primitives' members", .{name});
     }
 
     /// §4.12, dynamically (BOOTSTRAP.md §1.1): `x`'s value with `override`'s props

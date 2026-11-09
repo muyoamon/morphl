@@ -39,6 +39,7 @@ pub const Keyword = enum {
     @"defer",
     free,
     override,
+    primitives,
 
     /// The source spelling, including the `$`.
     pub fn text(self: Keyword) []const u8 {
@@ -102,6 +103,7 @@ const signatures = [_]Signature{
     &.{.expr}, // $defer e        (DEFER.md: a block item, run when the block is done)
     &.{.expr}, // $free r         (DEFER.md: release allocated storage through its allocator)
     &.{ .expr, .expr }, // $override x override  (§4.12a: replace props, the mirror of `$impl`)
+    &.{}, // $primitives        (§8: only the target of a projection, `$primitives.concat`)
 };
 
 /// Maps a keyword's name *without* the `$` to its tag.
@@ -132,6 +134,7 @@ const table = std.StaticStringMap(Keyword).initComptime(.{
     .{ "defer", .@"defer" },
     .{ "free", .free },
     .{ "override", .override },
+    .{ "primitives", .primitives },
 });
 
 pub fn lookup(name_without_dollar: []const u8) ?Keyword {
@@ -141,7 +144,8 @@ pub fn lookup(name_without_dollar: []const u8) ?Keyword {
 test "every keyword has a signature and round-trips through the table" {
     inline for (std.meta.fields(Keyword)) |f| {
         const kw: Keyword = @enumFromInt(f.value);
-        try std.testing.expect(kw.arity() >= 1 and kw.arity() <= 3);
+        // `$primitives` is the one form of none (§2.2): only a projection's target.
+        try std.testing.expect(kw.arity() <= 3);
         try std.testing.expectEqual(kw, lookup(f.name).?);
         try std.testing.expectEqualStrings("$" ++ f.name, kw.text());
     }
@@ -154,6 +158,7 @@ test "arities match SPEC.md 2.2" {
     try std.testing.expectEqual(@as(usize, 3), Keyword.@"if".arity());
     try std.testing.expectEqual(@as(usize, 3), Keyword.impl.arity());
     try std.testing.expectEqual(@as(usize, 1), Keyword.traitsof.arity());
+    try std.testing.expectEqual(@as(usize, 0), Keyword.primitives.arity());
 }
 
 test "true and false are not keywords" {

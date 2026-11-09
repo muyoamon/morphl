@@ -15,6 +15,11 @@
 $decl L $import "lexer"
 $decl P $import "prelude"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+$decl read_file  $primitives.read_file
+
 $decl not  P.not
 $decl and  P.and
 $decl or   P.or
@@ -173,6 +178,7 @@ $call add_kw ("extern",     2, "str",   "expr", "")
 $call add_kw ("defer",      1, "expr",  "",     "")
 $call add_kw ("free",       1, "expr",  "",     "")
 $call add_kw ("override",   2, "expr",  "expr", "")
+$call add_kw ("primitives", 0, "",      "",     "")
 
 $decl find_kw $func ($decl xs kws.node, $decl n "") $match xs (
   $case {$prop tag "cons"}
@@ -424,11 +430,12 @@ $decl parse_form $func ($decl ps proto_parser) {
             2)) ($call n_unit (t.line, t.col))
         $decl o3 $if ($call lt (2, s.arity)) ($call parse_operand (ps, t, s.o3,
             3)) ($call n_unit (t.line, t.col))
-        $decl ops $if ($call eq_int (s.arity, 1))
+        $decl ops $if ($call eq_int (s.arity, 0)) nodes.nil
+            ($if ($call eq_int (s.arity, 1))
             ($call nodes.cons (o1, nodes.nil))
             ($if ($call eq_int (s.arity, 2))
                 ($call nodes.cons (o1, $call nodes.cons (o2, nodes.nil)))
-                ($call nodes.cons (o1, $call nodes.cons (o2, $call nodes.cons (o3, nodes.nil)))))
+                ($call nodes.cons (o1, $call nodes.cons (o2, $call nodes.cons (o3, nodes.nil))))))
         $decl ret2 $call n_form (t.text, ops, t.line, t.col)
       }.ret2
 }.ret

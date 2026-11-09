@@ -215,6 +215,10 @@ pub fn build(b: *std.Build) void {
         // §8's `concat_all`: none, one and several pieces, multi-byte and empty ones, a million,
         // and the intrinsic as a value, aliased and passed (STRINGS.md).
         .{ .src = "stage1/fixtures/concat_all.mpl", .want = "[] [one] [a,b,c] [ü€😀] [xy] 3000000 abc|abc 6 a-b-c" },
+        // §8's `$primitives`: a member is the primitive whatever the file binds — its own
+        // `concat`, which calls the member — as a call, an alias at top level and in a block,
+        // a value and a parameter's default, and the option-returning members (TEXT.md).
+        .{ .src = "stage1/fixtures/primitives.mpl", .want = "ba[42]é?missing7" },
         .{ .src = "stage1/fixtures/fwd_init.mpl", .want = "126\n" },
         .{ .src = "stage1/fixtures/fwd_local.mpl", .want = "1048\n" },
         .{ .src = "stage1/fixtures/module_value.mpl", .want = "41\n" },
@@ -623,6 +627,16 @@ pub fn build(b: *std.Build) void {
     // `driver` is what stage 1 runs: `typecheck.mpl` stops after inference, so a refusal
     // only lowering makes needs `lower_dump.mpl`, which counts `check errors:`.
     for ([_]struct { src: []const u8, stage1: []const []const u8, count: []const u8, stage0: ?[]const u8, driver: []const u8 = "stage1/typecheck.mpl" }{
+        // §2.2 and §8: `$primitives` alone, and a name that is not one of its members.
+        .{
+            .src = "stage1/fixtures/primitives_bad.mpl",
+            .stage1 = &.{
+                "primitives_bad.mpl:3:9: $primitives is only the target of a projection, as in $primitives.concat (§8)",
+                "primitives_bad.mpl:4:9: 'add' is not one of $primitives' members (§8)",
+            },
+            .count = "errors: 2\n",
+            .stage0 = "$primitives is only the target of a projection",
+        },
         .{
             .src = "stage1/fixtures/fwd_uninit.mpl",
             .stage1 = &.{

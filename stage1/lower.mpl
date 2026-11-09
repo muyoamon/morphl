@@ -27,6 +27,11 @@ $decl Pa $import "parser"
 $decl IR $import "ir"
 $decl Y  $import "tyio"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+$decl read_file  $primitives.read_file
+
 $decl not P.not
 $decl and P.and
 
@@ -3929,7 +3934,8 @@ $decl ast_pure $func ($decl n Pa.proto_node) $match n (
   // `tyhole`: a generic §4.9's application inferred (`lower_apply`), a type and no value.
   $case {$prop tag "form"}
     $if ($call eq_str (n.keyword, "func")) true
-    ($if ($call eq_str (n.keyword, "template")) true ($call eq_str (n.keyword, "tyhole"))),
+    ($if ($call eq_str (n.keyword, "template")) true
+    ($if ($call eq_str (n.keyword, "primitives")) true ($call eq_str (n.keyword, "tyhole")))),
   $case n false
 )
 $decl spec_eff $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node,
@@ -5140,7 +5146,32 @@ $decl lower_override $func ($decl st proto_lst, $decl e benv.node, $decl n proto
 
 // A projection by name. A block literal projected on the spot is discarded there: a scope
 // (§4.15a). DEFER.md step 5: a projection consumes what its value does not hold (`consume_at`).
-$decl lower_projn $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
+// §8's `$primitives.name`: the root block's intrinsic of that name, looked up in the root's
+// own environment (`st.rootenv`), so no binding between here and the root stands in for it.
+// The node is the one a root name lowers to, so the C is the same. Inference has refused a
+// name that is not a member.
+$decl lower_primitive $func ($decl st proto_lst, $decl n proto_projn) {
+  $decl f   $call lookup ($call benv.val (st.rootenv), n.field)
+  $decl ret $if f.hit {
+      $decl bt   $call T.tval (f.bnd.ty)
+      $decl id   $call intern (st, bt)
+      $decl ret2 $call lres ($call IR.e_prim ($if ($call is_over_l (bt))
+                     ($call intern_cands (st, $call over_cands (bt), id))
+                     ($do ($call seal_fn (st, bt)) id), n.field), bt)
+    }.ret2
+    ($call lres ($call IR.e_unit ($call err (st, $call concat ("'", $call concat (n.field,
+        "' is not one of $primitives' members")), n)), T.t_bot))
+}.ret
+$decl is_primitives $func ($decl x Pa.proto_node) $match x (
+  $case {$prop tag "form"} $call eq_str (x.keyword, "primitives"),
+  $case x false
+)
+
+$fwd lower_projn_rest
+$decl lower_projn $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn)
+  $if ($call is_primitives (n.target)) ($call lower_primitive (st, n))
+      ($call lower_projn_rest (st, e, n))
+$decl lower_projn_rest $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
   $decl d0   $call dfr_list.val (st.defers)
   $decl sc   $set st.nextscope $call is_block_ast (n.target)
   $decl ret  $call lval ($call consume_at (st, d0, $call lower_proj (st, e, n), false, ""))

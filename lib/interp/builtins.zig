@@ -30,6 +30,14 @@ const Error = value.Error;
 const Scope = value.Scope;
 const Field = value.Field;
 
+/// §8's `$primitives`: the members a projection off the keyword may name. Stage 0 answers
+/// each with the root block's builtin of that name, which the root still binds until
+/// TEXT.md's step 6; stage 1's `prim_members` in `infer.mpl` must list the same names. The
+/// string-building ones so far — the FFI group, the byte type and `view` are step 4's.
+pub const primitives = [_][]const u8{
+    "concat", "concat_all", "to_str", "int_to_str", "from_code", "read_file",
+};
+
 /// Build the root scope: the implicit block every program is wrapped in (§8).
 pub fn rootScope(arena: Allocator, rt: *Runtime) Error!*Scope {
     const scope = try Scope.init(arena, null);
@@ -692,6 +700,46 @@ test "the two root blocks name the same things" {
         }
     }
     try std.testing.expectEqual(@as(usize, 0), missing);
+}
+
+// §8's `$primitives` has a member list in each stage — `primitives` here, `prim_members` in
+// `infer.mpl` — and a name in one and not the other is a program that runs in one stage and
+// is refused by the other. Scraped like `root_env` above: the quoted names in the declaration.
+test "the two stages agree on $primitives' members" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const tio = threaded.io();
+    const src = try std.Io.Dir.cwd().readFileAlloc(
+        tio,
+        "stage1/infer.mpl",
+        std.testing.allocator,
+        .limited(1 << 22),
+    );
+    defer std.testing.allocator.free(src);
+
+    const start = std.mem.indexOf(u8, src, "\n$decl prim_members") orelse return error.NoPrimMembers;
+    const rest = src[start + 1 ..];
+    const end = std.mem.indexOf(u8, rest, "\n$decl ") orelse rest.len;
+    const span = rest[0..end];
+
+    var named: usize = 0;
+    var missing: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, span, i, '"')) |open| {
+        const close = std.mem.indexOfScalarPos(u8, span, open + 1, '"') orelse break;
+        const name = span[open + 1 .. close];
+        named += 1;
+        const known = for (primitives) |m| {
+            if (std.mem.eql(u8, m, name)) break true;
+        } else false;
+        if (!known) {
+            std.debug.print("stage 0's primitives is missing '{s}'\n", .{name});
+            missing += 1;
+        }
+        i = close + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), missing);
+    try std.testing.expectEqual(primitives.len, named);
 }
 
 test "overflow and division by zero panic" {

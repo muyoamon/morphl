@@ -41,6 +41,10 @@ $decl L  $import "lower"
 $decl E  $import "emit"
 $decl V  $import "verify"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+
 // ------------------------------------------------------- what travels between
 //
 // §5.1 makes field order the interface, so each of these grows only at the end

@@ -6,6 +6,9 @@
 // first, values read out of storage explicitly, and tail position preserved
 // wherever a function recurses.
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat_all $primitives.concat_all
+
 // An example of `Bool`, for parameters that accept either tag.
 //
 // §3.4 makes a default *fix* its parameter's type and §3.2 makes `true` its own

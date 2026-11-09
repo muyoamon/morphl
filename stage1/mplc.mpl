@@ -12,6 +12,11 @@ $decl C  $import "compiler"
 $decl Pa $import "parser"
 $decl P  $import "prelude"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+$decl read_file  $primitives.read_file
+
 $decl argv $call args ()
 
 $decl usage "usage: mplc <file.mpl> [-L <dir>]... [-o <exe> [cc args...]]"

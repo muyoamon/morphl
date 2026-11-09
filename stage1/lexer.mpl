@@ -21,6 +21,10 @@
 
 $decl P $import "prelude"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat    $primitives.concat
+$decl from_code $primitives.from_code
+
 $decl not  P.not
 $decl and  P.and
 $decl or   P.or

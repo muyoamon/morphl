@@ -23,6 +23,10 @@
 
 $decl P $import "prelude"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+
 $decl not P.not
 $decl and P.and
 $decl or  P.or

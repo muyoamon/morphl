@@ -42,6 +42,10 @@
 $decl P $import "prelude"
 $decl T $import "types"
 
+// §8's operations that allocate a string, reached through `$primitives` (TEXT.md).
+$decl concat     $primitives.concat
+$decl int_to_str $primitives.int_to_str
+
 $decl not P.not
 
 $decl ints $specialize P.list 0
