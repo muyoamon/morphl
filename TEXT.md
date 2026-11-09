@@ -1,8 +1,9 @@
 # Owned text: design note
 
-Status: **decided; steps 1–2 are in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
-BOOTSTRAP (§1, §2) say what is decided, SPEC §11 says it is being implemented, and both
-stages have `$primitives`, which the compiler builds its text through. The plan is at the end. STRINGS.md made text cheap to build
+Status: **decided; steps 1–3 are in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
+BOOTSTRAP (§1, §2) say what is decided, SPEC §11 says it is being implemented, both stages
+have `$primitives`, which the compiler builds its text through, and `$alloc` of a
+constructing call allocates the block. The plan is at the end. STRINGS.md made text cheap to build
 (one `concat_all`, O(L)); this note is about who owns the bytes and when they are released.
 
 | | question | decided |
@@ -136,8 +137,12 @@ $decl text $func () $new {
 call is "frame storage of the scope it stands in, exactly as if that `$new` were written at
 the call". Three things make it sound and cheap:
 
-- **It changes no valid program.** Today `$alloc $new e` stores a place in storage, which A0
-  refuses, so the form is free to define.
+- **It replaces a reading that was a trap.** Before, `$alloc` of a constructing call read
+  the place through as a value (A0): the block was built in the frame and copied. Stage 0
+  then ran its deferrals when the frame ended, while the copy lived on — releasing what the
+  storage still held — and the compiled program already ran them at `$free`, so the two
+  stages disagreed on the same program. Now both mean the allocated block, and stage 0,
+  which releases nothing, refuses one with deferrals, as it refuses `$alloc { … $defer … }`.
 - **The deferral rule already fits.** §4.15a lets a constructed block's deferrals name only
   the block's own bindings, the file's top level and the root block. That is what a deferral
   needs when it runs at `$free` or at an arena's release, outside every frame.
@@ -305,9 +310,17 @@ without a new form, and widening types belongs to a different design.
    left its ~1,590 call sites as they were and cost the emitted compiler one thunk per alias
    (5,383,402 → 5,397,774 bytes). Two regenerations: the keyword first, then its uses.
    `primitives.mpl` and the `test-reject` case `primitives_bad.mpl` are the fixtures.
-3. **`$alloc` of a constructing call**, in inference and lowering, with fixtures: a frame text
-   and a heap text from one constructor, `$free` running its deferral, an arena releasing it,
-   and the fallible case.
+3. **`$alloc` of a constructing call.** Done. Lowering already handed the built block's
+   `drop` to the allocator (`alloc_fin`), but it built the block in the frame and allocated
+   a copy; now `ctor_site` allocates it once, from the allocator at the `$alloc` (`ctalloc`),
+   and registers the `drop` with its `defer_at` inside the built arm. Inference types a
+   fallible one `<&^T, none>` (`T.to_alloc`, shared), where it said `&^<T, none>`, and
+   `$free`'s routing follows a `$try` to its operand and counts such a result as allocated
+   (`T.alloc_res`) — without both, the block could be built and never named to be freed.
+   Stage 0 refuses one with deferrals, as it refuses `$alloc { … $defer … }`; it used to run
+   them when the frame ended, while the compiled program ran them at `$free`. Fixtures:
+   `ctor_alloc.mpl` (frame and heap from one constructor, `$free`, never freed, `$mut`,
+   fallible built and not; compiled only) and `std/mem_test.mpl`'s arena case (13).
 4. **The byte type**, `$primitives.view`, and the FFI group's move.
 5. **`std/str`'s text and views**, with `std/fmt` and `std/io` moved onto them, and
    `std/str_test.mpl` covering growth, a view across growth, `t.write (t.view ())`, a stale view

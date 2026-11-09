@@ -1731,6 +1731,38 @@ $decl t_union $func ($decl xs tys.node) {
 $decl union2 $func ($decl a proto_ty, $decl b proto_ty)
   $call t_union ($call tys.cons (a, $call tys.cons (b, tys.nil)))
 
+// `t`'s frame reference made allocated: itself, or each of a union's members. SPEC §5.3a's
+// `$alloc` of a constructing call answers the call's result so — `<&^T, none>` for one that
+// can fail — and both passes build it here, so they agree.
+$decl ref_alloc $func ($decl t proto_ty) $match t (
+  $case {$prop tag "ref"} $call t_ref_k (t.qual, $call tval (t.inner), k_alloc),
+  $case t t
+)
+$decl refs_alloc $func ($decl xs tys.node, $decl acc tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $call refs_alloc ($call tys.val (xs.tail), $call tys.cons ($call ref_alloc (xs.head), acc)),
+  $case xs acc
+)
+$decl to_alloc $func ($decl t proto_ty) $match t (
+  $case {$prop tag "union"} $call t_union ($call refs_alloc ($call tys.val (t.members), tys.nil)),
+  $case t ($call ref_alloc (t))
+)
+// Allocated storage, or a union a member of which is — that fallible result, `<&^T, none>`:
+// what `$free`'s routing asks of a function's result (DEFER.md).
+$decl is_alloc_ref $func ($decl t proto_ty) $match t (
+  $case {$prop tag "ref"} $call eq_str (t.kind, k_alloc),
+  $case t false
+)
+$decl allocs_in $func ($decl xs tys.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call is_alloc_ref (xs.head)) true ($call allocs_in ($call tys.val (xs.tail))),
+  $case xs false
+)
+$decl alloc_res $func ($decl t proto_ty) $match t (
+  $case {$prop tag "union"} $call allocs_in ($call tys.val (t.members)),
+  $case t ($call is_alloc_ref (t))
+)
+
 $fwd inter_add
 
 $decl inter_addall $func ($decl xs tys.node, $decl acc tys.node) $match xs (

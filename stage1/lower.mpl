@@ -577,6 +577,18 @@ $decl ctor_ent $func ($decl k 0, $decl d 0, $decl dt T.proto_ty, $decl vt T.prot
   $decl fn f  $decl dyn dn  $decl name nm  $decl file fl  $decl at sp
 }
 $decl proto_ctor $call ctor_ent (-1, -1, T.t_bot, T.t_bot, T.t_bot, T.t_bot, T.t_bot)
+// SPEC §5.3a: `$alloc` of a constructing call allocates the block the call constructs. While
+// the operand is lowered, `ctalloc` holds the call's site (`keep_key`) and what the `$alloc`
+// allocates with — the root's, or (`user` 1) the `alloc` member `mir` of the `allocator` in
+// `env` — and the `$alloc` form itself (`at`). `ctor_site`, at that site, allocates the block
+// there instead of in the frame and hands its `drop` to the allocator (`alloc_fin`), then sets
+// `done`, so that the `$alloc` answers the call's own result rather than allocating again.
+$decl cta_ent $func ($decl k "", $decl u 0, $decl en benv.node, $decl m IR.exprs.node,
+                    $decl mt T.proto_ty, $decl an Pa.proto_node, $decl dn 0) {
+  $decl key k  $decl user u  $decl env en  $decl mir m  $decl mty mt  $decl at an  $decl done dn
+}
+$decl proto_cta $call cta_ent ("", 0, benv.nil, IR.exprs.nil, T.t_bot, $call Pa.n_unit (0, 0), 0)
+$decl cta_val $func ($decl c proto_cta) c
 // `c` under another key.
 $decl ctor_as $func ($decl c proto_ctor, $decl k 0)
   $call ctor_ent (k, c.drop, c.dty, c.vty, c.rty, c.res, c.out, c.fn, c.dyn, c.name, c.file,
@@ -874,6 +886,8 @@ $decl lstate $func () {
   // root's (`infer.mpl`'s `ualloc`). Empty unless a caller supplies it, so a direct
   // lowering keeps the root's everywhere.
   $decl ualloc  $mut $alloc strs.node
+  // SPEC §5.3a: the `$alloc` of a constructing call being lowered (`cta_ent`).
+  $decl ctalloc $mut $alloc proto_cta
 }
 
 $decl proto_lst $call lstate ()
@@ -2169,6 +2183,22 @@ $decl has_defer $func ($decl xs Pa.nodes.node) $match xs (
 )
 $decl keep_key $func ($decl line 0, $decl col 0)
   $call concat ($call int_to_str (line), $call concat (":", $call int_to_str (col)))
+// SPEC §5.3a's `ctalloc` (`cta_ent`): the site it names, the allocator member it allocates
+// with, and that member read back, which the record holds only when it is not the root's.
+$decl cta_key $func ($decl x Pa.proto_node) {
+  $decl sp  $call P.span_of (x)
+  $decl ret $call keep_key (sp.line, sp.col)
+}.ret
+$decl alloc_member $func ($decl x Pa.proto_node) {
+  $decl sp  $call P.span_of (x)
+  $decl ret $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "alloc", sp.line,
+                sp.col)
+}.ret
+$decl cta_m $func ($decl c proto_cta) {
+  $decl ms  c.mir
+  $decl ret $match ms ($case {$prop tag "cons"} ($call lres (ms.head, c.mty)),
+                       $case ms ($call lres ($call IR.e_unit (0), T.t_bot)))
+}.ret
 $decl newlit_key $func ($decl b Pa.proto_node) {
   $decl ok  $match b ($case {$prop tag "block"} ($call has_defer ($call Pa.nodes.val (b.items))),
                       $case b false)
@@ -5220,8 +5250,6 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       // DEFER.md step 4: a literal's deferrals are kept for `defer_at` (`alloc_fin`).
       $decl dfa  $call dfr_list.val (st.defers)
       $decl kpa  $set st.keepat ($call newlit_key ($call op (n, 0)))
-      $decl v    $call as_value (st, $call lower (st, e, $call op (n, 0), false))
-      $decl rt   $call T.t_ref_k ("", v.ty, T.k_alloc)
       // §7.6: from the root allocator, the runtime's own; from any other, its `alloc` member
       // asked for the storage's size, through §8's `alloc_in`, which the backend emits.
       $decl sp0  $call P.span_of (n)
@@ -5229,20 +5257,42 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
                      $call concat ($call int_to_str (sp0.line), $call concat (":",
                      $call int_to_str (sp0.col)))))
       $decl user $call mem_strs ($call strs.val (st.ualloc), key)
-      $decl ret2 $if user {
-        $decl sp   $call P.span_of (n)
-        $decl m    $call as_value (st, $call lower (st, e,
-                       $call Pa.n_projn ($call Pa.n_name ("allocator", sp.line, sp.col), "alloc",
-                           sp.line, sp.col), false))
-        $decl ft   $call T.t_func ($call T.tys.cons (m.ty, $call T.tys.cons (v.ty, T.tys.nil)), rt)
-        $decl ai   $call IR.e_call ($call intern (st, rt),
-                       $call IR.e_prim ($call intern (st, ft), "alloc_in"),
-                       $call IR.exprs.cons (m.ir, $call IR.exprs.cons (v.ir, IR.exprs.nil)),
-                       tail)
-        $decl ret3 $call lres ($call alloc_fin (st, e, n, dfa, ai, rt), rt)
-      }.ret3 ($call lres ($call alloc_fin (st, e, n, dfa,
-                  $call IR.e_new ($call intern (st, rt), v.ir), rt),
-                  rt))
+      // SPEC §5.3a: of a constructing call, the call itself allocates the block (`ctalloc`,
+      // `ctor_site`) — so the allocator's member is lowered first, for the call to use — and
+      // the `$alloc` answers what it answers: `&^T`, or `<&^T, none>` for one that can fail.
+      $decl op0  $call op (n, 0)
+      $decl isc  $call is_form (op0, "call")
+      $decl ca0  $if ($if isc user false) {
+          $decl m    $call as_value (st, $call lower (st, e, $call alloc_member (n), false))
+          $decl ret3 $call cta_ent ($call cta_key (op0), 1, e,
+                         $call IR.exprs.cons (m.ir, IR.exprs.nil), m.ty, n, 0)
+        }.ret3 ($if isc ($call cta_ent ($call cta_key (op0), 0, e, IR.exprs.nil, T.t_bot, n, 0))
+                    proto_cta)
+      $decl sv   $call cta_val (st.ctalloc)
+      $decl s1   $set st.ctalloc ca0
+      $decl v0   $call lower (st, e, op0, false)
+      $decl got  $call cta_val (st.ctalloc)
+      $decl s2   $set st.ctalloc sv
+      $decl ret2 $if ($call eq_int (got.done, 1)) {
+        $decl v    $call lval (v0)
+        $decl ret3 $call lres ($call alloc_fin (st, e, n, dfa, v.ir, v.ty), v.ty)
+      }.ret3 {
+        $decl v    $call as_value (st, v0)
+        $decl rt   $call T.t_ref_k ("", v.ty, T.k_alloc)
+        $decl ret3 $if user {
+          $decl m    $if isc ($call cta_m (ca0))
+                         ($call as_value (st, $call lower (st, e, $call alloc_member (n), false)))
+          $decl ft   $call T.t_func ($call T.tys.cons (m.ty, $call T.tys.cons (v.ty, T.tys.nil)),
+                         rt)
+          $decl ai   $call IR.e_call ($call intern (st, rt),
+                         $call IR.e_prim ($call intern (st, ft), "alloc_in"),
+                         $call IR.exprs.cons (m.ir, $call IR.exprs.cons (v.ir, IR.exprs.nil)),
+                         tail)
+          $decl ret4 $call lres ($call alloc_fin (st, e, n, dfa, ai, rt), rt)
+        }.ret4 ($call lres ($call alloc_fin (st, e, n, dfa,
+                    $call IR.e_new ($call intern (st, rt), v.ir), rt),
+                    rt))
+      }.ret3
     }.ret2
     // §4.3: a view, not a value — no node, only a different type.
     ($if ($call P.or ($call eq_str (k, "mut"), $call eq_str (k, "const"))) {
@@ -6450,8 +6500,7 @@ $decl call_root $func ($decl st proto_lst, $decl e benv.node, $decl x Pa.proto_n
             ($match ft (
                 $case {$prop tag "func"} {
                   $decl r    $call T.tval (ft.result)
-                  $decl al   $match r ($case {$prop tag "ref"} ($call T.is_alloc (r.kind)),
-                                       $case r false)
+                  $decl al   $call T.alloc_res (r)
                   $decl nr   $call T.ci_mem ($call T.cints.val (ft.esc), 1000)
                   $decl ret3 $if ($if al ($call not (nr)) false)
                       ($call P.sval (st.rootid)) ""
@@ -6466,20 +6515,25 @@ $decl call_root $func ($decl st proto_lst, $decl e benv.node, $decl x Pa.proto_n
 
 // The provenance of what slot `sl` is bound to: an `$alloc` (or a view of one) records the
 // allocator in scope there; a name already carrying one passes it on.
+// Where an initializer's storage was drawn from, as `aprov` records it; "" when not known.
+// What survives a `$try` is its operand's (§4.15).
+$decl init_prov $func ($decl st proto_lst, $decl e benv.node, $decl init Pa.proto_node)
+  $if ($call is_alloc_init (init)) ($call alloc_ident (e))
+  ($if ($call is_form (init, "try")) ($call init_prov (st, e, $call op (init, 0)))
+  ($if ($call is_form (init, "call")) ($call call_root (st, e, init))
+  ($match init (
+      $case {$prop tag "name"} {
+        $decl f    $call lookup (e, init.text)
+        $decl ret2 $if ($if f.hit ($call eq_str (f.bnd.kind, "local")) false)
+            ($call prov_find ($call strs.val (st.aprov),
+                $call concat ($call int_to_str (f.bnd.slot), "|")))
+            ""
+      }.ret2,
+      $case init ""
+    ))))
 $decl note_prov $func ($decl st proto_lst, $decl e benv.node, $decl init Pa.proto_node,
                        $decl sl 0) {
-  $decl pv  $if ($call is_alloc_init (init)) ($call alloc_ident (e))
-      ($if ($call is_form (init, "call")) ($call call_root (st, e, init))
-      ($match init (
-          $case {$prop tag "name"} {
-            $decl f    $call lookup (e, init.text)
-            $decl ret2 $if ($if f.hit ($call eq_str (f.bnd.kind, "local")) false)
-                ($call prov_find ($call strs.val (st.aprov),
-                    $call concat ($call int_to_str (f.bnd.slot), "|")))
-                ""
-          }.ret2,
-          $case init ""
-        )))
+  $decl pv  $call init_prov (st, e, init)
   $decl ret $if ($call eq_str (pv, "")) ()
       ($do ($set st.aprov ($call strs.cons ($call concat ($call int_to_str (sl),
           $call concat ("|", pv)), $call strs.val (st.aprov)))) ())
@@ -7003,39 +7057,78 @@ $decl drop_args $func ($decl fs T.fields.node, $decl sp P.proto_span, $decl acc 
 // in an arm, the entry tagged with the call's position — and the value is saved first, in
 // a slot the deferral reads its fields from. `val` is the block, `fl` the flag to set once
 // it is stored, or -1 for none.
+// `$cd ($cs.f0, $cs.f1, …)`, through names no identifier can be (§2.1), and the environment
+// that reads them in: the block's `drop`, called over the snapshot of its fields in slot `ss`.
+// A dynamic call's `drop` is the slot it saved `d` in (`ctor_dyn_site`).
+$decl drop_site $func ($decl cr proto_ctor, $decl ss 0, $decl sp P.proto_span) {
+  $decl env  $call benv.cons ($call bind_ent ("$cd", $if cr.dyn "local" "global", cr.drop,
+                 cr.dty),
+                 $call benv.cons ($call bind_ent ("$cs", "local", ss, cr.vty), benv.nil))
+  $decl as   $call drop_args ($call blk_fields (cr.vty), sp, Pa.nodes.nil)
+  $decl call $call Pa.n_form ("call", $call Pa.nodes.cons ($call Pa.n_name ("$cd", sp.line,
+                 sp.col), $call Pa.nodes.cons ($call Pa.n_group (as, sp.line, sp.col),
+                 Pa.nodes.nil)), sp.line, sp.col)
+}
+
+// SPEC §5.3a: the storage `$alloc` of a constructing call makes for the block (`ctalloc`): the
+// root's, or the `alloc` member of the allocator in scope there, through §8's `alloc_in`.
+$decl cta_new $func ($decl st proto_lst, $decl val IR.proto_expr, $decl vty T.proto_ty,
+                     $decl rt T.proto_ty) {
+  $decl ca  $call cta_val (st.ctalloc)
+  $decl rid $call intern (st, rt)
+  $decl ms  ca.mir
+  $decl ret $match ms (
+      $case {$prop tag "cons"} {
+        $decl ft   $call T.t_func ($call T.tys.cons (ca.mty, $call T.tys.cons (vty, T.tys.nil)),
+                       rt)
+        $decl ret2 $call IR.e_call (rid, $call IR.e_prim ($call intern (st, ft), "alloc_in"),
+                       $call IR.exprs.cons (ms.head, $call IR.exprs.cons (val, IR.exprs.nil)),
+                       false)
+      }.ret2,
+      $case ms ($call IR.e_new (rid, val)))
+}.ret
+
 $decl ctor_built $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr proto_ctor,
-                        $decl val IR.proto_expr, $decl fl 0) {
+                        $decl val IR.proto_expr, $decl fl 0, $decl am P.boolean) {
   $decl rt   cr.rty
   $decl rid  $call intern (st, rt)
-  $decl ret  $if ($call lt (cr.drop, 0)) ($call IR.e_new (rid, val)) {
+  $decl ret  $if ($call lt (cr.drop, 0))
+      ($if am ($call cta_new (st, val, cr.vty, rt)) ($call IR.e_new (rid, val))) {
     $decl vid  $call intern (st, cr.vty)
     $decl ss   $call fresh_slot (st, vid)
     $decl sty  $call T.t_block ($call T.fields.cons ($call T.field ("s", cr.vty), T.fields.nil),
                    T.props.nil)
     $decl snap $call IR.e_field (vid, $call IR.e_block ($call intern (st, sty),
                    $call IR.bslots.cons ($call IR.bslot (ss, val), IR.bslots.nil)), 0)
-    $decl nw   $call IR.e_new (rid, snap)
-    $decl sp   $call P.span_of (n)
-    $decl nk   $call keep_key (sp.line, sp.col)
-    $decl pp   $call fresh_slot (st, rid)
-    $decl np   $set st.newptrs ($call strs.cons ($call concat (nk, $call concat ("|",
-                   $call concat ($call int_to_str (pp), $call concat ("|",
-                   $call int_to_str (rid))))), $call strs.val (st.newptrs)))
-    $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("p", rt), T.fields.nil),
-                   T.props.nil)
-    $decl ob   $call IR.e_field (rid, $call IR.e_block ($call intern (st, oty),
-                   $call IR.bslots.cons ($call IR.bslot (pp, nw), IR.bslots.nil)), 0)
-    // `$cd ($cs.f0, $cs.f1, …)`, through names no identifier can be (§2.1). A dynamic call's
-    // `drop` is the slot it saved `d` in (`ctor_dyn_site`).
-    $decl en   $call benv.cons ($call bind_ent ("$cd", $if cr.dyn "local" "global", cr.drop,
-                   cr.dty),
-                   $call benv.cons ($call bind_ent ("$cs", "local", ss, cr.vty), benv.nil))
-    $decl as   $call drop_args ($call blk_fields (cr.vty), sp, Pa.nodes.nil)
-    $decl dn   $call Pa.n_form ("call", $call Pa.nodes.cons ($call Pa.n_name ("$cd", sp.line, sp.col),
-                   $call Pa.nodes.cons ($call Pa.n_group (as, sp.line, sp.col), Pa.nodes.nil)),
-                   sp.line, sp.col)
-    $decl pu   $set st.defers ($call dfr_list.cons ($call dfr_ent (dn, en, nk, fl), st.defers))
-    $decl ret2 $call with_flag (st, fl, true, ob, rid, rt)
+    $decl ret2 $if am {
+        // Allocated, the block's `drop` is the allocator's: registered with its `defer_at`
+        // straight after the storage is made (`alloc_fin`), as an `$alloc` block's own
+        // deferrals are, and never the frame's.
+        $decl ca   $call cta_val (st.ctalloc)
+        $decl sp   $call P.span_of (n)
+        $decl ds   $call drop_site (cr, ss, sp)
+        $decl sv   $call dfr_list.val (st.defers)
+        $decl pu   $set st.defers ($call dfr_list.cons ($call dfr_ent (ds.call, ds.env,
+                       $call keep_key (sp.line, sp.col), -1), sv))
+        $decl ret3 $call alloc_fin (st, ca.env, ca.at, sv, $call cta_new (st, snap, cr.vty, rt),
+                       rt)
+      }.ret3 {
+        $decl nw   $call IR.e_new (rid, snap)
+        $decl sp   $call P.span_of (n)
+        $decl nk   $call keep_key (sp.line, sp.col)
+        $decl pp   $call fresh_slot (st, rid)
+        $decl np   $set st.newptrs ($call strs.cons ($call concat (nk, $call concat ("|",
+                       $call concat ($call int_to_str (pp), $call concat ("|",
+                       $call int_to_str (rid))))), $call strs.val (st.newptrs)))
+        $decl oty  $call T.t_block ($call T.fields.cons ($call T.field ("p", rt), T.fields.nil),
+                       T.props.nil)
+        $decl ob   $call IR.e_field (rid, $call IR.e_block ($call intern (st, oty),
+                       $call IR.bslots.cons ($call IR.bslot (pp, nw), IR.bslots.nil)), 0)
+        $decl ds   $call drop_site (cr, ss, sp)
+        $decl pu   $set st.defers ($call dfr_list.cons ($call dfr_ent (ds.call, ds.env, nk, fl),
+                       st.defers))
+        $decl ret3 $call with_flag (st, fl, true, ob, rid, rt)
+      }.ret3
   }.ret2
 }.ret
 
@@ -7063,25 +7156,41 @@ $decl pass_arms $func ($decl st proto_lst, $decl ms T.tys.node, $decl i 0, $decl
 // A constructor that can fail answers the block or what a `$try` left with (`res`), so the
 // call is a switch: the block goes into the `$new`, whose flag says it was built — only
 // then do its deferrals run — and anything else is answered as it is, into `out`.
-$decl ctor_site $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr proto_ctor,
-                       $decl call IR.proto_expr)
-  $if ($call T.same (cr.res, cr.vty)) {
-    $decl fl   $if ($if ($call lt (cr.drop, 0)) false ($call lt (0, $call P.ival (st.armdepth))))
-                   ($call fresh_slot (st, $call intern (st, T.t_bool))) -1
-    $decl ret2 $call lres ($call ctor_built (st, n, cr, call, fl), cr.rty)
+$decl ctor_alloc $func ($decl c proto_ctor)
+  $call ctor_ent (c.key, c.drop, c.dty, c.vty, $call T.to_alloc (c.rty), c.res,
+      $call T.to_alloc (c.out), c.fn, c.dyn, c.name, c.file, c.at)
+
+$decl ctor_site $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr0 proto_ctor,
+                       $decl call IR.proto_expr) {
+  // SPEC §5.3a: the operand of an `$alloc` (`ctalloc`) is allocated, and the record is done.
+  $decl ca   $call cta_val (st.ctalloc)
+  $decl sp   $call P.span_of (n)
+  $decl am   $if ($call eq_str (ca.key, "")) false
+                 ($call eq_str (ca.key, $call keep_key (sp.line, sp.col)))
+  $decl dn   $if am ($do ($set st.ctalloc ($call cta_ent ("", ca.user, ca.env, ca.mir, ca.mty,
+                 ca.at, 1))) 0) 0
+  $decl cr   $if am ($call ctor_alloc (cr0)) cr0
+  $decl ret  $if ($call T.same (cr.res, cr.vty)) {
+    $decl fl   $if am -1
+                   ($if ($if ($call lt (cr.drop, 0)) false
+                             ($call lt (0, $call P.ival (st.armdepth))))
+                        ($call fresh_slot (st, $call intern (st, T.t_bool))) -1)
+    $decl ret2 $call lres ($call ctor_built (st, n, cr, call, fl, am), cr.rty)
   }.ret2 {
     $decl ms   $call members_of ($call canon_ty (st, cr.res))
     $decl ix   $call same_ix (ms, cr.vty, 0)
     $decl mid  $call intern (st, cr.vty)
     $decl bs   $call fresh_slot (st, mid)
-    $decl fl   $if ($call lt (cr.drop, 0)) -1 ($call fresh_slot (st, $call intern (st, T.t_bool)))
+    $decl fl   $if ($if am true ($call lt (cr.drop, 0))) -1
+                   ($call fresh_slot (st, $call intern (st, T.t_bool)))
     $decl a0   $call IR.arm ($call IR.ints.cons (ix, IR.ints.nil), bs,
-                   $call ctor_built (st, n, cr, $call IR.e_local (mid, bs), fl))
+                   $call ctor_built (st, n, cr, $call IR.e_local (mid, bs), fl, am))
     $decl as   $call IR.arms.reverse ($call pass_arms (st, ms, 0, ix, IR.arms.nil), IR.arms.nil)
     $decl uid  $call intern (st, T.t_unit)
     $decl ret2 $call lres ($call IR.e_switch ($call intern (st, cr.out), call,
                    $call IR.arms.cons (a0, as), $call IR.e_unit (uid)), cr.out)
   }.ret2
+}.ret
 
 // ------------------------------------------------------ a constructor as a value
 //

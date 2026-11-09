@@ -168,6 +168,11 @@ pub fn build(b: *std.Build) void {
         // A constructor with a `$try` can fail: what was registered before it runs in the
         // constructor, and the caller releases the block only if it was built.
         .{ .src = "stage1/fixtures/ctor_try.mpl", .want = "75117143131269116 19u " },
+        // SPEC §5.3a: `$alloc` of a constructing call allocates the built block, and its
+        // deferrals are the allocator's — run by `$free`, never by the frame — so one
+        // constructor serves both lifetimes; fallible, it answers `<&^T, none>`, and `$try`
+        // leaves the reference `$free` takes. Compiled only: stage 0 releases nothing.
+        .{ .src = "stage1/fixtures/ctor_alloc.mpl", .want = "3254671710", .stage0 = false },
         // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
         // body's tail call, and mid-item — and a loop holding one stays in constant space.
         .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },
@@ -1158,7 +1163,7 @@ pub fn build(b: *std.Build) void {
         .{ .src = "std/map_test.mpl", .want = "16\n" },
         .{ .src = "std/fmt_test.mpl", .want = "27\n" },
         .{ .src = "std/io_test.mpl", .want = "29\n" },
-        .{ .src = "std/mem_test.mpl", .want = "10\n" },
+        .{ .src = "std/mem_test.mpl", .want = "13\n" },
         .{ .src = "std/result_test.mpl", .want = "10\n" },
         .{ .src = "std/json_test.mpl", .want = "18\n" },
     }) |fx| {

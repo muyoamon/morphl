@@ -60,6 +60,26 @@ $decl idiom $func () {
   $decl ret 0
 }.ret
 
+// SPEC §5.3a: `$alloc` of a constructing call allocates the block the call constructs from the
+// allocator in scope, whose `defer_at` takes the block's deferrals. So one constructor serves
+// a frame, where the scope releases it, and the arena, where `$free` or the arena does.
+$decl made $func ($decl d 0) $new { $decl k d  $defer $call note (k) }
+$decl constructed $func ($decl r T.proto_results) {
+  $decl allocator $call M.arena (1024)
+  $decl a   $alloc $call made (6)
+  $decl b   $alloc $call made (7)
+  $decl f   $free b
+  $decl c11 $call T.expect (r, "$free runs a constructed block's deferrals",
+                $call eq ($call C.ival (seen), 7))
+  $decl in  { $decl s $call made (8)  $decl ret2 $call C.ival (s.k) }.ret2
+  $decl c12 $call T.expect (r, "the one in a frame runs at its scope's end",
+                $call eq ($call C.ival (seen), 78))
+  $decl rl  $call allocator.release ()
+  $decl c13 $call T.expect (r, "release runs the arena's",
+                $call eq ($call C.ival (seen), 786))
+  $decl ret 0
+}.ret
+
 $decl main $func () {
   $decl r   $call T.results ()
   $decl a   $call in_arena (r)
@@ -68,5 +88,7 @@ $decl main $func () {
   $decl i   $call idiom ()
   $decl c10 $call T.expect (r, "$defer $free beside the $alloc, the arena released last",
                 $call eq ($call C.ival (seen), 5))
+  $decl z2  $set seen 0
+  $decl cs  $call constructed (r)
   $decl ret $call T.finish (r)
 }.ret

@@ -663,15 +663,17 @@ $decl b $call with (mk2, 2)                // same type as mk, different deferra
 ```
 
 **`$alloc` of a constructing call allocates the constructed block** instead of placing it in
-the caller's frame. A constructing call is a `$new` written at the call, so this is `$alloc $new e`
-given a meaning: storage holding a place is otherwise refused (above), so no program that was
-valid changes. `$alloc $call mk (1)` is `&^T`, may be stored and returned like any allocated
-reference, and its deferrals are the allocator's to run, at `$free` or when the allocator
-releases (§7.6). That is sound because a constructed block's deferrals already name only its
-own bindings and what is global (§4.15a), which is what a deferral run outside every frame
-needs. One constructor therefore serves both lifetimes: `$call mk (1)` in a frame, freed with
-it, and `$alloc $call mk (1)` on the heap, freed by its author. A fallible constructor's call
-answers `<&T, none>`; allocated, `<&^T, none>`.
+the caller's frame. It is not the reading-through of a place used where a value is wanted
+(above), which would build the block in the frame, run its deferrals when that frame ends, and
+allocate a copy outliving what they released. `$alloc $call mk (1)` is `&^T`, may be stored and
+returned like any allocated reference, and its deferrals are the allocator's to run, at `$free`
+or when the allocator releases (§7.6). That is sound because a constructed block's deferrals
+already name only its own bindings and what is global (§4.15a), which is what a deferral run
+outside every frame needs. One constructor therefore serves both lifetimes: `$call mk (1)` in a
+frame, freed with it, and `$alloc $call mk (1)` on the heap, freed by its author. A fallible
+constructor's call answers `<&T, none>`; allocated, `<&^T, none>`, and what survives a
+`$try` of it is the reference `$free` takes, so a name bound so is known to be the allocator's
+there.
 
 A function that constructs and one that does not are not interchangeable, either way: the
 first is called differently (§7.6), so the flag is part of the type's identity and of

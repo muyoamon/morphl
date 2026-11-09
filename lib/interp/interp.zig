@@ -1314,8 +1314,17 @@ pub const Interp = struct {
                 };
                 var held: std.ArrayListUnmanaged(Pending) = .empty;
                 if (stored) self.adopt = &held;
-                const v = (try self.eval(&ops[0], scope)).derefRefs();
+                const mark = self.fresh.items.len;
+                const raw = try self.eval(&ops[0], scope);
                 self.adopt = null;
+                // SPEC §5.3a: `$alloc` of a constructing call allocates the block the call
+                // built, so its deferrals wait for a release too — refused, as a literal's are,
+                // rather than run when this frame ends while the storage lives on.
+                if (f.keyword == .alloc and raw == .ref) for (self.fresh.items[mark..]) |fr| {
+                    if (fr.cell == raw.ref and fr.pend.len > 0)
+                        break :blk self.rt.fail(node.span, "$alloc of a constructed block with deferrals is outside the bootstrap subset: they run when the storage is released, and stage 0 releases nothing (BOOTSTRAP 1.2)", .{});
+                };
+                const v = raw.derefRefs();
                 if (self.stats) |st| {
                     st.cell_n += 1;
                     // What this storage would cost *compiled*: the value lives
@@ -2549,6 +2558,24 @@ test "$new is the only storage; $decl aliases and $new copies (12)" {
 test "$set requires storage, not a value field (4.4)" {
     try expectFails("$decl a 0 $set a 1", "$set needs storage on the left");
     try expectFails("$decl b { $decl a 0 } $set b.a 1", "$set needs storage on the left");
+}
+
+// SPEC §5.3a: `$alloc` of a constructing call allocates the built block, whose deferrals then
+// wait for a release stage 0 never makes — refused, as `$alloc { … $defer … }` is. A block
+// with none is an ordinary allocation, and runs.
+test "$alloc of a constructing call: refused with deferrals, run without (5.3a)" {
+    try expectFails(
+        \\$decl n $mut $new 0
+        \\$decl mk $func ($decl k 0) $new { $decl v k  $defer $set n 1 }
+        \\$decl keep $func () $alloc $call mk (5)
+        \\$decl h $call keep ()
+    , "$alloc of a constructed block with deferrals is outside the bootstrap subset");
+    try expectInt(
+        \\$decl mk $func ($decl k 0) $new { $decl v k }
+        \\$decl keep $func () $alloc $call mk (5)
+        \\$decl h $call keep ()
+        \\$decl got h.v
+    , "got", 5);
 }
 
 test "$mut requires a reference (4.3)" {

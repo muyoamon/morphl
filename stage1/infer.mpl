@@ -1962,7 +1962,7 @@ $decl root_res $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_nod
 $decl nonroot_res $func ($decl cx proto_ctx, $decl e env.node, $decl res T.proto_ty,
                          $decl body Pa.proto_node) {
   $decl r   $call tval (res)
-  $decl al  $match r ($case {$prop tag "ref"} ($call T.is_alloc (r.kind)), $case r false)
+  $decl al  $call T.alloc_res (r)
   $decl ret $if al ($if ($call root_res (cx, e, body, false, Pa.nodes.nil)) T.cints.nil
                         ($call T.cints.cons (1000, T.cints.nil)))
                 T.cints.nil
@@ -2345,13 +2345,16 @@ $decl prov_of $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node
                      $decl t T.proto_ty)
   $if ($call is_alloc_init (x)) ($call alloc_at (e))
   ($if ($call not ($call alloc_ref (t))) -2
+  // What survives a `$try` is its operand's (§4.15), so it came from where that did — how a
+  // fallible constructor's allocated block, `<&^T, none>`, is named to be freed.
+  ($if ($call is_form (x, "try")) ($call prov_of (cx, e, $call op (x, 0), t))
   ($if ($call is_form (x, "call"))
        ($if ($call in_strs ($call strs.val (cx.nonroot), $call fn_key_of (cx, x))) -2
             ($if ($call root_callee (e, $call op (x, 0))) -1 -2))
   ($match x (
       $case {$prop tag "name"} ($call prov_named (e, x.text, $call ival (cx.fdepth))),
       $case x -2
-    ))))
+    )))))
 // A name freed here, for `func_close` to find among this function's parameters.
 $decl note_freed $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl root P.boolean)
   $match x (
@@ -4674,7 +4677,7 @@ $decl member_facts $func ($decl cx proto_ctx, $decl nm "", $decl t T.proto_ty,
     $decl es   $call T.cints.val (t.esc)
     $decl a2   $call member_frees (key, es, acc)
     $decl r    $call T.tval (t.result)
-    $decl al   $match r ($case {$prop tag "ref"} ($call T.is_alloc (r.kind)), $case r false)
+    $decl al   $call T.alloc_res (r)
     $decl ret2 $if al
         ($call strs.cons ($call concat ("r:", $call concat (key,
             $if ($call T.ci_mem (es, 1000)) ":nonroot" ":root")), a2))
@@ -5580,6 +5583,11 @@ $decl infer_free $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
   $decl ret T.t_unit
 }.ret
 
+// A call that constructs (§5.3a), as `infer_call` recorded it.
+$decl alloc_ctor $func ($decl cx proto_ctx, $decl x Pa.proto_node)
+  $if ($call is_form (x, "call"))
+      ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, x))) false
+
 $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl k n.keyword
   $decl ret
@@ -5593,11 +5601,16 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
     ($if ($call eq_str (k, "alloc")) {
       $decl sd $call storage_defer (cx, e, n)
       $decl ac $call alloc_conforms (cx, e, n)
-      $decl v $call deref_ty ($call infer (cx, e, $call op (n, 0)))
+      $decl r0 $call infer (cx, e, $call op (n, 0))
+      $decl v  $call deref_ty (r0)
       // §5.3a again: allocated storage is exactly "storage that is not
       // itself frame-bound", so putting a frame reference in one escapes.
       $decl esc  $call escapes (cx, v, "this value", n)
-      $decl ret2 $call T.t_ref_k ("", v, T.k_alloc)
+      // §5.3a: of a constructing call, the block it constructs is what is allocated, so the
+      // answer is the call's own with its frame reference made allocated — `<&^T, none>` for
+      // one that can fail, where storing what it reads through to would be `&^<T, none>`.
+      $decl ret2 $if ($call alloc_ctor (cx, $call op (n, 0))) ($call T.to_alloc (r0))
+                     ($call T.t_ref_k ("", v, T.k_alloc))
     }.ret2
     ($if ($call or ($call eq_str (k, "mut"), $call eq_str (k, "const")))
                                      ($call infer_mut (cx, e, n, k))
