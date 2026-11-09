@@ -20,7 +20,7 @@ for the decisions that shape it.
 | D3a | containers that differ by element type | an `$overload` of templates over a shared base, derived with a new `$override` |
 | D4 | equality and formatting of blocks | a trait, written per type, generated at build time later |
 | D5 | which allocator containers draw from | the root's; an `_in` variant only when measured to matter |
-| D6 | how strings are built | a builder, joined pairwise; then by `concat_all` (STRINGS.md) |
+| D6 | how strings are built | a builder, joined once by `concat_all` (STRINGS.md) |
 | D7 | how failure is reported | `option` and `result` shapes `$try` already matches |
 | D8 | how it is tested | compiled-only, through §9's test interface |
 | D9 | how containers compose | values carrying their methods; type-changing operations as `std/seq` algorithms over capabilities |
@@ -409,24 +409,27 @@ exactly why a container wanting a caller's arena needs the allocator as a generi
 
 `concat` copies both operands, so building a string by appending is O(n²) — CLAUDE.md's
 "never build a string by appending to an accumulator", learned from `emit.mpl`'s `say`. The
-library's answer is a **builder**: chunks collected newest-first and joined by folding adjacent
-pairs, O(L log n), which is exactly what the emitter does. `std/fmt` writes into one, and
-`S.build` turns it into a `Str`. The second version joins with §8's `concat_all` in one
-allocation, O(L) — not a growable byte array, which copies the text about twice as it doubles
-(STRINGS.md, S3).
+library's answer is a **builder**: chunks collected newest-first and joined once by §8's
+`concat_all`, one allocation of their total length, O(L) — as the compiler's own text is
+(`P.join_chunks`). `std/fmt` writes into one, and `S.build` turns it into a `Str`. The first
+version folded adjacent pairs, O(L log n); a growable byte array would not do better either,
+since it copies the text about twice as it doubles (STRINGS.md, S3).
 
 §3.1 makes a `Str` UTF-8 and its operations byte-indexed; code-point iteration is library
 (§8), and `std/str` provides it, decoding as `from_code` encodes.
 
-**Done** (the first version), with `std/str_test.mpl` (28):
+**Done**, with `std/str_test.mpl` (34):
 
 - **`builder ()`**: `write`, `line`, `bytes` and `build`. `write` and `line` answer unit, so
   a `show` member ending in one conforms to `std/fmt`'s `show_proto`. The pieces sit newest first in the
-  builder's own `$mut $alloc` cell (D9's mutation rule), and `build` joins them pairwise and
+  builder's own `$mut $alloc` cell (D9's mutation rule), and `build` joins them once and
   keeps the result as the one piece, so building again is free and writing after it carries
   on. The members are not `add` and `len`: §4.10 makes a prop visible throughout its block,
   so either name would shadow the intrinsic the members' own bodies call.
-- **`concat_all`, `join (xs, sep)`**, the same pairwise join over a `std/list` list.
+- **`concat_all`, `join (xs, sep)`**, the same join over a `std/list` list: the pieces fill
+  an array of their count — `build` and `join` hold them newest first and fill it from the
+  far end, so nothing is reversed — and one piece is answered as itself. The root's
+  `concat_all` is reached as `cat_all`, named before the module's own shadows it (§4.1).
   `std/io`'s `unlines` is `join` now, and its own copy of the joiner is gone.
 - **`split (s, sep)`** answers a list, empty pieces kept (`"a,,b"` is three); an empty `sep`
   panics. **`find (s, p, from)`** answers a byte offset as an option; **`contains`,
@@ -436,7 +439,8 @@ allocation, O(L) — not a growable byte array, which copies the text about twic
   walked, nothing stored but the string and the offset — so `std/seq` counts, maps and
   collects them; `code_at` and `width` are the decoding.
 
-The second version waits for `concat_all` (STRINGS.md's plan, step 5).
+The second version — `concat_all` under `build`, `concat_all` and `join` — is in (STRINGS.md's
+plan, step 5).
 
 ## D7. Reporting failure
 

@@ -1,8 +1,8 @@
 # Strings: design note
 
-Status: **decided; steps 2–4 are in**, `std/str` (step 5) is left. SPEC §8 and BOOTSTRAP §2 name `concat_all`; this note
+Status: **done; every step is in.** SPEC §8 and BOOTSTRAP §2 name `concat_all`; this note
 keeps the reasoning, the measurements and the plan. STDLIB.md's D6 (the builder) is the
-library half and changes with step 5.
+library half, updated with step 5.
 
 | | question | status |
 |---|---|---|
@@ -149,5 +149,8 @@ copies it once.
 
    More than the −130 MB expected: the passes' list cells went with the copies, and an
    escape-free literal is no longer copied at all.
-5. **`std/str`**: `concat_all`, `join` and the builder's `build` over the intrinsic;
-   STDLIB.md's D6 updated.
+5. **`std/str`**. Done: `concat_all`, `join` and the builder's `build` over the intrinsic,
+   reached as `cat_all` above the module's own `concat_all`; `join` and `build` fill the
+   array from the far end, as `P.join_chunks` does, so neither reverses its pieces any more.
+   The fourth pairwise joiner is gone, `std/str_test.mpl` gained the empty, single and
+   many-piece edges (34), and STDLIB.md's D6 says so.

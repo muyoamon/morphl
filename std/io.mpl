@@ -35,7 +35,7 @@ $decl lines_go $func ($decl s "", $decl i 0, $decl start 0, $decl acc strs.node)
            ($call cl.cons ($call slice (s, start, i), acc)) acc, strs.nil))
 $decl lines $func ($decl s "") $call strs.of ($call lines_go (s, 0, 0, strs.nil))
 
-// Each line followed by a newline, joined pairwise by `std/str` (D6).
+// Each line followed by a newline, joined once by `std/str` (D6).
 $decl unlines $func ($decl xs ($call strs.empty ()))
   $if ($call xs.is_empty ()) "" ($call concat ($call S.join (xs, "\n"), "\n"))
 

@@ -89,5 +89,16 @@ $decl main $func () {
                                          $call eq ($call S.compare ("x", "x"), 0))))
   $decl c30 $call T.expect (r, "less", $call C.and ($call S.less ("a", "b"),
                                                     $call C.not ($call S.less ("b", "b"))))
+  // `concat_all`'s edges: no pieces, one (answered as itself), and many in order.
+  $decl one $call ($call strs.empty ()).push ("é")
+  $decl c31 $call T.expect (r, "concat_all of nothing",
+                $call eq ($call S.concat_all ($call strs.empty ()), ""))
+  $decl c32 $call T.expect (r, "concat_all and join of one",
+                $call C.and ($call eq ($call S.concat_all (one), "é"),
+                             $call eq ($call S.join (one, ","), "é")))
+  $decl c33 $call T.expect (r, "join of many, in order",
+                $call eq ($call S.join ($call S.split ("1 2 3 4 5 6 7 8 9", " "), ""), "123456789"))
+  $decl c34 $call T.expect (r, "an empty builder builds nothing",
+                $call eq ($call ($call S.builder ()).build (), ""))
   $decl ret $call T.finish (r)
 }.ret

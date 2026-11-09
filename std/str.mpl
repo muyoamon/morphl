@@ -7,8 +7,8 @@
 //
 // §8's `concat` copies both operands, so appending to an accumulator is O(n²) in the pieces
 // (CLAUDE.md, from `emit.mpl`'s `say`). Text is assembled in a **builder** instead, or with
-// `concat_all`/`join`: the pieces are collected and joined by folding adjacent pairs, log₂ n
-// passes each copying the text once.
+// `concat_all`/`join`: the pieces are collected and joined once by §8's `concat_all`, one
+// allocation of their total length (STRINGS.md).
 
 $decl C $import "std/core"
 $decl L $import "std/list"
@@ -18,30 +18,43 @@ $decl cl   strs.cell
 
 // ---------------------------------------------------------------- joining
 
-$fwd join_pass
-$decl join_pair $func ($decl x "", $decl rest strs.node, $decl acc strs.node) $match rest (
+// §8's, named before this module's own `concat_all` shadows it (§4.1).
+$decl cat_all concat_all
+
+// The pieces go into an array of their count, which `cat_all` copies into one allocation.
+$decl fill_back $func ($decl a $call array (0, ""), $decl xs strs.node, $decl i 0) $match xs (
   $case {$prop tag "cons"}
-    $call join_pass ($call cl.val (rest.tail), $call cl.cons ($call concat (x, rest.head), acc)),
-  $case rest ($call cl.reverse ($call cl.cons (x, acc), strs.nil))
+    $do ($set ($call at (a, i)) xs.head)
+        ($call fill_back (a, $call cl.val (xs.tail), $call sub (i, 1))),
+  $case xs a
 )
-$decl join_pass $func ($decl xs strs.node, $decl acc strs.node) $match xs (
-  $case {$prop tag "cons"} $call join_pair (xs.head, $call cl.val (xs.tail), acc),
-  $case xs ($call cl.reverse (acc, strs.nil))
+$decl fill_fwd $func ($decl a $call array (0, ""), $decl xs strs.node, $decl i 0) $match xs (
+  $case {$prop tag "cons"}
+    $do ($set ($call at (a, i)) xs.head)
+        ($call fill_fwd (a, $call cl.val (xs.tail), $call add (i, 1))),
+  $case xs a
 )
-$fwd join_cells
-$decl join_more $func ($decl xs strs.node, $decl rest strs.node) $match rest (
-  $case {$prop tag "cons"} $call join_cells ($call join_pass (xs, strs.nil)),
-  $case rest ""
+// The pieces newest first, joined: the array is filled from the far end, so nothing is
+// reversed. One piece is itself, uncopied.
+$decl join_back $func ($decl cs strs.node) $match cs (
+  $case {$prop tag "cons"}
+    $if ($call cl.is_nil ($call cl.val (cs.tail))) cs.head {
+      $decl n    $call cl.length (cs, 0)
+      $decl ret2 $call cat_all ($call fill_back ($call array (n, ""), cs, $call sub (n, 1)))
+    }.ret2,
+  $case cs ""
 )
 // The pieces in order, joined.
-$decl join_cells $func ($decl xs strs.node) $match xs (
+$decl join_fwd $func ($decl xs strs.node) $match xs (
   $case {$prop tag "cons"}
-    $if ($call cl.is_nil ($call cl.val (xs.tail))) xs.head
-        ($call join_more (xs, $call cl.val (xs.tail))),
+    $if ($call cl.is_nil ($call cl.val (xs.tail))) xs.head {
+      $decl n    $call cl.length (xs, 0)
+      $decl ret2 $call cat_all ($call fill_fwd ($call array (n, ""), xs, 0))
+    }.ret2,
   $case xs ""
 )
 
-$decl concat_all $func ($decl xs ($call strs.empty ())) $call join_cells (xs.cells)
+$decl concat_all $func ($decl xs ($call strs.empty ())) $call join_fwd (xs.cells)
 
 // `sep` between each pair, reversed in front of `acc`.
 $decl sep_go $func ($decl xs strs.node, $decl sep "", $decl acc strs.node) $match xs (
@@ -51,14 +64,14 @@ $decl sep_go $func ($decl xs strs.node, $decl sep "", $decl acc strs.node) $matc
   $case xs acc
 )
 $decl join $func ($decl xs ($call strs.empty ()), $decl sep "")
-  $call join_cells ($call cl.reverse ($call sep_go (xs.cells, sep, strs.nil), strs.nil))
+  $call join_back ($call sep_go (xs.cells, sep, strs.nil))
 
 // --------------------------------------------------------------- the builder
 
 // Text assembled piece by piece: `$call b.write (s)` and `$call b.build ()`. The pieces are
 // held newest first in the builder's own cell (D9: a container that changes in place holds
-// its state in `$mut $alloc` cells), and `build` joins them pairwise, then keeps the result
-// as the one piece, so building again costs nothing and adding after it carries on.
+// its state in `$mut $alloc` cells), and `build` joins them once, then keeps the result as
+// the one piece, so building again costs nothing and adding after it carries on.
 $decl builder $func () {
   $decl b   {
     $decl parts $mut $alloc strs.node
@@ -74,7 +87,7 @@ $decl builder $func () {
     // The bytes written so far.
     $prop bytes $func () $call C.ival (b.size)
     $prop build $func () {
-      $decl t   $call join_cells ($call cl.reverse ($call cl.val (b.parts), strs.nil))
+      $decl t   $call join_back ($call cl.val (b.parts))
       $decl k   $set b.parts ($call cl.cons (t, strs.nil))
       $decl ret t
     }.ret
