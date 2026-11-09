@@ -1,8 +1,8 @@
 # Owned text: design note
 
-Status: **decided in discussion, nothing implemented.** The plan is at the end, and the
-points still open are listed before it. When this lands, SPEC §2.2, §3.1, §7.6 and §8 and
-BOOTSTRAP §1 and §2 change (listed under "Spec changes"). STRINGS.md made text cheap to build
+Status: **decided; step 1 is in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
+BOOTSTRAP (§1, §2) say what is decided, and SPEC §11 says it is being implemented. Nothing
+in the compilers has changed yet. The plan is at the end. STRINGS.md made text cheap to build
 (one `concat_all`, O(L)); this note is about who owns the bytes and when they are released.
 
 | | question | decided |
@@ -13,7 +13,7 @@ BOOTSTRAP §1 and §2 change (listed under "Spec changes"). STRINGS.md made text
 | T4 | a text's lifetime | a **constructor**: frame by default, `$alloc` of the call for the heap |
 | T5 | what a view of a text is | a value holding a **reference** to the text, so §5.3a confines it |
 | T6 | mutation while a view exists | text is **append-only**; other changes bump a **generation** that views check |
-| T7 | bytes | a **byte type**, written through `unbox` |
+| T7 | bytes | a **byte type**, `$primitives.u8`, written through `unbox` |
 
 ## The problem
 
@@ -75,11 +75,12 @@ keeps not freeing it. That leak is a property of the bootstrap, not of the langu
 stops a user writing `$primitives`; the `$` says it is outside the language, and a lint can
 say so later, once there are suppressible warnings.
 
-**What it gains.** One new primitive, `$primitives.view (addr, n)`: the bytes at `addr` as a
+**What it gains.** The byte type (T7), and one new primitive, `$primitives.view (addr, n)`: the bytes at `addr` as a
 `Str`, **unchecked** — no copy and no UTF-8 validation. It is sound only in `std/str`, which
 writes nothing but bytes copied from views and code points it encoded itself, so what it
-views is valid by construction. `unbox` moves here too, since it is the one door from an
-address to a reference (T7).
+views is valid by construction. The whole FFI group moves here too — `str_ptr`,
+`str_from_ptr`, `array_ptr`, `box_ptr`, `unbox`, `raw_alloc`, `raw_free` — so the unsafe set
+is behind one keyword; `unbox` is the one door from an address to a reference (T7).
 
 ## T3. One type: text
 
@@ -150,9 +151,9 @@ so `$alloc` of one answers `<&^T, none>`.
 
 **A text drawing from another allocator keeps it in a field**, and frees through the field,
 since the deferral may not name the constructor's parameters. The allocator is a parameter of
-`S.text`, defaulted to the root's. It cannot be a parameter named `allocator` defaulted to
-`allocator` (that reads the slot it initialises), so it takes another name and the body binds
-`allocator` to it.
+`S.text`, defaulted to the root's, and it is named **`ator`**: a parameter named `allocator`
+defaulted to `allocator` would read the slot it initialises, so the body binds
+`$decl allocator ator` instead.
 
 **A function that hands back text constructs.** Its body is the `$new`, a tail call to a
 constructor, or an `$if`/`$match` whose arms are such calls. Because a call inside a block is
@@ -238,17 +239,21 @@ confined to platform calls (T5).
 ## T7. Bytes
 
 A byte type exists: one byte of storage. There is no syntax for a type, so it is reached
-through an example value (the root already has `byte (s, i)`, which answers an `Int`, so the
-example takes another name), with two conversions: to a byte from an `Int`, and back.
+through an example value, **`$primitives.u8`** — behind the keyword, since its uses are byte
+storage and C `char` buffers, both unsafe already, and the root's `byte (s, i)` already
+answers an `Int`. Two conversions go with it: `$primitives.to_u8 (n)`, which **panics** when
+`n` is outside 0..255, as checked `Int` arithmetic does (truncating is spelled
+`band (n, 255)`), and `$primitives.of_u8 (b)`, its `Int`.
 
 `std/str` writes bytes through `unbox`, which answers an `&^mut` reference of the example's
 type at an address:
 
 ```
-$set ($call unbox ($call add (addr, i), b0)) ($call to_byte (c))
+$set ($call $primitives.unbox ($call add (addr, i), $primitives.u8))
+     ($call $primitives.to_u8 (c))
 ```
 
-Bulk copies, a view into the buffer, go through `$extern "memcpy"` with `str_ptr`, since a byte
+Bulk copies, a view into the buffer, go through `$extern "memcpy"` with `$primitives.str_ptr`, since a byte
 loop in morphl is slow for large text and `std/` is compiled-only, so `$extern` is available.
 
 **Reinterpretation was considered and dropped.** A `$as A B` keyword (B's bits read as A) would
@@ -269,25 +274,25 @@ without a new form, and widening types belongs to a different design.
 - **BOOTSTRAP §1**: the compiler's subset reaches the allocating operations through
   `$primitives`, via the prelude. **§2**'s table moves with §8's.
 
+## Settled in step 1
+
+- **The byte type** is `$primitives.u8`, with `to_u8` and `of_u8` (T7).
+- **An `Int` outside 0..255** converted to a byte panics (T7).
+- **The allocator parameter** of `S.text` is `ator` (T4).
+- **`str_ptr` and `array_ptr`** move to `$primitives` with the rest of the FFI group (T2).
+
 ## Open
 
-1. **Where the byte example lives**, the root block or `$primitives`, and its name (`byte0`,
-   `u8`). Recommended: `$primitives`, since its uses are byte storage and C `char` buffers,
-   both unsafe already.
-2. **What converting an `Int` above 255 to a byte does**: panic, as checked `Int` arithmetic
-   does, or keep the low 8 bits. Recommended: panic.
-3. **The allocator parameter's name** on `S.text` (T4).
-4. **`str_ptr` and `array_ptr`**: keep them in the root as the FFI's way out, or move them to
-   `$primitives` with `unbox`.
-5. **Arrays.** `array (n, x)` and `args` allocate outside `$new`/`$alloc` too, so the same
+1. **Arrays.** `array (n, x)` and `args` allocate outside `$new`/`$alloc` too, so the same
    principle applies: an array becomes a view and owning sequences live in `std/vec`. It is a
-   separate, larger step, since an array is `concat_all`'s argument and `run`'s.
-6. **A lint for `$primitives` outside `std/` and the compiler**, which waits on suppressible
+   separate, larger step, since an array is `concat_all`'s argument and `run`'s. SPEC §11 says
+   so.
+2. **A lint for `$primitives` outside `std/` and the compiler**, which waits on suppressible
    warnings.
 
 ## Plan
 
-1. **This note**, and the SPEC and BOOTSTRAP text, once the open points are settled.
+1. **This note**, and the SPEC and BOOTSTRAP text. Done.
 2. **`$primitives`.** Both parsers' arity tables, stage 0's evaluator, inference (the block of
    the intrinsics' types), lowering (a projection is the intrinsic's `prim` node, so the
    emitted C is unchanged, and `collect_aliases` already makes an alias of one a direct call).
@@ -298,7 +303,7 @@ without a new form, and widening types belongs to a different design.
 3. **`$alloc` of a constructing call**, in inference and lowering, with fixtures: a frame text
    and a heap text from one constructor, `$free` running its deferral, an arena releasing it,
    and the fallible case.
-4. **The byte type**, `$primitives.view` and `unbox`'s move.
+4. **The byte type**, `$primitives.view`, and the FFI group's move.
 5. **`std/str`'s text and views**, with `std/fmt` and `std/io` moved onto them, and
    `std/str_test.mpl` covering growth, a view across growth, `t.write (t.view ())`, a stale view
    after `clear` panicking, `truncate` at a code-point boundary, and a heap text freed by an

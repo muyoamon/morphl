@@ -36,7 +36,7 @@ The language is prefix notation with **fixed arity** for every keyword. There is
 | Keyword | `$name` — compiler forms only (§2.2) |
 | Comment | `//` to end of line; `/* … */` block, non-nesting; whitespace to the parser |
 
-**Keywords are `$`-prefixed.** Every compiler form begins with `$` (`$decl`, `$call`, …); identifiers may not start with `$`. Bare names — including every intrinsic such as `add` or `print` — are ordinary values and may be shadowed. `true` and `false` are literals, not keywords. A reader can tell form from value at a glance.
+**Keywords are `$`-prefixed.** Every compiler form begins with `$` (`$decl`, `$call`, …); identifiers may not start with `$`. Bare names — including every intrinsic such as `add` or `print` — are ordinary values and may be shadowed. The primitives behind `$primitives` (§8) are reached through a keyword precisely so that nothing can shadow them. `true` and `false` are literals, not keywords. A reader can tell form from value at a glance.
 
 Newlines are whitespace. The language does not dictate formatting.
 
@@ -69,6 +69,7 @@ Newlines are whitespace. The language does not dictate formatting.
 | `$extern "symbol" sig` | 2 | string literal, type-only signature |
 | `$defer e` | 1 | expression; a block item only (§4.15a) |
 | `$free r` | 1 | expression: allocated storage (§7.6) |
+| `$primitives` | 0 | none; only the target of a projection, `$primitives.name` (§8) |
 
 Because every form has fixed arity and groups/blocks are delimited, parsing needs no separators, no newline sensitivity, and no formatter.
 
@@ -89,7 +90,11 @@ Because every form has fixed arity and groups/blocks are delimited, parsing need
 
 ### 3.1 Base types
 
-`Int` (64-bit; **overflow panics**; wrapping and saturating forms are explicit intrinsics), `Float` (64-bit IEEE 754; **never panics** — division by zero and invalid operations give infinities and NaN, §8), `Str` (immutable, pointer + length, **always valid UTF-8**). There is no character type: a character is a one-code-point substring.
+`Int` (64-bit; **overflow panics**; wrapping and saturating forms are explicit intrinsics), `Float` (64-bit IEEE 754; **never panics** — division by zero and invalid operations give infinities and NaN, §8), `Str` (pointer + length, **always valid UTF-8**). There is no character type: a character is a one-code-point substring.
+
+**A `Str` is a view: it owns nothing.** Its bytes are a literal's, which are static; another view's, which is what `slice` gives; or lent by storage that owns them, which is `std/str`'s text (§8). They never change while the view can read them, so a `Str` is immutable to its reader. A view read after the storage that lent it is released is the author's error, as reading any allocated reference after its release is (§7.6). No operation in the root block makes new bytes; the primitives that do are behind `$primitives` (§8), for the compiler and the library.
+
+Behind `$primitives` there is also a **byte**: one byte of storage, the type of `$primitives.u8`, for library code that writes bytes (§8).
 
 Literals have their base type: `0 : Int`, `"hi" : Str`. There are no singleton literal types.
 
@@ -501,7 +506,7 @@ function — would be declared wrongly. So `symbol` may be the C prototype itsel
 agrees with any header that declares it too, with the name parenthesised so that a
 function-like macro of that name is not expanded; each argument is converted to its declared
 C type and the result back, so an `int` arrives sign-extended and a `void` result is `()`. A
-pointer is an `Int` address (§8's `str_ptr`, `box_ptr`), a reference, or a callback's code
+pointer is an `Int` address (§8's `$primitives.str_ptr`, `box_ptr`), a reference, or a callback's code
 pointer, and a pointer result is an address. The prototype and the signature must take the
 same number of parameters. A type the subset of C declarators does not cover — a function
 pointer parameter, say — is written through a `typedef` the build supplies.
@@ -633,8 +638,8 @@ deferrals only if it holds the reference, that is, only if the block was built.
 ```
 $decl parse $func ($decl src "") $new {
   $prop tag "ok"
-  $decl p   $call raw_alloc (16)
-  $defer    $call raw_free (p)                       // runs in parse if the $try leaves
+  $decl p   $call $primitives.raw_alloc (16)
+  $defer    $call $primitives.raw_free (p)           // runs in parse if the $try leaves
   $decl n   ($try ($call str_to_int (src)) none).v
 }
 ```
@@ -656,6 +661,17 @@ $decl with $func ($decl make mk, $decl n 0) {
 $decl a $call with (mk, 1)
 $decl b $call with (mk2, 2)                // same type as mk, different deferrals
 ```
+
+**`$alloc` of a constructing call allocates the constructed block** instead of placing it in
+the caller's frame. A constructing call is a `$new` written at the call, so this is `$alloc $new e`
+given a meaning: storage holding a place is otherwise refused (above), so no program that was
+valid changes. `$alloc $call mk (1)` is `&^T`, may be stored and returned like any allocated
+reference, and its deferrals are the allocator's to run, at `$free` or when the allocator
+releases (§7.6). That is sound because a constructed block's deferrals already name only its
+own bindings and what is global (§4.15a), which is what a deferral run outside every frame
+needs. One constructor therefore serves both lifetimes: `$call mk (1)` in a frame, freed with
+it, and `$alloc $call mk (1)` on the heap, freed by its author. A fallible constructor's call
+answers `<&T, none>`; allocated, `<&^T, none>`.
 
 A function that constructs and one that does not are not interchangeable, either way: the
 first is called differently (§7.6), so the flag is part of the type's identity and of
@@ -824,7 +840,11 @@ Values of union type carry a discriminator so `$match` can test them. **Which po
 
 Only `$new` and `$alloc` allocate, and there are no references into value
 fields, so storage is the only thing to manage — and which kind of storage a
-reference names is in its type (§3.5).
+reference names is in its type (§3.5). A `Str` owns nothing (§3.1); text that owns its
+bytes is storage of the library's (§8's `std/str`). The one exception is `$primitives`: its
+allocating members make bytes no storage owns, which nothing ever releases. They exist for
+the compiler, which runs once and exits (BOOTSTRAP §1), and for the library to build on, and
+a program that uses them takes that on.
 
 **Frame storage** (`$new`) is a place (§5.3a) in the activation that made it, and is
 released when that activation ends: when its function returns, or when a tail call
@@ -853,7 +873,7 @@ declares the default for a target, and `$decl allocator …` in a block override
 what is written after it there. An allocator is any value with a member
 `$prop alloc $func ($decl size 0) 0`, which is asked for `size` bytes and answers their
 address (§8's raw memory); by convention it also has `free`, taking an address back. The
-root's are `raw_alloc` and `raw_free`; an arena's `free` does nothing, and it releases
+root's are `$primitives.raw_alloc` and `raw_free`; an arena's `free` does nothing, and it releases
 everything at once. `$alloc e` asks the allocator for the storage `e`'s value needs and
 stores the value there. An allocator releases when the author says so, which makes
 `$alloc` **unsafe by declaration** — the same status as `$extern` (§4.16). A reference
@@ -861,7 +881,7 @@ used after its allocator released it is the author's error.
 
 **Releasing: `$free r`.** `r` must be allocated storage that is not a `$const` view —
 frame storage is released with its frame. `$free r` calls the `free` of the `allocator` in
-scope where it is written, `free (addr, size)` — the root's is `raw_free (addr)` — with the
+scope where it is written, `free (addr, size)` — the root's is `$primitives.raw_free (addr)` — with the
 storage's address and size, the size the compiler's (§5.3's invariance makes it exactly
 what was allocated). **It must be the allocator that made `r`**: `allocator` at the `$free`
 resolves to the same binding it resolved to at the `$alloc`, so storage is never handed to
@@ -938,19 +958,27 @@ Every program is wrapped in an implicit **root block**, assembled by the build p
 | Numeric | `add sub mul div mod neg lt` | each `$overload` over `(Int,Int)` and `(Float,Float)`; no implicit conversion. On `Int`, overflow and `div`/`mod` by zero panic, and `mod` by `-1` is `0`. On `Float` they are IEEE 754: `div` by zero is an infinity (NaN for `0.0 / 0.0`), `mod` by zero is NaN, `mod` takes the dividend's sign, and `lt` is false whenever an operand is NaN |
 | Numeric, explicit | `add_wrap sub_wrap mul_wrap add_sat sub_sat mul_sat` | wrapping (two's complement, modulo 2^64) / saturating (clamped to `Int`'s range) `Int` arithmetic; never panic |
 | Bitwise | `band bor bxor shl shr` | on `Int`'s two's complement bits. `shl (x, n)` discards the bits shifted out and `shr` is arithmetic, copying the sign bit in; a count `n` outside `0..63` panics |
-| Conversion | `to_float to_int to_str` | `to_int` overloaded: `Str -> option Int`, `Float -> option Int` (truncates toward zero; `none` if out of range or NaN). From a `Str` it accepts exactly §2.1's integer literals — an optional `-`, then decimal digits, in range — so `+5`, `1_000` and ` 5` are `none` |
+| Conversion | `to_float to_int` | `to_int` overloaded: `Str -> option Int`, `Float -> option Int` (truncates toward zero; `none` if out of range or NaN). From a `Str` it accepts exactly §2.1's integer literals — an optional `-`, then decimal digits, in range — so `+5`, `1_000` and ` 5` are `none` |
 | Equality | `eq` | overloaded over `Int Float Str Bool`; structural equality on blocks is a trait. On `Float` it is IEEE equality — NaN is not equal to itself and `0.0` equals `-0.0` — so `eq` is not reflexive on `Float`, and an equality built from it over a block with a `Float` field inherits that |
-| Strings | `concat concat_all len slice byte` | **byte** units. `byte (s, i)` reads one byte as `Int`. `len` counts bytes; `slice (s, i, j)` takes byte offsets and panics if an offset splits a code point, preserving the validity invariant, and shares the bytes. `concat (a, b)` copies both; `concat_all (parts)`, `parts` a `[Str]`, joins them in order in one allocation of their total length (`""` for none), which is how text built from many pieces is built in O(n) rather than by repeated `concat`. Code-point and grapheme iteration are library; `eq` is bytewise (equal to code-point equality under the invariant) |
+| Strings | `len slice byte` | **byte** units, over views (§3.1); none of them allocates. `byte (s, i)` reads one byte as `Int`. `len` counts bytes; `slice (s, i, j)` takes byte offsets and panics if an offset splits a code point, preserving the validity invariant, and shares the bytes. Code-point and grapheme iteration are library; `eq` is bytewise (equal to code-point equality under the invariant). Building text is `std/str`'s, and `$primitives`' below |
 | Arrays | `array at alen` | `$call array (n, example)` → `&mut [T]`, contiguous, bounds-checked; `at` → fat `&mut T` (or `&const T` through a `&const` array); length not part of the type |
 | Control | `panic` | returns `⊥`; aborts, no catch |
 | Shapes | `err none` | failure and absence (§4.15); patterns for `$try` and `$match` |
 | Bounds | `sendable` | compiler-known template bound (§7.8) |
-| FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox raw_alloc raw_free` | raw addresses for `$extern` and for allocators written in the language (§7.6), each an `Int` (§3.1 has one integer type): `str_ptr (s)` and `array_ptr (a)` give the base of the bytes or elements (a `Str` is not NUL-terminated, so its length travels separately); `box_ptr (r)` takes the address of storage, which must be a reference; `unbox (addr, example)` recovers a reference typed by the example — allocated and writable, since what it points at is outside every frame. `str_from_ptr (addr, n)` is the way back for bytes: it copies `n` bytes from the address and answers `option Str`, `none` when they are not valid UTF-8 or `n` is negative — the validating function this section's ABI mapping requires. `raw_alloc (n)` answers the address of `n` fresh bytes, 0 when none is to be had, and `raw_free (addr)` releases one; they are the root `allocator`'s `alloc` and `free`. All unsafe by declaration |
 | Build | `compiler` | see §9 |
+
+**`$primitives`** — what the library is built from, and what the compiler uses directly. It is a keyword, not a name (§2.1), so nothing shadows it, and every use reads `$primitives.name`; a member may be aliased like any value, `$decl concat $primitives.concat`. The allocating members make bytes that no storage owns and that nothing releases (§7.6); the others are unsafe by declaration, as `$extern` is (§4.16). A program reaches what they do through `std/` — text through `std/str`, formatting through `std/fmt`, files through `std/io` — and nothing stops it writing `$primitives` itself, which is the `$` telling it it has left the language:
+
+| Group | Names | Notes |
+|---|---|---|
+| Building strings | `concat concat_all to_str` | `concat (a, b)` copies both; `concat_all (parts)`, `parts` a `[Str]`, joins them in order in one allocation of their total length (`""` for none), which is how text built from many pieces is built in O(n) rather than by repeated `concat`; `to_str` renders an `Int` or `Float`. Each answers a `Str` whose bytes nothing owns |
+| Views | `view` | `view (addr, n)`: the `n` bytes at `addr` as a `Str`, with no copy and no UTF-8 check. Sound only where every byte there was copied from a view or encoded from a code point, which is what `std/str` keeps to |
+| Bytes | `u8 to_u8 of_u8` | `u8` is a value of the byte type (§3.1), as `0` is of `Int`, so it is the example a byte-typed default or `unbox` is given; `to_u8 (n)` panics when `n` is outside `0..255`, and `of_u8 (b)` is its `Int` |
+| FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox raw_alloc raw_free` | raw addresses for `$extern` and for allocators written in the language (§7.6), each an `Int` (§3.1 has one integer type): `str_ptr (s)` and `array_ptr (a)` give the base of the bytes or elements (a `Str` is not NUL-terminated, so its length travels separately); `box_ptr (r)` takes the address of storage, which must be a reference; `unbox (addr, example)` recovers a reference typed by the example — allocated and writable, since what it points at is outside every frame. `str_from_ptr (addr, n)` is the way back for bytes: it copies `n` bytes from the address and answers `option Str`, `none` when they are not valid UTF-8 or `n` is negative — the validating function this section's ABI mapping requires. `raw_alloc (n)` answers the address of `n` fresh bytes, 0 when none is to be had, and `raw_free (addr)` releases one; they are the root `allocator`'s `alloc` and `free`. All unsafe by declaration |
 
 **Platform** — library code over `$extern`, present per target: `print`, `read`, files, sockets, `spawn`/`join`/`channel`/`mutex`/`atomic`, `malloc`-backed allocators. The root block defines `option` and `result` before any of these so failing operations return them — an operation with nothing to answer but success answers `ok | err` (§4.15), as writing a file does; `Int` arithmetic (overflow, `div` by zero) and `slice` out of range panic. `Float` arithmetic does not: its failures are values (§3.1), and the program meets them where a `Float` becomes an `Int`, since `to_int` answers `none` for NaN and out-of-range values.
 
-Everything else — `not`, `and`, `or`, `max`, lists, maps, formatting — is library code. That library is `std/`: ordinary modules imported by name like any other (`$decl L $import "std/list"`), found through the build's search roots (§4.14) — `std/core` (`not`/`and`/`or`, `max`/`min`, `equal`/`less` and the `option` helpers), `std/list`, `std/vec` (a growable vector over `array`), `std/map`, `std/str`, `std/fmt`, `std/io`, `std/seq`, `std/mem`, `std/result`, `std/json` and `std/test`. None of it is in the root block, so a program pays only for what it imports. Sanity check that the core suffices:
+Everything else — `not`, `and`, `or`, `max`, lists, maps, formatting — is library code. That library is `std/`: ordinary modules imported by name like any other (`$decl L $import "std/list"`), found through the build's search roots (§4.14) — `std/core` (`not`/`and`/`or`, `max`/`min`, `equal`/`less` and the `option` helpers), `std/list`, `std/vec` (a growable vector over `array`), `std/map`, `std/str` (text that owns its bytes: a constructed, append-only buffer, whose views are references to it — TEXT.md), `std/fmt`, `std/io`, `std/seq`, `std/mem`, `std/result`, `std/json` and `std/test`. None of it is in the root block, so a program pays only for what it imports. Sanity check that the core suffices:
 
 ```
 $decl not $func ($decl b $union (true, false)) $match b ($case true false, $case false true)
@@ -1122,6 +1150,9 @@ These follow from stated rules and are accepted by design:
 
 ## 11. Deferred / Open
 
+- **Owned text is being implemented** (TEXT.md's plan). Until its step 6 the root block still binds the names §8 moved to `$primitives`, and `std/str`'s text is not yet written.
+- Arrays allocate outside `$new` and `$alloc` as building strings did: `array (n, example)` and `args`. TEXT.md applies the same principle to them — an array becomes a view, owning sequences are `std/vec`'s — as a later step.
+
 - Whether the pass-facing compiler functions should be `$template`s bounded by the node type (§9.3), so that a pass's own annotations survive a call into the compiler instead of being prefix-copied away (§7.4). It is the difference between passes carrying analysis beside the tree and inside it.
 - Whether a *library* allocator can be made safe rather than unsafe by declaration — some form of scoped allocator whose references cannot outlive it, which would be §5.3a's rule generalised from the frame to any allocator. Deliberately not attempted: it is the step from two kinds to arbitrarily many, and that is a lifetime system.
 - Variadic templates (abstraction over group arity).
@@ -1217,7 +1248,7 @@ $specialize id "s"            // explicit, yields Str -> Str
 ```
 $decl show $overload (
   $func ($decl b true) $if b "yes" "no",      // specific first
-  $func ($decl n 0)    $call to_str (n)
+  $func ($decl n 0)    $if ($call lt (n, 0)) "negative" "not negative"
 )
 $call show true               // picks candidate 1
 ```
@@ -1240,15 +1271,15 @@ $call total (rect, sq)                                   // 37
 
 // Shared behaviour is a function over the trait object, not a default.
 $decl describe $func ($decl s $traitsof shape_proto)
-  $call concat ("area=", $call int_to_str ($call s.area ()))
-$call describe (rect)                                    // "area=12"
+  $if ($call lt ($call s.area (), 20)) "small" "large"
+$call describe (rect)                                    // "small"
 
 // `Int` has no props. `$impl` gives this value the members; the `$decl` over it names the
 // receiver, and the value is still an `Int`. The receiver is a reference (§4.10), so the
 // member reads it where a value is expected (§5.4) rather than returning it.
 $decl n   7
 $decl n_s $impl n ($traitsof shape_proto) { $prop area $func () $call add (n_s, 0) }
-$call describe (n_s)                                     // "area=7"
+$call describe (n_s)                                     // "small"
 
 // Storage of trait type holds trait objects; `$set` replaces the whole object.
 $decl cur $mut $alloc $traitsof shape_proto

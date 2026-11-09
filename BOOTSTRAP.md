@@ -57,6 +57,7 @@ Two defects had to go first, both the same shape and neither visible to stage 0'
 | `$template T body` | single name only, **no bounds** (`$template (T bound)` is out), no self-specialization |
 | `$specialize t args` | **always explicit.** Never rely on `$call`-time inference of `T` (§4.9) |
 | `$import "name"` | none. Load-once, cycles are an error |
+| `$primitives` | the allocating string members only: `concat concat_all` and §2's `int_to_str from_code read_file`. The compiler is the one program meant to build text with them (SPEC §7.6): it runs once, so bytes nothing releases cost it nothing, and it cannot use `std/str`, which is compiled-only. Each module aliases what it calls, `$decl concat $primitives.concat`, so call sites read as before. The byte and FFI members are out (§1.2's `$extern` row) |
 | `$try e pat` | `pat` restricted to `err` / `none` / another prop-tagged block — §1.3 |
 | `$impl x trait override` | none, evaluated dynamically: `x`'s value with `override`'s props attached (SPEC §4.12). Stage 1's own source does not use it; it is in the subset so that trait programs run under both stages and keep the stage-0/stage-2 cross-check every other fixture has |
 | `$traitsof e` | none, likewise: the value and `e`'s own props (SPEC §4.13) |
@@ -66,7 +67,7 @@ Two defects had to go first, both the same shape and neither visible to stage 0'
 
 | Excluded | Why, and what to write instead |
 |---|---|
-| `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap |
+| `$extern` | Stage 0 provides I/O as opaque builtins instead (§2). Keeps the platform out of the bootstrap. The same holds for `$primitives`' FFI, byte and view members, which only `$extern`-level code needs: stage 0 has the names and refuses them, since it has no memory layout to give a byte or an address |
 | `$const`, all `&const` | Nothing in stage 1 needs a read-only view. (This exclusion used to be justified by fat references; under §5.1's prefix rule a `&const` upcast is free and thin, so the reason is now only that it is unused.) Use `&T` or `$mut`. |
 | `Float` arithmetic | A compiler needs no float math. Float *literals* are carried through as their source text `Str` and emitted by the backend as C `double` literals — so the lexer still lexes them. Stage 1 compiles float arithmetic (§2); only stage 0 lacks it |
 | Releasing an allocator | Nothing is freed at stage 0 (§3), so the default `allocator` is malloc-and-never-free. `$alloc` itself is *in* the subset — §5.3a makes it the only way a container outlives its builder, so stage 1 cannot be written without it. |
@@ -110,15 +111,15 @@ Stage 1 types and compiles §8's overloads: `add sub mul div mod neg lt` over `(
 | Int arithmetic, explicit | `add_wrap sub_wrap mul_wrap add_sat sub_sat mul_sat` — as §8 |
 | Bitwise | `band bor bxor shl shr` — as §8; a shift count outside 0..63 panics |
 | Comparison | `eq` (`Int`, `Str`, `Bool`), and the monomorphic `eq_int eq_str` |
-| Strings | `concat concat_all len slice byte` — byte units, as §8; `concat_all` takes a `[Str]` |
-| Conversion | `int_to_str` , `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works; `to_str` (from `Int`) and `to_int` (from `Str`) are the same at stage 0, and `to_float` refuses |
-| Characters | `from_code (cp)` → `none \| some Str`. **An addition to §8, not an implementation of it** — see §7 |
+| Strings | `len slice byte` — byte units, as §8 |
+| `$primitives` | `concat concat_all` (a `[Str]`), `int_to_str`, `from_code`, `read_file`, and the byte, view and FFI members — SPEC §8's, plus these three of §2's, which allocate too. Stage 0 implements the allocating ones and refuses the rest (§1.2) |
+| Conversion | `str_to_int` → `none` or `{$prop tag "some" $decl v 0}` so `$try x none` works; `to_int` (from `Str`) is the same at stage 0, and `to_float` refuses. `int_to_str` and `to_str` make a string, so they are `$primitives`' |
+| Characters | `$primitives.from_code (cp)` → `none \| some Str`. **An addition to §8, not an implementation of it** — see §7 |
 | Arrays | `array at alen` — as §8, over any element type (the example fixes it); `at` returns a reference into the elements. `args` and `run` keep `[Str]` |
 | Control | `panic` |
 | Shapes | `err none` — prop-tagged blocks, per §4.15 |
-| Platform | `print eprint read_file write_file args run errno` — opaque Zig builtins, reached through an interface the driver supplies (see below) |
-| FFI | `str_ptr str_from_ptr array_ptr box_ptr unbox raw_alloc raw_free` — as §8 in stage 1, which compiles them; stage 0 has the names and refuses them, since it has no `$extern` (§1.2) |
-| Storage | `allocator` — §7.6's root allocator, whose `alloc` and `free` are `raw_alloc` and `raw_free`; stage 0 never frees (§3), so its `$alloc` ignores it |
+| Platform | `print eprint write_file args run errno`, and `$primitives.read_file`, which makes a string — opaque Zig builtins, reached through an interface the driver supplies (see below) |
+| Storage | `allocator` — §7.6's root allocator, whose `alloc` and `free` are `$primitives.raw_alloc` and `raw_free`; stage 0 never frees (§3), so its `$alloc` ignores it |
 
 **Platform shapes.** §8 requires failing operations to return `option`/`result` rather than panic, which fixes these signatures:
 
