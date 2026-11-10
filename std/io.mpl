@@ -12,13 +12,18 @@ $decl S $import "std/str"
 
 $decl strs $specialize L.list ""
 
-$decl print_line  $func ($decl s "") $do ($call print (s)) ($call print ("\n"))
-$decl eprint_line $func ($decl s "") $do ($call eprint (s)) ($call eprint ("\n"))
+// A `Str`, or a view of a `std/str` text, which is read for the length of the call (TEXT.md,
+// T5): these and `write` are where a text meets the platform.
+$decl print_line  $func ($decl s $union ("", S.proto_view))
+  $do ($call print ($call S.raw_str (s))) ($call print ("\n"))
+$decl eprint_line $func ($decl s $union ("", S.proto_view))
+  $do ($call eprint ($call S.raw_str (s))) ($call eprint ("\n"))
 
 // A whole file, or `none` when it cannot be read or is not UTF-8 (§3.1); and a whole file
 // written, truncating, answering `ok` or `err`.
 $decl read  $func ($decl path "") $call read_file (path)
-$decl write $func ($decl path "", $decl text "") $call write_file (path, text)
+$decl write $func ($decl path "", $decl text $union ("", S.proto_view))
+  $call write_file (path, $call S.raw_str (text))
 
 // The text between newlines. A final newline ends the last line rather than starting an
 // empty one, so `lines` and `unlines` are inverses on text that ends in one; a `\r` before
@@ -270,16 +275,19 @@ $decl from_str $func ($decl s "") {
   $decl ret r
 }.ret
 
-// A writer collecting what it is given; `text ()` is all of it.
-$decl to_text $func () {
-  $decl w   {
-    $decl b    $call S.builder ()
-    $prop write $func ($decl s "") $do ($call w.b.write (s)) wrote
-    $prop flush $func () wrote
-    $prop text  $func () $call w.b.build ()
-  }
-  $decl ret w
-}.ret
+// A writer collecting what it is given into a text of its own: `view ()` is all of it, and
+// `text ()` all of it copied out as a `Str`. A constructor (§5.3a), so it is frame storage
+// where it is called or, as a stream must be to make a `writer` that can be stored,
+// `$alloc $call I.to_text ()`; its buffer goes with it. It keeps the text's state itself, as
+// `std/str` provides for, since a block cannot hold a text.
+$decl to_text $func () $new {
+  $decl hd $call S.header ()
+  $prop write $func ($decl s "") $do ($call S.put (to_text.hd, s)) wrote
+  $prop flush $func () wrote
+  $prop view  $func () $call S.whole (to_text)
+  $prop text  $func () $call S.copy_out ($call S.whole (to_text))
+  $defer $call S.drop_header (hd)
+}
 
 // Written at the end of what is there, and created if it is not. `O_APPEND` without
 // `O_CREAT` needs no third argument to C's variadic `open`; a file that is not there is made
@@ -356,17 +364,18 @@ $decl write_line $template ($decl W $traitsof writer_proto) $func ($decl w W, $d
   $decl ret $call w.write ("\n")
 }.ret
 
-// Everything left in `r`, or the failure that stopped it. `builder` is an example for the
-// parameter, evaluated once (§4.10) and never written to.
-$decl builder $call S.builder ()
+// Everything left in `r`, or the failure that stopped it: read into a frame text, and copied
+// out of it at the end.
 $decl read_rest $template ($decl R $traitsof reader_proto)
-  $func ($decl r R, $decl b builder, $decl c ($call got (""))) $match c (
+  $func ($decl r R, $decl t S.proto_text, $decl c ($call got (""))) $match c (
     $case {$prop tag "ok"}
-      $if ($call eq (c.v, "")) ($call got ($call b.build ()))
-          ($do ($call b.write (c.v)) ($call read_rest (r, b, $call r.read (4096)))),
+      $if ($call eq (c.v, "")) ($call got ($call S.copy_out ($call t.view ())))
+          ($do ($call t.write (c.v)) ($call read_rest (r, t, $call r.read (4096)))),
     $case c c)
-$decl read_all $template ($decl R $traitsof reader_proto) $func ($decl r R)
-  $call read_rest (r, $call S.builder (), $call r.read (4096))
+$decl read_all $template ($decl R $traitsof reader_proto) $func ($decl r R) {
+  $decl t   $call S.text ()
+  $decl ret $call read_rest (r, t, $call r.read (4096))
+}.ret
 
 // Everything in `r` written to `w`, then `ok`; or the first failure of either. `x` is the
 // last write's answer and `c` the chunk after it — §7.1 evaluates arguments in order, so the

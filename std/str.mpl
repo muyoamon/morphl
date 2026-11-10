@@ -1,5 +1,6 @@
 // std/str: building and taking apart a `Str` (STDLIB.md, D6), over §8's `concat`, `len`,
-// `slice`, `byte` and `from_code`.
+// `slice`, `byte` and `from_code`; and **text**, a growable buffer owning its bytes, with
+// views of it (TEXT.md, T3–T6), at the end of this file.
 //
 // §3.1 makes a `Str` valid UTF-8 and its operations byte-indexed, so every index here is a
 // byte offset and every search compares bytes; code points are `codes`, a sequence that
@@ -68,6 +69,9 @@ $decl join $func ($decl xs ($call strs.empty ()), $decl sep "")
 
 // --------------------------------------------------------------- the builder
 
+// The pieces design, kept for `std/json` and the language server until TEXT.md's step 6;
+// new code writes a `text` (below), which owns its bytes.
+//
 // Text assembled piece by piece: `$call b.write (s)` and `$call b.build ()`. The pieces are
 // held newest first in the builder's own cell (D9: a container that changes in place holds
 // its state in `$mut $alloc` cells), and `build` joins them once, then keeps the result as
@@ -121,10 +125,10 @@ $decl less    $func ($decl a "", $decl b "") $call lt ($call compare (a, b), 0)
 
 // ------------------------------------------------------------- searching
 
-$decl starts_with $func ($decl s "", $decl p "")
+$decl str_starts_with $func ($decl s "", $decl p "")
   $if ($call lt ($call len (s), $call len (p))) false
       ($call eq ($call slice (s, 0, $call len (p)), p))
-$decl ends_with $func ($decl s "", $decl p "")
+$decl str_ends_with $func ($decl s "", $decl p "")
   $if ($call lt ($call len (s), $call len (p))) false
       ($call eq ($call slice (s, $call sub ($call len (s), $call len (p)), $call len (s)), p))
 
@@ -135,11 +139,11 @@ $decl at_is $func ($decl s "", $decl p "", $decl i 0)
 
 // The first byte offset at or after `from` where `p` occurs, as an option. An empty `p`
 // occurs everywhere, so it is found at `from`.
-$decl find $func ($decl s "", $decl p "", $decl from 0)
+$decl str_find $func ($decl s "", $decl p "", $decl from 0)
   $if ($call lt ($call sub ($call len (s), $call len (p)), from)) none
       ($if ($call at_is (s, p, from)) ($call C.some (from))
-           ($call find (s, p, $call add (from, 1))))
-$decl contains $func ($decl s "", $decl p "") $call C.is_some ($call find (s, p, 0))
+           ($call str_find (s, p, $call add (from, 1))))
+$decl str_contains $func ($decl s "", $decl p "") $call C.is_some ($call str_find (s, p, 0))
 
 // ------------------------------------------------------------ taking apart
 
@@ -209,3 +213,233 @@ $decl codes $func ($decl s "", $decl i 0) {
   }
   $decl ret w
 }.ret
+
+// ------------------------------------------------------------------- text
+//
+// A text is a growable buffer, the builder and the string at once (TEXT.md, T3–T6):
+//
+//   $decl t $call S.text ()            // frame text: its deferral frees the buffer
+//   $call t.write ("hello, ")
+//   $call t.write (name)               // a `Str` or a view, copied in at once
+//   $call I.print_line ($call t.view ())
+//
+// `S.text` is a constructor (§5.3a), so `$decl t $call S.text ()` is frame storage of the
+// scope it stands in, and `$alloc $call S.text ()` a heap text whose deferral is its
+// allocator's: run by `$free`, or when an arena releases it. The buffer itself is the
+// root's raw memory either way.
+//
+// A **view** is `{of, at, n, gen}`: the text, an offset, a length and the generation it was
+// made under. It holds the text as a reference, so §5.3a keeps a view of a frame text in that
+// frame. A text only grows, and a view holds an offset rather than an address, so a view stays
+// right across growth; `clear` and `truncate` add one to the generation, and reading a view
+// made before panics (T6). `raw_str (v)` is the view as a `Str`, valid until the text next
+// grows or ends: for the length of a platform call, nothing longer (T5).
+
+$decl c_memcpy $extern "void *memcpy(void *, const void *, size_t)"
+  $func ($decl d 0, $decl s 0, $decl n 0) 0
+
+// C's `memcpy` wants an address even for no bytes, and an empty text has none.
+$decl copy $func ($decl d 0, $decl s 0, $decl n 0)
+  $if ($call lt (0, n)) ($call c_memcpy (d, s, n)) 0
+
+// The state is a header of four words in raw memory — the buffer's address, its capacity,
+// the bytes used, the generation — since a constructed block's deferral can release raw
+// memory and cannot `$free` a field.
+$decl word   $func ($decl h 0, $decl k 0)
+  $call $primitives.unbox ($call add (h, $call mul (k, 8)), 0)
+$decl get    $func ($decl h 0, $decl k 0) $call C.ival ($call word (h, k))
+$decl header $func () {
+  $decl h   $call $primitives.raw_alloc (32)
+  $decl ok  $if ($call eq (h, 0)) ($call panic ("str: out of memory")) 0
+  $decl w0  $set ($call word (h, 0)) 0
+  $decl w1  $set ($call word (h, 1)) 0
+  $decl w2  $set ($call word (h, 2)) 0
+  $decl w3  $set ($call word (h, 3)) 0
+  $decl ret h
+}.ret
+$decl drop_header $func ($decl h 0)
+  $do ($call $primitives.raw_free ($call get (h, 0))) ($call $primitives.raw_free (h))
+
+// Byte `i` of the memory at `a`, and a byte stored there.
+$decl peek $func ($decl a 0, $decl i 0)
+  $call $primitives.of_u8 ($call $primitives.unbox ($call add (a, i), $primitives.u8))
+$decl poke $func ($decl a 0, $decl i 0, $decl c 0)
+  $set ($call $primitives.unbox ($call add (a, i), $primitives.u8)) ($call $primitives.to_u8 (c))
+
+// The buffer grown to hold `need` bytes, what is there copied across and then `n` bytes from
+// `p` after it, before the old one is freed — so `p` may point into the text itself, and
+// `t.write (t.view ())` reads its source after growing.
+$decl grow $func ($decl h 0, $decl need 0, $decl p 0, $decl n 0) {
+  $decl u   $call get (h, 2)
+  $decl nc  $call C.max ($call C.max ($call mul ($call get (h, 1), 2), need), 16)
+  $decl nb  $call $primitives.raw_alloc (nc)
+  $decl ok  $if ($call eq (nb, 0)) ($call panic ("str: out of memory")) 0
+  $decl m1  $call copy (nb, $call get (h, 0), u)
+  $decl m2  $call copy ($call add (nb, u), p, n)
+  $decl f   $call $primitives.raw_free ($call get (h, 0))
+  $decl s0  $set ($call word (h, 0)) nb
+  $decl s1  $set ($call word (h, 1)) nc
+  $decl ret ()
+}.ret
+
+// `n` bytes at `p` written at the end.
+$decl put_bytes $func ($decl h 0, $decl p 0, $decl n 0) {
+  $decl u   $call get (h, 2)
+  $decl m   $if ($call lt ($call get (h, 1), $call add (u, n)))
+                ($call grow (h, $call add (u, n), p, n))
+                ($do ($call copy ($call add ($call get (h, 0), u), p, n)) ())
+  $decl ret $do ($set ($call word (h, 2)) ($call add (u, n))) ()
+}.ret
+
+// Code point `c` written at the end as UTF-8, or U+FFFD for one `from_code` would refuse: a
+// surrogate, or past U+10FFFF.
+$decl code_ok $func ($decl c 0)
+  $call C.and ($call C.and ($call lt (-1, c), $call lt (c, 1114112)),
+               $call C.not ($call C.and ($call lt (55295, c), $call lt (c, 57344))))
+$decl put_code $func ($decl h 0, $decl c0 0) {
+  $decl c   $if ($call code_ok (c0)) c0 65533
+  $decl w   $if ($call lt (c, 128)) 1 ($if ($call lt (c, 2048)) 2 ($if ($call lt (c, 65536)) 3 4))
+  $decl u   $call get (h, 2)
+  $decl g   $if ($call lt ($call get (h, 1), $call add (u, w)))
+                ($call grow (h, $call add (u, w), 0, 0)) ()
+  $decl a   $call add ($call get (h, 0), u)
+  $decl lo  $func ($decl k 0) $call bor (128, $call band ($call shr (c, k), 63))
+  $decl b   $if ($call eq (w, 1)) ($call poke (a, 0, c))
+      ($if ($call eq (w, 2))
+           ($do ($call poke (a, 0, $call bor (192, $call shr (c, 6))))
+                ($call poke (a, 1, $call lo (0))))
+      ($if ($call eq (w, 3))
+           ($do ($call poke (a, 0, $call bor (224, $call shr (c, 12))))
+                ($do ($call poke (a, 1, $call lo (6))) ($call poke (a, 2, $call lo (0)))))
+           ($do ($call poke (a, 0, $call bor (240, $call shr (c, 18))))
+                ($do ($call poke (a, 1, $call lo (12)))
+                     ($do ($call poke (a, 2, $call lo (6))) ($call poke (a, 3, $call lo (0))))))))
+  $decl ret $do ($set ($call word (h, 2)) ($call add (u, w))) ()
+}.ret
+
+// Whether byte `i` of the memory at `a` continues a code point rather than starting one.
+$decl is_cont $func ($decl a 0, $decl i 0)
+  $call C.and ($call lt (127, $call peek (a, i)), $call lt ($call peek (a, i), 192))
+
+// The first `n` bytes kept, `n` not past the end nor inside a code point (§3.1), and the
+// generation moved on.
+$decl cut $func ($decl h 0, $decl n 0) {
+  $decl u   $call get (h, 2)
+  $decl ok  $if ($call C.or ($call lt (n, 0), $call lt (u, n)))
+                ($call panic ($call concat ("str: truncate to ", $call concat ($call int_to_str (n),
+                     $call concat (" of ", $call int_to_str (u))))))
+                ($if ($call lt (n, u))
+                     ($if ($call is_cont ($call get (h, 0), n))
+                          ($call panic ("str: truncate inside a code point")) 0) 0)
+  $decl s2  $set ($call word (h, 2)) n
+  $decl ret $do ($set ($call word (h, 3)) ($call add ($call get (h, 3), 1))) ()
+}.ret
+
+// A view. Its text is held as a `&const` of the prefix `{hd}`, which §5.1 makes every
+// text a subtype of, so the type can be written before `text` is and one view type serves
+// every text.
+$decl view_of $func ($decl o $const $new { $decl hd 0 }, $decl a 0, $decl k 0, $decl g 0)
+  { $decl of o  $decl at a  $decl n k  $decl gen g }
+$decl proto_view $call view_of ($const $new { $decl hd 0 }, 0, 0, 0)
+
+// The address of a view's first byte, or a panic when its text was cleared or truncated
+// after it was made.
+$decl view_addr $func ($decl v proto_view)
+  $if ($call eq ($call get (v.of.hd, 3), v.gen)) ($call add ($call get (v.of.hd, 0), v.at))
+      ($call panic ("str: a view read after its text was cleared or truncated"))
+
+// A `Str` as itself, and a view as a `Str` of its bytes — valid until its text next grows or
+// ends, so for the length of a call and nothing longer (T5).
+$decl raw_str $func ($decl s $union ("", proto_view)) $match s (
+  $case "" s,
+  $case {} $call $primitives.view ($call view_addr (s), s.n)
+)
+
+// For a constructor that keeps a text's state itself, since a block can hold neither a frame
+// text (§5.3a, A0) nor an `$alloc`ed one its deferral could `$free`: a block whose first
+// field is `$decl hd $call S.header ()`, with `$defer $call S.drop_header (hd)`, writes with
+// `put` and has its views from `whole`, as `text` does. `std/io`'s `to_text` is one.
+//
+// A `Str` or a view written at the end of the text whose header is `h`.
+$decl put $func ($decl h 0, $decl s $union ("", proto_view)) {
+  $decl r   $call raw_str (s)
+  $decl ret $call put_bytes (h, $call $primitives.str_ptr (r), $call len (r))
+}.ret
+// A view of the whole of a text, or of anything whose first field is a text's header.
+$decl whole $func ($decl o $const $new { $decl hd 0 })
+  $call view_of (o, 0, $call get (o.hd, 2), $call get (o.hd, 3))
+
+$decl text $func () $new {
+  $decl hd $call header ()
+  // The whole of the text, as written so far.
+  $prop view     $func () $call whole (text)
+  // A `Str` or a view, copied in; so `t.write (t.view ())` doubles it. All of these answer
+  // unit, so a `show` member ending in a write conforms to `std/fmt`'s `show_proto`.
+  $prop write    $func ($decl s $union ("", proto_view)) $call put (text.hd, s)
+  $prop line     $func ($decl s $union ("", proto_view))
+    $do ($call put (text.hd, s)) ($call put (text.hd, "\n"))
+  $prop code     $func ($decl c 0) $call put_code (text.hd, c)
+  // The bytes written so far.
+  $prop size     $func () $call get (text.hd, 2)
+  // Emptied, keeping the buffer; and the first `n` bytes kept. Either makes every view made
+  // before stale.
+  $prop clear    $func () $call cut (text.hd, 0)
+  $prop truncate $func ($decl n 0) $call cut (text.hd, n)
+  $defer $call drop_header (hd)
+}
+
+// ------------------------------------------------------------------- views
+
+// The view as a `Str` of its own, copied, which outlives the text.
+$decl copy_out $func ($decl v proto_view)
+  $call C.or_else ($call $primitives.str_from_ptr ($call view_addr (v), v.n), "")
+
+$decl view_len  $func ($decl v proto_view) $do ($call view_addr (v)) v.n
+$decl view_byte $func ($decl v proto_view, $decl i 0)
+  $if ($call C.and ($call lt (-1, i), $call lt (i, v.n))) ($call peek ($call view_addr (v), i))
+      ($call panic ($call concat ("str: byte ", $call concat ($call int_to_str (i),
+           $call concat (" of a view of ", $call int_to_str (v.n))))))
+
+// Bytes `i` to `j` of the view, a view of the same text; as §8's `slice`, `i ≤ j ≤ len` and
+// neither inside a code point.
+$decl view_slice $func ($decl v proto_view, $decl i 0, $decl j 0) {
+  $decl a   $call view_addr (v)
+  $decl bad $func ($decl k 0) $if ($call lt (k, v.n)) ($call is_cont (a, k)) false
+  $decl ok  $if ($call C.or ($call C.or ($call lt (i, 0), $call lt (j, i)), $call lt (v.n, j)))
+                ($call panic ($call concat ("str: slice ", $call concat ($call int_to_str (i),
+                     $call concat (" to ", $call concat ($call int_to_str (j),
+                     $call concat (" of a view of ", $call int_to_str (v.n))))))))
+                ($if ($call C.or ($call bad (i), $call bad (j)))
+                     ($call panic ("str: slice inside a code point")) 0)
+  $decl ret $call view_of (v.of, $call add (v.at, i), $call sub (j, i), v.gen)
+}.ret
+
+// Each of these reads the view's bytes for the length of the call.
+$decl view_eq     $func ($decl v proto_view, $decl s "") $call eq ($call raw_str (v), s)
+$decl views_eq    $func ($decl v proto_view, $decl w proto_view)
+  $call eq ($call raw_str (v), $call raw_str (w))
+$decl view_find   $func ($decl v proto_view, $decl p "", $decl from 0)
+  $call str_find ($call raw_str (v), p, from)
+$decl view_starts $func ($decl v proto_view, $decl p "")
+  $call str_starts_with ($call raw_str (v), p)
+$decl view_ends   $func ($decl v proto_view, $decl p "") $call str_ends_with ($call raw_str (v), p)
+$decl view_has    $func ($decl v proto_view, $decl p "") $call str_contains ($call raw_str (v), p)
+
+// Every operation on a `Str` or a view, by the type of the first operand (§4.8). The root's
+// are named first, since these names shadow them from here on (§4.1).
+$decl root_len   len
+$decl root_byte  byte
+$decl root_slice slice
+$decl root_eq    eq
+$decl len         $overload (root_len, view_len)
+$decl byte        $overload (root_byte, view_byte)
+$decl slice       $overload (root_slice, view_slice)
+$decl eq          $overload (root_eq, view_eq, views_eq)
+$decl find        $overload (str_find, view_find)
+$decl starts_with $overload (str_starts_with, view_starts)
+$decl ends_with   $overload (str_ends_with, view_ends)
+$decl contains    $overload (str_contains, view_has)
+
+// A text, as the default of a parameter that takes one. A top-level `$decl` is evaluated once
+// (§4.10), so this is one empty text nothing writes to.
+$decl proto_text $call text ()

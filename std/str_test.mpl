@@ -5,6 +5,7 @@
 $decl C $import "std/core"
 $decl L $import "std/list"
 $decl Q $import "std/seq"
+$decl M $import "std/mem"
 $decl S $import "std/str"
 $decl T $import "std/test"
 
@@ -25,6 +26,28 @@ $decl encode $func ($decl b ($call S.builder ()), $decl cs ($call S.codes ("", 0
   $decl w   $call Q.for_each (cs, $func ($decl c 0)
                 $call b.write ($call C.or_else ($call from_code (c), "?")))
   $decl ret $call b.build ()
+}.ret
+
+// `n` writes of "ab", to a text.
+$decl fill_text $func ($decl t S.proto_text, $decl n 0)
+  $if ($call lt (0, n)) ($do ($call t.write ("ab")) ($call fill_text (t, $call sub (n, 1)))) ()
+
+// A text's bytes copied out, which outlive it.
+$decl copied $func () {
+  $decl t   $call S.text ()
+  $decl w   $call t.write ("kept")
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret
+
+// A heap text from an arena, written and read, then released with the arena, which runs
+// the text's deferral and so frees its buffer.
+$decl in_arena $func () {
+  $decl allocator $call M.arena (4096)
+  $decl h         $alloc $call S.text ()
+  $decl w         $call fill_text (h, 1000)
+  $decl n         $call h.size ()
+  $decl done      $call allocator.release ()
+  $decl ret       n
 }.ret
 
 $decl main $func () {
@@ -100,5 +123,59 @@ $decl main $func () {
                 $call eq ($call S.join ($call S.split ("1 2 3 4 5 6 7 8 9", " "), ""), "123456789"))
   $decl c34 $call T.expect (r, "an empty builder builds nothing",
                 $call eq ($call ($call S.builder ()).build (), ""))
+  // Text: growth, a view across growth, a text written into itself.
+  $decl t   $call S.text ()
+  $decl f2  $call fill_text (t, 100000)
+  $decl c35 $call T.expect (r, "text grows", $call eq ($call t.size (), 200000))
+  $decl t2  $call S.text ()
+  $decl w5  $call t2.write ("hello")
+  $decl v   $call t2.view ()
+  $decl f3  $call fill_text (t2, 5000)
+  $decl c36 $call T.expect (r, "...and a view made before still reads",
+                $call S.eq (v, "hello"))
+  $decl t3  $call S.text ()
+  $decl w6  $call t3.write ("abc")
+  $decl w7  $call t3.write ($call t3.view ())
+  $decl w8  $call t3.write ($call t3.view ())
+  $decl c37 $call T.expect (r, "a text written into itself", $call S.eq ($call t3.view (), "abcabcabcabc"))
+  // Views: the root's operations by the first operand's type.
+  $decl t4  $call S.text ()
+  $decl w9  $call t4.line ("héllo")
+  $decl v4  $call t4.view ()
+  $decl c38 $call T.expect (r, "a view's len and byte",
+                $call C.and ($call eq ($call S.len (v4), 7), $call eq ($call S.byte (v4, 6), 10)))
+  $decl c39 $call T.expect (r, "a view's slice",
+                $call C.and ($call S.eq ($call S.slice (v4, 1, 3), "é"),
+                             $call S.eq ($call S.slice ($call S.slice (v4, 1, 6), 2, 4), "ll")))
+  $decl c40 $call T.expect (r, "a view's find and its relatives",
+                $call C.and ($call C.and ($call eq ($call at_or ($call S.find (v4, "l", 4)), 4),
+                                         $call S.starts_with (v4, "hé")),
+                             $call C.and ($call S.ends_with (v4, "o\n"),
+                                         $call C.not ($call S.contains (v4, "x")))))
+  $decl c41 $call T.expect (r, "two views equal",
+                $call S.eq ($call S.slice (v4, 3, 4), $call S.slice (v4, 4, 5)))
+  $decl t5  $call S.text ()
+  $decl w10 $call t5.code (233)
+  $decl w11 $call t5.code (128512)
+  $decl w12 $call t5.code (55296)
+  $decl w13 $call t5.code (36)
+  $decl c42 $call T.expect (r, "code points written", $call S.eq ($call t5.view (), "é😀\u{fffd}$"))
+  // Clear and truncate: the text goes on, from where it was cut.
+  $decl t6  $call S.text ()
+  $decl w14 $call t6.write ("aéb")
+  $decl k1  $call t6.truncate (3)
+  $decl w15 $call t6.write ("!")
+  $decl c43 $call T.expect (r, "truncate at a code point", $call S.eq ($call t6.view (), "aé!"))
+  $decl k2  $call t6.clear ()
+  $decl w16 $call t6.write ("new")
+  $decl c44 $call T.expect (r, "clear", $call C.and ($call eq ($call t6.size (), 3),
+                                                     $call S.eq ($call t6.view (), "new")))
+  $decl c45 $call T.expect (r, "copy_out outlives its text", $call eq ($call copied (), "kept"))
+  $decl h   $alloc $call S.text ()
+  $decl w17 $call fill_text (h, 3)
+  $decl c46 $call T.expect (r, "a heap text", $call S.eq ($call h.view (), "ababab"))
+  $decl fr  $free h
+  $decl c47 $call T.expect (r, "a heap text in an arena", $call eq ($call in_arena (), 2000))
+  $decl c48 $call T.expect (r, "an empty text", $call S.eq ($call ($call S.text ()).view (), ""))
   $decl ret $call T.finish (r)
 }.ret

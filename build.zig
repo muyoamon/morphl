@@ -174,7 +174,7 @@ pub fn build(b: *std.Build) void {
         // leaves the reference `$free` takes. Compiled only: stage 0 releases nothing.
         .{ .src = "stage1/fixtures/ctor_alloc.mpl", .want = "3254671710", .stage0 = false },
         .{ .src = "stage1/fixtures/bytes.mpl", .want = "12006629424", .stage0 = false },
-        .{ .src = "stage1/fixtures/ctor_recv.mpl", .want = "66521289977", .stage0 = false },
+        .{ .src = "stage1/fixtures/ctor_recv.mpl", .want = "6652128997744", .stage0 = false },
         // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
         // body's tail call, and mid-item — and a loop holding one stays in constant space.
         .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },
@@ -1000,7 +1000,7 @@ pub fn build(b: *std.Build) void {
                .mods = &.{"ctor_value_util"} },
             // A module constructor's members are reached from the entry's output through
             // the receiver, as any member is.
-            .{ .src = "stage1/fixtures/ctor_recv.mpl", .want = "66521289977",
+            .{ .src = "stage1/fixtures/ctor_recv.mpl", .want = "6652128997744",
                .mods = &.{"ctor_recv_util"} },
             .{ .src = "stage1/fixtures/ctor_top.mpl", .want = "e init main 11\na3 a2 b1 c5\n",
                .mods = &.{"ctor_top_util"} },
@@ -1183,11 +1183,11 @@ pub fn build(b: *std.Build) void {
         .{ .src = "std/core_test.mpl", .want = "17\n" },
         .{ .src = "std/list_test.mpl", .want = "28\n" },
         .{ .src = "std/seq_test.mpl", .want = "36\n" },
-        .{ .src = "std/str_test.mpl", .want = "34\n" },
+        .{ .src = "std/str_test.mpl", .want = "48\n" },
         .{ .src = "std/vec_test.mpl", .want = "26\n" },
         .{ .src = "std/map_test.mpl", .want = "16\n" },
         .{ .src = "std/fmt_test.mpl", .want = "27\n" },
-        .{ .src = "std/io_test.mpl", .want = "29\n" },
+        .{ .src = "std/io_test.mpl", .want = "31\n" },
         .{ .src = "std/mem_test.mpl", .want = "13\n" },
         .{ .src = "std/result_test.mpl", .want = "10\n" },
         .{ .src = "std/json_test.mpl", .want = "18\n" },
@@ -1229,6 +1229,31 @@ pub fn build(b: *std.Build) void {
         run_exe.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
         std_step.dependOn(&run_exe.step);
         test_step.dependOn(&run_exe.step);
+    }
+    {
+        // std/str's panics (TEXT.md, T6): a view read after its text was cleared or
+        // truncated, and a text cut inside a code point. Each aborts, so one run per case.
+        const build_exe = std.Build.Step.Run.create(b, "mplc std/str_panic_test.mpl");
+        build_exe.addFileArg(mplc_bin);
+        build_exe.addArgs(&.{ "std/str_panic_test.mpl", "-L", ".", "-o" });
+        const exe_out = build_exe.addOutputFileArg("prog");
+        build_exe.setCwd(b.path("."));
+        build_exe.has_side_effects = true;
+        build_exe.expectExitCode(0);
+        for ([_]struct { case: []const u8, msg: []const u8 }{
+            .{ .case = "clear", .msg = "str: a view read after its text was cleared or truncated" },
+            .{ .case = "truncate", .msg = "str: a view read after its text was cleared or truncated" },
+            .{ .case = "split", .msg = "str: truncate inside a code point" },
+        }) |c| {
+            const run_exe = std.Build.Step.Run.create(b, b.fmt("std/str panics: {s}", .{c.case}));
+            run_exe.addFileArg(exe_out);
+            run_exe.addArg(c.case);
+            run_exe.has_side_effects = true;
+            run_exe.addCheck(.{ .expect_stderr_match = c.msg });
+            run_exe.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+            std_step.dependOn(&run_exe.step);
+            test_step.dependOn(&run_exe.step);
+        }
     }
 
     // The language server (lsp/morphl_lsp.mpl): `zig build lsp` installs `morphl-lsp`, built

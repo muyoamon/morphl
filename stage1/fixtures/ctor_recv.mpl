@@ -1,7 +1,8 @@
 // SPEC §4.10: a constructor's members name their receiver by the constructor's own name —
 // the block its body makes (§5.3a), which the caller provides. Members of an entry-file
 // constructor, a `$mut` one, a block's local one and a module's, called through a frame
-// place, a heap one, a trait object and a member answering a block holding the receiver.
+// place, a heap one, a trait object, a member answering a block holding the receiver, and
+// a member called on a constructing call.
 // Compiled only: stage 0 refuses a constructor's receiver (BOOTSTRAP 1.2).
 $decl U    $import "ctor_recv_util"
 $decl log  $mut $alloc ""
@@ -74,6 +75,10 @@ $decl case_f $func () {
   $decl ret $call get_of (c)
 }.ret
 
+// G: a member called on a constructing call, whose storage is released once the call
+// returns and not where the member is read off it: 44, where releasing early said 34.
+$decl case_g $func () { $decl ret $call ($call counter (3)).both () }.ret
+
 $decl main $func () {
   $decl a   $call say ($call case_a ())
   $decl b   $call say ($call case_b ())
@@ -81,5 +86,6 @@ $decl main $func () {
   $decl d   $call say ($call case_d ())
   $decl e   $call say ($call case_e ())
   $decl f   $call say ($call case_f ())
+  $decl g   $call say ($call case_g ())
   $decl ret $call sval (log)
 }.ret

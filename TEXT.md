@@ -1,10 +1,11 @@
 # Owned text: design note
 
-Status: **decided; steps 1–4 are in, with a constructor's receiver** — SPEC (§2.1, §2.2,
+Status: **decided; steps 1–5 are in, with a constructor's receiver** — SPEC (§2.1, §2.2,
 §3.1, §4.10, §5.3a, §7.6, §8, §11) and BOOTSTRAP (§1, §2) say what is decided, SPEC §11 says it is being implemented, both stages
 have `$primitives`, which the compiler builds its text through, `$alloc` of a
-constructing call allocates the block, and the byte type, `view` and the FFI group are
-`$primitives`' members. The plan is at the end. STRINGS.md made text cheap to build
+constructing call allocates the block, the byte type, `view` and the FFI group are
+`$primitives`' members, and `std/str` has text and views, which `std/fmt` and `std/io` write
+through. The plan is at the end. STRINGS.md made text cheap to build
 (one `concat_all`, O(L)); this note is about who owns the bytes and when they are released.
 
 | | question | decided |
@@ -345,10 +346,29 @@ without a new form, and widening types belongs to a different design.
    at the caller, so §5.3a keeps a view of a frame text in its frame. Stage 0 refuses one,
    since it resolves the name through the scope it was written in, where it is the function.
    `ctor_recv.mpl` (also in `test-split`) is the fixture.
-5. **`std/str`'s text and views**, with `std/fmt` and `std/io` moved onto them, and
-   `std/str_test.mpl` covering growth, a view across growth, `t.write (t.view ())`, a stale view
-   after `clear` panicking, `truncate` at a code-point boundary, and a heap text freed by an
-   arena. Run under ASan, which is what catches a view read after its owner.
+5. **`std/str`'s text and views**, with `std/fmt` and `std/io` moved onto them. Done. A text's
+   state is a header of four words in raw memory (address, capacity, used, generation), since
+   a constructed block's deferral can release raw memory and cannot `$free` a field; the
+   buffer is the root's `raw_alloc`, so a heap text from an arena frees it when the arena runs
+   the text's deferral. `ator` is not in yet. A view's owner is typed `&const {hd}`, the
+   prefix every text has (§5.1): sibling props are typed against placeholders, so `write`'s
+   parameter could not name `view`'s result, and the prefix can be written before `text`.
+   `write` takes a `Str` or a view and copies before freeing the old buffer, so
+   `t.write (t.view ())` works; `raw_str` takes either, and `std/str` overloads `len`, `byte`,
+   `slice`, `eq`, `find`, `starts_with`, `ends_with` and `contains` over the two. `copy_out`
+   copies a view into a `Str` of its own, which is how `std/fmt`'s `render` and `std/io`'s
+   `read_all` answer one. `std/fmt`'s writers take a text (`F.text`); `std/io`'s
+   `print_line`, `eprint_line` and `write` take a `Str` or a view, and `to_text` keeps a
+   text's header itself, through `S.header`, `S.put`, `S.whole` and `S.drop_header`, since a
+   block can hold neither a frame text (A0) nor an `$alloc`ed one its deferral could free.
+   The builder stays for `std/json` and the language server until step 6.
+   `std/str_test.mpl` covers growth, a view across growth, `t.write (t.view ())`, code points,
+   `truncate` and `clear`, a heap text `$free`d and one in an arena; `std/str_panic_test.mpl`
+   the stale views and a cut inside a code point, one run each; all run under ASan. Two
+   compiler fixes came with it. A projection whose value is a function no longer releases its
+   target's storage: `($call mk ()).m ()` released the constructed block before `m` ran,
+   which the receiver made observable (`ctor_recv.mpl`'s case G). And the C runtime hands no
+   `mem*` call the null pointer of an empty `Str`, which an empty text's view is.
 6. **The root's allocating names removed.** Stage 0's `builtins.zig`, `infer.mpl`'s `root_env`,
    `emit.mpl`, the Zig test that the two root blocks name the same things, and every fixture
    and `std/` module that still calls them.

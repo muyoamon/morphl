@@ -1,15 +1,15 @@
-// std/fmt: writing values as text into a `std/str` builder (STDLIB.md, D1, D4, D6).
+// std/fmt: writing values into a `std/str` text (STDLIB.md, D1, D4, D6; TEXT.md, T3).
 //
-// Every writer takes the builder first and answers unit, so a value's text is assembled in
+// Every writer takes the text first and answers unit, so a value's text is assembled in
 // one place however deeply it nests — a record whose `show` returned a `Str` would `concat`
 // its children's, which is D6's O(n²) trap. `render` is the one that answers a `Str`.
 //
 //   $decl F $import "std/fmt"
-//   $decl b $call S.builder ()
-//   $call F.str (b, "x = ")  $call F.int (b, 42)  $call b.build ()     // "x = 42"
-//   $call F.fixed (b, 2.675, 2)                                        // "2.67"
+//   $decl t $call S.text ()
+//   $call F.str (t, "x = ")  $call F.int (t, 42)  $call t.view ()      // "x = 42"
+//   $call F.fixed (t, 2.675, 2)                                        // "2.67"
 //
-// A block opts in by having a `show` member (D4): `$prop show $func ($decl b F.builder) …`,
+// A block opts in by having a `show` member (D4): `$prop show $func ($decl b F.text) …`,
 // writing itself into `b`. §9 keeps reflection out of the language, so nothing is derived.
 // `show` takes no value of the block's own type, so `show_proto` needs no F-bound and a
 // `showable` is an ordinary trait object.
@@ -22,25 +22,24 @@ $decl S $import "std/str"
 $decl strs $specialize L.list ""
 $decl cl   strs.cell
 
-// A builder, as the default of a parameter that takes one. §5.7 never evaluates a
-// default as a type carrier, but a top-level `$decl` is evaluated once (§4.10), so this
-// is one empty builder nothing writes to.
-$decl builder $call S.builder ()
+// A text, as the default of a parameter that takes one: `std/str`'s, one empty text
+// nothing writes to. A writer borrows the text it is given, so a frame text or a heap one
+// will do (§5.3a).
+$decl text S.proto_text
 
-$decl show_proto { $prop show $func ($decl b builder) () }
+$decl show_proto { $prop show $func ($decl b text) () }
 $decl showable   $traitsof show_proto
 
 // ---------------------------------------------------------------- primitives
 
-$decl int   $func ($decl b builder, $decl n 0)      $call b.write ($call int_to_str (n))
+$decl int   $func ($decl b text, $decl n 0)      $call b.write ($call int_to_str (n))
 // §8's `to_str` on a `Float`: the shortest of 15, 16 or 17 significant digits that reads
 // back as the same double, with `.0` on a whole number.
-$decl float $func ($decl b builder, $decl x 0.0)    $call b.write ($call to_str (x))
-$decl str   $func ($decl b builder, $decl s "")     $call b.write (s)
-$decl bool  $func ($decl b builder, $decl v C.bool) $call b.write ($if v "true" "false")
+$decl float $func ($decl b text, $decl x 0.0)    $call b.write ($call to_str (x))
+$decl str   $func ($decl b text, $decl s "")     $call b.write (s)
+$decl bool  $func ($decl b text, $decl v C.bool) $call b.write ($if v "true" "false")
 // A code point; one `from_code` refuses (a surrogate, or past U+10FFFF) is U+FFFD.
-$decl code  $func ($decl b builder, $decl c 0)
-  $call b.write ($call C.or_else ($call from_code (c), "\u{fffd}"))
+$decl code  $func ($decl b text, $decl c 0) $call b.code (c)
 
 // Any of the four by its type, resolved at compile time (§4.8). `Bool` is `true | false`
 // and no subtype of `Int` (§3.2), so the candidates cannot overlap.
@@ -53,24 +52,25 @@ $decl put $overload (int, float, str, bool)
 // would make `F.show (b, s.a)` refuse a field, and refuse it as a tail call, where the
 // object would refer to storage of the call that is ending (§7.7).
 $decl show $template ($decl X $traitsof show_proto)
-  $func ($decl b builder, $decl x X) $call x.show (b)
+  $func ($decl b text, $decl x X) $call x.show (b)
 
-// The text of `x` alone.
+// The text of `x` alone, as a `Str` of its own: written into a frame text, which goes when
+// this returns, and copied out of it.
 $decl render $template ($decl X $traitsof show_proto) $func ($decl x X) {
-  $decl b   $call S.builder ()
-  $decl w   $call x.show (b)
-  $decl ret $call b.build ()
+  $decl t   $call S.text ()
+  $decl w   $call x.show (t)
+  $decl ret $call S.copy_out ($call t.view ())
 }.ret
 
 // `f` of each element of any `std/seq` sequence, with `sep` between: `sep_by (b, xs, ", ",
 // F.int)`. `A` and `B` come from `f`.
 $decl sep_rest $template ($decl Sq $traitsof ($specialize Q.seq_of Sq), A, B)
-  $func ($decl b builder, $decl xs Sq, $decl sep "", $decl f $func ($decl o builder, $decl x A) B)
+  $func ($decl b text, $decl xs Sq, $decl sep "", $decl f $func ($decl o text, $decl x A) B)
     $if ($call xs.is_empty ()) ()
         ($do ($call b.write (sep))
              ($do ($call f (b, $call xs.head ())) ($call sep_rest (b, $call xs.rest (), sep, f))))
 $decl sep_by $template ($decl Sq $traitsof ($specialize Q.seq_of Sq), A, B)
-  $func ($decl b builder, $decl xs Sq, $decl sep "", $decl f $func ($decl o builder, $decl x A) B)
+  $func ($decl b text, $decl xs Sq, $decl sep "", $decl f $func ($decl o text, $decl x A) B)
     $if ($call xs.is_empty ()) ()
         ($do ($call f (b, $call xs.head ())) ($call sep_rest (b, $call xs.rest (), sep, f)))
 
@@ -101,9 +101,9 @@ $decl radix_str $func ($decl n 0, $decl base 10)
            }.ret2
                ($call S.concat_all ($call strs.of ($call digits_of (n, base, strs.nil))))))
 
-$decl radix $func ($decl b builder, $decl n 0, $decl base 10)
+$decl radix $func ($decl b text, $decl n 0, $decl base 10)
   $call b.write ($call radix_str (n, base))
-$decl hex   $func ($decl b builder, $decl n 0) $call radix (b, n, 16)
+$decl hex   $func ($decl b text, $decl n 0) $call radix (b, n, 16)
 
 // ------------------------------------------------------------------- padding
 
@@ -112,15 +112,15 @@ $decl width_of $func ($decl s "") $call Q.count ($call S.codes (s, 0), 0)
 
 // `s` with `fill` in front, or after, until it is `w` code points wide; a wider `s` is
 // written whole. `fill` is repeated whole, so it should be one code point.
-$decl pad_left  $func ($decl b builder, $decl s "", $decl w 0, $decl fill " ")
+$decl pad_left  $func ($decl b text, $decl s "", $decl w 0, $decl fill " ")
   $do ($call b.write ($call S.repeat (fill, $call sub (w, $call width_of (s)))))
       ($call b.write (s))
-$decl pad_right $func ($decl b builder, $decl s "", $decl w 0, $decl fill " ")
+$decl pad_right $func ($decl b text, $decl s "", $decl w 0, $decl fill " ")
   $do ($call b.write (s))
       ($call b.write ($call S.repeat (fill, $call sub (w, $call width_of (s)))))
 
 // `n` in at least `w` columns, zeros after the sign: `zeros (b, -7, 4)` is `-007`.
-$decl zeros $func ($decl b builder, $decl n 0, $decl w 0) {
+$decl zeros $func ($decl b text, $decl n 0, $decl w 0) {
   $decl s   $call int_to_str (n)
   $decl ret $if ($call lt (n, 0))
                 ($do ($call b.write ("-"))
@@ -144,7 +144,7 @@ $decl escape_of $func ($decl c 0)
 
 // The unescaped run from `start` is written in one piece when an escape or the end is
 // reached, so plain text costs one write and not one per byte.
-$decl quoted_go $func ($decl b builder, $decl s "", $decl start 0, $decl i 0)
+$decl quoted_go $func ($decl b text, $decl s "", $decl start 0, $decl i 0)
   $if ($call lt (i, $call len (s)))
       ($if ($call eq ($call len ($call escape_of ($call byte (s, i))), 0))
            ($call quoted_go (b, s, start, $call add (i, 1)))
@@ -154,7 +154,7 @@ $decl quoted_go $func ($decl b builder, $decl s "", $decl start 0, $decl i 0)
       ($call b.write ($call slice (s, start, i)))
 
 // `s` as a morphl string literal, which reads back as `s`.
-$decl quoted $func ($decl b builder, $decl s "")
+$decl quoted $func ($decl b text, $decl s "")
   $do ($call b.write ("\""))
       ($do ($call quoted_go (b, s, 0, 0)) ($call b.write ("\"")))
 
@@ -289,4 +289,4 @@ $decl fixed_str $func ($decl x 0.0, $decl d 0)
     $decl ret2  $if minus ($call concat ("-", body)) body
   }.ret2)
 
-$decl fixed $func ($decl b builder, $decl x 0.0, $decl d 0) $call b.write ($call fixed_str (x, d))
+$decl fixed $func ($decl b text, $decl x 0.0, $decl d 0) $call b.write ($call fixed_str (x, d))

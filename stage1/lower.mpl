@@ -5206,7 +5206,11 @@ $decl lower_projn $func ($decl st proto_lst, $decl e benv.node, $decl n proto_pr
 $decl lower_projn_rest $func ($decl st proto_lst, $decl e benv.node, $decl n proto_projn) {
   $decl d0   $call dfr_list.val (st.defers)
   $decl sc   $set st.nextscope $call is_block_ast (n.target)
-  $decl ret  $call lval ($call consume_at (st, d0, $call lower_proj (st, e, n), false, ""))
+  $decl pv   $call lower_proj (st, e, n)
+  // A function read off a target may be a member holding it as its receiver (§4.10), which
+  // its type does not say; the call it is made for releases the target once it returns.
+  $decl ret  $call lval ($if ($call is_func_ty (pv.ty)) pv
+                 ($call consume_at (st, d0, pv, false, "")))
 }.ret
 
 // A call's callee. A constructor named here is called (§5.3a), so it stays the constructor —

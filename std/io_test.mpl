@@ -4,6 +4,7 @@
 $decl C $import "std/core"
 $decl L $import "std/list"
 $decl I $import "std/io"
+$decl S $import "std/str"
 $decl T $import "std/test"
 
 $decl strs $specialize L.list ""
@@ -156,5 +157,12 @@ $decl main $func () {
   $decl mo  $call I.open_read ("/nonexistent/morphl/file")
   $decl c27 $call T.expect (r, "opening a missing file answers its errno",
                 $match mo ($case {$prop tag "err"} $call eq (mo.e, 2), $case mo false))
+  // A text meets the platform through a view.
+  $decl tx  $call S.text ()
+  $decl tw  $call tx.line ("from a text")
+  $decl wv  $call I.write (tmp, $call S.slice ($call tx.view (), 7, 12))
+  $decl c30 $call T.expect (r, "a view written to a file",
+                $call eq ($call C.or_else ($call I.read (tmp), ""), "text\n"))
+  $decl c31 $call T.expect (r, "a to_text's view", $call S.eq ($call co.view (), uni))
   $decl ret $call T.finish (r)
 }.ret
