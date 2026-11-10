@@ -174,6 +174,7 @@ pub fn build(b: *std.Build) void {
         // leaves the reference `$free` takes. Compiled only: stage 0 releases nothing.
         .{ .src = "stage1/fixtures/ctor_alloc.mpl", .want = "3254671710", .stage0 = false },
         .{ .src = "stage1/fixtures/bytes.mpl", .want = "12006629424", .stage0 = false },
+        .{ .src = "stage1/fixtures/ctor_recv.mpl", .want = "66521289977", .stage0 = false },
         // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
         // body's tail call, and mid-item — and a loop holding one stays in constant space.
         .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },
@@ -997,6 +998,10 @@ pub fn build(b: *std.Build) void {
             // entry's, so it is exported, as the `drop` it answers is.
             .{ .src = "stage1/fixtures/ctor_value.mpl", .want = "wawbkbuaubwawtptoawdawb 12344567068119",
                .mods = &.{"ctor_value_util"} },
+            // A module constructor's members are reached from the entry's output through
+            // the receiver, as any member is.
+            .{ .src = "stage1/fixtures/ctor_recv.mpl", .want = "66521289977",
+               .mods = &.{"ctor_recv_util"} },
             .{ .src = "stage1/fixtures/ctor_top.mpl", .want = "e init main 11\na3 a2 b1 c5\n",
                .mods = &.{"ctor_top_util"} },
             .{ .src = "stage1/fixtures/ctor_alias.mpl", .want = "uauaxafagaga 2 31",

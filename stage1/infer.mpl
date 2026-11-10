@@ -4814,6 +4814,12 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
   // body is typed against that placeholder and its resolution recorded as one
   // equation of the group's system.
   $decl fe $call find_fwd (s.fwds, nm)
+  // §4.10: a constructor's members name their receiver by the constructor's own name, so
+  // the block its body makes claims it while the function is typed.
+  $decl cr $if ($call is_form (init, "func"))
+               ($call recv_save ($call sval (cx.rname), $call sval (cx.rqual),
+                    $call ival (cx.rline), $call ival (cx.rcol))) proto_recv
+  $decl cs $if ($call is_form (init, "func")) ($call recv_set (cx, $call recv_of (nm, init))) 0
   $decl ty $if ($call lt (-1, fe.id))
       ($call infer_fwd_body (cx, s.env, init, fe.id))
       ($if ($call is_form (init, "func"))
@@ -4831,6 +4837,7 @@ $decl infer_decl_item $func ($decl cx proto_ctx, $decl s proto_bst, $decl it Pa.
             $decl put $call recv_set (cx, old)
             $decl ret $call close_rec (cx, raw, id, it)
           }.ret))
+  $decl cp $if ($call is_form (init, "func")) ($call recv_set (cx, cr)) 0
   $decl done $set cx.inprog ($if ($call lt (-1, fe.id))
                 ($call drop_prog ($call hint_list.val (cx.inprog), fe.id, hint_list.nil))
                 ($call hint_list.val (cx.inprog)))

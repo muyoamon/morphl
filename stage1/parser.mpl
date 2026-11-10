@@ -1313,41 +1313,64 @@ $decl ov_body $func ($decl body proto_node, $decl ov nodes.node, $decl ns pstrs.
 //
 // The block a `$decl`'s initializer is, directly or through `$new`, `$alloc`, `$mut`,
 // `$const`, `$impl` or `$override` — for those two the override, whose props are the ones
-// the declaring name is the receiver of (§4.12, §4.12a). Anything else answers itself.
-// Inference and lowering both ask, so the answer is here.
-$decl recv_target $func ($decl n proto_node) $match n (
+// the declaring name is the receiver of (§4.12, §4.12a) — or, for a constructor (§5.3a), the
+// block its body makes. Anything else answers itself. Inference and lowering both ask, so
+// the answer is here.
+// A constructor's body: a `$new`, through `$mut` or `$const`. Only that body is a receiver's
+// block — a body that computes in a block and answers it is a value, and has none.
+$decl is_new_body $func ($decl n proto_node) $match n (
   $case {$prop tag "form"}
-    $if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
-                   $call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const"))))
-        ($call recv_target ($call operand (n, 0)))
-        ($if ($call eq_str (n.keyword, "impl")) ($call recv_target ($call operand (n, 2)))
-             ($if ($call eq_str (n.keyword, "override")) ($call recv_target ($call operand (n, 1)))
-                  n)),
+    $if ($call eq_str (n.keyword, "new")) true
+        ($if ($call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const")))
+             ($call is_new_body ($call operand (n, 0))) false),
+  $case n false
+)
+// The body of `n` when `n` is a constructor's `$func`, and `n` otherwise.
+$decl ctor_of $func ($decl n proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call eq_str (n.keyword, "func"))
+        ($if ($call is_new_body ($call operand (n, 1))) ($call operand (n, 1)) n) n,
   $case n n
 )
+$decl recv_target $func ($decl n0 proto_node) {
+  $decl n   $call ctor_of (n0)
+  $decl ret $match n (
+    $case {$prop tag "form"}
+      $if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
+                     $call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const"))))
+          ($call recv_target ($call operand (n, 0)))
+          ($if ($call eq_str (n.keyword, "impl")) ($call recv_target ($call operand (n, 2)))
+               ($if ($call eq_str (n.keyword, "override")) ($call recv_target ($call operand (n, 1)))
+                    n)),
+    $case n n
+  )
+}.ret
 
 // The receiver's qualifier: mutable when the declaration reaches its block through
 // `$mut`, read-only otherwise.
-$decl recv_qual $func ($decl n proto_node) $match n (
+$decl recv_qual_go $func ($decl n proto_node) $match n (
   $case {$prop tag "form"}
     $if ($call eq_str (n.keyword, "mut")) "mut"
         ($if ($call or ($call or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "alloc")),
                         $call eq_str (n.keyword, "const")))
-             ($call recv_qual ($call operand (n, 0)))
+             ($call recv_qual_go ($call operand (n, 0)))
              "const"),
   $case n "const"
 )
+$decl recv_qual $func ($decl n proto_node) $call recv_qual_go ($call ctor_of (n))
 
 // Whether the block sits in storage, and which kind (§3.5): "alloc" through `$alloc`,
-// "frame" through `$new`, "" for a value.
-$decl recv_kind $func ($decl n proto_node) $match n (
+// "frame" through `$new`, "" for a value. A constructor's is "frame": its caller provides
+// the storage, and frame storage is what every caller's can be used as (§5.3).
+$decl recv_kind_go $func ($decl n proto_node) $match n (
   $case {$prop tag "form"}
     $if ($call eq_str (n.keyword, "alloc")) "alloc"
         ($if ($call eq_str (n.keyword, "new")) "frame"
              ($if ($call or ($call eq_str (n.keyword, "mut"), $call eq_str (n.keyword, "const")))
-                  ($call recv_kind ($call operand (n, 0))) "")),
+                  ($call recv_kind_go ($call operand (n, 0))) "")),
   $case n ""
 )
+$decl recv_kind $func ($decl n proto_node) $call recv_kind_go ($call ctor_of (n))
 
 $decl is_block $func ($decl n proto_node) $match n ($case {$prop tag "block"} true, $case n false)
 

@@ -1315,6 +1315,19 @@ $decl by13 $call check_str ("an alias of $primitives.unbox is the intrinsic",
 $decl by14 $call check_str ("the byte type is not a root name",
   $call errs_of ("$decl x u8"), "unknown name 'u8'")
 
+// §4.10: a constructor's members name their receiver by the constructor's own name.
+$decl rc_pre "$decl ival $func ($decl x 0) x  $decl mk $func ($decl k 0) $new { $decl v $mut $alloc k  $prop get $func () $call ival (mk.v)  $prop put $func ($decl d 0) $set mk.v d  $prop peek $func () { $decl of mk } }  "
+$decl rc01 $call check_str ("a constructor's member reads its receiver",
+  $call field_ty ($call concat (rc_pre, "$decl c $call mk (3)  $decl x $call c.get ()"), "x"), "Int")
+$decl rc02 $call check_str ("...and writes a cell through it",
+  $call errs_of ($call concat (rc_pre, "$decl c $call mk (3)  $decl w $call c.put (4)")), "")
+$decl rc03 $call check_str ("a block holding the receiver stays in the caller's frame",
+  $call errs_of ($call concat (rc_pre,
+      "$decl f $func () { $decl c $call mk (1)  $decl ret $call c.peek () }.ret")),
+  "this function's result holds frame storage made in this call (&const block), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
+$decl rc04 $call check_str ("a body that is not a $new has no receiver: the name is the function",
+  $call field_ty ("$decl mk $func ($decl k 0) { $decl b { $decl v k  $prop again $func () $call mk (1) }  $decl ret b }.ret  $decl x ($call ($call mk (5)).again ()).v", "x"), "Int")
+
 // §8's arrays at any element type (STDLIB.md, P3), typed per call like `unbox`.
 $decl ff08 $call check_str ("an array takes its element type from the example",
   $call field_ty ("$decl x $call array (3, 0)", "x"), "[]Int")

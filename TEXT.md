@@ -1,7 +1,7 @@
 # Owned text: design note
 
-Status: **decided; steps 1–4 are in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
-BOOTSTRAP (§1, §2) say what is decided, SPEC §11 says it is being implemented, both stages
+Status: **decided; steps 1–4 are in, with a constructor's receiver** — SPEC (§2.1, §2.2,
+§3.1, §4.10, §5.3a, §7.6, §8, §11) and BOOTSTRAP (§1, §2) say what is decided, SPEC §11 says it is being implemented, both stages
 have `$primitives`, which the compiler builds its text through, `$alloc` of a
 constructing call allocates the block, and the byte type, `view` and the FFI group are
 `$primitives`' members. The plan is at the end. STRINGS.md made text cheap to build
@@ -334,6 +334,17 @@ without a new form, and widening types belongs to a different design.
    ("outside the bootstrap subset"), as it refuses the FFI group. Fixtures: `bytes.mpl`
    (bytes through `unbox` into raw memory and an array of bytes, each read back by `view`,
    both conversions as values; compiled only) and `test-panic`'s `byte_range.mpl`.
+4b. **A constructor's receiver.** Done. T3's `$call t.write (…)` needs `S.text`'s members to
+   reach the text, and §4.10 gave a receiver only to a block a `$decl` binds — a
+   constructor's block is its function's body, so its members could name nothing. SPEC §4.10
+   now makes the constructor's own name the receiver inside its block's members, the
+   storage the call built: `Pa.recv_target` and its qualifier and kind see through a
+   `$func` whose body is a `$new` (`Pa.ctor_of`), inference claims it in `infer_decl_item`'s
+   `$func` branch, and lowering at the entry file's and a module's `$func` (a block's local
+   one already went through `recv_enter`). A member holding the receiver is a borrowed place
+   at the caller, so §5.3a keeps a view of a frame text in its frame. Stage 0 refuses one,
+   since it resolves the name through the scope it was written in, where it is the function.
+   `ctor_recv.mpl` (also in `test-split`) is the fixture.
 5. **`std/str`'s text and views**, with `std/fmt` and `std/io` moved onto them, and
    `std/str_test.mpl` covering growth, a view across growth, `t.write (t.view ())`, a stale view
    after `clear` panicking, `truncate` at a code-point boundary, and a heap text freed by an

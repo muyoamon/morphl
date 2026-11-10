@@ -6049,6 +6049,8 @@ $decl knot_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "", $decl
 $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
                              $decl pn Pa.proto_node, $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, $call mod_short (m.path), m.file, m.isctx, m.bfile)
+  // §4.10: a constructor's block is its members' receiver, as inference claims it.
+  $decl rse   $call recv_enter (st, nm, pn)
   $decl pe0   $call later_members (st, $call mprops.val (m.props), nm, false,
                   $call benv.val (m.penv))
   $decl chk   $call no_caps (st, pe0, pn)
@@ -6155,6 +6157,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   $decl mrs $set st.minread ($if ($call lt (mr2, om)) mr2 om)
   $decl lpo $set st.lpstack ($call lp_pop ($call strs.val (st.lpstack)))
   $decl put $call put_lifted (st, idx, lf)
+  $decl rsb $call recv_put (st, rse)
   $decl ret $call lres ($call IR.e_global ($call intern (st, fty1), idx), fty1)
   // Restored after the result is computed, not before: a nested `$import` inside
   // this member has already moved `curmod` on, and everything this member lowers
@@ -8712,7 +8715,9 @@ $decl lower_top $func ($decl st proto_lst, $decl e benv.node, $decl items Pa.nod
         ($call note_fdef (st, $call fdef_ent ($call IR.fns.length (acc, 0),
              $call group_items ($call op (init, 0)), et, "", "", "", nm, ""))) 0
     $decl fm   $if ($call is_form (init, "func")) {
+          $decl rs   $call recv_enter (st, nm, init)
           $decl lf   $call lower_func (st, et, nm, init, fty, IR.ints.nil)
+          $decl rb   $call recv_put (st, rs)
           $decl cg   $call ctor_reg (st, $call IR.fns.length (acc, 0))
           $decl ret2 $call topfn (lf, -1, -1)
         }.ret2 {

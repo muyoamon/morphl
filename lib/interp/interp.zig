@@ -1200,6 +1200,10 @@ pub const Interp = struct {
         // self-reference: a `$func` that names itself reads this very slot
         // once the `$decl` completes.
         const index = scope.pendingSlot(name) orelse try scope.reserve(name, span);
+        // SPEC §4.10: a constructor's members name their receiver by the constructor's
+        // name. Stage 0 resolves a name through the scope it was written in, where this
+        // one is the function, so it refuses rather than call the function by mistake.
+        if (ctorNamesSelf(init_node, name)) return self.outOfSubset(span, "a constructor's receiver", "its members would read the constructor where the spec gives them the block it built, and nothing stage 1 runs uses one");
         const v = try self.eval(init_node, scope);
         if (self.stats != null) switch (v) {
             .func => |f| if (f.name == null) {
@@ -1676,6 +1680,30 @@ pub const Interp = struct {
             },
             else => false,
         };
+    }
+
+    /// Whether `fn_node` is a constructor — a `$func` whose body is a `$new` of a block,
+    /// through `$mut` or `$const` (§5.3a) — with a `$prop` `$func` mentioning `name`, which
+    /// §4.10 makes its receiver. A mention anywhere counts, shadowed or not: this only
+    /// decides what to refuse.
+    fn ctorNamesSelf(fn_node: *const Node, name: []const u8) bool {
+        if (!fn_node.isForm(.func)) return false;
+        var body = &fn_node.data.form.operands[1];
+        while (body.isForm(.mut) or body.isForm(.@"const")) body = &body.data.form.operands[0];
+        if (!body.isForm(.new)) return false;
+        const blk = &body.data.form.operands[0];
+        if (blk.data != .block) return false;
+        for (blk.data.block) |*it| {
+            if (it.isForm(.prop) and it.data.form.operands[1].isForm(.func) and
+                mentions(&it.data.form.operands[1], name)) return true;
+        }
+        return false;
+    }
+
+    fn mentions(n: *const Node, name: []const u8) bool {
+        if (n.data == .name and Scope.nameEql(n.data.name, name)) return true;
+        for (n.children()) |*c| if (mentions(c, name)) return true;
+        return false;
     }
 
     fn isStorageForm(n: *const Node) bool {
@@ -2585,6 +2613,20 @@ test "$alloc of a constructing call: refused with deferrals, run without (5.3a)"
         \\$decl h $call keep ()
         \\$decl got h.v
     , "got", 5);
+}
+
+test "a constructor's receiver is refused; a constructor naming itself otherwise runs (4.10)" {
+    try expectFails(
+        \\$decl mk $func ($decl k 0) $new { $decl v k  $prop get $func () mk.v }
+    , "a constructor's receiver is outside the bootstrap subset");
+    try expectFails(
+        \\$decl mk $func ($decl k 0) $mut $new { $decl v k  $prop get $func () mk.v }
+    , "a constructor's receiver is outside the bootstrap subset");
+    // A value body has no receiver (§4.10), so the name is the function there.
+    try expectInt(
+        \\$decl mk $func ($decl k 0) { $decl b { $decl v k  $prop again $func () mk }  $decl ret b }.ret
+        \\$decl got ($call ($call ($call mk (5)).again ()) (6)).v
+    , "got", 6);
 }
 
 test "$mut requires a reference (4.3)" {
