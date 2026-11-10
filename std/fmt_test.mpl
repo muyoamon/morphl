@@ -144,5 +144,18 @@ $decl main $func () {
                              $call eq ($call F.fixed_str ($call div (-1.0, 0.0), 2), "-inf"))))
   $decl c27 $call T.expect (r, "fixed writes into the text",
                 $call is ($func ($decl b F.text) $call F.fixed (b, 3.14159, 2), "3.14"))
+  // Digits written straight into the text, at their edges.
+  $decl c28 $call T.expect (r, "int of the most negative",
+                $call is ($func ($decl b F.text) $call F.int (b, -9223372036854775808),
+                    "-9223372036854775808"))
+  $decl c29 $call T.expect (r, "zeros of the most negative and of zero",
+                $call C.and (
+                $call is ($func ($decl b F.text) $call F.zeros (b, -9223372036854775808, 22),
+                    "-009223372036854775808"),
+                $call is ($func ($decl b F.text) $call F.zeros (b, 0, 3), "000")))
+  $decl c30 $call T.expect (r, "radix_str", $call eq ($call F.radix_str (-255, 16), "-ff"))
+  $decl c31 $call T.expect (r, "fixed across limbs",
+                $call C.and ($call eq ($call F.fixed_str (123456789012.5, 1), "123456789012.5"),
+                             $call eq ($call F.fixed_str (1000000000.0, 0), "1000000000")))
   $decl ret $call T.finish (r)
 }.ret

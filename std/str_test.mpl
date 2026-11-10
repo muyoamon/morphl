@@ -28,6 +28,14 @@ $decl encode $func ($decl b ($call S.builder ()), $decl cs ($call S.codes ("", 0
   $decl ret $call b.build ()
 }.ret
 
+// The pieces of a view's split, with `|` between, written into `t`.
+$decl bar_views $func ($decl t S.proto_text,
+                       $decl xs ($call S.split ($call S.proto_text.view (), ",")),
+                       $decl first C.bool)
+  $if ($call xs.is_empty ()) ()
+      ($do ($if first () ($call t.write ("|")))
+           ($do ($call t.write ($call xs.head ())) ($call bar_views (t, $call xs.rest (), false))))
+
 // `n` writes of "ab", to a text.
 $decl fill_text $func ($decl t S.proto_text, $decl n 0)
   $if ($call lt (0, n)) ($do ($call t.write ("ab")) ($call fill_text (t, $call sub (n, 1)))) ()
@@ -177,5 +185,28 @@ $decl main $func () {
   $decl fr  $free h
   $decl c47 $call T.expect (r, "a heap text in an arena", $call eq ($call in_arena (), 2000))
   $decl c48 $call T.expect (r, "an empty text", $call S.eq ($call ($call S.text ()).view (), ""))
+  // Taking a view apart, into views of the same text.
+  $decl t7  $call S.text ()
+  $decl w18 $call t7.write (",a,,bé,")
+  $decl o7  $call S.text ()
+  $decl b7  $call bar_views (o7, $call S.split ($call t7.view (), ","), true)
+  $decl c49 $call T.expect (r, "a view's split", $call S.eq ($call o7.view (), "|a||bé|"))
+  $decl o8  $call S.text ()
+  $decl b8  $call bar_views (o8, $call S.split ($call S.slice ($call t7.view (), 1, 2), ","), true)
+  $decl c50 $call T.expect (r, "...without the separator", $call S.eq ($call o8.view (), "a"))
+  $decl t8  $call S.text ()
+  $decl w19 $call t8.write (" \t a b \n")
+  $decl c51 $call T.expect (r, "a view's trim",
+                $call C.and ($call S.eq ($call S.trim ($call t8.view ()), "a b"),
+                $call C.and ($call S.eq ($call S.trim_start ($call t8.view ()), "a b \n"),
+                             $call S.eq ($call S.trim_end ($call t8.view ()), " \t a b"))))
+  $decl c52 $call T.expect (r, "...of white space alone",
+                $call eq ($call S.len ($call S.trim ($call S.slice ($call t8.view (), 0, 3))), 0))
+  $decl t9  $call S.text ()
+  $decl w20 $call t9.write (u)
+  $decl c53 $call T.expect (r, "a view's codes",
+                $call C.and ($call eq ($call Q.count ($call S.codes ($call t9.view (), 0), 0), 4),
+                             $call eq ($call ($call ($call S.codes ($call t9.view (), 1)).rest ())
+                                           .head (), 8364)))
   $decl ret $call T.finish (r)
 }.ret

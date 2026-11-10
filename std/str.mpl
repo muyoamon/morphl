@@ -156,7 +156,7 @@ $decl split_go $func ($decl s "", $decl sep "", $decl start 0, $decl i 0, $decl 
            ($call split_go (s, sep, $call add (i, $call len (sep)), $call add (i, $call len (sep)),
                 $call cl.cons ($call slice (s, start, i), acc)))
            ($call split_go (s, sep, start, $call add (i, 1), acc)))
-$decl split $func ($decl s "", $decl sep "")
+$decl str_split $func ($decl s "", $decl sep "")
   $if ($call eq ($call len (sep), 0)) ($call panic ("split: an empty separator"))
       ($call strs.of ($call split_go (s, sep, 0, 0, strs.nil)))
 
@@ -172,9 +172,9 @@ $decl last_non $func ($decl s "", $decl j 0)
       ($if ($call is_space ($call byte (s, $call sub (j, 1))))
            ($call last_non (s, $call sub (j, 1))) j)
       j
-$decl trim_start $func ($decl s "") $call slice (s, $call first_non (s, 0), $call len (s))
-$decl trim_end   $func ($decl s "") $call slice (s, 0, $call last_non (s, $call len (s)))
-$decl trim       $func ($decl s "") $call trim_end ($call trim_start (s))
+$decl str_trim_start $func ($decl s "") $call slice (s, $call first_non (s, 0), $call len (s))
+$decl str_trim_end   $func ($decl s "") $call slice (s, 0, $call last_non (s, $call len (s)))
+$decl str_trim       $func ($decl s "") $call str_trim_end ($call str_trim_start (s))
 
 // -------------------------------------------------------------- code points
 
@@ -202,14 +202,14 @@ $decl code_at $func ($decl s "", $decl i 0) {
 
 // The code points of `s` from byte `i`, as a sequence (`std/seq`'s `seq_of`): decoded as it
 // is walked, and nothing stored but the string and the offset.
-$decl codes $func ($decl s "", $decl i 0) {
+$decl str_codes $func ($decl s "", $decl i 0) {
   $decl w   {
     $decl text s
     $decl at   i
     $prop is_empty $func () $call C.not ($call lt (w.at, $call len (w.text)))
     $prop head     $func () $call code_at (w.text, w.at)
     $prop rest     $func ()
-      $call codes (w.text, $call add (w.at, $call width ($call byte (w.text, w.at))))
+      $call str_codes (w.text, $call add (w.at, $call width ($call byte (w.text, w.at))))
   }
   $decl ret w
 }.ret
@@ -425,6 +425,60 @@ $decl view_starts $func ($decl v proto_view, $decl p "")
 $decl view_ends   $func ($decl v proto_view, $decl p "") $call str_ends_with ($call raw_str (v), p)
 $decl view_has    $func ($decl v proto_view, $decl p "") $call str_contains ($call raw_str (v), p)
 
+// Trimmed: a view of the same text, without the white space at either end.
+$decl view_first_non $func ($decl a 0, $decl n 0, $decl i 0)
+  $if ($call lt (i, n))
+      ($if ($call is_space ($call peek (a, i))) ($call view_first_non (a, n, $call add (i, 1))) i) i
+$decl view_last_non $func ($decl a 0, $decl j 0)
+  $if ($call lt (0, j))
+      ($if ($call is_space ($call peek (a, $call sub (j, 1))))
+           ($call view_last_non (a, $call sub (j, 1))) j)
+      j
+$decl view_trim_start $func ($decl v proto_view)
+  $call view_slice (v, $call view_first_non ($call view_addr (v), v.n, 0), v.n)
+$decl view_trim_end   $func ($decl v proto_view)
+  $call view_slice (v, 0, $call view_last_non ($call view_addr (v), v.n))
+$decl view_trim       $func ($decl v proto_view) $call view_trim_end ($call view_trim_start (v))
+
+// The pieces of a view between occurrences of `sep`, as a sequence of views (`std/seq`'s
+// `seq_of`) found as it is walked — not a list, since a list's cells may not hold a view of
+// a frame text (§5.3a, A0). The pieces are `split`'s: `a,,b` is `a`, ``, `b`.
+$decl splits $func ($decl v proto_view, $decl p "", $decl i 0, $decl d C.bool) {
+  $decl w   {
+    $decl src  v
+    $decl sep  p
+    $decl from i
+    $decl done d
+    $prop is_empty $func () w.done
+    // Where the piece from `from` ends: the next `sep`, or the end of the view.
+    $prop stop     $func ()
+      $call C.or_else ($call str_find ($call raw_str (w.src), w.sep, w.from), w.src.n)
+    $prop head     $func () $call view_slice (w.src, w.from, $call w.stop ())
+    $prop rest     $func () {
+      $decl e    $call w.stop ()
+      $decl last $call eq (e, w.src.n)
+      $decl ret2 $call splits (w.src, w.sep, $if last e ($call add (e, $call len (w.sep))), last)
+    }.ret2
+  }
+  $decl ret w
+}.ret
+$decl view_split $func ($decl v proto_view, $decl sep "")
+  $if ($call eq ($call len (sep), 0)) ($call panic ("split: an empty separator"))
+      ($call splits (v, sep, 0, false))
+
+// The code points of a view from byte `i`, as `codes` gives a `Str`'s.
+$decl view_codes $func ($decl v proto_view, $decl i 0) {
+  $decl w   {
+    $decl src v
+    $decl at  i
+    $prop is_empty $func () $call C.not ($call lt (w.at, $call view_len (w.src)))
+    $prop head     $func () $call code_at ($call raw_str (w.src), w.at)
+    $prop rest     $func ()
+      $call view_codes (w.src, $call add (w.at, $call width ($call view_byte (w.src, w.at))))
+  }
+  $decl ret w
+}.ret
+
 // Every operation on a `Str` or a view, by the type of the first operand (§4.8). The root's
 // are named first, since these names shadow them from here on (§4.1).
 $decl root_len   len
@@ -439,6 +493,11 @@ $decl find        $overload (str_find, view_find)
 $decl starts_with $overload (str_starts_with, view_starts)
 $decl ends_with   $overload (str_ends_with, view_ends)
 $decl contains    $overload (str_contains, view_has)
+$decl split       $overload (str_split, view_split)
+$decl trim_start  $overload (str_trim_start, view_trim_start)
+$decl trim_end    $overload (str_trim_end, view_trim_end)
+$decl trim        $overload (str_trim, view_trim)
+$decl codes       $overload (str_codes, view_codes)
 
 // A text, as the default of a parameter that takes one. A top-level `$decl` is evaluated once
 // (§4.10), so this is one empty text nothing writes to.

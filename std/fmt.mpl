@@ -19,9 +19,6 @@ $decl L $import "std/list"
 $decl Q $import "std/seq"
 $decl S $import "std/str"
 
-$decl strs $specialize L.list ""
-$decl cl   strs.cell
-
 // A text, as the default of a parameter that takes one: `std/str`'s, one empty text
 // nothing writes to. A writer borrows the text it is given, so a frame text or a heap one
 // will do (§5.3a).
@@ -30,9 +27,55 @@ $decl text S.proto_text
 $decl show_proto { $prop show $func ($decl b text) () }
 $decl showable   $traitsof show_proto
 
+// ---------------------------------------------------------------------- radix
+//
+// Digits are written into the text as they are found, so nothing here builds a `Str`.
+
+$decl digits "0123456789abcdefghijklmnopqrstuvwxyz"
+$decl digit  $func ($decl d 0) $call slice (digits, d, $call add (d, 1))
+
+$decl check_base $func ($decl base 0)
+  $if ($call C.or ($call lt (base, 2), $call lt (36, base)))
+      ($call panic ($call concat ("fmt: no base ", $call int_to_str (base)))) ()
+
+// The digits of `n` > 0, most significant first. Not a tail call: the high digits are written
+// first, and there are at most 64 of them.
+$decl put_digits $func ($decl b text, $decl n 0, $decl base 0)
+  $if ($call eq (n, 0)) ()
+      ($do ($call put_digits (b, $call div (n, base), base))
+           ($call b.write ($call digit ($call mod (n, base)))))
+
+// The digits of `|n|`. The magnitude of the most negative `Int` does not fit in one, so a
+// negative number takes its last digit first — `div` truncates, so `q * base - n` is that
+// digit — and what is left, `-q`, does fit.
+$decl put_mag $func ($decl b text, $decl n 0, $decl base 0)
+  $if ($call lt (n, 0)) {
+    $decl q    $call div (n, base)
+    $decl ret2 $do ($call put_digits (b, $call neg (q), base))
+                   ($call b.write ($call digit ($call sub ($call mul (q, base), n))))
+  }.ret2 ($if ($call eq (n, 0)) ($call b.write ("0")) ($call put_digits (b, n, base)))
+
+// How many digits `n` has in `base`, its sign aside.
+$decl count_digits $func ($decl n 0, $decl base 0, $decl k 1)
+  $if ($call C.and ($call lt ($call neg (base), n), $call lt (n, base))) k
+      ($call count_digits ($call div (n, base), base, $call add (k, 1)))
+
+// `n` in `base`, 2 to 36, lower case, a `-` before a negative.
+$decl radix $func ($decl b text, $decl n 0, $decl base 10)
+  $do ($call check_base (base))
+      ($do ($if ($call lt (n, 0)) ($call b.write ("-")) ()) ($call put_mag (b, n, base)))
+$decl hex   $func ($decl b text, $decl n 0) $call radix (b, n, 16)
+
+// The same as a `Str` of its own.
+$decl radix_str $func ($decl n 0, $decl base 10) {
+  $decl t   $call S.text ()
+  $decl w   $call radix (t, n, base)
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret
+
 // ---------------------------------------------------------------- primitives
 
-$decl int   $func ($decl b text, $decl n 0)      $call b.write ($call int_to_str (n))
+$decl int   $func ($decl b text, $decl n 0)      $call radix (b, n, 10)
 // §8's `to_str` on a `Float`: the shortest of 15, 16 or 17 significant digits that reads
 // back as the same double, with `.0` on a whole number.
 $decl float $func ($decl b text, $decl x 0.0)    $call b.write ($call to_str (x))
@@ -74,82 +117,54 @@ $decl sep_by $template ($decl Sq $traitsof ($specialize Q.seq_of Sq), A, B)
     $if ($call xs.is_empty ()) ()
         ($do ($call f (b, $call xs.head ())) ($call sep_rest (b, $call xs.rest (), sep, f)))
 
-// ---------------------------------------------------------------------- radix
-
-$decl digits "0123456789abcdefghijklmnopqrstuvwxyz"
-$decl digit  $func ($decl d 0) $call slice (digits, d, $call add (d, 1))
-
-// The digits of `n` ≥ 0 in front of `acc`, most significant first.
-$decl digits_of $func ($decl n 0, $decl base 0, $decl acc strs.node)
-  $if ($call eq (n, 0)) acc
-      ($call digits_of ($call div (n, base), base,
-           $call cl.cons ($call digit ($call mod (n, base)), acc)))
-
-// `n` in `base`, 2 to 36, lower case, a `-` before a negative. The magnitude of the most
-// negative `Int` does not fit in one, so a negative number takes its last digit first —
-// `div` truncates, so `q * base - n` is that digit — and what is left, `-q`, does fit.
-$decl radix_str $func ($decl n 0, $decl base 10)
-  $if ($call C.or ($call lt (base, 2), $call lt (36, base)))
-      ($call panic ($call concat ("fmt: no base ", $call int_to_str (base))))
-      ($if ($call eq (n, 0)) "0"
-           ($if ($call lt (n, 0)) {
-             $decl q    $call div (n, base)
-             $decl d    $call sub ($call mul (q, base), n)
-             $decl ret2 $call concat ("-", $call S.concat_all ($call strs.of
-                            ($call digits_of ($call neg (q), base,
-                                 $call cl.cons ($call digit (d), strs.nil)))))
-           }.ret2
-               ($call S.concat_all ($call strs.of ($call digits_of (n, base, strs.nil))))))
-
-$decl radix $func ($decl b text, $decl n 0, $decl base 10)
-  $call b.write ($call radix_str (n, base))
-$decl hex   $func ($decl b text, $decl n 0) $call radix (b, n, 16)
-
 // ------------------------------------------------------------------- padding
 
 // Width is in code points, not bytes (§3.1), so `é` takes one column as `e` does.
 $decl width_of $func ($decl s "") $call Q.count ($call S.codes (s, 0), 0)
 
+// `s` written `k` times; none when `k` is not positive.
+$decl times $func ($decl b text, $decl s "", $decl k 0)
+  $if ($call lt (0, k)) ($do ($call b.write (s)) ($call times (b, s, $call sub (k, 1)))) ()
+
 // `s` with `fill` in front, or after, until it is `w` code points wide; a wider `s` is
 // written whole. `fill` is repeated whole, so it should be one code point.
 $decl pad_left  $func ($decl b text, $decl s "", $decl w 0, $decl fill " ")
-  $do ($call b.write ($call S.repeat (fill, $call sub (w, $call width_of (s)))))
-      ($call b.write (s))
+  $do ($call times (b, fill, $call sub (w, $call width_of (s)))) ($call b.write (s))
 $decl pad_right $func ($decl b text, $decl s "", $decl w 0, $decl fill " ")
-  $do ($call b.write (s))
-      ($call b.write ($call S.repeat (fill, $call sub (w, $call width_of (s)))))
+  $do ($call b.write (s)) ($call times (b, fill, $call sub (w, $call width_of (s))))
 
 // `n` in at least `w` columns, zeros after the sign: `zeros (b, -7, 4)` is `-007`.
 $decl zeros $func ($decl b text, $decl n 0, $decl w 0) {
-  $decl s   $call int_to_str (n)
-  $decl ret $if ($call lt (n, 0))
-                ($do ($call b.write ("-"))
-                     ($call pad_left (b, $call slice (s, 1, $call len (s)), $call sub (w, 1), "0")))
-                ($call pad_left (b, s, w, "0"))
+  $decl neg $call lt (n, 0)
+  $decl ret $do ($if neg ($call b.write ("-")) ())
+      ($do ($call times (b, "0", $call sub ($call sub (w, $if neg 1 0),
+                                             $call count_digits (n, 10, 1))))
+           ($call put_mag (b, n, 10)))
 }.ret
 
 // ------------------------------------------------------------------ quoting
 
-// The escape for byte `c` in a morphl string literal (§2.1: `\n \t \\ \"` and `\u{…}`),
-// or "" when it stands for itself. A byte of a multi-byte code point is 128 or more and
+// Whether byte `c` needs an escape in a morphl string literal (§2.1: `\n \t \\ \"` and
+// `\u{…}`), and the escape written. A byte of a multi-byte code point is 128 or more and
 // stands for itself, so the text stays valid UTF-8.
-$decl escape_of $func ($decl c 0)
-  $if ($call eq (c, 34)) "\\\""
-  ($if ($call eq (c, 92)) "\\\\"
-  ($if ($call eq (c, 10)) "\\n"
-  ($if ($call eq (c, 9)) "\\t"
-  ($if ($call C.or ($call lt (c, 32), $call eq (c, 127)))
-       ($call concat ("\\u{", $call concat ($call radix_str (c, 16), "}")))
-       ""))))
+$decl is_control $func ($decl c 0) $call C.or ($call lt (c, 32), $call eq (c, 127))
+$decl escapes    $func ($decl c 0)
+  $call C.or ($call C.or ($call eq (c, 34), $call eq (c, 92)), $call is_control (c))
+$decl put_escape $func ($decl b text, $decl c 0)
+  $if ($call eq (c, 34)) ($call b.write ("\\\""))
+  ($if ($call eq (c, 92)) ($call b.write ("\\\\"))
+  ($if ($call eq (c, 10)) ($call b.write ("\\n"))
+  ($if ($call eq (c, 9)) ($call b.write ("\\t"))
+       ($do ($call b.write ("\\u{")) ($do ($call radix (b, c, 16)) ($call b.write ("}")))))))
 
 // The unescaped run from `start` is written in one piece when an escape or the end is
 // reached, so plain text costs one write and not one per byte.
 $decl quoted_go $func ($decl b text, $decl s "", $decl start 0, $decl i 0)
   $if ($call lt (i, $call len (s)))
-      ($if ($call eq ($call len ($call escape_of ($call byte (s, i))), 0))
+      ($if ($call C.not ($call escapes ($call byte (s, i))))
            ($call quoted_go (b, s, start, $call add (i, 1)))
            ($do ($call b.write ($call slice (s, start, i)))
-                ($do ($call b.write ($call escape_of ($call byte (s, i))))
+                ($do ($call put_escape (b, $call byte (s, i)))
                      ($call quoted_go (b, s, $call add (i, 1), $call add (i, 1))))))
       ($call b.write ($call slice (s, start, i)))
 
@@ -238,24 +253,6 @@ $decl big_shr $func ($decl xs limbs.node, $decl s 0, $decl sticky C.bool)
     $decl ret2 $if up ($call big_add1 (dv.q)) dv.q
   }.ret2
 
-// The decimal digits, high limb first and without its leading zeros, the rest nine wide.
-$decl big_str_go $func ($decl hi limbs.node, $decl acc strs.node) $match hi (
-  $case {$prop tag "cons"} {
-    $decl s    $call int_to_str (hi.head)
-    $decl ret2 $call big_str_go (hi.tail, $call cl.cons (s, $call cl.cons ($call S.repeat ("0",
-                   $call sub (9, $call len (s))), acc)))
-  }.ret2,
-  $case hi $call S.concat_all ($call strs.of ($call cl.reverse (acc, strs.nil)))
-)
-$decl big_str_top $func ($decl hi limbs.node) $match hi (
-  $case {$prop tag "cons"}
-    $if ($call C.and ($call eq (hi.head, 0), $call C.not ($call lc.is_nil (hi.tail))))
-        ($call big_str_top (hi.tail))
-        ($call big_str_go (hi.tail, $call cl.cons ($call int_to_str (hi.head), strs.nil))),
-  $case hi "0"
-)
-$decl big_str $func ($decl xs limbs.node) $call big_str_top ($call lc.reverse (xs, limbs.nil))
-
 // `a` ≥ 0 as `{m, e}`, `a = m · 2^e` with `m` whole and below 2^53.
 $decl whole $func ($decl a 0.0) $call eq ($call to_float ($call C.or_else ($call to_int (a), 0)), a)
 $decl split_go $func ($decl a 0.0, $decl ex 0)
@@ -264,29 +261,65 @@ $decl split_go $func ($decl a 0.0, $decl ex 0)
       ($if ($call whole (a)) { $decl m $call C.or_else ($call to_int (a), 0)  $decl e ex }
            ($call split_go ($call mul (a, 2.0), $call sub (ex, 1))))
 
-// The digits of `|x| · 10^d`, rounded — at least `d + 1` of them, so a point fits.
-$decl scaled $func ($decl a 0.0, $decl d 0) {
+// The decimal digits of the limbs `hi`, high limb first: the first limb without its leading
+// zeros, the rest nine wide.
+$decl put_limbs $func ($decl b text, $decl hi limbs.node) $match hi (
+  $case {$prop tag "cons"}
+    $do ($call times (b, "0", $call sub (9, $call count_digits (hi.head, 10, 1))))
+        ($do ($call put_mag (b, hi.head, 10)) ($call put_limbs (b, hi.tail))),
+  $case hi ()
+)
+// Without the leading zero limbs, one limb kept so zero is "0".
+$decl top_limbs $func ($decl hi limbs.node) $match hi (
+  $case {$prop tag "cons"}
+    $if ($call C.and ($call eq (hi.head, 0), $call C.not ($call lc.is_nil (hi.tail))))
+        ($call top_limbs (hi.tail)) hi,
+  $case hi hi
+)
+$decl digit_count $func ($decl hi limbs.node) $match hi (
+  $case {$prop tag "cons"}
+    $call add ($call count_digits (hi.head, 10, 1), $call mul (9, $call lc.length (hi.tail, 0))),
+  $case hi 0
+)
+
+// The digits of `|x| · 10^d`, rounded — at least `d + 1` of them, so a point fits — written
+// into `b`.
+$decl put_scaled $func ($decl b text, $decl a 0.0, $decl d 0) {
   $decl sp  $call split_go (a, 0)
   $decl m5  $call big_pow ($call big_mul ($call lc.cons (sp.m, limbs.nil), 1), 5, d, 12, 244140625)
   $decl t   $call add (sp.e, d)
   $decl q   $if ($call lt (t, 0)) ($call big_shr (m5, $call neg (t), false))
                 ($call big_pow (m5, 2, t, 29, 536870912))
-  $decl s   $call big_str (q)
-  $decl ret $call concat ($call S.repeat ("0", $call sub ($call add (d, 1), $call len (s))), s)
+  $decl hi  $call top_limbs ($call lc.reverse (q, limbs.nil))
+  $decl ret $match hi (
+    $case {$prop tag "cons"}
+      $do ($call times (b, "0", $call sub ($call add (d, 1), $call digit_count (hi))))
+          ($do ($call put_mag (b, hi.head, 10)) ($call put_limbs (b, hi.tail))),
+    $case hi ()
+  )
 }.ret
 
-$decl fixed_str $func ($decl x 0.0, $decl d 0)
+// The digits go into a text of their own first, since the point falls `d` from their end,
+// and are copied into `b` as two views of it.
+$decl fixed $func ($decl b text, $decl x 0.0, $decl d 0)
   $if ($call lt (d, 0)) ($call panic ($call concat ("fmt: no ", $call concat (
           $call int_to_str (d), " decimals"))))
-  ($if ($call C.not ($call eq ($call sub (x, x), 0.0))) ($call to_str (x)) {
+  ($if ($call C.not ($call eq ($call sub (x, x), 0.0))) ($call b.write ($call to_str (x))) {
     $decl minus $call C.or ($call lt (x, 0.0),
                     $call C.and ($call eq (x, 0.0), $call lt ($call div (1.0, x), 0.0)))
-    $decl s     $call scaled ($if minus ($call neg (x)) x, d)
-    $decl k     $call sub ($call len (s), d)
-    $decl body  $if ($call eq (d, 0)) s
-                    ($call concat ($call slice (s, 0, k),
-                         $call concat (".", $call slice (s, k, $call len (s)))))
-    $decl ret2  $if minus ($call concat ("-", body)) body
+    $decl t     $call S.text ()
+    $decl w     $call put_scaled (t, $if minus ($call neg (x)) x, d)
+    $decl v     $call t.view ()
+    $decl k     $call sub ($call S.len (v), d)
+    $decl n     $call S.len (v)
+    $decl ret2  $do ($if minus ($call b.write ("-")) ())
+                    ($do ($call b.write ($call S.slice (v, 0, k)))
+                         ($if ($call eq (d, 0)) ()
+                              ($do ($call b.write (".")) ($call b.write ($call S.slice (v, k, n))))))
   }.ret2)
 
-$decl fixed $func ($decl b text, $decl x 0.0, $decl d 0) $call b.write ($call fixed_str (x, d))
+$decl fixed_str $func ($decl x 0.0, $decl d 0) {
+  $decl t   $call S.text ()
+  $decl w   $call fixed (t, x, d)
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret

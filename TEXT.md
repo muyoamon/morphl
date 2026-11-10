@@ -369,6 +369,15 @@ without a new form, and widening types belongs to a different design.
    target's storage: `($call mk ()).m ()` released the constructed block before `m` ran,
    which the receiver made observable (`ctor_recv.mpl`'s case G). And the C runtime hands no
    `mem*` call the null pointer of an empty `Str`, which an empty text's view is.
+5b. **The rest of the view API, and `std/fmt` writing into the text.** Done. `std/str`
+   overloads `split`, `trim`, `trim_start`, `trim_end` and `codes` over views. A view's
+   `split` answers a sequence of views found as it is walked, not a list, since a list's
+   cells may not hold a view of a frame text (A0). `std/fmt` builds no `Str` on a write path:
+   `int` and `radix` write their digits, `pad_left`, `pad_right` and `zeros` their fill,
+   `quoted` its escapes, and `fixed` its digits into a scratch text whose view it copies
+   across in two slices, with the point between. `radix_str` and `fixed_str` are
+   `copy_out`s of a text. What is left of the root's allocating names in it is `to_str` on a
+   `Float` and the text of a panic.
 6. **The root's allocating names removed.** Stage 0's `builtins.zig`, `infer.mpl`'s `root_env`,
    `emit.mpl`, the Zig test that the two root blocks name the same things, and every fixture
    and `std/` module that still calls them.
