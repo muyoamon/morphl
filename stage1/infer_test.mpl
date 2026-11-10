@@ -1077,12 +1077,17 @@ $decl co06 $call check_str ("...of allocated storage is not",
       "$decl h $func () { $decl r $alloc { $prop area $func () 2 }  $decl w $set cur r  $decl ret 0 }.ret")),
   "")
 
-// §5.3a's A0: storage never holds a place, and a trait object over a local is one. The
-// type cannot tell this call's cell from one a caller lent, which would outlive the local.
-$decl co07 $call check_str ("...and nor does frame trait storage, whoever's cell it is",
+// §5.3a's A0: storage holds no place that may end before it, and a trait object over a
+// local is a place. A local made after the cell may be the younger, so it is refused...
+$decl co07 $call check_str ("...and nor does frame trait storage, over a local of this call",
   $call errs_of ($call concat (co_pre,
       "$decl h $func () { $decl c $mut $new $traitsof shape  $decl r { $prop area $func () 2 }  $decl w $set c r  $decl ret 0 }.ret")),
-  "storage cannot hold a place: this trait object would refer to frame storage (§6, §5.3a); store a reference to $alloc storage instead")
+  "storage cannot hold a place that may end before it: this trait object refers to storage made in this call — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")
+// ...and one over a place the caller lent outlives every cell this call makes.
+$decl co07b $call check_str ("...but may hold one over a place the caller lent",
+  $call errs_of ($call concat (co_pre,
+      "$decl h $func ($decl r $new { $prop area $func () 2 }) { $decl c $mut $new $traitsof shape  $decl w $set c r  $decl ret 0 }.ret")),
+  "")
 
 $decl co08 $call check_str ("$set of an expression into trait storage",
   $call errs_of ($call concat (co_pre, "$decl w $set cur { $prop area $func () 2 }")), "a trait object refers to its value, so this must be a name or a reference (§6); $traitsof makes one from an expression")
@@ -1365,9 +1370,31 @@ $decl st04 $call check_str ("a result may not hold a place this call made",
 $decl st05 $call check_str ("...nor one it lent to a call that hands it back",
   $call errs_of ($call concat (st_pre, "$decl bad $func () { $decl c $mut $new 0  $decl ret $call id_ref (c) }.ret")),
   "this function's result holds frame storage made in this call (&mut Int), which ends when it returns; return a place the caller passed in, or $alloc storage (§5.3a)")
-$decl st06 $call check_str ("storage may not hold a value carrying a place",
-  $call errs_of ("$decl f $func () { $decl loc $mut $new 7  $decl b $mut $new { $decl r loc }  $decl ret 0 }.ret"),
-  "storage cannot hold a place: this value holds frame storage (&mut Int), and only a pointer value may be stored (§5.3a); store $alloc storage instead")
+// A0 is about age: storage may hold a place that outlives it. Every place a `$new` can name
+// already exists, so a frame `$new` may hold any of them.
+$decl st06 $call check_str ("a frame $new may hold a place made before it",
+  $call errs_of ("$decl f $func () { $decl loc $mut $new 7  $decl b $mut $new { $decl r loc }  $decl ret 0 }.ret"), "")
+$decl st06b $call check_str ("...and storage of its own",
+  $call errs_of ("$decl f $func () { $decl b $mut $new { $decl r $mut $new 0 }  $decl ret 0 }.ret"), "")
+$decl st06c $call check_str ("$set may store a lent place into storage this call made",
+  $call errs_of ("$decl f $func ($decl p $mut $new 0) { $decl s $mut $new { $decl r $mut $new 0 }  $decl w $set s { $decl r p }  $decl ret 0 }.ret"), "")
+$decl st06d $call check_str ("...but not a place this call made, into the caller's storage (STORAGE.md)",
+  $call errs_of ("$decl f $func ($decl p $mut $new { $decl r $mut $new 0 }) { $decl loc $mut $new 7  $decl w $set p { $decl r loc }  $decl ret 0 }.ret"),
+  "storage cannot hold a place that may end before it: this storage is not one this call made — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")
+$decl st06e $call check_str ("...nor one made in an inner block, into an outer cell",
+  $call errs_of ("$decl f $func () { $decl s $mut $new { $decl r $mut $new 0 }  $decl w { $decl loc $mut $new 7  $decl w2 $set s { $decl r loc } }  $decl ret 0 }.ret"),
+  "storage cannot hold a place that may end before it: this value holds a place made in this call — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")
+$decl st06f $call check_str ("...nor a lent place into lent storage, whose ages are unknown",
+  $call errs_of ("$decl f $func ($decl p $mut $new { $decl r $mut $new 0 }, $decl q $mut $new 0) { $decl w $set p { $decl r q }  $decl ret 0 }.ret"),
+  "storage cannot hold a place that may end before it: this storage is not one this call made — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")
+$decl st06g $call check_str ("a constructor may keep a place its caller lent",
+  $call errs_of ("$decl k $func ($decl p $mut $new 0) $new { $decl r p }  $decl f $func () { $decl loc $mut $new 4  $decl c $call k (loc)  $decl ret 0 }.ret"), "")
+$decl st06h $call check_str ("...but not storage of its own call",
+  $call errs_of ("$decl k $func () $new { $decl c $mut $new 0 }"),
+  "this constructor's block would keep a place made in its own call ('c'), which ends when the constructor returns: a constructed block keeps only places its caller lent (§5.3a)")
+$decl st06i $call check_str ("...and allocating one that keeps a frame place is refused",
+  $call errs_of ("$decl k $func ($decl p $mut $new 0) $new { $decl r p }  $decl f $func () { $decl loc $mut $new 4  $decl h $alloc $call k (loc)  $decl ret 0 }.ret"),
+  "this value holds frame storage (&mut Int), which cannot outlive the scope its $new made it in. Write $alloc there instead (§4.2a, §5.3a)")
 $decl st07 $call check_str ("...but a place used as a value is read through, and may be",
   $call errs_of ("$decl f $func ($decl p $mut $new 0) { $decl loc $mut $new 7  $decl w $set p loc  $decl ret 0 }.ret"), "")
 $decl st08 $call check_str ("a tail call may not pass a place this call made",
@@ -1411,7 +1438,7 @@ $decl tc03 $call check_str ("...or a reference the caller lent",
   $call errs_of ($call concat (tr_pre, "$decl g $func ($decl r $new seven, $decl n 0) $call k (r, n)")), "")
 $decl tc04 $call check_str ("a cell the caller lent may not hold an object over this call's parameter",
   $call errs_of ("$decl shape { $prop area $func () 0 }  $decl seven { $decl v 7  $prop area $func () seven.v }  $decl stash $func ($decl c $mut $new $traitsof shape, $decl r seven) { $decl w $set c r  $decl ret 0 }.ret"),
-  "storage cannot hold a place: this trait object would refer to frame storage (§6, §5.3a); store a reference to $alloc storage instead")
+  "storage cannot hold a place that may end before it: this trait object refers to frame storage, and the storage is not one this call made — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")
 
 $decl done18 $call nl ("all trait storage tests passed")
 

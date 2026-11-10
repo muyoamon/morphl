@@ -11,7 +11,7 @@ there was no `allocator` name in either root block.
 
 | | question | status |
 |---|---|---|
-| A0 | what a frame reference is, and where it may go | **decided**: a place, never stored |
+| A0 | what a frame reference is, and where it may go | **decided**: a place, stored only where it outlives the storage (revised) |
 | R | whether a function may return a place | **decided**: R2, a result may borrow |
 | — | whether top-level `$new` is special | **decided**: no, it is the outermost frame |
 | R3 | whether a function may construct into its caller's frame | **implemented**: yes, when its body *is* the `$new` |
@@ -44,6 +44,22 @@ frame (§7.7), does to it; whether a function may hand a place back; and what `a
   live, inside phases that build their survivors amid it).
 
 ## A0. A frame reference is a place, not a value (decided)
+
+**Revised: storage holds no place that may end before it.** The rule below refused every
+place inside a stored value, which the danger never required. In the example that motivated
+it, the defect is that `inner`'s own `loc` is stored into the caller's `p`, which outlives
+it — not that a block holds a place. `$new { $decl a $new 5 }` holds a place that dies with
+it, and a constructed text holding its caller's arena holds one that dies after it. So A0
+is about age, read off provenance (SPEC §5.3a): a frame `$new` may hold any place it can
+name, since each already exists; a constructed block may keep the places its caller lent
+and none its own call made; `$set` stores a place only into storage the activation made,
+and only one lent to the activation; `$alloc`ed storage, arrays and `unbox`'s memory hold
+none. The `$set` case is decided at the function's close (`set_walk` in `infer.mpl`), and
+the constructor's in `ctor_check` (`ctor_places`). `T.frame_bound` still stops at a
+reference: frame storage may now hold a place, but a frame reference is frame-bound itself.
+What a constructor's block makes itself — composition, `$new` and constructing calls among
+its fields — is the next step: it would need that storage moved out of the constructor's
+own frame, and is refused until then.
 
 `$new` and `$alloc` look alike and are not.
 

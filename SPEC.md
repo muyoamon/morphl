@@ -572,10 +572,21 @@ capture, or a name in an enclosing frame, the file's top level included — is
 **borrowed**: the activation it belongs to outlives this one. Four rules follow, and
 together they are the whole of it:
 
-> **Storage never holds a place.** `$new`, `$alloc` and `$set` refuse a value that
-> carries one. A place used where a value is wanted is read through (§5.4), so
-> `$new $new 0` is one cell and `$set p loc` copies `loc`'s value; what is refused is
-> a place carried *inside* a value.
+> **Storage holds no place that may end before it.** A place used where a value is
+> wanted is read through (§5.4), so `$new $new 0` is one cell and `$set p loc` copies
+> `loc`'s value; what is at stake is a place carried *inside* a value, and whether it
+> outlives the storage holding it. That is read off provenance:
+>
+> - A frame `$new` may hold any place it can name. Each already exists, in the `$new`'s
+>   scope or an enclosing one, so it outlives the new storage.
+> - A constructed block is its caller's storage: it may keep a place its caller lent,
+>   which was there before the call, and none its own call made.
+> - `$set` stores a place only into storage this activation made — a name bound to a
+>   `$new` or to a constructing call — and only a place lent to this activation. Storage
+>   that came in may be older than anything, and a place this activation made may be
+>   younger than the storage, in an inner block.
+> - `$alloc`ed storage, an array's elements and memory reached through `unbox` hold no
+>   frame place at all, and neither does storage `$set` at a file's top level.
 >
 > **A function's result may hold only borrowed places.** Returning a place the caller
 > passed in hands it back to its owner; returning an own one is an error — unless the
@@ -592,15 +603,15 @@ together they are the whole of it:
 > owns. (A function's own body is the second rule's case, and is reported as that.)
 
 Which places are own is a question about the source, answered by following each place to
-the `$new` that made it, so nothing is annotated and nothing is solved. Because storage
-never holds a place, an allocated reference never leads to one, and a frame reference
-*is* one: the check never looks behind a reference. A `$func` literal that captures a
+the `$new` that made it, so nothing is annotated and nothing is solved. Allocated storage
+holds no frame place, so an allocated reference never leads to one; frame storage may,
+but a frame reference is itself frame-bound, so the check never looks behind a reference. A `$func` literal that captures a
 place is frame-bound, so a closure cannot carry an own place out either (§7.3). A trait
 object refers to its referent (§6), and one that §6's coercion makes from a value refers
 to that value's own storage — a name's slot, or fresh frame storage — so it is own when
 that storage is this activation's: coercing this call's own parameter in a tail call is
 the same error as passing its `$new`, and storing such an object in a cell a caller lent
-is the same error as storing the `$new`.
+is the same error as storing the place there.
 
 The error is reported where the place would escape. The fix: make that storage `$alloc`
 (§4.2a) and release it when done, or, for a tail call, make the call non-tail.
@@ -864,7 +875,7 @@ deferrals already; a call through a function value is answered them beside the b
 code pointer to one function of the block's fields, which captures nothing, since a
 constructed block's deferrals read only its own bindings and what is global (§4.15a) — and
 the caller registers a call to it as it would the known one. It is safe because §5.3a
-confines places: storage never holds one, a function returns only places that came in or
+confines places: storage holds none that may end first, a function returns only places that came in or
 that it constructs into its caller, and a tail call passes none its activation made.
 Nothing is annotated; the one fact inferred — which places an activation made — is read
 off the source, by following each place to the `$new` that made it.

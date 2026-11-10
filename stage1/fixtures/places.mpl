@@ -1,5 +1,5 @@
 // §5.3a's provenance (STORAGE.md), the refusing side: a place this call made may not be
-// returned (§R), stored inside a value (A0), or passed by a tail call (A4) — including a
+// returned (§R), stored where it may end first (A0), or passed by a tail call (A4) — including a
 // trait object §6's coercion makes over this call's own storage. Each is a
 // static rule stage 0 does not check, so only stage 1 is asked to refuse.
 
@@ -12,10 +12,10 @@ $decl own  $func () { $decl c $new 3  $decl ret c }.ret
 $decl bad  $func () { $decl c $mut $new 0  $decl ret $call id_ref (c) }.ret
 $decl clo  $func () { $decl c $mut $new 0  $decl ret $func () $call ival (c) }.ret
 
-// Stored: a block carrying a place, into a cell.
-$decl keep $func () {
+// Stored: a place this call made, into the caller's cell, which outlives it (STORAGE.md).
+$decl keep $func ($decl p $mut $new { $decl r $mut $new 0 }) {
   $decl loc $mut $new 7
-  $decl b   $mut $new { $decl r loc }
+  $decl w   $set p { $decl r loc }
   $decl ret 0
 }.ret
 

@@ -175,6 +175,10 @@ pub fn build(b: *std.Build) void {
         .{ .src = "stage1/fixtures/ctor_alloc.mpl", .want = "3254671710", .stage0 = false },
         .{ .src = "stage1/fixtures/bytes.mpl", .want = "12006629424", .stage0 = false },
         .{ .src = "stage1/fixtures/ctor_recv.mpl", .want = "6652128997744", .stage0 = false },
+        // SPEC §5.3a's A0: storage holds no place that may end before it — so a frame `$new`
+        // may hold places made before it, `$set` a lent place into a cell made here, and a
+        // constructor keep a place its caller lent. Each aliases.
+        .{ .src = "stage1/fixtures/a0_age.mpl", .want = "111048" },
         // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
         // body's tail call, and mid-item — and a loop holding one stays in constant space.
         .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },
@@ -709,10 +713,10 @@ pub fn build(b: *std.Build) void {
                 "places.mpl:11:12: this function's result holds frame storage made in this call (&Int)",
                 "places.mpl:12:12: this function's result holds frame storage made in this call (&mut Int)",
                 "places.mpl:13:12: this function's result holds frame storage made in this call (a reference captured by a closure)",
-                "places.mpl:18:18: storage cannot hold a place",
+                "places.mpl:18:13: storage cannot hold a place that may end before it: this storage is not one this call made",
                 "places.mpl:24:60: this tail call passes $new storage made in this call",
                 "places.mpl:32:55: this tail call makes a trait object referring to storage of this call",
-                "places.mpl:34:20: storage cannot hold a place: this trait object would refer to frame storage",
+                "places.mpl:34:20: storage cannot hold a place that may end before it: this trait object refers to frame storage",
                 "places.mpl:42:15: this function's result holds frame storage made in this call",
                 "places.mpl:46:15: this function's result holds frame storage made in this call",
             },

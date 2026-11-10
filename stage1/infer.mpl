@@ -515,6 +515,11 @@ $decl ctx $func () {
   // the argument's own storage, a name's slot or fresh frame storage, rather than to a
   // place the argument holds. By position, for `owns_arg`.
   $decl slotref  $mut $alloc strs.node
+  // §5.3a's A0 at a `$set` into frame storage: the positions of those whose value holds a
+  // place, and of those storing a trait object over frame storage, which `set_walk`
+  // decides at the function's close, where provenance is known.
+  $decl setchk   $mut $alloc strs.node
+  $decl settrait $mut $alloc strs.node
 }
 
 $decl proto_ctx $call ctx ()
@@ -1866,6 +1871,107 @@ $decl tail_check $func ($decl cx proto_ctx, $decl ie env.node, $decl e owns.node
        ($call tail_arms (cx, ie, e, $call group_items ($call op (x, 1))))
        ())))
 
+// §5.3a's A0 at a `$set` into frame storage (`note_set`): storage holds no place that may end
+// before it. Decided with provenance, which is known here: the target must be storage this
+// call made — a name bound to a `$new` or a constructing call (`fresh`) — and every place the
+// value holds must have been lent to this call, so it outlives every storage this call makes.
+// An own place may be younger than the storage, in an inner block, and is refused; so is any
+// place stored through a parameter, a projection or a call, whose age is unknown. A nested
+// `$func` is its own close's; a `$match` narrowing has its scrutinee's provenance.
+$decl fresh_x $func ($decl cx proto_ctx, $decl x Pa.proto_node)
+  $if ($call is_form (x, "new")) true
+  ($if ($call P.or ($call is_form (x, "mut"), $call is_form (x, "const")))
+       ($call fresh_x (cx, $call op (x, 0)))
+  ($if ($call is_form (x, "call"))
+       ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, x)))
+       false))
+$decl set_err $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl what "")
+  $do ($call err (cx, $call concat ("storage cannot hold a place that may end before it: ", $call concat (what,
+      " — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")), x)) ()
+$decl set_check $func ($decl cx proto_ctx, $decl e owns.node, $decl f owns.node,
+                       $decl x Pa.proto_node) {
+  $decl k   $call fn_key_of (cx, x)
+  $decl tg  $call op (x, 0)
+  $decl v   $call op (x, 1)
+  $decl fr  $match tg ($case {$prop tag "name"} ($call own_of_name (f, tg.text)), $case tg false)
+  $decl ret $if ($call in_strs ($call strs.val (cx.setchk), k))
+      ($if ($call not (fr)) ($call set_err (cx, x, "this storage is not one this call made"))
+      ($if ($call owns_x (cx, e, v)) ($call set_err (cx, x, "this value holds a place made in this call"))
+           ()))
+      ($if ($call in_strs ($call strs.val (cx.settrait), $call fn_key_of (cx, v)))
+           ($if ($call not (fr))
+                ($call set_err (cx, v, "this trait object refers to frame storage, and the storage is not one this call made"))
+           ($if ($call owns_arg (cx, e, v))
+                ($call set_err (cx, v, "this trait object refers to storage made in this call"))
+                ()))
+           ())
+}.ret
+
+$fwd set_walk
+$decl set_all $func ($decl cx proto_ctx, $decl e owns.node, $decl f owns.node,
+                     $decl xs Pa.nodes.node) $match xs (
+    $case {$prop tag "cons"}
+      $do ($call set_walk (cx, e, f, xs.head))
+          ($call set_all (cx, e, f, $call Pa.nodes.val (xs.tail))),
+    $case xs ()
+  )
+// A block's items in order, each `$decl` binding its name as `owns_items` does and, in `f`,
+// as fresh storage or not.
+$decl set_items $func ($decl cx proto_ctx, $decl e owns.node, $decl f owns.node,
+                       $decl xs Pa.nodes.node) $match xs (
+    $case {$prop tag "cons"}
+      $if ($call P.or ($call is_form (xs.head, "decl"), $call is_form (xs.head, "fwd"))) {
+        $decl nm   $call name_of ($call op (xs.head, 0))
+        $decl dc   $call is_form (xs.head, "decl")
+        $decl i    $if dc ($call op (xs.head, 1)) ($call Pa.n_unit (0, 0))
+        $decl w    $if dc ($call set_walk (cx, e, f, i)) ()
+        $decl ow   $if dc ($call owns_x (cx, e, i)) true
+        $decl fs   $if dc ($call fresh_x (cx, i)) false
+        $decl ret2 $call set_items (cx, $call owns.cons ($call own_ent (nm, ow), e),
+                       $call owns.cons ($call own_ent (nm, fs), f), $call Pa.nodes.val (xs.tail))
+      }.ret2
+      ($do ($call set_walk (cx, e, f, xs.head))
+           ($call set_items (cx, e, f, $call Pa.nodes.val (xs.tail)))),
+    $case xs ()
+  )
+$decl set_arms $func ($decl cx proto_ctx, $decl e owns.node, $decl f owns.node, $decl so P.boolean,
+                      $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"} {
+    $decl pt   $call op (xs.head, 0)
+    $decl nm   $call name_of (pt)
+    $decl e2   $if ($call eq_str (nm, "")) e ($call owns.cons ($call own_ent (nm, so), e))
+    $decl f2   $if ($call eq_str (nm, "")) f ($call owns.cons ($call own_ent (nm, false), f))
+    $decl ret  $do ($call set_walk (cx, e2, f2, $call op (xs.head, 1)))
+                   ($call set_arms (cx, e, f, so, $call Pa.nodes.val (xs.tail)))
+  }.ret,
+  $case xs ()
+)
+$decl set_walk $func ($decl cx proto_ctx, $decl e owns.node, $decl f owns.node,
+                      $decl x Pa.proto_node) $match x (
+    $case {$prop tag "group"} ($call set_all (cx, e, f, $call Pa.nodes.val (x.items))),
+    $case {$prop tag "block"} ($call set_items (cx, e, f, $call Pa.nodes.val (x.items))),
+    $case {$prop tag "proj_name"} ($call set_walk (cx, e, f, $call node_val (x.target))),
+    $case {$prop tag "proj_index"} ($call set_walk (cx, e, f, $call node_val (x.target))),
+    $case {$prop tag "form"} {
+      $decl k   x.keyword
+      $decl ret $if ($call P.or ($call eq_str (k, "func"), $call eq_str (k, "template"))) ()
+          ($if ($call eq_str (k, "union"))
+               ($call set_walk (cx, e, f,
+                    $call Pa.nodes.nth ($call group_items ($call op (x, 0)), 0)))
+          ($if ($call eq_str (k, "match")) {
+             $decl sc   $call op (x, 0)
+             $decl ret2 $do ($call set_walk (cx, e, f, sc))
+                            ($call set_arms (cx, e, f, $call owns_x (cx, e, sc),
+                                 $call group_items ($call op (x, 1))))
+           }.ret2
+          ($if ($call eq_str (k, "set"))
+               ($do ($call set_all (cx, e, f, $call Pa.nodes.val (x.operands)))
+                    ($call set_check (cx, e, f, x)))
+               ($call set_all (cx, e, f, $call Pa.nodes.val (x.operands))))))
+    }.ret,
+    $case x ()
+  )
+
 // DEFER.md: this function's parameters it frees, as `128 + i`, from the names `note_freed`
 // recorded at its depth — which it takes, so a sibling at the same depth starts clean. Only
 // through the root: which allocator is not in the type, and a caller must be able to check
@@ -2109,16 +2215,42 @@ $decl ctor_dfrs $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.n
         ($call ctor_dfrs (cx, e, $call Pa.nodes.val (xs.tail), own, ps)),
   $case xs ()
 )
+// §5.3a's A0 for a constructed block, which is its caller's storage: a place the caller lent
+// was there before the call and outlives it, so a field may keep one. A place this call made
+// may not be kept — its storage is this call's and ends when the constructor returns.
+$decl ctor_place_err $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl nm "")
+  $do ($call err (cx, $call concat ("this constructor's block would keep a place made in its own call",
+      $call concat ($if ($call eq_str (nm, "")) "" ($call concat (" ('", $call concat (nm, "')"))),
+      ", which ends when the constructor returns: a constructed block keeps only places its caller lent (§5.3a)")), x)) ()
+$decl ctor_places $func ($decl cx proto_ctx, $decl e owns.node, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call is_form (xs.head, "decl")) {
+      $decl nm   $call name_of ($call op (xs.head, 0))
+      $decl ow   $call owns_x (cx, e, $call op (xs.head, 1))
+      $decl r    $if ow ($call ctor_place_err (cx, xs.head, nm)) ()
+      $decl ret2 $call ctor_places (cx, $call owns.cons ($call own_ent (nm, ow), e),
+                     $call Pa.nodes.val (xs.tail))
+    }.ret2
+    ($if ($call is_form (xs.head, "fwd"))
+         ($call ctor_places (cx, $call owns.cons ($call own_ent (
+              $call name_of ($call op (xs.head, 0)), true), e), $call Pa.nodes.val (xs.tail)))
+         ($call ctor_places (cx, e, $call Pa.nodes.val (xs.tail)))),
+  $case xs ()
+)
 $decl ctor_check $func ($decl cx proto_ctx, $decl e env.node, $decl ps Pa.nodes.node,
                         $decl b Pa.proto_node) {
   $decl blk $call ctor_new (b)
+  $decl own $call own_params ($call param_names (ps, Pa.pstrs.nil), owns.nil)
   $decl ret $match blk (
       $case {$prop tag "block"} {
         $decl its  $call Pa.nodes.val (blk.items)
+        $decl pl   $call ctor_places (cx, own, its)
         $decl ret2 $call ctor_dfrs (cx, e, its, $call item_names (its, Pa.pstrs.nil),
                        $call param_names (ps, Pa.pstrs.nil))
       }.ret2,
-      $case blk ()
+      // A unit answer: no literal (a forwarding constructor, checked where it forwards to).
+      $case {$prop tag "unit"} (),
+      $case blk $if ($call owns_x (cx, own, blk)) ($call ctor_place_err (cx, b, "")) ()
     )
 }.ret
 
@@ -2152,6 +2284,7 @@ $decl func_close $func ($decl cx proto_ctx, $decl e env.node, $decl n Pa.proto_n
                       ($do ($call note_borrows (cx, res0)) res0))
                  ($do ($call note_borrows (cx, res0)) res0))
   $decl tc   $call tail_check (cx, e, own0, $call op (n, 1))
+  $decl sw   $call set_walk (cx, own0, own0, $call op (n, 1))
   // ...and its closure clause: a literal that captured frame storage is itself
   // frame-bound, so returning *it* is an escape too — caught one level out.
   $decl free $call Pa.free_names ($call op (n, 1), Pa.pstrs.nil)
@@ -2414,9 +2547,14 @@ $decl join_m $func ($decl cx proto_ctx, $decl a T.proto_ty, $decl b T.proto_ty) 
       r
 }.ret
 
-// §5.3a's A0: storage never holds a place. A place used where a value is wanted is read
-// through (§5.4), so `$new $new 0` is one cell and `$set p loc` copies; what this refuses
-// is a place carried *inside* a value — in a field, or captured by a closure.
+// §5.3a's A0: storage holds no place that may end before it does. A place used where a value
+// is wanted is read through (§5.4), so `$new $new 0` is one cell and `$set p loc` copies;
+// what is at stake is a place carried *inside* a value — in a field, or captured by a
+// closure. A frame `$new` needs no check: every place it can name already exists, in its
+// scope or an outer one, so it outlives the new storage. A `$set` into frame storage is
+// decided at the function's close (`set_walk`), and a constructor's block there too
+// (`ctor_places`). What is left here is storage that is not a frame's, or whose age against
+// the place is unknown: an array's elements, C's memory, and a `$set` at the top level.
 $decl no_place $func ($decl cx proto_ctx, $decl v T.proto_ty, $decl n Pa.proto_node)
   $if ($call T.frame_bound (v, 0))
       ($call err (cx, $call concat ("storage cannot hold a place: this value holds frame storage (",
@@ -2426,9 +2564,17 @@ $decl no_place $func ($decl cx proto_ctx, $decl v T.proto_ty, $decl n Pa.proto_n
 
 $decl infer_new $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl v   $call deref_ty ($call infer (cx, e, $call op (n, 0)))
-  $decl chk $call no_place (cx, v, n)
   $decl ret $call T.t_ref ("", v)
 }.ret
+
+// A `$set` into frame storage whose value holds a place, recorded for `set_walk`; at the top
+// level, where there is no close to decide it at, refused as before.
+$decl note_set $func ($decl cx proto_ctx, $decl v T.proto_ty, $decl n Pa.proto_node)
+  $if ($call T.frame_bound (v, 0))
+      ($if ($call eq_int ($call ival (cx.fdepth), 0)) ($do ($call no_place (cx, v, n)) ())
+           ($do ($set cx.setchk ($call strs.cons ($call fn_key_of (cx, n),
+                    $call strs.val (cx.setchk)))) ()))
+      ()
 
 $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl tgt $call T.tval ($call infer (cx, e, $call op (n, 0)))
@@ -2443,11 +2589,20 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
         $decl cw   $call coerce_why (x, raw, tgt.inner)
         $decl fr   $call P.and ($call P.not ($call T.is_trait (val)),
                        $call traitsof_frame (cx, e, x, raw))
+        // §5.3a's A0: a trait object referring to frame storage is a place. Allocated
+        // storage outlives every frame, and at the top level there is no close to decide it
+        // at, so both refuse it here; into a frame's storage it is `set_walk`'s question.
+        $decl tf   $call P.and ($call T.is_trait (tgt.inner), fr)
+        $decl late $if tf ($if ($call T.is_alloc (tgt.kind)) false
+                              ($call lt (0, $call ival (cx.fdepth)))) false
+        $decl rec  $if late ($set cx.settrait ($call strs.cons ($call fn_key_of (cx, x),
+                       $call strs.val (cx.settrait)))) ($call strs.val (cx.settrait))
+        // A value, not a reference, is coerced to an object over its own slot (`owns_arg`).
+        $decl slot $if ($if late ($call not ($call is_ref ($call T.unroll (raw)))) false)
+                       ($set cx.slotref ($call strs.cons ($call fn_key_of (cx, x),
+                           $call strs.val (cx.slotref)))) ($call strs.val (cx.slotref))
         $decl ret2 $if ($call not ($call eq_str (cw, ""))) ($call err (cx, cw, x))
-            ($if ($call P.and ($call T.is_trait (tgt.inner), fr))
-                 // §5.3a's A0, for storage of either kind: a trait object referring to frame
-                 // storage is a place, and storage never holds one — a frame cell the caller
-                 // lent outlives this call as surely as allocated storage does.
+            ($if ($if tf ($call not (late)) false)
                  ($if ($call T.is_alloc (tgt.kind))
                       ($call err (cx, "this trait object would refer to frame storage, which allocated storage outlives (§5.3a); store a reference to $alloc storage instead", x))
                       ($call err (cx, "storage cannot hold a place: this trait object would refer to frame storage (§6, §5.3a); store a reference to $alloc storage instead", x)))
@@ -2457,7 +2612,7 @@ $decl infer_set $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form)
         $if ($call eq_str (tgt.qual, "const"))
             ($call err (cx, "$set through a read-only reference (§5.3)", n))
         ($do ($if ($call T.is_alloc (tgt.kind))
-                 ($call escapes (cx, val, "this value", n)) ($call no_place (cx, val, n)))
+                 ($call escapes (cx, val, "this value", n)) ($call note_set (cx, val, n)))
         ($if ($call T.sub ($if ($call T.is_trait (tgt.inner)) raw val, tgt.inner)) val
             ($if ($call or ($call has_free_var (val), $call has_free_var (tgt.inner)))
                 ($do ($call defer_check (cx, val, tgt.inner, "cannot write ", n)) val)
