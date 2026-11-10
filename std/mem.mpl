@@ -74,3 +74,14 @@ $decl arena $func ($decl cap 0) {
   }
   $decl ret a
 }.ret
+
+// An arena's two operations as `std/str`'s `ator` takes them, for a text drawing from it:
+// `$call S.text ($call M.ator (allocator))`. The functions close over `a` by value, which is
+// its cells, so they may be kept where the arena itself could not be (§5.3a).
+$decl proto_arena $call arena (0)
+$decl ator $func ($decl a proto_arena) {
+  $decl ret {
+    $decl alloc $func ($decl n 0) $call a.alloc (n)
+    $decl free  $func ($decl p 0, $decl n 0) $call a.free (p, n)
+  }
+}.ret

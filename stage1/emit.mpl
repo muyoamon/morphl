@@ -1163,14 +1163,35 @@ $decl layout_ty $func ($decl t T.proto_ty) {
       $case u u
     )
 }.ret
+// §5.1: a block whose fields are another's first is a prefix of it, and a reference to the
+// longer one is read as a reference to the prefix — a pointer cast, since the prefix's fields
+// sit at the same offsets. `std/str`'s view holds its text as `&const {hd}`.
+$decl fields_prefix $func ($decl fs T.fields.node, $decl ws T.fields.node) $match ws (
+  $case {$prop tag "cons"} $match fs (
+      $case {$prop tag "cons"}
+        $if ($call eq_str (fs.head.name, ws.head.name))
+            ($if ($call T.same ($call T.tval (fs.head.ty), $call T.tval (ws.head.ty)))
+                 ($call fields_prefix ($call T.fields.val (fs.tail), $call T.fields.val (ws.tail)))
+                 false)
+            false,
+      $case fs false),
+  $case ws true
+)
+$decl layout_prefix $func ($decl a T.proto_ty, $decl b T.proto_ty) $match a (
+  $case {$prop tag "block"} $match b (
+      $case {$prop tag "block"}
+        $call fields_prefix ($call T.fields.val (a.fields), $call T.fields.val (b.fields)),
+      $case b $call T.same (a, b)),
+  $case a $call T.same (a, b)
+)
 $decl same_layout_refs $func ($decl ft T.proto_ty, $decl wt T.proto_ty) {
   $decl a   $call T.unroll (ft)
   $decl b   $call T.unroll (wt)
   $decl ret $match a (
       $case {$prop tag "ref"} $match b (
           $case {$prop tag "ref"}
-            $call T.same ($call layout_ty ($call T.tval (a.inner)),
-                          $call layout_ty ($call T.tval (b.inner))),
+            $call layout_prefix ($call layout_ty ($call T.tval (a.inner)),
+                                 $call layout_ty ($call T.tval (b.inner))),
           $case b false),
       $case a false
     )

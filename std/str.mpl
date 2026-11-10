@@ -242,14 +242,23 @@ $decl c_memcpy $extern "void *memcpy(void *, const void *, size_t)"
 $decl copy $func ($decl d 0, $decl s 0, $decl n 0)
   $if ($call lt (0, n)) ($call c_memcpy (d, s, n)) 0
 
-// The state is a header of four words in raw memory — the buffer's address, its capacity,
-// the bytes used, the generation — since a constructed block's deferral can release raw
-// memory and cannot `$free` a field.
+// Where a text's memory comes from (T4): an allocator's two operations, as functions. The
+// root allocator is a marker and an arena a block, so no one parameter could take either
+// as itself; both are this. `root_ator` is the root's, and `std/mem`'s `M.ator (a)` an
+// arena's, closing over it. `free` is given the size `alloc` was asked for.
+$decl root_ator {
+  $decl alloc $func ($decl n 0) $call $primitives.raw_alloc (n)
+  $decl free  $func ($decl a 0, $decl n 0) $do ($call $primitives.raw_free (a)) ()
+}
+
+// The state is a header of four words — the buffer's address, its capacity, the bytes
+// used, the generation — in memory from the text's allocator, as the buffer is, since a
+// constructed block's deferral can release that and cannot `$free` a field.
 $decl word   $func ($decl h 0, $decl k 0)
   $call $primitives.unbox ($call add (h, $call mul (k, 8)), 0)
 $decl get    $func ($decl h 0, $decl k 0) $call C.ival ($call word (h, k))
-$decl header $func () {
-  $decl h   $call $primitives.raw_alloc (32)
+$decl header $func ($decl al root_ator) {
+  $decl h   $call al.alloc (32)
   $decl ok  $if ($call eq (h, 0)) ($call panic ("str: out of memory")) 0
   $decl w0  $set ($call word (h, 0)) 0
   $decl w1  $set ($call word (h, 1)) 0
@@ -257,8 +266,8 @@ $decl header $func () {
   $decl w3  $set ($call word (h, 3)) 0
   $decl ret h
 }.ret
-$decl drop_header $func ($decl h 0)
-  $do ($call $primitives.raw_free ($call get (h, 0))) ($call $primitives.raw_free (h))
+$decl drop_header $func ($decl h 0, $decl al root_ator)
+  $do ($call al.free ($call get (h, 0), $call get (h, 1))) ($call al.free (h, 32))
 
 // Byte `i` of the memory at `a`, and a byte stored there.
 $decl peek $func ($decl a 0, $decl i 0)
@@ -269,24 +278,26 @@ $decl poke $func ($decl a 0, $decl i 0, $decl c 0)
 // The buffer grown to hold `need` bytes, what is there copied across and then `n` bytes from
 // `p` after it, before the old one is freed — so `p` may point into the text itself, and
 // `t.write (t.view ())` reads its source after growing.
-$decl grow $func ($decl h 0, $decl need 0, $decl p 0, $decl n 0) {
+$decl grow $func ($decl h 0, $decl al root_ator, $decl need 0, $decl p 0, $decl n 0) {
   $decl u   $call get (h, 2)
   $decl nc  $call C.max ($call C.max ($call mul ($call get (h, 1), 2), need), 16)
-  $decl nb  $call $primitives.raw_alloc (nc)
+  $decl nb  $call al.alloc (nc)
   $decl ok  $if ($call eq (nb, 0)) ($call panic ("str: out of memory")) 0
   $decl m1  $call copy (nb, $call get (h, 0), u)
   $decl m2  $call copy ($call add (nb, u), p, n)
-  $decl f   $call $primitives.raw_free ($call get (h, 0))
+  // An empty text has had no buffer to free.
+  $decl f   $if ($call eq ($call get (h, 1), 0)) ()
+                ($call al.free ($call get (h, 0), $call get (h, 1)))
   $decl s0  $set ($call word (h, 0)) nb
   $decl s1  $set ($call word (h, 1)) nc
   $decl ret ()
 }.ret
 
 // `n` bytes at `p` written at the end.
-$decl put_bytes $func ($decl h 0, $decl p 0, $decl n 0) {
+$decl put_bytes $func ($decl h 0, $decl al root_ator, $decl p 0, $decl n 0) {
   $decl u   $call get (h, 2)
   $decl m   $if ($call lt ($call get (h, 1), $call add (u, n)))
-                ($call grow (h, $call add (u, n), p, n))
+                ($call grow (h, al, $call add (u, n), p, n))
                 ($do ($call copy ($call add ($call get (h, 0), u), p, n)) ())
   $decl ret $do ($set ($call word (h, 2)) ($call add (u, n))) ()
 }.ret
@@ -296,12 +307,12 @@ $decl put_bytes $func ($decl h 0, $decl p 0, $decl n 0) {
 $decl code_ok $func ($decl c 0)
   $call C.and ($call C.and ($call lt (-1, c), $call lt (c, 1114112)),
                $call C.not ($call C.and ($call lt (55295, c), $call lt (c, 57344))))
-$decl put_code $func ($decl h 0, $decl c0 0) {
+$decl put_code $func ($decl h 0, $decl al root_ator, $decl c0 0) {
   $decl c   $if ($call code_ok (c0)) c0 65533
   $decl w   $if ($call lt (c, 128)) 1 ($if ($call lt (c, 2048)) 2 ($if ($call lt (c, 65536)) 3 4))
   $decl u   $call get (h, 2)
   $decl g   $if ($call lt ($call get (h, 1), $call add (u, w)))
-                ($call grow (h, $call add (u, w), 0, 0)) ()
+                ($call grow (h, al, $call add (u, w), 0, 0)) ()
   $decl a   $call add ($call get (h, 0), u)
   $decl lo  $func ($decl k 0) $call bor (128, $call band ($call shr (c, k), 63))
   $decl b   $if ($call eq (w, 1)) ($call poke (a, 0, c))
@@ -357,35 +368,42 @@ $decl raw_str $func ($decl s $union ("", proto_view)) $match s (
 
 // For a constructor that keeps a text's state itself, since a block can hold neither a frame
 // text (§5.3a, A0) nor an `$alloc`ed one its deferral could `$free`: a block whose first
-// field is `$decl hd $call S.header ()`, with `$defer $call S.drop_header (hd)`, writes with
-// `put` and has its views from `whole`, as `text` does. `std/io`'s `to_text` is one.
+// field is `$decl hd $call S.header (al)`, with `$defer $call S.drop_header (hd, al)`, writes
+// with `put` and has its views from `whole`, as `text` does. `std/io`'s `to_text` is one.
+// `al` is an allocator's operations, as `root_ator`, and the same one every time.
 //
 // A `Str` or a view written at the end of the text whose header is `h`.
-$decl put $func ($decl h 0, $decl s $union ("", proto_view)) {
+$decl put $func ($decl h 0, $decl s $union ("", proto_view), $decl al root_ator) {
   $decl r   $call raw_str (s)
-  $decl ret $call put_bytes (h, $call $primitives.str_ptr (r), $call len (r))
+  $decl ret $call put_bytes (h, al, $call $primitives.str_ptr (r), $call len (r))
 }.ret
 // A view of the whole of a text, or of anything whose first field is a text's header.
 $decl whole $func ($decl o $const $new { $decl hd 0 })
   $call view_of (o, 0, $call get (o.hd, 2), $call get (o.hd, 3))
 
-$decl text $func () $new {
-  $decl hd $call header ()
+// `ator` is where its memory comes from, the root's unless it is given one: `$call S.text
+// ($call M.ator (allocator))` draws from an arena, header and buffer both. It is kept in a
+// field, since a deferral may name only the block's own bindings (§4.15a). A frame text
+// from an arena must end before the arena is released; a heap one, `$alloc`ed from the same
+// arena, is released with it.
+$decl text $func ($decl ator root_ator) $new {
+  $decl hd $call header (ator)
+  $decl al ator
   // The whole of the text, as written so far.
   $prop view     $func () $call whole (text)
   // A `Str` or a view, copied in; so `t.write (t.view ())` doubles it. All of these answer
   // unit, so a `show` member ending in a write conforms to `std/fmt`'s `show_proto`.
-  $prop write    $func ($decl s $union ("", proto_view)) $call put (text.hd, s)
+  $prop write    $func ($decl s $union ("", proto_view)) $call put (text.hd, s, text.al)
   $prop line     $func ($decl s $union ("", proto_view))
-    $do ($call put (text.hd, s)) ($call put (text.hd, "\n"))
-  $prop code     $func ($decl c 0) $call put_code (text.hd, c)
+    $do ($call put (text.hd, s, text.al)) ($call put (text.hd, "\n", text.al))
+  $prop code     $func ($decl c 0) $call put_code (text.hd, text.al, c)
   // The bytes written so far.
   $prop size     $func () $call get (text.hd, 2)
   // Emptied, keeping the buffer; and the first `n` bytes kept. Either makes every view made
   // before stale.
   $prop clear    $func () $call cut (text.hd, 0)
   $prop truncate $func ($decl n 0) $call cut (text.hd, n)
-  $defer $call drop_header (hd)
+  $defer $call drop_header (hd, al)
 }
 
 // ------------------------------------------------------------------- views

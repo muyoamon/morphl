@@ -282,11 +282,11 @@ $decl from_str $func ($decl s "") {
 // `std/str` provides for, since a block cannot hold a text.
 $decl to_text $func () $new {
   $decl hd $call S.header ()
-  $prop write $func ($decl s "") $do ($call S.put (to_text.hd, s)) wrote
+  $prop write $func ($decl s "") $do ($call S.put (to_text.hd, s, S.root_ator)) wrote
   $prop flush $func () wrote
   $prop view  $func () $call S.whole (to_text)
   $prop text  $func () $call S.copy_out ($call S.whole (to_text))
-  $defer $call S.drop_header (hd)
+  $defer $call S.drop_header (hd, S.root_ator)
 }
 
 // Written at the end of what is there, and created if it is not. `O_APPEND` without

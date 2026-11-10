@@ -159,8 +159,12 @@ so `$alloc` of one answers `<&^T, none>`.
 **A text drawing from another allocator keeps it in a field**, and frees through the field,
 since the deferral may not name the constructor's parameters. The allocator is a parameter of
 `S.text`, defaulted to the root's, and it is named **`ator`**: a parameter named `allocator`
-defaulted to `allocator` would read the slot it initialises, so the body binds
-`$decl allocator ator` instead.
+defaulted to `allocator` would read the slot it initialises. It is the allocator's two
+operations as functions, `{alloc, free}`, not the allocator itself: the root allocator is a
+marker and an arena a block, so no one parameter type takes both, and a trait object over an
+arena, which is frame storage, could not be kept in the text's field (§5.3a). `S.root_ator`
+is the root's and `M.ator (a)` an arena's, closing over it by value. Header and buffer both
+come from it, so `$call S.text ($call M.ator (allocator))` is arena memory throughout.
 
 **A function that hands back text constructs.** Its body is the `$new`, a tail call to a
 constructor, or an `$if`/`$match` whose arms are such calls. Because a call inside a block is
@@ -350,7 +354,7 @@ without a new form, and widening types belongs to a different design.
    state is a header of four words in raw memory (address, capacity, used, generation), since
    a constructed block's deferral can release raw memory and cannot `$free` a field; the
    buffer is the root's `raw_alloc`, so a heap text from an arena frees it when the arena runs
-   the text's deferral. `ator` is not in yet. A view's owner is typed `&const {hd}`, the
+   the text's deferral. A view's owner is typed `&const {hd}`, the
    prefix every text has (§5.1): sibling props are typed against placeholders, so `write`'s
    parameter could not name `view`'s result, and the prefix can be written before `text`.
    `write` takes a `Str` or a view and copies before freeing the old buffer, so
@@ -378,6 +382,14 @@ without a new form, and widening types belongs to a different design.
    across in two slices, with the point between. `radix_str` and `fixed_str` are
    `copy_out`s of a text. What is left of the root's allocating names in it is `to_str` on a
    `Float` and the text of a panic.
+5c. **`ator`.** Done. `S.text (ator)` takes an allocator's two operations, `{alloc, free}`
+   (T4), defaulted to `S.root_ator`; `std/mem`'s `M.ator (a)` makes an arena's. The text keeps
+   it in a field, draws its header and its buffer from it, and its deferral frees both
+   through it. Emit needed one thing: a reference to a block coerced to a reference to its
+   §5.1 prefix is a pointer cast (`layout_prefix` in `same_layout_refs`) — the view's owner,
+   `&const {hd}`, from a text that now has a second field, was refused as "cannot coerce".
+   `std/str_test.mpl` checks the arena hands out exactly the header and the buffers, and a
+   heap text drawing from the arena it lives in, released with it.
 6. **The root's allocating names removed.** Stage 0's `builtins.zig`, `infer.mpl`'s `root_env`,
    `emit.mpl`, the Zig test that the two root blocks name the same things, and every fixture
    and `std/` module that still calls them.
