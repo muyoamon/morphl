@@ -951,9 +951,14 @@ $fwd owner_check
 // root block's binding of that name — `root_env` itself, so no binding between here and the
 // root stands in for it (§2.1: a keyword cannot be shadowed). Stage 0's
 // `builtins.primitives` must list the same names, which a Zig test checks.
+// The byte type and `view` are its own (`T.prim_extra`); the rest are the root's names.
 $decl prim_members $call strs.cons ("concat", $call strs.cons ("concat_all",
     $call strs.cons ("to_str", $call strs.cons ("int_to_str", $call strs.cons ("from_code",
-    $call strs.cons ("read_file", strs.nil))))))
+    $call strs.cons ("read_file", $call strs.cons ("u8", $call strs.cons ("to_u8",
+    $call strs.cons ("of_u8", $call strs.cons ("view", $call strs.cons ("str_ptr",
+    $call strs.cons ("str_from_ptr", $call strs.cons ("array_ptr", $call strs.cons ("box_ptr",
+    $call strs.cons ("unbox", $call strs.cons ("raw_alloc", $call strs.cons ("raw_free",
+    strs.nil)))))))))))))))))
 $decl prim_member $func ($decl xs strs.node, $decl n "") $match xs (
   $case {$prop tag "cons"} $if ($call eq_str (xs.head, n)) true ($call prim_member (xs.tail, n)),
   $case xs false
@@ -964,7 +969,8 @@ $decl is_primitives $func ($decl x Pa.proto_node) $match x (
 )
 $decl infer_primitive $func ($decl cx proto_ctx, $decl n proto_projn) {
   $decl f   $call lookup (root_env, n.field)
-  $decl ret $if ($if f.ok ($call prim_member (prim_members, n.field)) false) f.ty
+  $decl ret $if ($call prim_member (prim_members, n.field))
+      ($if f.ok f.ty ($call T.prim_extra (n.field)).ty)
       ($call err (cx, $call concat ("'", $call concat (n.field,
           "' is not one of $primitives' members (§8)")), n))
 }.ret
@@ -3225,23 +3231,31 @@ $decl infer_call_std $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_
 
 // §2.2: `$if c a b` is sugar for `$match c ($case true a, $case false b)`.
 
-// §8's `box_ptr` and `unbox`, which the root block binds at marker types because
-// it cannot say "for any T" (`T.ffi_box`). Recognised by name *and* marker, so a
-// user's own `unbox` shadows the intrinsic as it shadows any other.
-$decl ffi_which $func ($decl e env.node, $decl c Pa.proto_node) {
-  $decl nw  $call callee_name (c)
-  $decl f   $call lookup (e, nw)
-  // A name an `$override` renamed (§4.12a) is the intrinsic it stands for.
-  $decl nm  $call Pa.ov_plain (nw)
+// §8's `box_ptr`, `unbox` and arrays, which the root block binds at marker types because
+// it cannot say "for any T" (`T.ffi_box`). A name is the intrinsic when its type is the
+// marker, so a user's own `unbox` shadows it as it shadows any other name; `$primitives.unbox`
+// and the others are the intrinsic wherever they are written (§2.1).
+$decl ffi_member $func ($decl nm "")
+  $if ($call P.or ($call eq_str (nm, "box_ptr"),
+                  $call P.or ($call eq_str (nm, "unbox"), $call eq_str (nm, "array_ptr")))) nm ""
+$decl ffi_named $func ($decl e env.node, $decl c Pa.proto_node) {
+  $decl f   $call lookup (e, $call callee_name (c))
+  // By the marker alone, as lowering's `ffi_l` does: an alias of the intrinsic is the
+  // intrinsic, whatever it is called, and a user's own `unbox` has no marker type.
+  $decl t   f.ty
   $decl ret $if ($call not (f.ok)) ""
-      ($if ($call and ($call eq_str (nm, "box_ptr"), $call T.same (f.ty, T.ffi_box))) nm
-      ($if ($call and ($call eq_str (nm, "unbox"), $call T.same (f.ty, T.ffi_unbox))) nm
-      ($if ($call and ($call eq_str (nm, "array"), $call T.same (f.ty, T.ffi_array))) nm
-      ($if ($call and ($call eq_str (nm, "at"), $call T.same (f.ty, T.ffi_at))) nm
-      ($if ($call and ($call eq_str (nm, "alen"), $call T.same (f.ty, T.ffi_alen))) nm
-      ($if ($call and ($call eq_str (nm, "array_ptr"), $call T.same (f.ty, T.ffi_aptr))) nm
-           ""))))))
+      ($if ($call T.same (t, T.ffi_box)) "box_ptr"
+      ($if ($call T.same (t, T.ffi_unbox)) "unbox"
+      ($if ($call T.same (t, T.ffi_array)) "array"
+      ($if ($call T.same (t, T.ffi_at)) "at"
+      ($if ($call T.same (t, T.ffi_alen)) "alen"
+      ($if ($call T.same (t, T.ffi_aptr)) "array_ptr" ""))))))
 }.ret
+$decl ffi_which $func ($decl e env.node, $decl c Pa.proto_node) $match c (
+  $case {$prop tag "proj_name"}
+    $if ($call is_primitives (c.target)) ($call ffi_member (c.field)) "",
+  $case c ($call ffi_named (e, c))
+)
 
 $decl is_bot_ty $func ($decl t T.proto_ty) $match t (
   $case {$prop tag "bottom"} true,

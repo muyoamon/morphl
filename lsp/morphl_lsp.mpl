@@ -89,7 +89,7 @@ $decl st {
 $decl env_or $func ($decl name "", $decl d "") {
   $decl p   $call c_getenv ($call I.c_path (name))
   $decl ret $if ($call eq (p, 0)) d
-                ($call Co.or_else ($call str_from_ptr (p, $call I.c_strlen (p)), d))
+                ($call Co.or_else ($call $primitives.str_from_ptr (p, $call I.c_strlen (p)), d))
 }.ret
 $decl tmp_dir $call env_or ("XDG_RUNTIME_DIR", "/tmp")
 $decl pid     $call int_to_str ($call c_getpid ())

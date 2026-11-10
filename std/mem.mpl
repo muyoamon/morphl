@@ -50,7 +50,7 @@ $decl run_all $func ($decl xs fins.node) $match xs (
 // may have as many arenas as it likes — made from the root allocator, which is what this
 // function's scope binds.
 $decl arena $func ($decl cap 0) {
-  $decl b   $call raw_alloc (cap)
+  $decl b   $call $primitives.raw_alloc (cap)
   $decl ok  $if ($if ($call lt (0, cap)) ($call eq (b, 0)) false)
                 ($call panic ("arena: out of memory")) 0
   $decl a   { $decl base b  $decl top $mut $alloc b  $decl end $call add (b, cap)
@@ -69,7 +69,7 @@ $decl arena $func ($decl cap 0) {
     $prop reset   $func () $do ($call run_all ($call fc.val (a.fns)))
       ($do ($set a.fns fins.nil) ($set a.top a.base))
     $prop release $func () $do ($call run_all ($call fc.val (a.fns)))
-      ($do ($set a.fns fins.nil) ($call raw_free (a.base)))
+      ($do ($set a.fns fins.nil) ($call $primitives.raw_free (a.base)))
     $prop used    $func () $call sub ($call C.ival (a.top), a.base)
   }
   $decl ret a

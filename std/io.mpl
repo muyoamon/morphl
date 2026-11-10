@@ -102,7 +102,8 @@ $decl mode_rw  420
 // The text of an error code, as `strerror` gives it.
 $decl describe $func ($decl e 0) {
   $decl p   $call c_strerror (e)
-  $decl ret $call C.or_else ($call str_from_ptr (p, $call c_strlen (p)), "unknown error")
+  $decl ret $call C.or_else ($call $primitives.str_from_ptr (p, $call c_strlen (p)),
+                             "unknown error")
 }.ret
 
 // The answers, each at the type its method is declared with: `wrote` and `write_failed`
@@ -150,7 +151,7 @@ $decl stderr $alloc {
 // `e_ilseq`'s failure, and so is a code point the stream ends in the middle of.
 $decl fd_reader $func ($decl fd 0, $decl cap 4096) {
   $decl size $call C.max (cap, 4)
-  $decl mem  $call raw_alloc (size)
+  $decl mem  $call $primitives.raw_alloc (size)
   $decl ok   $if ($call eq (mem, 0)) ($call panic ("io: out of memory")) 0
   $decl r    {
     $decl file  fd
@@ -159,11 +160,12 @@ $decl fd_reader $func ($decl fd 0, $decl cap 4096) {
     $decl have  $mut $alloc 0
     $prop read  $func ($decl max 0) $call r.next ($call C.max (4, $call C.min (max, r.room)))
     // The descriptor closed and the buffer given back; nothing may read it after.
-    $prop close $func () $do ($call raw_free (r.buf)) ($call closed ($call c_close (r.file)))
+    $prop close $func ()
+      $do ($call $primitives.raw_free (r.buf)) ($call closed ($call c_close (r.file)))
     // The longest of the first `k`, `k - 1` … `k - 3` bytes that is text, or `none`.
     $prop take  $func ($decl k 0, $decl j 0)
       $if ($call C.or ($call eq (j, 4), $call lt ($call sub (k, j), 1))) none {
-        $decl o    $call str_from_ptr (r.buf, $call sub (k, j))
+        $decl o    $call $primitives.str_from_ptr (r.buf, $call sub (k, j))
         $decl ret2 $match o ($case {$prop tag "some"} o, $case o $call r.take (k, $call add (j, 1)))
       }.ret2
     $prop next  $func ($decl m 0) {
@@ -201,7 +203,7 @@ $decl stdin $alloc $call fd_reader (0, 4096)
 $decl fd_writer $func ($decl fd 0) {
   $decl w   {
     $decl file  fd
-    $prop write $func ($decl s "") $call w.put ($call str_ptr (s), $call len (s))
+    $prop write $func ($decl s "") $call w.put ($call $primitives.str_ptr (s), $call len (s))
     $prop put   $func ($decl p 0, $decl n 0) $if ($call eq (n, 0)) wrote {
       $decl k    $call c_write (w.file, p, n)
       $decl e    $if ($call lt (k, 0)) ($call errno ()) 0
@@ -227,7 +229,7 @@ $decl fd_writer $func ($decl fd 0) {
 //
 // A path is a `Str`, and C wants it ended by a NUL, which a `Str` may hold anywhere (§3.1);
 // one with a NUL inside names the file up to it.
-$decl c_path $func ($decl p "") $call str_ptr ($call concat (p, "\u{0}"))
+$decl c_path $func ($decl p "") $call $primitives.str_ptr ($call concat (p, "\u{0}"))
 
 $decl open_read $func ($decl path "", $decl cap 4096) {
   $decl fd  $call c_open ($call c_path (path), o_rdonly)

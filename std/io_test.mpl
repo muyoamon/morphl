@@ -135,7 +135,7 @@ $decl main $func () {
                     $call eq ($call line_of ($call lr2.read_line ()), "END"))))
   // Appending: to a file not there yet, then to the end of what one write left.
   $decl tmp3 "/tmp/morphl_std_io_test_append.txt"
-  $decl rm0 $call c_unlink ($call str_ptr ($call concat (tmp3, "\u{0}")))
+  $decl rm0 $call c_unlink ($call $primitives.str_ptr ($call concat (tmp3, "\u{0}")))
   $decl ap1 $call I.open_append (tmp3)
   $decl w1  $match ap1 ($case {$prop tag "ok"} $do ($call ap1.v.write ("one\n")) ($call ap1.v.close ()),
                         $case ap1 C.ok)

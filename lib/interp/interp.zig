@@ -1463,6 +1463,7 @@ pub const Interp = struct {
                     .value => |v| return v,
                     else => {},
                 };
+                return self.rt.fail(span, "$primitives.{s} is outside the bootstrap subset (BOOTSTRAP 1.2)", .{name});
             }
         }
         return self.rt.fail(span, "'{s}' is not one of $primitives' members", .{name});
@@ -2563,6 +2564,14 @@ test "$set requires storage, not a value field (4.4)" {
 // SPEC §5.3a: `$alloc` of a constructing call allocates the built block, whose deferrals then
 // wait for a release stage 0 never makes — refused, as `$alloc { … $defer … }` is. A block
 // with none is an ordinary allocation, and runs.
+test "$primitives' byte members and FFI group are refused (BOOTSTRAP 1.2)" {
+    // The byte type and `view` have no root binding; the FFI group does, and refuses when called.
+    try expectFails("$decl b $primitives.u8", "$primitives.u8 is outside the bootstrap subset");
+    try expectFails("$decl b $call $primitives.to_u8 (3)", "$primitives.to_u8 is outside");
+    try expectFails("$decl p $call $primitives.str_ptr (\"a\")", "FFI intrinsics are outside");
+    try expectFails("$decl p $primitives.nope", "'nope' is not one of $primitives' members");
+}
+
 test "$alloc of a constructing call: refused with deferrals, run without (5.3a)" {
     try expectFails(
         \\$decl n $mut $new 0

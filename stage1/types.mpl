@@ -154,6 +154,8 @@ $decl cv_eq $func ($decl a proto_cv, $decl b proto_cv) $match a (
 
 $decl t_int   { $prop tag "int" }
 $decl t_float { $prop tag "float" }
+// §3.1's byte, `$primitives.u8`'s type: one byte of storage (§8, TEXT.md T7).
+$decl t_u8    { $prop tag "u8" }
 $decl t_str   { $prop tag "str" }
 $decl t_true  { $prop tag "true" }
 $decl t_false { $prop tag "false" }
@@ -246,7 +248,7 @@ $decl t_bnd $func ($decl k 0) { $prop tag "bnd" $decl idx k  $decl h $call hmix 
 // evaluated. Field orders must match the constructors exactly, since §5.1 makes
 // layout part of the type.
 $decl proto_ty $union (
-  t_int, t_float, t_str, t_true, t_false, t_unit, t_bot,
+  t_int, t_float, t_u8, t_str, t_true, t_false, t_unit, t_bot,
   $call t_var (0),
   $call t_bnd (0),
  {  // §5.5: every field that reaches a type again goes through storage. A list
@@ -381,6 +383,7 @@ $decl hash_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "false"}  5,
   $case {$prop tag "unit"}   6,
   $case {$prop tag "bottom"} 7,
+  $case {$prop tag "u8"}     8,
   $case {$prop tag "var"}    t.h,
   $case {$prop tag "bnd"}    t.h,
   $case {$prop tag "block"}  t.h,
@@ -552,6 +555,7 @@ $decl cid_of $func ($decl t proto_ty) $match t (
   $case {$prop tag "false"}  17,
   $case {$prop tag "unit"}   21,
   $case {$prop tag "bottom"} 25,
+  $case {$prop tag "u8"}     29,
   $case {$prop tag "var"}    ($call add ($call mul (t.id, 4), 2)),
   $case {$prop tag "bnd"}    ($call add ($call mul (t.idx, 4), 3)),
   $case {$prop tag "block"}  t.cid,
@@ -1148,6 +1152,7 @@ $decl show_to $func ($decl t proto_ty, $decl acc strs.node) $match t (
   $case {$prop tag "false"}  $call strs.cons ("false", acc),
   $case {$prop tag "unit"}   $call strs.cons ("()", acc),
   $case {$prop tag "bottom"} $call strs.cons ("!", acc),
+  $case {$prop tag "u8"}     $call strs.cons ("u8", acc),
   $case {$prop tag "var"}    $call strs.cons ($call concat ("v", $call int_to_str (t.id)), acc),
   $case {$prop tag "block"}
     $call strs.cons ("}", $call show_props_to (t.props,
@@ -1469,6 +1474,7 @@ $decl same_deep $func ($decl a proto_ty, $decl b proto_ty) $match a (
       $case {$prop tag "false"} ($match b ($case {$prop tag "false"} true, $case b false)),
       $case {$prop tag "unit"} ($match b ($case {$prop tag "unit"} true, $case b false)),
       $case {$prop tag "bottom"} ($match b ($case {$prop tag "bottom"} true, $case b false)),
+      $case {$prop tag "u8"} ($match b ($case {$prop tag "u8"} true, $case b false)),
           $case a false
         )
     )
@@ -3232,6 +3238,7 @@ $decl explain $func ($decl a proto_ty, $decl b proto_ty)
 $decl is_base $func ($decl t proto_ty) $match t (
   $case {$prop tag "int"}   true,
   $case {$prop tag "float"} true,
+  $case {$prop tag "u8"}    true,
   $case {$prop tag "str"}   true,
   $case t false
 )
@@ -3958,3 +3965,19 @@ $decl ffi_array $call tag_block ("intrinsic", "array")
 $decl ffi_at    $call tag_block ("intrinsic", "at")
 $decl ffi_alen  $call tag_block ("intrinsic", "alen")
 $decl ffi_aptr  $call tag_block ("intrinsic", "array_ptr")
+
+// §8's `$primitives` members the root block does not bind (TEXT.md T2, T7): the byte —
+// `u8`, a value of it as `0` is of `Int` — with `to_u8 (n)` and `of_u8 (b)`, and
+// `view (addr, n)`, the bytes at an address as a `Str`. Both passes look a member up here
+// when the root has no binding of its name, so they type it alike.
+$decl prim_hit $func ($decl k P.boolean, $decl t proto_ty) { $decl ok k  $decl ty t }
+$decl prim_extra $func ($decl n "")
+  $if ($call eq_str (n, "u8")) ($call prim_hit (true, t_u8))
+  ($if ($call eq_str (n, "to_u8"))
+      ($call prim_hit (true, $call t_func ($call tys.cons (t_int, tys.nil), t_u8)))
+  ($if ($call eq_str (n, "of_u8"))
+      ($call prim_hit (true, $call t_func ($call tys.cons (t_u8, tys.nil), t_int)))
+  ($if ($call eq_str (n, "view"))
+      ($call prim_hit (true, $call t_func ($call tys.cons (t_int, $call tys.cons (t_int,
+           tys.nil)), t_str)))
+       ($call prim_hit (false, t_bot)))))

@@ -173,6 +173,7 @@ pub fn build(b: *std.Build) void {
         // constructor serves both lifetimes; fallible, it answers `<&^T, none>`, and `$try`
         // leaves the reference `$free` takes. Compiled only: stage 0 releases nothing.
         .{ .src = "stage1/fixtures/ctor_alloc.mpl", .want = "3254671710", .stage0 = false },
+        .{ .src = "stage1/fixtures/bytes.mpl", .want = "12006629424", .stage0 = false },
         // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
         // body's tail call, and mid-item — and a loop holding one stays in constant space.
         .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },
@@ -606,6 +607,25 @@ pub fn build(b: *std.Build) void {
             prun0.expectExitCode(1);
             panic_step.dependOn(&prun0.step);
             test_step.dependOn(&prun0.step);
+        }
+        // §8's `$primitives.to_u8` outside 0..255, compiled only: stage 0 has no byte type.
+        {
+            const bsrc = "stage1/fixtures/byte_range.mpl";
+            const bemit = b.addRunArtifact(runner);
+            bemit.addArgs(&.{ "--run", "stage1/emit_c.mpl", bsrc });
+            bemit.setCwd(b.path("."));
+            bemit.has_side_effects = true;
+            const bc = bemit.captureStdOut(.{ .basename = "out.c" });
+            const bcc = b.addSystemCommand(&.{ "cc", "-O0", "-Wall", "-Wno-unused-function", "-Wno-unused-but-set-variable", "-Werror", "-o" });
+            const bbin = bcc.addOutputFileArg("byte_range");
+            bcc.addFileArg(bc);
+            const brun = std.Build.Step.Run.create(b, "run byte_range");
+            brun.addFileArg(bbin);
+            brun.has_side_effects = true;
+            brun.addCheck(.{ .expect_stderr_match = "panic: to_u8: 256 is outside 0..255" });
+            brun.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+            panic_step.dependOn(&brun.step);
+            test_step.dependOn(&brun.step);
         }
         // ...and `mod` by -1 at the bottom of the range is 0, not C's undefined `%`.
         const ok = std.Build.Step.Run.create(b, "run the overflow fixture");

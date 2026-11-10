@@ -33,9 +33,13 @@ const Field = value.Field;
 /// §8's `$primitives`: the members a projection off the keyword may name. Stage 0 answers
 /// each with the root block's builtin of that name, which the root still binds until
 /// TEXT.md's step 6; stage 1's `prim_members` in `infer.mpl` must list the same names. The
-/// string-building ones so far — the FFI group, the byte type and `view` are step 4's.
+/// byte type and `view` have no root binding, and stage 0 refuses them: a byte is storage
+/// written through `unbox`, which BOOTSTRAP 1.2 keeps out of the subset with the rest of
+/// the FFI group.
 pub const primitives = [_][]const u8{
-    "concat", "concat_all", "to_str", "int_to_str", "from_code", "read_file",
+    "concat",    "concat_all", "to_str",    "int_to_str", "from_code", "read_file",
+    "u8",        "to_u8",      "of_u8",     "view",       "str_ptr",   "str_from_ptr",
+    "array_ptr", "box_ptr",    "unbox",     "raw_alloc",  "raw_free",
 };
 
 /// Build the root scope: the implicit block every program is wrapped in (§8).

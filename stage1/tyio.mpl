@@ -165,6 +165,7 @@ $decl put_prps $func ($decl st proto_cst, $decl xs T.props.node) $match xs (
 $decl put_body $func ($decl st proto_cst, $decl t T.proto_ty) $match t (
   $case {$prop tag "int"}   ($call put (st, "i")),
   $case {$prop tag "float"} ($call put (st, "f")),
+  $case {$prop tag "u8"}    ($call put (st, "y")),
   $case {$prop tag "str"}   ($call put (st, "s")),
   $case {$prop tag "true"}  ($call put (st, "T")),
   $case {$prop tag "false"} ($call put (st, "F")),
@@ -391,6 +392,7 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
   $decl j $call add (i, 1)
   $decl ret $if ($call one (s, i, "i")) ($call rt (j, T.t_int))
          ($if ($call one (s, i, "f")) ($call rt (j, T.t_float))
+         ($if ($call one (s, i, "y")) ($call rt (j, T.t_u8))
          ($if ($call one (s, i, "s")) ($call rt (j, T.t_str))
          ($if ($call one (s, i, "T")) ($call rt (j, T.t_true))
          ($if ($call one (s, i, "F")) ($call rt (j, T.t_false))
@@ -473,7 +475,7 @@ $decl read_body $func ($decl st proto_cst, $decl s "", $decl i 0) {
            $decl ps   $call read_prps (st, s, np.at, np.val, T.props.nil)
            $decl ret2 $call rt (ps.at, $call T.t_with (bs.val, ps.val))
          }.ret2
-              ($call rt (j, T.t_bot))))))))))))))))))))))
+              ($call rt (j, T.t_bot)))))))))))))))))))))))
 }.ret
 
 $decl read_at $func ($decl st proto_cst, $decl s "", $decl i 0)

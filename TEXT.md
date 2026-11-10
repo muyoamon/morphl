@@ -1,9 +1,10 @@
 # Owned text: design note
 
-Status: **decided; steps 1–3 are in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
+Status: **decided; steps 1–4 are in** — SPEC (§2.1, §2.2, §3.1, §5.3a, §7.6, §8, §11) and
 BOOTSTRAP (§1, §2) say what is decided, SPEC §11 says it is being implemented, both stages
-have `$primitives`, which the compiler builds its text through, and `$alloc` of a
-constructing call allocates the block. The plan is at the end. STRINGS.md made text cheap to build
+have `$primitives`, which the compiler builds its text through, `$alloc` of a
+constructing call allocates the block, and the byte type, `view` and the FFI group are
+`$primitives`' members. The plan is at the end. STRINGS.md made text cheap to build
 (one `concat_all`, O(L)); this note is about who owns the bytes and when they are released.
 
 | | question | decided |
@@ -321,7 +322,18 @@ without a new form, and widening types belongs to a different design.
    them when the frame ended, while the compiled program ran them at `$free`. Fixtures:
    `ctor_alloc.mpl` (frame and heap from one constructor, `$free`, never freed, `$mut`,
    fallible built and not; compiled only) and `std/mem_test.mpl`'s arena case (13).
-4. **The byte type**, `$primitives.view`, and the FFI group's move.
+4. **The byte type**, `$primitives.view`, and the FFI group's move. Done. `u8` is a leaf
+   type (`T.t_u8`, rendered `u8`, `uint8_t` in C, `y` in an interface); `u8`, `to_u8`,
+   `of_u8` and `view` have no root binding, so both passes type them from one table,
+   `T.prim_extra`, and the FFI group's members are the root's names, which `std/` and the
+   language server now reach only through the keyword. `to_u8` outside 0..255 panics
+   (`mpl_to_u8`), `of_u8` is a cast, and `view` is a pointer and a length with no copy.
+   Inference recognises `unbox`, `box_ptr` and the array intrinsics by their marker type
+   alone, as lowering always did, so an alias by any name is the intrinsic (it used to need
+   the intrinsic's own name too). Stage 0 knows every member and refuses the byte ones
+   ("outside the bootstrap subset"), as it refuses the FFI group. Fixtures: `bytes.mpl`
+   (bytes through `unbox` into raw memory and an array of bytes, each read back by `view`,
+   both conversions as values; compiled only) and `test-panic`'s `byte_range.mpl`.
 5. **`std/str`'s text and views**, with `std/fmt` and `std/io` moved onto them, and
    `std/str_test.mpl` covering growth, a view across growth, `t.write (t.view ())`, a stale view
    after `clear` panicking, `truncate` at a code-point boundary, and a heap text freed by an

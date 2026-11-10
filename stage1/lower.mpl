@@ -5182,8 +5182,10 @@ $decl lower_override $func ($decl st proto_lst, $decl e benv.node, $decl n proto
 // name that is not a member.
 $decl lower_primitive $func ($decl st proto_lst, $decl n proto_projn) {
   $decl f   $call lookup ($call benv.val (st.rootenv), n.field)
-  $decl ret $if f.hit {
-      $decl bt   $call T.tval (f.bnd.ty)
+  // The byte type and `view` are `$primitives`' own, with no root binding (`T.prim_extra`).
+  $decl x   $call T.prim_extra (n.field)
+  $decl ret $if ($if f.hit true x.ok) {
+      $decl bt   $if f.hit ($call T.tval (f.bnd.ty)) x.ty
       $decl id   $call intern (st, bt)
       $decl ret2 $call lres ($call IR.e_prim ($if ($call is_over_l (bt))
                      ($call intern_cands (st, $call over_cands (bt), id))

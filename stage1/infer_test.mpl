@@ -1297,6 +1297,24 @@ $decl ff07 $call check_str ("str_from_ptr answers an option of a Str",
   $call field_ty ("$decl x $call str_from_ptr (0, 0)", "x"),
   "<{tag=s\"none\",},{v:Str,tag=s\"some\",}>")
 
+// TEXT.md step 4: the byte type and `view` are `$primitives`' own, and the FFI group is
+// reached through it as well as through the root.
+$decl by08 $call check_str ("$primitives.u8 is a byte",
+  $call field_ty ("$decl x $primitives.u8", "x"), "u8")
+$decl by09 $call check_str ("to_u8 and of_u8 convert",
+  $call field_ty ("$decl x $call $primitives.of_u8 ($call $primitives.to_u8 (3))", "x"), "Int")
+$decl by10 $call check_str ("a byte is not an Int",
+  $call errs_of ("$decl x $call $primitives.to_u8 ($primitives.u8)"),
+  "argument 1 is u8, expected Int")
+$decl by11 $call check_str ("view answers a Str",
+  $call field_ty ("$decl x $call $primitives.view (0, 0)", "x"), "Str")
+$decl by12 $call check_str ("$primitives.unbox is the intrinsic, typed by its example",
+  $call field_ty ("$decl x $call $primitives.unbox (0, $primitives.u8)", "x"), "&^mut u8")
+$decl by13 $call check_str ("an alias of $primitives.unbox is the intrinsic",
+  $call field_ty ("$decl ub $primitives.unbox  $decl x $call ub (0, \"\")", "x"), "&^mut Str")
+$decl by14 $call check_str ("the byte type is not a root name",
+  $call errs_of ("$decl x u8"), "unknown name 'u8'")
+
 // §8's arrays at any element type (STDLIB.md, P3), typed per call like `unbox`.
 $decl ff08 $call check_str ("an array takes its element type from the example",
   $call field_ty ("$decl x $call array (3, 0)", "x"), "[]Int")
