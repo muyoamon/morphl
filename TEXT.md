@@ -157,14 +157,21 @@ the call". Three things make it sound and cheap:
 so `$alloc` of one answers `<&^T, none>`.
 
 **A text drawing from another allocator keeps it in a field**, and frees through the field,
-since the deferral may not name the constructor's parameters. The allocator is a parameter of
-`S.text`, defaulted to the root's, and it is named **`ator`**: a parameter named `allocator`
-defaulted to `allocator` would read the slot it initialises. It is the allocator's two
-operations as functions, `{alloc, free}`, not the allocator itself: the root allocator is a
-marker and an arena a block, so no one parameter type takes both, and a trait object over an
-arena, which is frame storage, could not be kept in the text's field (§5.3a). `S.root_ator`
-is the root's and `M.ator (a)` an arena's, closing over it by value. Header and buffer both
-come from it, so `$call S.text ($call M.ator (allocator))` is arena memory throughout.
+since the deferral may not name the constructor's parameters. The allocator is `S.text`'s
+parameter `from`, an **`M.any`**: `std/mem`'s trait of an allocator's two members,
+`alloc (size)` and `free (addr, size)` (STORAGE.md B2). `M.root` is the root's raw memory as
+such a value, and the default; an arena conforms as it is, so `$call S.text (allocator)` with
+an arena bound draws from it. A trait object refers to its allocator, which the text may
+keep because its caller lent it (A0 is about age): a frame text from a frame arena ends
+first, and a heap text needs a heap arena. A parameter named `allocator` defaulted to
+`allocator` would read the slot it initialises, which is why it is `from`. The root's own
+`allocator` binding is a compiler marker, not a value, so it does not conform yet; `M.root`
+stands for it.
+
+**A text's state is its own storage** (§5.3a's composition): four cells, the buffer's
+address, its capacity, the bytes used and the generation, built where the text is — in the
+caller's frame for a frame text, beside the block for `$alloc`. Only the buffer comes from
+the allocator. A constructor that wants a text holds one, as `std/io`'s `to_text` does.
 
 **A function that hands back text constructs.** Its body is the `$new`, a tail call to a
 constructor, or an `$if`/`$match` whose arms are such calls. Because a call inside a block is
@@ -289,7 +296,8 @@ without a new form, and widening types belongs to a different design.
 
 - **The byte type** is `$primitives.u8`, with `to_u8` and `of_u8` (T7).
 - **An `Int` outside 0..255** converted to a byte panics (T7).
-- **The allocator parameter** of `S.text` is `ator` (T4).
+- **The allocator parameter** of `S.text` is `from`, an `M.any` (T4; it was `ator`, an
+  `{alloc, free}` of functions, until step 5d).
 - **`str_ptr` and `array_ptr`** move to `$primitives` with the rest of the FFI group (T2).
 
 ## Open
@@ -390,6 +398,19 @@ without a new form, and widening types belongs to a different design.
    `&const {hd}`, from a text that now has a second field, was refused as "cannot coerce".
    `std/str_test.mpl` checks the arena hands out exactly the header and the buffers, and a
    heap text drawing from the arena it lives in, released with it.
+5d. **The allocator trait, and a text's state its own.** Done. `std/mem` has `M.any`, the
+   trait of `alloc (size)` and `free (addr, size)`, and `M.root`, the root's raw memory as a
+   conforming value; `M.ator` and `S.root_ator` are gone. `S.text (from)` takes an `M.any`,
+   defaulted to the root's, so `$call S.text (allocator)` with an arena bound draws from it,
+   and keeps the trait object, a reference its caller lent. Its state is four cells of its
+   own, built by composition, so the header in raw memory and its helpers (`S.header`,
+   `S.put`'s header form, `S.drop_header`) are gone, and a view's owner is `&const` of the
+   cells' prefix, `S.proto_st`. `std/io`'s `to_text` holds a text. One checker change: a
+   global is no capture (`caps_frame` skips what `is_glob` finds), since it is a static read
+   where it is, so a constructor naming a module whose type holds a top-level `$new` — every
+   user of `std/str` — may still be `$alloc`ed; `alloc_lent` also reads a projected callee's
+   type (`S.text`), not only a name's. `compose_alloc.mpl`'s `dropped` is a top-level `$new`
+   again. The heap-text-in-its-own-arena test `$alloc`s the arena.
 6. **The root's allocating names removed.** Stage 0's `builtins.zig`, `infer.mpl`'s `root_env`,
    `emit.mpl`, the Zig test that the two root blocks name the same things, and every fixture
    and `std/` module that still calls them.

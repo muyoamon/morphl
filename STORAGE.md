@@ -627,9 +627,11 @@ $decl main $func () {
 becomes `mpl_alloc_in (a, sizeof (T))`. Simple and fast; no user can write an allocator.
 
 **B2. An allocator is a trait** (chosen): any value conforming to
-`$traitsof { $prop alloc $func ($decl size 0) 0  $prop free $func ($decl addr 0) () }`.
-`alloc` answers an address; `free` releases one object, which is what A4's diagnostic means by
-"release it when done". `$alloc e` asks the lexical `allocator` for `sizeof (T)` bytes and stores
+`$traitsof { $prop alloc $func ($decl size 0) 0  $prop free $func ($decl addr 0, $decl size 0) () }`.
+`alloc` answers an address; `free` releases one object, told the size it was asked for, which
+is what A4's diagnostic means by "release it when done". `std/mem` writes it down as `M.any`,
+with `M.root` the root's raw memory as a conforming value, so a library function can take an
+allocator as a parameter (`S.text (from)`). `$alloc e` asks the lexical `allocator` for `sizeof (T)` bytes and stores
 `e` there. An arena implements `free` as nothing and releases everything at once; the root's
 default implements it with `raw_free`. This is §7.6 as written: the
 root's default is one implementation, and an arena or a pool is library morphl.

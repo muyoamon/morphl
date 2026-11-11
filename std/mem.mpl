@@ -75,13 +75,16 @@ $decl arena $func ($decl cap 0) {
   $decl ret a
 }.ret
 
-// An arena's two operations as `std/str`'s `ator` takes them, for a text drawing from it:
-// `$call S.text ($call M.ator (allocator))`. The functions close over `a` by value, which is
-// its cells, so they may be kept where the arena itself could not be (§5.3a).
+// An arena, as a parameter's default.
 $decl proto_arena $call arena (0)
-$decl ator $func ($decl a proto_arena) {
-  $decl ret {
-    $decl alloc $func ($decl n 0) $call a.alloc (n)
-    $decl free  $func ($decl p 0, $decl n 0) $call a.free (p, n)
-  }
-}.ret
+
+// An allocator as a value (§7.6, STORAGE.md B2): `alloc` answers the address of `size` bytes,
+// and `free` gives back what `alloc` answered, told the size it was asked for. `root` is the
+// root allocator's two operations, §8's raw memory, and `any` the trait every allocator here
+// conforms to — an arena among them — so a parameter typed `any` takes either, and keeps a
+// reference to the allocator it was given: `$call S.text (allocator)` with an arena bound.
+$decl root {
+  $prop alloc $func ($decl size 0) $call $primitives.raw_alloc (size)
+  $prop free  $func ($decl addr 0, $decl size 0) $do ($call $primitives.raw_free (addr)) ()
+}
+$decl any $traitsof root

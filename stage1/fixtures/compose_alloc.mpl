@@ -2,9 +2,9 @@
 // constructing call allocates the block and the region its own storage is built in as one
 // object, which `$free` releases after running the block's deferral. Compiled only: stage 0
 // releases nothing.
-// Allocated: a function capturing frame storage — even the top level's — could have put it
-// in the block, which `$alloc` would then outlive (§5.3a).
-$decl dropped $mut $alloc 0
+// A top-level place: a function naming it captures nothing (it is a static, read where it
+// is), so `cell`'s deferral may write it from an `$alloc`ed block (§5.3a: A0 is about age).
+$decl dropped $mut $new 0
 $decl ival    $func ($decl x 0) x
 
 $decl cell $func ($decl n 0) $new {

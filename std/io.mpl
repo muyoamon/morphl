@@ -278,15 +278,13 @@ $decl from_str $func ($decl s "") {
 // A writer collecting what it is given into a text of its own: `view ()` is all of it, and
 // `text ()` all of it copied out as a `Str`. A constructor (§5.3a), so it is frame storage
 // where it is called or, as a stream must be to make a `writer` that can be stored,
-// `$alloc $call I.to_text ()`; its buffer goes with it. It keeps the text's state itself, as
-// `std/str` provides for, since a block cannot hold a text.
+// `$alloc $call I.to_text ()`; its text is built with it, and goes with it.
 $decl to_text $func () $new {
-  $decl hd $call S.header ()
-  $prop write $func ($decl s "") $do ($call S.put (to_text.hd, s, S.root_ator)) wrote
+  $decl t     $call S.text ()
+  $prop write $func ($decl s "") $do ($call to_text.t.write (s)) wrote
   $prop flush $func () wrote
-  $prop view  $func () $call S.whole (to_text)
-  $prop text  $func () $call S.copy_out ($call S.whole (to_text))
-  $defer $call S.drop_header (hd, S.root_ator)
+  $prop view  $func () $call to_text.t.view ()
+  $prop text  $func () $call S.copy_out ($call to_text.t.view ())
 }
 
 // Written at the end of what is there, and created if it is not. `O_APPEND` without

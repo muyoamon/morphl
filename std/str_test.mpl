@@ -58,10 +58,10 @@ $decl in_arena $func () {
   $decl ret       n
 }.ret
 
-// A frame text drawing from an arena (`ator`), header and buffer both: what the arena handed
-// out, once the text has grown past 16 bytes twice. The text ends before the arena does.
+// A frame text drawing from an arena: what the arena handed out, once the text has grown
+// past 16 bytes twice. The text ends before the arena does.
 $decl arena_bytes $func ($decl a M.proto_arena) {
-  $decl t   $call S.text ($call M.ator (a))
+  $decl t   $call S.text (a)
   $decl w   $call fill_text (t, 20)
   $decl ok  $call S.eq ($call S.slice ($call t.view (), 38, 40), "ab")
   $decl ret $if ok ($call a.used ()) -1
@@ -74,14 +74,19 @@ $decl from_arena $func () {
 }.ret
 
 // A heap text in an arena that it draws from too, released with it: the deferral gives the
-// buffer back to the arena, before the arena's memory goes.
+// buffer back to the arena, before the arena's memory goes. The text keeps a reference to
+// its allocator, so a heap text's must be heap storage too (§5.3a): the arena is `$alloc`ed.
 $decl all_arena $func () {
-  $decl allocator $call M.arena (65536)
-  $decl h         $alloc $call S.text ($call M.ator (allocator))
-  $decl w         $call fill_text (h, 3000)
-  $decl n         $call S.len ($call h.view ())
-  $decl done      $call allocator.release ()
-  $decl ret       n
+  $decl ar   $alloc $call M.arena (65536)
+  $decl n    {
+    $decl allocator ar
+    $decl h         $alloc $call S.text (ar)
+    $decl w         $call fill_text (h, 3000)
+    $decl ret2      $call S.len ($call h.view ())
+  }.ret2
+  $decl done $call ar.release ()
+  $decl f    $free ar
+  $decl ret  n
 }.ret
 
 $decl main $func () {
@@ -211,7 +216,7 @@ $decl main $func () {
   $decl fr  $free h
   $decl c47 $call T.expect (r, "a heap text in an arena", $call eq ($call in_arena (), 2000))
   // 32 for the header, then buffers of 16, 32 and 64 as it grows: an arena gives nothing back.
-  $decl c54 $call T.expect (r, "a text drawing from an arena", $call eq ($call from_arena (), 144))
+  $decl c54 $call T.expect (r, "a text drawing from an arena", $call eq ($call from_arena (), 112))
   $decl c55 $call T.expect (r, "...heap, and released with it", $call eq ($call all_arena (), 6000))
   $decl c48 $call T.expect (r, "an empty text", $call S.eq ($call ($call S.text ()).view (), ""))
   // Taking a view apart, into views of the same text.

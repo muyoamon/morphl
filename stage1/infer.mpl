@@ -1057,7 +1057,9 @@ $decl param_names $func ($decl ps Pa.nodes.node, $decl acc Pa.pstrs.node) $match
 $decl caps_frame $func ($decl cx proto_ctx, $decl e env.node, $decl ns Pa.pstrs.node,
                         $decl skip Pa.pstrs.node) $match ns (
   $case {$prop tag "cons"} {
-    $decl skipped $call Pa.mem_pstr (skip, ns.head)
+    // A global is no capture: it is read where it is, a static, and holding one of its places
+    // holds nothing that can end (A0 is about age).
+    $decl skipped $if ($call Pa.mem_pstr (skip, ns.head)) true ($call is_glob (e, ns.head))
     $decl f       $if skipped ($call found (false, T.t_bot)) ($call lookup (e, ns.head))
     $decl hit     $if f.ok ($call T.frame_bound (f.ty, 0)) false
     $decl ret     $if hit true ($call caps_frame (cx, e, $call Pa.pstrs.val (ns.tail), skip))
@@ -5780,11 +5782,16 @@ $decl any_placed $func ($decl cx proto_ctx, $decl xs Pa.nodes.node) $match xs (
     $if ($call placed_at (cx, xs.head)) true ($call any_placed (cx, $call Pa.nodes.val (xs.tail))),
   $case xs false
 )
+// A name, or a member projected off one (`S.text`): a callee typed again for its type alone.
+$decl name_path $func ($decl c Pa.proto_node) $match c (
+  $case {$prop tag "name"} true,
+  $case {$prop tag "proj_name"} $call name_path ($call node_val (c.target)),
+  $case c false
+)
 $decl alloc_lent $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
                         $decl v T.proto_ty, $decl n Pa.proto_node) {
   $decl c   $call op (x, 0)
-  $decl ct  $match c ($case {$prop tag "name"} ($call T.unroll ($call infer (cx, e, c))),
-                      $case c T.t_bot)
+  $decl ct  $if ($call name_path (c)) ($call T.unroll ($call infer (cx, e, c))) T.t_bot
   $decl cf  $match ct ($case {$prop tag "func"} ct.frame, $case ct true)
   $decl ret $if ($if cf true ($call any_placed (cx, $call group_items ($call op (x, 1)))))
                 ($call escapes (cx, v, "this value", n)) v

@@ -13,6 +13,7 @@
 
 $decl C $import "std/core"
 $decl L $import "std/list"
+$decl M $import "std/mem"
 
 $decl strs $specialize L.list ""
 $decl cl   strs.cell
@@ -225,8 +226,8 @@ $decl str_codes $func ($decl s "", $decl i 0) {
 //
 // `S.text` is a constructor (§5.3a), so `$decl t $call S.text ()` is frame storage of the
 // scope it stands in, and `$alloc $call S.text ()` a heap text whose deferral is its
-// allocator's: run by `$free`, or when an arena releases it. The buffer itself is the
-// root's raw memory either way.
+// allocator's: run by `$free`, or when an arena releases it. The buffer is from the
+// allocator the text is given, the root's unless it is given one.
 //
 // A **view** is `{of, at, n, gen}`: the text, an offset, a length and the generation it was
 // made under. It holds the text as a reference, so §5.3a keeps a view of a frame text in that
@@ -242,32 +243,17 @@ $decl c_memcpy $extern "void *memcpy(void *, const void *, size_t)"
 $decl copy $func ($decl d 0, $decl s 0, $decl n 0)
   $if ($call lt (0, n)) ($call c_memcpy (d, s, n)) 0
 
-// Where a text's memory comes from (T4): an allocator's two operations, as functions. The
-// root allocator is a marker and an arena a block, so no one parameter could take either
-// as itself; both are this. `root_ator` is the root's, and `std/mem`'s `M.ator (a)` an
-// arena's, closing over it. `free` is given the size `alloc` was asked for.
-$decl root_ator {
-  $decl alloc $func ($decl n 0) $call $primitives.raw_alloc (n)
-  $decl free  $func ($decl a 0, $decl n 0) $do ($call $primitives.raw_free (a)) ()
+// The state is four cells of the text's own — the buffer's address, its capacity, the bytes
+// used, the generation — built where the text is (§5.3a's composition). Everything here
+// takes it as `proto_st`, the prefix every text has (§5.1): sibling props are typed against
+// each other's placeholders, so it has to be written before `text` is, and one type then
+// serves every text. Its buffer is from the text's allocator, `al`, an `M.any`.
+$decl proto_st $const $new {
+  $decl p    $mut $new 0
+  $decl cap  $mut $new 0
+  $decl used $mut $new 0
+  $decl gen  $mut $new 0
 }
-
-// The state is a header of four words — the buffer's address, its capacity, the bytes
-// used, the generation — in memory from the text's allocator, as the buffer is, since a
-// constructed block's deferral can release that and cannot `$free` a field.
-$decl word   $func ($decl h 0, $decl k 0)
-  $call $primitives.unbox ($call add (h, $call mul (k, 8)), 0)
-$decl get    $func ($decl h 0, $decl k 0) $call C.ival ($call word (h, k))
-$decl header $func ($decl al root_ator) {
-  $decl h   $call al.alloc (32)
-  $decl ok  $if ($call eq (h, 0)) ($call panic ("str: out of memory")) 0
-  $decl w0  $set ($call word (h, 0)) 0
-  $decl w1  $set ($call word (h, 1)) 0
-  $decl w2  $set ($call word (h, 2)) 0
-  $decl w3  $set ($call word (h, 3)) 0
-  $decl ret h
-}.ret
-$decl drop_header $func ($decl h 0, $decl al root_ator)
-  $do ($call al.free ($call get (h, 0), $call get (h, 1))) ($call al.free (h, 32))
 
 // Byte `i` of the memory at `a`, and a byte stored there.
 $decl peek $func ($decl a 0, $decl i 0)
@@ -278,28 +264,28 @@ $decl poke $func ($decl a 0, $decl i 0, $decl c 0)
 // The buffer grown to hold `need` bytes, what is there copied across and then `n` bytes from
 // `p` after it, before the old one is freed — so `p` may point into the text itself, and
 // `t.write (t.view ())` reads its source after growing.
-$decl grow $func ($decl h 0, $decl al root_ator, $decl need 0, $decl p 0, $decl n 0) {
-  $decl u   $call get (h, 2)
-  $decl nc  $call C.max ($call C.max ($call mul ($call get (h, 1), 2), need), 16)
+$decl grow $func ($decl s proto_st, $decl al M.any, $decl need 0, $decl p 0, $decl n 0) {
+  $decl u   $call C.ival (s.used)
+  $decl nc  $call C.max ($call C.max ($call mul ($call C.ival (s.cap), 2), need), 16)
   $decl nb  $call al.alloc (nc)
   $decl ok  $if ($call eq (nb, 0)) ($call panic ("str: out of memory")) 0
-  $decl m1  $call copy (nb, $call get (h, 0), u)
+  $decl m1  $call copy (nb, $call C.ival (s.p), u)
   $decl m2  $call copy ($call add (nb, u), p, n)
   // An empty text has had no buffer to free.
-  $decl f   $if ($call eq ($call get (h, 1), 0)) ()
-                ($call al.free ($call get (h, 0), $call get (h, 1)))
-  $decl s0  $set ($call word (h, 0)) nb
-  $decl s1  $set ($call word (h, 1)) nc
+  $decl f   $if ($call eq ($call C.ival (s.cap), 0)) ()
+                ($call al.free ($call C.ival (s.p), $call C.ival (s.cap)))
+  $decl s0  $set s.p nb
+  $decl s1  $set s.cap nc
   $decl ret ()
 }.ret
 
 // `n` bytes at `p` written at the end.
-$decl put_bytes $func ($decl h 0, $decl al root_ator, $decl p 0, $decl n 0) {
-  $decl u   $call get (h, 2)
-  $decl m   $if ($call lt ($call get (h, 1), $call add (u, n)))
-                ($call grow (h, al, $call add (u, n), p, n))
-                ($do ($call copy ($call add ($call get (h, 0), u), p, n)) ())
-  $decl ret $do ($set ($call word (h, 2)) ($call add (u, n))) ()
+$decl put_bytes $func ($decl s proto_st, $decl al M.any, $decl p 0, $decl n 0) {
+  $decl u   $call C.ival (s.used)
+  $decl m   $if ($call lt ($call C.ival (s.cap), $call add (u, n)))
+                ($call grow (s, al, $call add (u, n), p, n))
+                ($do ($call copy ($call add ($call C.ival (s.p), u), p, n)) ())
+  $decl ret $do ($set s.used ($call add (u, n))) ()
 }.ret
 
 // Code point `c` written at the end as UTF-8, or U+FFFD for one `from_code` would refuse: a
@@ -307,13 +293,13 @@ $decl put_bytes $func ($decl h 0, $decl al root_ator, $decl p 0, $decl n 0) {
 $decl code_ok $func ($decl c 0)
   $call C.and ($call C.and ($call lt (-1, c), $call lt (c, 1114112)),
                $call C.not ($call C.and ($call lt (55295, c), $call lt (c, 57344))))
-$decl put_code $func ($decl h 0, $decl al root_ator, $decl c0 0) {
+$decl put_code $func ($decl s proto_st, $decl al M.any, $decl c0 0) {
   $decl c   $if ($call code_ok (c0)) c0 65533
   $decl w   $if ($call lt (c, 128)) 1 ($if ($call lt (c, 2048)) 2 ($if ($call lt (c, 65536)) 3 4))
-  $decl u   $call get (h, 2)
-  $decl g   $if ($call lt ($call get (h, 1), $call add (u, w)))
-                ($call grow (h, al, $call add (u, w), 0, 0)) ()
-  $decl a   $call add ($call get (h, 0), u)
+  $decl u   $call C.ival (s.used)
+  $decl g   $if ($call lt ($call C.ival (s.cap), $call add (u, w)))
+                ($call grow (s, al, $call add (u, w), 0, 0)) ()
+  $decl a   $call add ($call C.ival (s.p), u)
   $decl lo  $func ($decl k 0) $call bor (128, $call band ($call shr (c, k), 63))
   $decl b   $if ($call eq (w, 1)) ($call poke (a, 0, c))
       ($if ($call eq (w, 2))
@@ -325,7 +311,7 @@ $decl put_code $func ($decl h 0, $decl al root_ator, $decl c0 0) {
            ($do ($call poke (a, 0, $call bor (240, $call shr (c, 18))))
                 ($do ($call poke (a, 1, $call lo (12)))
                      ($do ($call poke (a, 2, $call lo (6))) ($call poke (a, 3, $call lo (0))))))))
-  $decl ret $do ($set ($call word (h, 2)) ($call add (u, w))) ()
+  $decl ret $do ($set s.used ($call add (u, w))) ()
 }.ret
 
 // Whether byte `i` of the memory at `a` continues a code point rather than starting one.
@@ -334,29 +320,27 @@ $decl is_cont $func ($decl a 0, $decl i 0)
 
 // The first `n` bytes kept, `n` not past the end nor inside a code point (§3.1), and the
 // generation moved on.
-$decl cut $func ($decl h 0, $decl n 0) {
-  $decl u   $call get (h, 2)
+$decl cut $func ($decl s proto_st, $decl n 0) {
+  $decl u   $call C.ival (s.used)
   $decl ok  $if ($call C.or ($call lt (n, 0), $call lt (u, n)))
                 ($call panic ($call concat ("str: truncate to ", $call concat ($call int_to_str (n),
                      $call concat (" of ", $call int_to_str (u))))))
                 ($if ($call lt (n, u))
-                     ($if ($call is_cont ($call get (h, 0), n))
+                     ($if ($call is_cont ($call C.ival (s.p), n))
                           ($call panic ("str: truncate inside a code point")) 0) 0)
-  $decl s2  $set ($call word (h, 2)) n
-  $decl ret $do ($set ($call word (h, 3)) ($call add ($call get (h, 3), 1))) ()
+  $decl s2  $set s.used n
+  $decl ret $do ($set s.gen ($call add ($call C.ival (s.gen), 1))) ()
 }.ret
 
-// A view. Its text is held as a `&const` of the prefix `{hd}`, which §5.1 makes every
-// text a subtype of, so the type can be written before `text` is and one view type serves
-// every text.
-$decl view_of $func ($decl o $const $new { $decl hd 0 }, $decl a 0, $decl k 0, $decl g 0)
+// A view.
+$decl view_of $func ($decl o proto_st, $decl a 0, $decl k 0, $decl g 0)
   { $decl of o  $decl at a  $decl n k  $decl gen g }
-$decl proto_view $call view_of ($const $new { $decl hd 0 }, 0, 0, 0)
+$decl proto_view $call view_of (proto_st, 0, 0, 0)
 
 // The address of a view's first byte, or a panic when its text was cleared or truncated
 // after it was made.
 $decl view_addr $func ($decl v proto_view)
-  $if ($call eq ($call get (v.of.hd, 3), v.gen)) ($call add ($call get (v.of.hd, 0), v.at))
+  $if ($call eq ($call C.ival (v.of.gen), v.gen)) ($call add ($call C.ival (v.of.p), v.at))
       ($call panic ("str: a view read after its text was cleared or truncated"))
 
 // A `Str` as itself, and a view as a `Str` of its bytes — valid until its text next grows or
@@ -366,44 +350,45 @@ $decl raw_str $func ($decl s $union ("", proto_view)) $match s (
   $case {} $call $primitives.view ($call view_addr (s), s.n)
 )
 
-// For a constructor that keeps a text's state itself, since a block can hold neither a frame
-// text (§5.3a, A0) nor an `$alloc`ed one its deferral could `$free`: a block whose first
-// field is `$decl hd $call S.header (al)`, with `$defer $call S.drop_header (hd, al)`, writes
-// with `put` and has its views from `whole`, as `text` does. `std/io`'s `to_text` is one.
-// `al` is an allocator's operations, as `root_ator`, and the same one every time.
-//
-// A `Str` or a view written at the end of the text whose header is `h`.
-$decl put $func ($decl h 0, $decl s $union ("", proto_view), $decl al root_ator) {
+// A `Str` or a view written at the end of the text whose state is `st`.
+$decl put $func ($decl st proto_st, $decl s $union ("", proto_view), $decl al M.any) {
   $decl r   $call raw_str (s)
-  $decl ret $call put_bytes (h, al, $call $primitives.str_ptr (r), $call len (r))
+  $decl ret $call put_bytes (st, al, $call $primitives.str_ptr (r), $call len (r))
 }.ret
-// A view of the whole of a text, or of anything whose first field is a text's header.
-$decl whole $func ($decl o $const $new { $decl hd 0 })
-  $call view_of (o, 0, $call get (o.hd, 2), $call get (o.hd, 3))
+// A view of the whole of a text.
+$decl whole $func ($decl s proto_st)
+  $call view_of (s, 0, $call C.ival (s.used), $call C.ival (s.gen))
 
-// `ator` is where its memory comes from, the root's unless it is given one: `$call S.text
-// ($call M.ator (allocator))` draws from an arena, header and buffer both. It is kept in a
-// field, since a deferral may name only the block's own bindings (§4.15a). A frame text
-// from an arena must end before the arena is released; a heap one, `$alloc`ed from the same
-// arena, is released with it.
-$decl text $func ($decl ator root_ator) $new {
-  $decl hd $call header (ator)
-  $decl al ator
+// `from` is the allocator its buffer comes from, the root's unless it is given one:
+// `$call S.text (allocator)` with an arena bound draws from the arena. It is kept in a field,
+// since a deferral may name only the block's own bindings (§4.15a), and the text holds it as
+// a reference, so it must end before the allocator does.
+$decl text $func ($decl from M.any) $new {
+  $decl p    $mut $new 0
+  $decl cap  $mut $new 0
+  $decl used $mut $new 0
+  $decl gen  $mut $new 0
+  $decl al   from
   // The whole of the text, as written so far.
   $prop view     $func () $call whole (text)
   // A `Str` or a view, copied in; so `t.write (t.view ())` doubles it. All of these answer
-  // unit, so a `show` member ending in a write conforms to `std/fmt`'s `show_proto`.
-  $prop write    $func ($decl s $union ("", proto_view)) $call put (text.hd, s, text.al)
+  // unit, so a `show` member ending in a write conforms to `std/fmt`'s `show_proto`. None
+  // tail-calls with `text.al`: while the props are typed the receiver's fields are
+  // placeholders, so the checker cannot see `al` is already a trait object and not a value
+  // coerced to one over storage the tail call would end (§7.7).
+  $prop write    $func ($decl s $union ("", proto_view)) $do ($call put (text, s, text.al)) ()
   $prop line     $func ($decl s $union ("", proto_view))
-    $do ($call put (text.hd, s, text.al)) ($call put (text.hd, "\n", text.al))
-  $prop code     $func ($decl c 0) $call put_code (text.hd, text.al, c)
+    $do ($call put (text, s, text.al)) ($do ($call put (text, "\n", text.al)) ())
+  $prop code     $func ($decl c 0) $do ($call put_code (text, text.al, c)) ()
   // The bytes written so far.
-  $prop size     $func () $call get (text.hd, 2)
+  $prop size     $func () $call C.ival (text.used)
   // Emptied, keeping the buffer; and the first `n` bytes kept. Either makes every view made
   // before stale.
-  $prop clear    $func () $call cut (text.hd, 0)
-  $prop truncate $func ($decl n 0) $call cut (text.hd, n)
-  $defer $call drop_header (hd, al)
+  $prop clear    $func () $call cut (text, 0)
+  $prop truncate $func ($decl n 0) $call cut (text, n)
+  // An empty text has had no buffer to free.
+  $defer $if ($call eq ($call C.ival (cap), 0)) ()
+             ($call al.free ($call C.ival (p), $call C.ival (cap)))
 }
 
 // ------------------------------------------------------------------- views
