@@ -12,20 +12,16 @@ $decl T $import "std/test"
 $decl strs $specialize L.list ""
 $decl ints $specialize L.list 0
 
-// `n` writes of "ab", to a builder.
-$decl fill $func ($decl b ($call S.builder ()), $decl n 0)
-  $if ($call lt (0, n)) ($do ($call b.write ("ab")) ($call fill (b, $call sub (n, 1)))) ()
-
 // The pieces of a split, with `|` between, so an empty piece shows.
 $decl bars $func ($decl xs ($call strs.empty ())) $call S.join (xs, "|")
 
 $decl at_or $func ($decl o $union (none, { $prop tag "some"  $decl v 0 })) $call C.or_else (o, -1)
 
 // Each code point encoded again, which must give back the string.
-$decl encode $func ($decl b ($call S.builder ()), $decl cs ($call S.codes ("", 0))) {
-  $decl w   $call Q.for_each (cs, $func ($decl c 0)
-                $call b.write ($call C.or_else ($call from_code (c), "?")))
-  $decl ret $call b.build ()
+$decl encode $func ($decl cs ($call S.codes ("", 0))) {
+  $decl t   $call S.text ()
+  $decl w   $call Q.for_each (cs, $func ($decl c 0) $call t.code (c))
+  $decl ret $call S.copy_out ($call t.view ())
 }.ret
 
 // The pieces of a view's split, with `|` between, written into `t`.
@@ -91,18 +87,6 @@ $decl all_arena $func () {
 
 $decl main $func () {
   $decl r   $call T.results ()
-  $decl b   $call S.builder ()
-  $decl w1  $call b.write ("hello")
-  $decl w2  $call b.write (", ")
-  $decl w3  $call b.line ("world")
-  $decl c1  $call T.expect (r, "builder", $call eq ($call b.build (), "hello, world\n"))
-  $decl c2  $call T.expect (r, "...counts its bytes", $call eq ($call b.bytes (), 13))
-  $decl c3  $call T.expect (r, "...builds again the same", $call eq ($call b.build (), "hello, world\n"))
-  $decl w4  $call b.write ("!")
-  $decl c4  $call T.expect (r, "...and carries on", $call eq ($call b.build (), "hello, world\n!"))
-  $decl big $call S.builder ()
-  $decl f   $call fill (big, 100000)
-  $decl c5  $call T.expect (r, "many writes", $call eq ($call len ($call big.build ()), 200000))
   $decl xs  $call ($call ($call ($call strs.empty ()).push ("c")).push ("b")).push ("a")
   $decl c6  $call T.expect (r, "concat_all", $call eq ($call S.concat_all (xs), "abc"))
   $decl c7  $call T.expect (r, "join", $call eq ($call S.join (xs, ", "), "a, b, c"))
@@ -142,8 +126,7 @@ $decl main $func () {
                              $call C.and ($call eq ($call cs.nth (2), 8364),
                                          $call eq ($call cs.nth (3), 128512))))
   $decl c26 $call T.expect (r, "...counted", $call eq ($call Q.count ($call S.codes (u, 0), 0), 4))
-  $decl c27 $call T.expect (r, "...encoded back", $call eq ($call encode ($call S.builder (),
-                $call S.codes (u, 0)), u))
+  $decl c27 $call T.expect (r, "...encoded back", $call eq ($call encode ($call S.codes (u, 0)), u))
   $decl c28 $call T.expect (r, "codes of nothing", $call ($call S.codes ("", 0)).is_empty ())
   $decl c29 $call T.expect (r, "compare, bytewise then shorter first",
                 $call C.and ($call eq ($call S.compare ("ab", "abc"), -1),
@@ -160,8 +143,6 @@ $decl main $func () {
                              $call eq ($call S.join (one, ","), "é")))
   $decl c33 $call T.expect (r, "join of many, in order",
                 $call eq ($call S.join ($call S.split ("1 2 3 4 5 6 7 8 9", " "), ""), "123456789"))
-  $decl c34 $call T.expect (r, "an empty builder builds nothing",
-                $call eq ($call ($call S.builder ()).build (), ""))
   // Text: growth, a view across growth, a text written into itself.
   $decl t   $call S.text ()
   $decl f2  $call fill_text (t, 100000)

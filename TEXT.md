@@ -373,7 +373,7 @@ without a new form, and widening types belongs to a different design.
    `print_line`, `eprint_line` and `write` take a `Str` or a view, and `to_text` keeps a
    text's header itself, through `S.header`, `S.put`, `S.whole` and `S.drop_header`, since a
    block can hold neither a frame text (A0) nor an `$alloc`ed one its deferral could free.
-   The builder stays for `std/json` and the language server until step 6.
+   The builder stays for `std/json` and the language server until step 5e.
    `std/str_test.mpl` covers growth, a view across growth, `t.write (t.view ())`, code points,
    `truncate` and `clear`, a heap text `$free`d and one in an arena; `std/str_panic_test.mpl`
    the stale views and a cut inside a code point, one run each; all run under ASan. Two
@@ -416,6 +416,18 @@ without a new form, and widening types belongs to a different design.
    check takes for a value coerced to a trait object, so `write`'s tail call was refused.
    `prop_ty` now puts `cx.placed` and `cx.slotref` back after it, and the members tail-call
    again (`infer_test`'s `tc05`/`tc06`).
+5e. **`std/json` and the language server onto the text.** Done, and the builder is gone.
+   `J.write (t, v)` writes a value into a text and `J.text` is its `copy_out`; a string with
+   an escape is decoded into a frame text, and one without is a slice of the document, as
+   before. The server reads its input into one text, `carry`: a message's body and what
+   follows it are copied out before it is emptied for the rest, and a reply's header is
+   written after its body, whose size it gives. What it built with `concat` — the temporary
+   paths, a diagnostic from another file, the two failure messages, a root under the
+   workspace — is written into a frame text, a header name is compared without lowering it
+   first, and a URI's `%XX` is read with `J.hex_val` rather than `J.hex4` over `"00"`. A
+   decoded `%XX` above 127 is still written as the code point of that value, not the byte,
+   as before. `std/str_test.mpl` lost the builder's six checks (55 to 49); `test-lsp`'s
+   recorded session replies byte for byte as before.
 6. **The root's allocating names removed.** Stage 0's `builtins.zig`, `infer.mpl`'s `root_env`,
    `emit.mpl`, the Zig test that the two root blocks name the same things, and every fixture
    and `std/` module that still calls them.

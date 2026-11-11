@@ -24,6 +24,7 @@
 $decl C  $import "compiler"
 $decl Pa $import "parser"
 $decl Co $import "std/core"
+$decl F  $import "std/fmt"
 $decl I  $import "std/io"
 $decl J  $import "std/json"
 $decl M  $import "std/map"
@@ -80,7 +81,6 @@ $decl docs   $call docs_t.new (S.less)
 $decl st {
   $decl down  $mut $alloc $union (false, true)
   $decl roots $mut $alloc Pa.pstrs.node
-  $decl carry $mut $alloc ""
 }
 
 // Where a check's text and answer go, one pair per server: in `$XDG_RUNTIME_DIR`, which
@@ -92,94 +92,89 @@ $decl env_or $func ($decl name "", $decl d "") {
                 ($call Co.or_else ($call $primitives.str_from_ptr (p, $call I.c_strlen (p)), d))
 }.ret
 $decl tmp_dir $call env_or ("XDG_RUNTIME_DIR", "/tmp")
-$decl pid     $call int_to_str ($call c_getpid ())
-$decl tmp_buf $call concat (tmp_dir, $call concat ("/morphl-lsp-", $call concat (pid, ".mpl")))
-$decl tmp_out $call concat (tmp_dir, $call concat ("/morphl-lsp-", $call concat (pid, ".json")))
+// `<dir>/morphl-lsp-<pid><ext>`.
+$decl tmp_name $func ($decl ext "") {
+  $decl t   $call S.text ()
+  $decl w1  $call t.write (tmp_dir)
+  $decl w2  $call t.write ("/morphl-lsp-")
+  $decl w3  $call F.int (t, $call c_getpid ())
+  $decl w4  $call t.write (ext)
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret
+$decl tmp_buf $call tmp_name (".mpl")
+$decl tmp_out $call tmp_name (".json")
 
 $decl unlink $func ($decl p "") $call c_unlink ($call I.c_path (p))
 
 // ----------------------------------------------------------- reading messages
 //
-// A message is headers, a blank line and `Content-Length` bytes of JSON. What has been read
-// past the message is carried to the next one.
+// A message is headers, a blank line and `Content-Length` bytes of JSON. The input is read
+// into `carry`, and what is read past a message is kept there for the next one.
 
-$decl sb0 $call S.builder ()
+$decl carry $call S.text ()
 
 $decl input $alloc $call I.fd_reader (0, 65536)
 
-// More of the input added to what is carried; `false` at its end or a failure.
+// More of the input added to `carry`; `false` at its end or a failure.
 $decl more $func () {
   $decl ch  $call input.read (65536)
   $decl ret $match ch (
     $case {$prop tag "ok"}
-      $if ($call eq_str (ch.v, "")) false
-          ($do ($set st.carry ($call concat ($call Co.sval (st.carry), ch.v))) true),
+      $if ($call eq_str (ch.v, "")) false ($do ($call carry.write (ch.v)) true),
     $case ch false)
 }.ret
 
 // Where the headers end (the blank line's offset), or -1 at the end of the input.
 $decl read_head $func () {
-  $decl f   $call S.find ($call Co.sval (st.carry), "\u{d}\n\u{d}\n", 0)
+  $decl f   $call S.find ($call carry.view (), "\u{d}\n\u{d}\n", 0)
   $decl ret $match f (
     $case {$prop tag "some"} f.v,
     $case f $if ($call more ()) ($call read_head ()) -1)
 }.ret
 
-// `s` with its ASCII capitals made small, as header names are compared (RFC 9110).
-$decl lower_go $func ($decl s "", $decl i 0, $decl b sb0)
-  $if ($call lt (i, $call len (s))) {
-    $decl c    $call byte (s, i)
-    $decl ret2 $do ($call b.write ($if ($call Co.and ($call lt (64, c), $call lt (c, 91)))
-                        ($call Co.or_else ($call from_code ($call add (c, 32)), ""))
-                        ($call slice (s, i, $call add (i, 1)))))
-                   ($call lower_go (s, $call add (i, 1), b))
-  }.ret2 ($call b.build ())
-$decl lower $func ($decl s "") $call lower_go (s, 0, $call S.builder ())
+// Whether `h` starts with `k` from byte `i`, an ASCII capital in `h` read as small, as header
+// names are compared (RFC 9110); `k` is small already.
+$decl small $func ($decl c 0)
+  $if ($call Co.and ($call lt (64, c), $call lt (c, 91))) ($call add (c, 32)) c
+$decl starts_nocase $func ($decl h "", $decl k "", $decl i 0)
+  $if ($call lt (i, $call len (k)))
+      ($if ($call lt (i, $call len (h)))
+           ($if ($call eq ($call small ($call byte (h, i)), $call byte (k, i)))
+                ($call starts_nocase (h, k, $call add (i, 1))) false)
+           false)
+      true
 
 // The `Content-Length` among the header lines, or 0.
 $decl length_of $func ($decl hs ($call S.split ("", "\n")).cells) $match hs (
   $case {$prop tag "cons"} {
     $decl h    $call S.trim (hs.head)
     $decl k    "content-length:"
-    $decl is   $if ($call lt ($call len (h), $call len (k))) false
-                   ($call eq_str ($call lower ($call slice (h, 0, $call len (k))), k))
-    $decl ret2 $if is ($call Co.or_else ($call str_to_int ($call S.trim ($call slice (h,
-                   $call len (k), $call len (h)))), 0))
+    $decl ret2 $if ($call starts_nocase (h, k, 0))
+                   ($call Co.or_else ($call str_to_int ($call S.trim ($call slice (h,
+                       $call len (k), $call len (h)))), 0))
                    ($call length_of ($call S.cl.val (hs.tail)))
   }.ret2,
   $case hs 0
 )
 
-$decl sb $call S.builder ()
-// Chunks read into `b` until it holds `need` bytes; `false` if the input ends first.
-$decl fill_go $func ($decl b sb, $decl need 0)
-  $if ($call lt ($call b.bytes (), need)) {
-    $decl ch   $call input.read (65536)
-    $decl ret2 $match ch (
-      $case {$prop tag "ok"}
-        $if ($call eq_str (ch.v, "")) false ($do ($call b.write (ch.v)) ($call fill_go (b, need))),
-      $case ch false)
-  }.ret2 true
-$decl fill $func ($decl need 0) {
-  $decl b   $call S.builder ()
-  $decl w   $call b.write ($call Co.sval (st.carry))
-  $decl ok  $call fill_go (b, need)
-  $decl s   $set st.carry ($call b.build ())
-  $decl ret ok
-}.ret
+// The input read into `carry` until it holds `need` bytes; `false` if it ends first.
+$decl fill $func ($decl need 0)
+  $if ($call lt ($call carry.size (), need)) ($if ($call more ()) ($call fill (need)) false) true
 
-// The next message's body, or `none` at the end of the input.
+// The next message's body, or `none` at the end of the input. The body and what follows it
+// are copied out of `carry` before it is emptied for the rest.
 $decl read_message $func () {
   $decl h   $call read_head ()
   $decl ret $if ($call lt (h, 0)) none {
-    $decl hs   $call S.split ($call slice ($call Co.sval (st.carry), 0, h), "\n")
-    $decl n    $call Co.max ($call length_of (hs.cells), 0)
+    $decl hd   $call S.copy_out ($call S.slice ($call carry.view (), 0, h))
+    $decl n    $call Co.max ($call length_of (($call S.split (hd, "\n")).cells), 0)
     $decl need $call add (h, $call add (4, n))
-    $decl ok   $call fill (need)
-    $decl c    $call Co.sval (st.carry)
-    $decl ret2 $if ok {
-        $decl body $call slice (c, $call add (h, 4), need)
-        $decl w    $set st.carry ($call slice (c, need, $call len (c)))
+    $decl ret2 $if ($call fill (need)) {
+        $decl v    $call carry.view ()
+        $decl body $call S.copy_out ($call S.slice (v, $call add (h, 4), need))
+        $decl rest $call S.copy_out ($call S.slice (v, need, $call carry.size ()))
+        $decl c    $call carry.clear ()
+        $decl w    $call carry.write (rest)
         $decl ret3 $call Co.some (body)
       }.ret3 none
   }.ret2
@@ -187,11 +182,16 @@ $decl read_message $func () {
 
 // ----------------------------------------------------------- writing messages
 
+// A message: its body written first, since the header gives its length.
 $decl send $func ($decl v J.null) {
-  $decl body $call J.text (v)
-  $decl w1   $call print ($call concat ("Content-Length: ",
-                 $call concat ($call int_to_str ($call len (body)), "\u{d}\n\u{d}\n")))
-  $decl w2   $call print (body)
+  $decl body $call S.text ()
+  $decl wb   $call J.write (body, v)
+  $decl head $call S.text ()
+  $decl h1   $call head.write ("Content-Length: ")
+  $decl h2   $call F.int (head, $call body.size ())
+  $decl h3   $call head.write ("\u{d}\n\u{d}\n")
+  $decl w1   $call print ($call S.raw_str ($call head.view ()))
+  $decl w2   $call print ($call S.raw_str ($call body.view ()))
   $decl f    $call I.stdout.flush ()
   $decl ret  ()
 }.ret
@@ -225,22 +225,32 @@ $decl notify $func ($decl method "", $decl params J.null) {
 
 // --------------------------------------------------------------- positions
 
+// The two hex digits at `i` of `s` as a number, or -1.
+$decl hex2 $func ($decl s "", $decl i 0)
+  $if ($call lt ($call len (s), $call add (i, 2))) -1 {
+    $decl hi   $call J.hex_val ($call byte (s, i))
+    $decl lo   $call J.hex_val ($call byte (s, $call add (i, 1)))
+    $decl ret2 $if ($call Co.or ($call lt (hi, 0), $call lt (lo, 0))) -1
+                   ($call add ($call mul (hi, 16), lo))
+  }.ret2
+
 // The file a `file://` URI names, with its `%XX` escapes decoded; anything else as it is.
-$decl unescape_go $func ($decl s "", $decl i 0, $decl start 0, $decl b sb)
+$decl unescape_go $func ($decl s "", $decl i 0, $decl start 0, $decl b S.proto_text)
   $if ($call lt (i, $call len (s)))
       ($if ($call eq ($call byte (s, i), 37)) {
-         $decl h    $call J.hex4 ($call concat ("00", $call slice (s, $call add (i, 1),
-                        $call Co.min ($call add (i, 3), $call len (s)))), 0, 0, 0)
-         $decl ret2 $if ($call Co.or ($call lt (h, 0), $call lt ($call len (s), $call add (i, 3))))
-             ($call unescape_go (s, $call add (i, 1), start, b))
+         $decl h    $call hex2 (s, $call add (i, 1))
+         $decl ret2 $if ($call lt (h, 0)) ($call unescape_go (s, $call add (i, 1), start, b))
              ($do ($call b.write ($call slice (s, start, i)))
-                  ($do ($call b.write ($call J.code_text (h)))
+                  ($do ($call b.code (h))
                        ($call unescape_go (s, $call add (i, 3), $call add (i, 3), b))))
        }.ret2 ($call unescape_go (s, $call add (i, 1), start, b)))
-      ($do ($call b.write ($call slice (s, start, i))) ($call b.build ()))
+      ($call b.write ($call slice (s, start, i)))
 $decl uri_path $func ($decl uri "")
-  $if ($call S.starts_with (uri, "file://"))
-      ($call unescape_go ($call slice (uri, 7, $call len (uri)), 0, 0, $call S.builder ()))
+  $if ($call S.starts_with (uri, "file://")) {
+      $decl t    $call S.text ()
+      $decl w    $call unescape_go ($call slice (uri, 7, $call len (uri)), 0, 0, t)
+      $decl ret2 $call S.copy_out ($call t.view ())
+    }.ret2
       uri
 
 // The byte where line `l` (from 1) starts, and where the line at `i` ends.
@@ -309,6 +319,18 @@ $decl diagnostic $func ($decl r J.null, $decl msg "") {
   $decl ret $call o.build ()
 }.ret
 
+// A diagnostic raised in another file, as `file:line:col: msg`, or `file: msg` with no line.
+$decl elsewhere $func ($decl file "", $decl l 0, $decl c 0, $decl msg "") {
+  $decl t   $call S.text ()
+  $decl w1  $call t.write (file)
+  $decl w2  $if ($call lt (0, l))
+                ($do ($call t.write (":"))
+                     ($do ($call F.int (t, l)) ($do ($call t.write (":")) ($call F.int (t, c))))) ()
+  $decl w3  $call t.write (": ")
+  $decl w4  $call t.write (msg)
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret
+
 // One checker diagnostic as LSP's, against the document `text` at `path`.
 $decl lsp_diag $func ($decl d J.null, $decl path "", $decl text "") {
   $decl l    $call J.int_or ($call J.get (d, "line"), 0)
@@ -317,11 +339,7 @@ $decl lsp_diag $func ($decl d J.null, $decl path "", $decl text "") {
   $decl msg  $call J.str_or ($call J.get (d, "msg"), "")
   $decl ret  $if ($call eq_str (file, path))
       ($call diagnostic ($call token_range (text, l, c), msg))
-      ($call diagnostic ($call token_range (text, 0, 0),
-           $call concat (file, $call concat ($if ($call lt (0, l))
-               ($call concat (":", $call concat ($call int_to_str (l),
-                   $call concat (":", $call int_to_str (c))))) "",
-               $call concat (": ", msg)))))
+      ($call diagnostic ($call token_range (text, 0, 0), $call elsewhere (file, l, c, msg)))
 }.ret
 $decl lsp_diags $func ($decl ds J.values.node, $decl path "", $decl text "", $decl a abuild)
   $match ds (
@@ -352,6 +370,14 @@ $decl check_argv $func ($decl path "") {
   $decl ret av
 }.ret
 
+$decl failed_msg $func ($decl code 0) {
+  $decl t   $call S.text ()
+  $decl w1  $call t.write ("morphl-lsp: the checker failed (exit status ")
+  $decl w2  $call F.int (t, code)
+  $decl w3  $call t.write (")")
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret
+
 // The diagnostics of `text` as the file `path`: the checker's, or one saying it failed.
 $decl check_text $func ($decl path "", $decl text "") {
   $decl u0   $call unlink (tmp_out)
@@ -366,8 +392,7 @@ $decl check_text $func ($decl path "", $decl text "") {
   $decl w    $match got (
     $case {$prop tag "ok"} $call lsp_diags ($call J.items (got.v), path, text, a),
     $case got $call a.push ($call diagnostic ($call token_range (text, 0, 0),
-        $call concat ("morphl-lsp: the checker failed (exit status ",
-            $call concat ($call int_to_str (code), ")")))))
+        $call failed_msg (code))))
   $decl ret  $call a.build ()
 }.ret
 
@@ -404,10 +429,17 @@ $decl capabilities $func () {
   $decl ret  $call o.build ()
 }.ret
 
+// `r` against `base`, unless it is absolute.
+$decl under $func ($decl base "", $decl r "") {
+  $decl t   $call S.text ()
+  $decl w1  $call t.write (base)
+  $decl w2  $call t.write ("/")
+  $decl w3  $call t.write (r)
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret
 $decl add_root $func ($decl base "", $decl r "", $decl acc Pa.pstrs.node)
   $if ($call eq_str (r, "")) acc
-      ($call Pa.pstrs.cons ($if ($call S.starts_with (r, "/")) r
-                                ($call concat (base, $call concat ("/", r))), acc))
+      ($call Pa.pstrs.cons ($if ($call S.starts_with (r, "/")) r ($call under (base, r)), acc))
 // The workspace's root folder, then the roots named relative to it.
 $decl rel_roots $func ($decl base "", $decl xs J.values.node, $decl acc Pa.pstrs.node) $match xs (
   $case {$prop tag "cons"}
@@ -460,6 +492,13 @@ $decl leave $func () {
   $decl ret $call c_exit ($if ($call Co.bval (st.down)) 0 1)
 }.ret
 
+$decl unknown $func ($decl m "") {
+  $decl t   $call S.text ()
+  $decl w1  $call t.write ("unknown method ")
+  $decl w2  $call t.write (m)
+  $decl ret $call S.copy_out ($call t.view ())
+}.ret
+
 $decl handle $func ($decl msg J.null) {
   $decl m   $call J.str_or ($call J.get (msg, "method"), "")
   $decl id  $call J.get (msg, "id")
@@ -473,7 +512,7 @@ $decl handle $func ($decl msg J.null) {
     ($if ($call eq_str (m, "textDocument/didSave")) ($call saved (ps))
     ($if ($call eq_str (m, "textDocument/didClose")) ($call closed (ps))
     // A request the server does not know is answered; a notification is not (JSON-RPC 2.0).
-    ($if req ($call respond_err (id, -32601, $call concat ("unknown method ", m))) ())))))))
+    ($if req ($call respond_err (id, -32601, $call unknown (m))) ())))))))
 }.ret
 
 $decl handle_text $func ($decl body "") {

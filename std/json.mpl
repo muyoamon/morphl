@@ -152,44 +152,47 @@ $decl int_or $func ($decl v value, $decl d 0) $match v (
 
 // ----------------------------------------------------------------- writing
 
-$decl builder $call S.builder ()
+// A text, as the default of a parameter that takes one: `std/str`'s, one empty text nothing
+// writes to. A writer borrows the text it is given.
+$decl buf S.proto_text
 
 $decl hex_digits "0123456789abcdef"
-$decl hex_at $func ($decl n 0) $call slice (hex_digits, n, $call add (n, 1))
 
-// The escape for byte `c` inside a JSON string, or "" when it stands for itself. A byte of
-// a multi-byte code point is 128 or more and stands for itself.
-$decl escape_of $func ($decl c 0)
-  $if ($call eq (c, 34)) "\\\""
-  ($if ($call eq (c, 92)) "\\\\"
-  ($if ($call eq (c, 10)) "\\n"
-  ($if ($call eq (c, 13)) "\\r"
-  ($if ($call eq (c, 9)) "\\t"
-  ($if ($call lt (c, 32))
-       ($call concat ("\\u00", $call concat ($call hex_at ($call div (c, 16)),
-                                             $call hex_at ($call mod (c, 16)))))
-       "")))))
+// Whether byte `c` needs an escape inside a JSON string. A byte of a multi-byte code point
+// is 128 or more and stands for itself.
+$decl needs_escape $func ($decl c 0)
+  $call C.or ($call lt (c, 32), $call C.or ($call eq (c, 34), $call eq (c, 92)))
+// The escape for byte `c`, written.
+$decl put_escape $func ($decl b buf, $decl c 0)
+  $if ($call eq (c, 34)) ($call b.write ("\\\""))
+  ($if ($call eq (c, 92)) ($call b.write ("\\\\"))
+  ($if ($call eq (c, 10)) ($call b.write ("\\n"))
+  ($if ($call eq (c, 13)) ($call b.write ("\\r"))
+  ($if ($call eq (c, 9)) ($call b.write ("\\t"))
+       ($do ($call b.write ("\\u00"))
+            ($do ($call b.code ($call byte (hex_digits, $call div (c, 16))))
+                 ($call b.code ($call byte (hex_digits, $call mod (c, 16))))))))))
 
 // A run that needs no escape is written in one piece.
-$decl quote_go $func ($decl b builder, $decl s "", $decl start 0, $decl i 0)
+$decl quote_go $func ($decl b buf, $decl s "", $decl start 0, $decl i 0)
   $if ($call lt (i, $call len (s)))
-      ($if ($call eq ($call len ($call escape_of ($call byte (s, i))), 0))
-           ($call quote_go (b, s, start, $call add (i, 1)))
+      ($if ($call needs_escape ($call byte (s, i)))
            ($do ($call b.write ($call slice (s, start, i)))
-                ($do ($call b.write ($call escape_of ($call byte (s, i))))
-                     ($call quote_go (b, s, $call add (i, 1), $call add (i, 1))))))
+                ($do ($call put_escape (b, $call byte (s, i)))
+                     ($call quote_go (b, s, $call add (i, 1), $call add (i, 1)))))
+           ($call quote_go (b, s, start, $call add (i, 1))))
       ($call b.write ($call slice (s, start, i)))
-$decl quote $func ($decl b builder, $decl s "")
+$decl quote $func ($decl b buf, $decl s "")
   $do ($call b.write ("\"")) ($do ($call quote_go (b, s, 0, 0)) ($call b.write ("\"")))
 
 $fwd write
-$decl write_items $func ($decl b builder, $decl xs values.node, $decl first C.bool) $match xs (
+$decl write_items $func ($decl b buf, $decl xs values.node, $decl first C.bool) $match xs (
   $case {$prop tag "cons"}
     $do ($if first () ($call b.write (",")))
         ($do ($call write (b, xs.head)) ($call write_items (b, xs.tail, false))),
   $case xs ()
 )
-$decl write_members $func ($decl b builder, $decl ks strs.node, $decl vs values.node,
+$decl write_members $func ($decl b buf, $decl ks strs.node, $decl vs values.node,
                            $decl first C.bool) $match ks (
   $case {$prop tag "cons"}
     $do ($if first () ($call b.write (",")))
@@ -200,8 +203,8 @@ $decl write_members $func ($decl b builder, $decl ks strs.node, $decl vs values.
                                              false))))),
   $case ks ()
 )
-// `v` as JSON text, with no space between tokens.
-$decl write $func ($decl b builder, $decl v value) $match v (
+// `v` written into `b` as JSON text, with no space between tokens.
+$decl write $func ($decl b buf, $decl v value) $match v (
   $case {$prop tag "null"} $call b.write ("null"),
   $case {$prop tag "bool"} $call b.write ($if v.v "true" "false"),
   $case {$prop tag "num"}  $call b.write (v.text),
@@ -213,10 +216,12 @@ $decl write $func ($decl b builder, $decl v value) $match v (
     $do ($call b.write ("{"))
         ($do ($call write_members (b, $call keys (v), $call vals (v), true)) ($call b.write ("}")))
 )
+// `v` as JSON text, a `Str` of its own: written into a frame text, which goes when this
+// returns.
 $decl text $func ($decl v value) {
-  $decl b   $call S.builder ()
-  $decl w   $call write (b, v)
-  $decl ret $call b.build ()
+  $decl t   $call S.text ()
+  $decl w   $call write (t, v)
+  $decl ret $call S.copy_out ($call t.view ())
 }.ret
 
 // ----------------------------------------------------------------- parsing
@@ -305,13 +310,16 @@ $decl esc_of $func ($decl s "", $decl i 0)
 
 // A string's contents from `i`, the byte after its opening quote; `start` begins the run not
 // yet written to `b`. `c` is the byte at `i` and `e` the escape there, passed in so that the
-// loop is one tail call (§7.7) — a string is as long as a document.
-$decl chars $func ($decl s "", $decl i 0, $decl start 0, $decl b builder, $decl c 0,
+// loop is one tail call (§7.7) — a string is as long as a document. A string with no escape
+// is a slice of `s`, and `b` holds nothing until the first escape.
+$decl chars $func ($decl s "", $decl i 0, $decl start 0, $decl b buf, $decl c 0,
                    $decl e ($call esc_of ("", 0)))
   $if ($call lt (c, 0)) ($call s_err ("unterminated string", i))
   ($if ($call eq (c, 34))
-       ($do ($call b.write ($call slice (s, start, i)))
-            ($call s_ok ($call b.build (), $call add (i, 1))))
+       ($if ($call eq ($call b.size (), 0))
+            ($call s_ok ($call slice (s, start, i), $call add (i, 1)))
+            ($do ($call b.write ($call slice (s, start, i)))
+                 ($call s_ok ($call S.copy_out ($call b.view ()), $call add (i, 1)))))
   ($if ($call eq (c, 92))
        ($if ($call eq ($call len (e.text), 0)) ($call s_err ("invalid escape in string", i))
             ($do ($call b.write ($call slice (s, start, i)))
@@ -321,8 +329,10 @@ $decl chars $func ($decl s "", $decl i 0, $decl start 0, $decl b builder, $decl 
   ($if ($call lt (c, 32)) ($call s_err ("control character in string", i))
        ($call chars (s, $call add (i, 1), start, b, $call at_b (s, $call add (i, 1)),
                      $call esc_of (s, $call add (i, 1)))))))
-$decl read_string $func ($decl s "", $decl i 0)
-  $call chars (s, i, i, $call S.builder (), $call at_b (s, i), $call esc_of (s, i))
+$decl read_string $func ($decl s "", $decl i 0) {
+  $decl t   $call S.text ()
+  $decl ret $call chars (s, i, i, t, $call at_b (s, i), $call esc_of (s, i))
+}.ret
 
 // A number's text from `i`, checked against JSON's grammar: an optional `-`, `0` or digits
 // not starting with `0`, then an optional fraction and exponent.

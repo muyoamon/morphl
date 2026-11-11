@@ -7,7 +7,7 @@
 // decodes as it goes and works with `std/seq`: `$call Q.count ($call S.codes (s))`.
 //
 // §8's `concat` copies both operands, so appending to an accumulator is O(n²) in the pieces
-// (CLAUDE.md, from `emit.mpl`'s `say`). Text is assembled in a **builder** instead, or with
+// (CLAUDE.md, from `emit.mpl`'s `say`). Text is assembled in a **text** instead, or with
 // `concat_all`/`join`: the pieces are collected and joined once by §8's `concat_all`, one
 // allocation of their total length (STRINGS.md).
 
@@ -67,38 +67,6 @@ $decl sep_go $func ($decl xs strs.node, $decl sep "", $decl acc strs.node) $matc
 )
 $decl join $func ($decl xs ($call strs.empty ()), $decl sep "")
   $call join_back ($call sep_go (xs.cells, sep, strs.nil))
-
-// --------------------------------------------------------------- the builder
-
-// The pieces design, kept for `std/json` and the language server until TEXT.md's step 6;
-// new code writes a `text` (below), which owns its bytes.
-//
-// Text assembled piece by piece: `$call b.write (s)` and `$call b.build ()`. The pieces are
-// held newest first in the builder's own cell (D9: a container that changes in place holds
-// its state in `$mut $alloc` cells), and `build` joins them once, then keeps the result as
-// the one piece, so building again costs nothing and adding after it carries on.
-$decl builder $func () {
-  $decl b   {
-    $decl parts $mut $alloc strs.node
-    $decl size  $mut $alloc 0
-    // Not `add` or `len`: a prop is visible throughout its block (§4.10), so a member
-    // of either name would shadow the intrinsic these bodies call.
-    // Both answer unit, so a `show` member ending in a write conforms to `std/fmt`'s
-    // `show_proto`, whose `show` answers `()`.
-    $prop write $func ($decl s "") $do
-      ($set b.parts ($call cl.cons (s, $call cl.val (b.parts))))
-      ($do ($set b.size ($call add ($call C.ival (b.size), $call len (s)))) ())
-    $prop line  $func ($decl s "") $do ($call b.write (s)) ($call b.write ("\n"))
-    // The bytes written so far.
-    $prop bytes $func () $call C.ival (b.size)
-    $prop build $func () {
-      $decl t   $call join_back ($call cl.val (b.parts))
-      $decl k   $set b.parts ($call cl.cons (t, strs.nil))
-      $decl ret t
-    }.ret
-  }
-  $decl ret b
-}.ret
 
 // `s` `n` times, by doubling: log₂ n concatenations.
 $decl repeat $func ($decl s "", $decl n 0)

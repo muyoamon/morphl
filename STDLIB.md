@@ -20,7 +20,7 @@ for the decisions that shape it.
 | D3a | containers that differ by element type | an `$overload` of templates over a shared base, derived with a new `$override` |
 | D4 | equality and formatting of blocks | a trait, written per type, generated at build time later |
 | D5 | which allocator containers draw from | the root's; an `_in` variant only when measured to matter |
-| D6 | how strings are built | a builder, joined once by `concat_all` (STRINGS.md) |
+| D6 | how strings are built | a `std/str` text, which owns its bytes (TEXT.md); a builder joined by `concat_all` before it (STRINGS.md) |
 | D7 | how failure is reported | `option` and `result` shapes `$try` already matches |
 | D8 | how it is tested | compiled-only, through §9's test interface |
 | D9 | how containers compose | values carrying their methods; type-changing operations as `std/seq` algorithms over capabilities |
@@ -225,15 +225,15 @@ Proposed modules, in the order they can be written:
 |---|---|---|
 | `std/core` | `max`, `min`, `option` and `result` helpers (`some`, `ok`, `fail`, `or_else`, `map_opt`) | P1 |
 | `std/list` | `list T` with `map`, `filter`, `fold`, `find`, `any`, `all`, `zip`, `append`, `take`, `drop`, `sort` | P1; P2 for `sort` |
-| `std/str` | a builder, `join`, `split`, `find`, `starts_with`, `trim`, code-point iteration | `concat_all` for the builder (STRINGS.md) |
-| `std/fmt` | formatting `Int`, `Float`, `Str` and anything with a `show` member into a builder | done |
+| `std/str` | a text and its views, `join`, `split`, `find`, `starts_with`, `trim`, code-point iteration | `concat_all` for the builder (STRINGS.md) |
+| `std/fmt` | formatting `Int`, `Float`, `Str` and anything with a `show` member into a text | done |
 | `std/io` | `print_line`, reading and writing whole files and lines, over the platform group; streams — `stdin`/`stdout`/`stderr`, files (`open_read`, `open_write`, `open_append`, `close`), in-memory readers and writers, `line_reader`'s `read_line` over any reader (optionally dropping a `\r` before the newline), `write_line`, `read_all` and `copy` as bounded templates, `writer`/`reader` trait objects for a choice made at run time | — |
 | `std/vec` | a growable vector over `array` | P3 |
 | `std/map` | an ordered map (sorted vecs; keys ordered by a `less` given at `new`) | done |
 | `std/mem` | an arena allocator over `raw_alloc`, as `arena.mpl` does | — |
 | `std/test` | a runner for §9's test interface | — |
 | `std/result` | `result (T, E)`: `ok`/`err` with `is_ok`, `value_or`, `unwrap` and the rest as methods; `map`, `map_err` | P15 |
-| `std/json` | JSON text read into a value (`parse`, answering `{tag err, msg, pos}` on malformed text) and written back (`text`); `get`/`at`/`str_or`/`int_or`/`bool_or` read a member as `null` or a default when it is absent or of another kind; `object`/`array_of` builders. A number keeps its text | — |
+| `std/json` | JSON text read into a value (`parse`, answering `{tag err, msg, pos}` on malformed text) and written back (`text`, or `write` into a `std/str` text); `get`/`at`/`str_or`/`int_or`/`bool_or` read a member as `null` or a default when it is absent or of another kind; `object`/`array_of` builders. A number keeps its text | — |
 
 Names are reached through the module's binding (`L.map`, `S.split`), so nothing in `std/`
 is global and nothing shadows a root name. A module is a block (§4.14), so this is the
@@ -352,12 +352,12 @@ block — it cannot see the fields. So:
   $func () …` — the receiver is implicit (§4.10) and the declaring name in a default is the
   type itself. `std/core` gives the prototypes the bounds are made from, as F-bounded
   templates (`eq_proto T`, `ord_proto T`), and `std/fmt` gives `show_proto` (TRAITS.md) —
-  `std/fmt`, not `std/core`, because `show` names `std/str`'s builder and `std/str` imports
+  `std/fmt`, not `std/core`, because `show` names `std/str`'s text and `std/str` imports
   `std/core`. Needs P6 and P2.
 - **A member named after an intrinsic shadows it inside the type**, because a prop is
   visible throughout its block: `eq`'s body calling `eq` on a field calls itself. The idiom
   is the one stage 1 already uses for `isub` — `$decl ieq eq` above the type.
-- **`show` writes into a builder** (`$prop show $func ($decl b S.builder) …`) rather than
+- **`show` writes into a text** (`$prop show $func ($decl b F.text) …`) rather than
   returning a `Str`: a nested record rendering its children by `concat` is D6's O(n²) trap.
   It takes no value of its own type, so a `show` object needs no F-bound.
 - **Primitives** have no props. For equality and order, `std/core`'s `equal`/`less`
@@ -411,7 +411,8 @@ exactly why a container wanting a caller's arena needs the allocator as a generi
 "never build a string by appending to an accumulator", learned from `emit.mpl`'s `say`. The
 library's answer is a **builder**: chunks collected newest-first and joined once by §8's
 `concat_all`, one allocation of their total length, O(L) — as the compiler's own text is
-(`P.join_chunks`). `std/fmt` writes into one, and `S.build` turns it into a `Str`. The first
+(`P.join_chunks`). It has since been replaced by TEXT.md's text, a growable buffer owning its
+bytes, which `std/fmt`, `std/io`, `std/json` and the language server write into. The first
 version folded adjacent pairs, O(L log n); a growable byte array would not do better either,
 since it copies the text about twice as it doubles (STRINGS.md, S3).
 
@@ -420,7 +421,8 @@ since it copies the text about twice as it doubles (STRINGS.md, S3).
 
 **Done**, with `std/str_test.mpl` (34):
 
-- **`builder ()`**: `write`, `line`, `bytes` and `build`. `write` and `line` answer unit, so
+- **`builder ()`**, removed once `std/json` and the language server wrote into a text
+  (TEXT.md, step 5e): `write`, `line`, `bytes` and `build`. `write` and `line` answer unit, so
   a `show` member ending in one conforms to `std/fmt`'s `show_proto`. The pieces sit newest first in the
   builder's own `$mut $alloc` cell (D9's mutation rule), and `build` joins them once and
   keeps the result as the one piece, so building again is free and writing after it carries
