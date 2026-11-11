@@ -76,17 +76,10 @@ $decl radix_str $func ($decl n 0, $decl base 10) {
 // ---------------------------------------------------------------- primitives
 
 $decl int   $func ($decl b text, $decl n 0)      $call radix (b, n, 10)
-// §8's `to_str` on a `Float`: the shortest of 15, 16 or 17 significant digits that reads
-// back as the same double, with `.0` on a whole number.
-$decl float $func ($decl b text, $decl x 0.0)    $call b.write ($call to_str (x))
 $decl str   $func ($decl b text, $decl s "")     $call b.write (s)
 $decl bool  $func ($decl b text, $decl v C.bool) $call b.write ($if v "true" "false")
 // A code point; one `from_code` refuses (a surrogate, or past U+10FFFF) is U+FFFD.
 $decl code  $func ($decl b text, $decl c 0) $call b.code (c)
-
-// Any of the four by its type, resolved at compile time (§4.8). `Bool` is `true | false`
-// and no subtype of `Int` (§3.2), so the candidates cannot overlap.
-$decl put $overload (int, float, str, bool)
 
 // ------------------------------------------------------------ showable things
 
@@ -189,7 +182,7 @@ $decl quoted $func ($decl b text, $decl s "")
 // limb first; `d` digits cost O(d) limbs.
 //
 // A negative `x` writes `-`, `-0.0` and a negative that rounds to zero included, as `%f`
-// does; NaN and the infinities are `to_str`'s `nan`, `inf` and `-inf`.
+// does; NaN and the infinities are `nan`, `inf` and `-inf`.
 
 $decl limbs $specialize L.list 0
 $decl lc    limbs.cell
@@ -253,6 +246,11 @@ $decl big_shr $func ($decl xs limbs.node, $decl s 0, $decl sticky C.bool)
     $decl ret2 $if up ($call big_add1 (dv.q)) dv.q
   }.ret2
 
+// NaN as `nan`, whatever its sign, and an infinity as `inf` or `-inf`.
+$decl nonfinite $func ($decl b text, $decl x 0.0)
+  $if ($call eq (x, x)) ($call b.write ($if ($call lt (x, 0.0)) "-inf" "inf"))
+      ($call b.write ("nan"))
+
 // `a` ≥ 0 as `{m, e}`, `a = m · 2^e` with `m` whole and below 2^53.
 $decl whole $func ($decl a 0.0) $call eq ($call to_float ($call C.or_else ($call to_int (a), 0)), a)
 $decl split_go $func ($decl a 0.0, $decl ex 0)
@@ -304,7 +302,7 @@ $decl put_scaled $func ($decl b text, $decl a 0.0, $decl d 0) {
 $decl fixed $func ($decl b text, $decl x 0.0, $decl d 0)
   $if ($call lt (d, 0)) ($call panic ($call concat ("fmt: no ", $call concat (
           $call int_to_str (d), " decimals"))))
-  ($if ($call C.not ($call eq ($call sub (x, x), 0.0))) ($call b.write ($call to_str (x))) {
+  ($if ($call C.not ($call eq ($call sub (x, x), 0.0))) ($call nonfinite (b, x)) {
     $decl minus $call C.or ($call lt (x, 0.0),
                     $call C.and ($call eq (x, 0.0), $call lt ($call div (1.0, x), 0.0)))
     $decl t     $call S.text ()
@@ -323,3 +321,231 @@ $decl fixed_str $func ($decl x 0.0, $decl d 0) {
   $decl w   $call fixed (t, x, d)
   $decl ret $call S.copy_out ($call t.view ())
 }.ret
+
+// ------------------------------------------------------------ shortest digits
+//
+// `float` writes what §8's `to_str` answers, with no `Str` built: the shortest of 15, 16
+// and 17 significant digits that reads back as the same double, laid out as C's `%g` lays
+// it out — a point where the exponent is from -4 to one less than the digits, `e±XX`
+// otherwise, trailing zeros dropped — and `.0` after a whole number written without an
+// exponent, so finite text is a morphl float literal.
+//
+// Every step is exact, over whole numbers in raw memory. `x = m · 2^e` with `m` of 53 bits
+// (fewer only at the least exponent); its first digit's exponent is estimated from `e` and
+// checked; the digits are `x · 10^k` rounded down by dividing, then corrected against
+// `q + 1/2`, ties to even, as `%g` rounds. And they read back as `x` when they lie between
+// the halfway points to the doubles either side — on one, when `m` is even, since a tie
+// reads as the even one.
+
+// A whole number in raw memory: a count of limbs, then the limbs, base 10⁹, low first. Each
+// is freed when the question it was made for is answered, since nothing frees what is left
+// (§7.6) and a program may print many doubles. `bcap` limbs hold every number below: the
+// largest is a double's ~1,075 bits beside a power of ten that matches it, ~360 digits.
+$decl bcap 160
+$decl word $func ($decl a 0, $decl i 0) $call $primitives.unbox ($call add (a, $call mul (8, i)), 0)
+$decl blen $func ($decl a 0) $call C.ival ($call word (a, 0))
+$decl bget $func ($decl a 0, $decl i 0) $call C.ival ($call word (a, $call add (i, 1)))
+$decl bput $func ($decl a 0, $decl i 0, $decl v 0)
+  $do ($set ($call word (a, $call add (i, 1))) v) ()
+$decl bsetn $func ($decl a 0, $decl n 0) $do ($set ($call word (a, 0)) n) ()
+
+// The top limbs that are zero dropped, one kept.
+$decl btrim $func ($decl a 0)
+  $if ($call C.and ($call lt (1, $call blen (a)),
+                    $call eq ($call bget (a, $call sub ($call blen (a), 1)), 0)))
+      ($do ($call bsetn (a, $call sub ($call blen (a), 1))) ($call btrim (a))) ()
+
+// `v` ≥ 0, in memory of its own.
+$decl bnew $func ($decl v 0) {
+  $decl a   $call $primitives.raw_alloc ($call mul (8, $call add (bcap, 1)))
+  $decl ok  $if ($call eq (a, 0)) ($call panic ("fmt: out of memory")) ()
+  $decl w0  $call bput (a, 0, $call mod (v, lbase))
+  $decl w1  $call bput (a, 1, $call mod ($call div (v, lbase), lbase))
+  $decl w2  $call bput (a, 2, $call div (v, $call mul (lbase, lbase)))
+  $decl n   $call bsetn (a, 3)
+  $decl t   $call btrim (a)
+  $decl ret a
+}.ret
+$decl bfree $func ($decl a 0) $call $primitives.raw_free (a)
+
+// `a · k` in place, `k` no more than 10⁹, so a limb's product and its carry fit an `Int`.
+$decl bmul_go $func ($decl a 0, $decl k 0, $decl i 0, $decl carry 0)
+  $if ($call lt (i, $call blen (a))) {
+    $decl v    $call add ($call mul ($call bget (a, i), k), carry)
+    $decl w    $call bput (a, i, $call mod (v, lbase))
+    $decl ret2 $call bmul_go (a, k, $call add (i, 1), $call div (v, lbase))
+  }.ret2
+  ($if ($call eq (carry, 0)) ()
+  ($if ($call lt ($call blen (a), bcap))
+       ($do ($call bput (a, $call blen (a), carry))
+            ($call bsetn (a, $call add ($call blen (a), 1))))
+       ($call panic ("fmt: a number too large for its memory"))))
+$decl bmul $func ($decl a 0, $decl k 0) $call bmul_go (a, k, 0, 0)
+
+$decl small_pow $func ($decl k 0, $decl n 0, $decl acc 1)
+  $if ($call eq (n, 0)) acc ($call small_pow (k, $call sub (n, 1), $call mul (acc, k)))
+
+// `a · k^n` in place, `k^c` at a time; `kc` is `k^c`, no more than 10⁹.
+$decl bpow $func ($decl a 0, $decl k 0, $decl n 0, $decl c 0, $decl kc 0)
+  $if ($call lt (n, c)) ($if ($call eq (n, 0)) () ($call bmul (a, $call small_pow (k, n, 1))))
+      ($do ($call bmul (a, kc)) ($call bpow (a, k, $call sub (n, c), c, kc)))
+$decl bscale $func ($decl a 0, $decl p2 0, $decl p5 0)
+  $do ($call bpow (a, 5, p5, 12, 244140625)) ($call bpow (a, 2, p2, 29, 536870912))
+
+// `a / d` in place, rounded down, `d` no more than 2^29: from the top limb down.
+$decl bdiv_go $func ($decl a 0, $decl d 0, $decl i 0, $decl rm 0)
+  $if ($call lt (i, 0)) ($call btrim (a)) {
+    $decl v    $call add ($call mul (rm, lbase), $call bget (a, i))
+    $decl w    $call bput (a, i, $call div (v, d))
+    $decl ret2 $call bdiv_go (a, d, $call sub (i, 1), $call mod (v, d))
+  }.ret2
+// `a / k^n`, rounded down, `k^c` at a time: rounding down twice is rounding down once.
+$decl bdivp $func ($decl a 0, $decl k 0, $decl n 0, $decl c 0, $decl kc 0)
+  $if ($call eq (n, 0)) ()
+      ($do ($call bdiv_go (a, $if ($call lt (n, c)) ($call small_pow (k, n, 1)) kc,
+                           $call sub ($call blen (a), 1), 0))
+           ($call bdivp (a, k, $call sub (n, $call C.min (n, c)), c, kc)))
+
+// The number as an `Int`, which it must fit.
+$decl bint_go $func ($decl a 0, $decl i 0, $decl acc 0)
+  $if ($call lt (i, 0)) acc
+      ($call bint_go (a, $call sub (i, 1), $call add ($call mul (acc, lbase), $call bget (a, i))))
+$decl bint $func ($decl a 0) $call bint_go (a, $call sub ($call blen (a), 1), 0)
+
+// -1, 0 or 1 as `a` is below, equal to or above `b`.
+$decl bcmp_go $func ($decl a 0, $decl b 0, $decl i 0)
+  $if ($call lt (i, 0)) 0
+  ($if ($call lt ($call bget (a, i), $call bget (b, i))) -1
+  ($if ($call lt ($call bget (b, i), $call bget (a, i))) 1
+       ($call bcmp_go (a, b, $call sub (i, 1)))))
+$decl bcmp $func ($decl a 0, $decl b 0)
+  $if ($call lt ($call blen (a), $call blen (b))) -1
+  ($if ($call lt ($call blen (b), $call blen (a))) 1
+       ($call bcmp_go (a, b, $call sub ($call blen (a), 1))))
+
+// `a · 2^a2 · 5^a5` against `b · 2^b2 · 5^b5`, for `a` and `b` ≥ 0 and powers of any sign.
+$decl cmp_sc $func ($decl a 0, $decl a2 0, $decl a5 0, $decl b 0, $decl b2 0, $decl b5 0) {
+  $decl m2  $call C.min (a2, b2)
+  $decl m5  $call C.min (a5, b5)
+  $decl x   $call bnew (a)
+  $decl y   $call bnew (b)
+  $decl sx  $call bscale (x, $call sub (a2, m2), $call sub (a5, m5))
+  $decl sy  $call bscale (y, $call sub (b2, m2), $call sub (b5, m5))
+  $decl r   $call bcmp (x, y)
+  $decl fx  $call bfree (x)
+  $decl fy  $call bfree (y)
+  $decl ret r
+}.ret
+
+// `m · 2^e` with its 53 bits, unless `e` is the least a double has.
+$decl norm $func ($decl mm 0, $decl ee 0)
+  $if ($call C.and ($call lt (mm, 4503599627370496), $call lt (-1074, ee)))
+      ($call norm ($call mul (mm, 2), $call sub (ee, 1))) { $decl m mm  $decl e ee }
+
+// The exponent of `x`'s first digit, `floor (log10 x)`: `log10 2` times the binary one,
+// then moved until `10^k ≤ x < 10^(k+1)`.
+$decl bitlen $func ($decl m 0, $decl k 0)
+  $if ($call eq (m, 0)) k ($call bitlen ($call div (m, 2), $call add (k, 1)))
+$decl est_exp $func ($decl m 0, $decl e 0)
+  $call C.or_else ($call to_int ($call mul ($call to_float ($call add (e, $call sub (
+      $call bitlen (m, 0), 1))), 0.30102999566398120)), 0)
+$decl pow10_le $func ($decl m 0, $decl e 0, $decl k 0)
+  $call lt (-1, $call cmp_sc (m, e, 0, 1, k, k))
+$decl fix_exp $func ($decl m 0, $decl e 0, $decl k 0)
+  $if ($call C.not ($call pow10_le (m, e, k))) ($call fix_exp (m, e, $call sub (k, 1)))
+  ($if ($call pow10_le (m, e, $call add (k, 1))) ($call fix_exp (m, e, $call add (k, 1))) k)
+
+// `m · 2^e` to `p` significant digits, `x0` its first digit's exponent: `{d, x}`, the digits
+// as a whole number and the exponent after rounding, which a carry can move up one.
+$decl round_sig $func ($decl m 0, $decl e 0, $decl x0 0, $decl p 0) {
+  $decl k   $call sub ($call sub (p, 1), x0)
+  // `x · 10^k` is `m · 2^t · 5^k`.
+  $decl t   $call add (e, k)
+  $decl a   $call bnew (m)
+  $decl up  $call bscale (a, $call C.max (t, 0), $call C.max (k, 0))
+  $decl d5  $call bdivp (a, 5, $call C.max ($call neg (k), 0), 12, 244140625)
+  $decl d2  $call bdivp (a, 2, $call C.max ($call neg (t), 0), 29, 536870912)
+  $decl q   $call bint (a)
+  $decl fa  $call bfree (a)
+  $decl c   $call cmp_sc (m, $call add (t, 1), k, $call add ($call mul (q, 2), 1), 0, 0)
+  $decl r   $if ($call C.or ($call lt (0, c),
+                             $call C.and ($call eq (c, 0), $call eq ($call mod (q, 2), 1))))
+                ($call add (q, 1)) q
+  $decl top $call small_pow (10, p, 1)
+  $decl ret $if ($call eq (r, top)) { $decl d $call div (top, 10)  $decl x $call add (x0, 1) }
+                { $decl d r  $decl x x0 }
+}.ret
+
+// Whether `d · 10^k` reads back as `m · 2^e`. Below a power of two the double under it is
+// half as far away, so its halfway point is too.
+$decl reads_back $func ($decl d 0, $decl k 0, $decl m 0, $decl e 0) {
+  $decl eg  $call C.and ($call eq (m, 4503599627370496), $call lt (-1074, e))
+  $decl lo  $if eg ($call cmp_sc (d, k, k, $call sub ($call mul (m, 4), 1), $call sub (e, 2), 0))
+                   ($call cmp_sc (d, k, k, $call sub ($call mul (m, 2), 1), $call sub (e, 1), 0))
+  $decl hi  $call cmp_sc (d, k, k, $call add ($call mul (m, 2), 1), $call sub (e, 1), 0)
+  $decl ev  $call eq ($call mod (m, 2), 0)
+  $decl ret $call C.and ($if ev ($call lt (-1, lo)) ($call eq (lo, 1)),
+                         $if ev ($call lt (hi, 1)) ($call eq (hi, -1)))
+}.ret
+
+// The first of `p` = 15, 16 and 17 digits that reads back: `{d, x, prec}`.
+$decl shortest $func ($decl m 0, $decl e 0, $decl x0 0, $decl p 15) {
+  $decl r    $call round_sig (m, e, x0, p)
+  $decl ret2 $if ($call C.or ($call eq (p, 17),
+                              $call reads_back (r.d, $call add ($call sub (r.x, p), 1), m, e)))
+                 { $decl d r.d  $decl x r.x  $decl prec p }
+                 ($call shortest (m, e, x0, $call add (p, 1)))
+}.ret2
+
+// `d` without its trailing zeros: `{v, z}`, `z` how many there were.
+$decl strip $func ($decl d 0, $decl z 0)
+  $if ($call C.and ($call lt (0, d), $call eq ($call mod (d, 10), 0)))
+      ($call strip ($call div (d, 10), $call add (z, 1))) { $decl v d  $decl n z }
+
+// The digits `v`, `x` the exponent of the first, laid out by `%g` for precision `p`.
+$decl put_g $func ($decl b text, $decl v 0, $decl x 0, $decl p 0) {
+  $decl l   $call count_digits (v, 10, 1)
+  $decl ret $if ($call C.or ($call lt (x, -4), $call C.not ($call lt (x, p)))) {
+      $decl u    $call small_pow (10, $call sub (l, 1), 1)
+      $decl ret2 $do ($call put_mag (b, $call div (v, u), 10))
+          ($do ($if ($call lt (1, l))
+                    ($do ($call b.write (".")) ($call zeros (b, $call mod (v, u), $call sub (l, 1))))
+                    ())
+               ($do ($call b.write ($if ($call lt (x, 0)) "e-" "e+"))
+                    ($call zeros (b, $if ($call lt (x, 0)) ($call neg (x)) x, 2))))
+    }.ret2
+    ($if ($call lt (x, 0))
+         ($do ($call b.write ("0."))
+              ($do ($call times (b, "0", $call sub ($call neg (x), 1))) ($call put_mag (b, v, 10))))
+    ($if ($call lt (x, l)) {
+      $decl u    $call small_pow (10, $call sub (l, $call add (x, 1)), 1)
+      $decl ret2 $do ($call put_mag (b, $call div (v, u), 10))
+          ($do ($call b.write ("."))
+               ($call zeros (b, $call mod (v, u), $call sub (l, $call add (x, 1)))))
+    }.ret2
+    ($do ($call put_mag (b, v, 10))
+         ($do ($call times (b, "0", $call sub (x, $call sub (l, 1)))) ($call b.write (".0"))))))
+}.ret
+
+// §8's `to_str` on a `Float`, written.
+$decl float $func ($decl b text, $decl x 0.0)
+  $if ($call C.not ($call eq ($call sub (x, x), 0.0))) ($call nonfinite (b, x)) {
+    $decl minus $call C.or ($call lt (x, 0.0),
+                    $call C.and ($call eq (x, 0.0), $call lt ($call div (1.0, x), 0.0)))
+    $decl a     $if minus ($call neg (x)) x
+    $decl ret2  $do ($if minus ($call b.write ("-")) ())
+        ($if ($call eq (a, 0.0)) ($call b.write ("0.0")) {
+          $decl sp   $call split_go (a, 0)
+          $decl nm   $call norm (sp.m, sp.e)
+          $decl s    $call shortest (nm.m, nm.e,
+                         $call fix_exp (nm.m, nm.e, $call est_exp (nm.m, nm.e)), 15)
+          $decl z    $call strip (s.d, 0)
+          $decl ret3 $call put_g (b, z.v, s.x, s.prec)
+        }.ret3)
+  }.ret2
+
+// ---------------------------------------------------------------- primitives, by type
+
+// Any of the four by its type, resolved at compile time (§4.8). `Bool` is `true | false`
+// and no subtype of `Int` (§3.2), so the candidates cannot overlap.
+$decl put $overload (int, float, str, bool)

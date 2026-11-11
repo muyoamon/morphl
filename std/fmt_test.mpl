@@ -54,6 +54,31 @@ $decl twice $func ($decl x 0.0, $decl n 0)
   $if ($call eq (n, 0)) x ($call twice ($call mul (x, 2.0), $call sub (n, 1)))
 $decl halve $func ($decl x 0.0, $decl n 0)
   $if ($call eq (n, 0)) x ($call halve ($call div (x, 2.0), $call sub (n, 1)))
+// `F.float`'s text of `x`.
+$decl fl $func ($decl x 0.0) $call one ($func ($decl b F.text) $call F.float (b, x))
+
+// The double whose bits are `n`, through a word of raw memory.
+$decl fval $func ($decl x 0.0) x
+$decl bits $func ($decl n 0) {
+  $decl a   $call $primitives.raw_alloc (8)
+  $decl w   $set ($call $primitives.unbox (a, 0)) n
+  $decl x   $call fval ($call $primitives.unbox (a, 0.0))
+  $decl f   $call $primitives.raw_free (a)
+  $decl ret x
+}.ret
+// xorshift64.
+$decl next $func ($decl s 0) {
+  $decl a   $call bxor (s, $call shl (s, 13))
+  $decl b   $call bxor (a, $call shr (a, 7))
+  $decl ret $call bxor (b, $call shl (b, 17))
+}.ret
+// How many of `n` doubles of random bits `F.float` writes as §8's `to_str` does.
+$decl agree $func ($decl s 0, $decl n 0, $decl k 0)
+  $if ($call eq (n, 0)) k
+      ($call agree ($call next (s), $call sub (n, 1),
+           $if ($call eq ($call fl ($call bits (s)), $call to_str ($call bits (s))))
+               ($call add (k, 1)) k))
+
 $decl fmax   $call mul ($call sub (2.0, $call halve (1.0, 52)), $call twice (1.0, 1023))
 $decl tiny_f $call halve (1.0, 1074)
 
@@ -157,5 +182,24 @@ $decl main $func () {
   $decl c31 $call T.expect (r, "fixed across limbs",
                 $call C.and ($call eq ($call F.fixed_str (123456789012.5, 1), "123456789012.5"),
                              $call eq ($call F.fixed_str (1000000000.0, 0), "1000000000")))
+  // The shortest digits that read back, at the edges of `%g`'s layout and of the range.
+  $decl c32 $call T.expect (r, "float, shortest", $call C.and (
+                $call C.and ($call eq ($call fl (0.1), "0.1"),
+                             $call eq ($call fl ($call add (0.1, 0.2)), "0.30000000000000004")),
+                $call C.and ($call C.and ($call eq ($call fl (9007199254740993.0), "9007199254740992.0"),
+                                         $call eq ($call fl ($call neg (0.0)), "-0.0")),
+                             $call eq ($call fl (123456789012345678.0), "1.2345678901234568e+17"))))
+  $decl c33 $call T.expect (r, "float, its layout", $call C.and (
+                $call C.and ($call eq ($call fl (100000000000000.0), "100000000000000.0"),
+                             $call eq ($call fl (1000000000000000.0), "1e+15")),
+                $call C.and ($call eq ($call fl (0.0001), "0.0001"),
+                             $call eq ($call fl (0.00001), "1e-05"))))
+  $decl c34 $call T.expect (r, "float, its range", $call C.and (
+                $call C.and ($call eq ($call fl (fmax), "1.7976931348623157e+308"),
+                             $call eq ($call fl (tiny_f), "4.94065645841247e-324")),
+                $call C.and ($call eq ($call fl ($call halve (1.0, 1022)), "2.2250738585072014e-308"),
+                             $call eq ($call fl ($call div (0.0, 0.0)), "nan"))))
+  $decl c35 $call T.expect (r, "float as to_str, on random bits",
+                $call eq ($call agree (88172645463325252, 20000, 0), 20000))
   $decl ret $call T.finish (r)
 }.ret

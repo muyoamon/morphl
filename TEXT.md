@@ -428,6 +428,19 @@ without a new form, and widening types belongs to a different design.
    decoded `%XX` above 127 is still written as the code point of that value, not the byte,
    as before. `std/str_test.mpl` lost the builder's six checks (55 to 49); `test-lsp`'s
    recorded session replies byte for byte as before.
+5f. **A double's digits written into the text.** Done. `F.float` writes what `to_str`
+   answers — the shortest of 15, 16 and 17 significant digits that reads back, in `%g`'s
+   layout, `.0` after a whole number — without building a `Str`, and `F.fixed` writes `nan`
+   and the infinities itself; what is left of `to_str` in `std/` is gone. Every step is
+   exact: the digits are `m · 2^e · 10^k` rounded down by division and corrected against
+   `q + 1/2`, ties to even, and they read back when they lie between the halfway points to
+   the neighbouring doubles (on one when `m` is even). The whole numbers live in raw
+   memory, `raw_alloc`ed and freed per comparison, since list cells are never reclaimed: the
+   first cut on `std/list` limbs took ~200 KB a double. `std/fmt_test.mpl` checks the
+   layout's and the range's edges and 20,000 doubles of random bits against `to_str` (31 to
+   35); a million more agreed. What a double still leaves behind is the text's: each call
+   to one of a text's members allocates an 8-byte environment for its receiver that is never
+   freed, about 22 of them a double.
 6. **The root's allocating names removed.** Stage 0's `builtins.zig`, `infer.mpl`'s `root_env`,
    `emit.mpl`, the Zig test that the two root blocks name the same things, and every fixture
    and `std/` module that still calls them.
