@@ -2098,16 +2098,20 @@ $decl callee_text $func ($decl c Pa.proto_node) $match c (
 // only in its own module, so `U.h` and `U.mk` stay two.
 $decl alias_mark $func ($decl nm "", $decl tg "") $call concat ("$al:", $call concat (nm,
     $call concat ("=", tg)))
+// `nm`'s target when it is the hidden `$al:<tx>=<target>` entry, or "". A helper, so that
+// `alias_of` recurses in tail position: the walk is as long as the environment.
+$decl alias_hit $func ($decl nm "", $decl tx "") {
+  $decl pre  $call concat ("$al:", $call concat (tx, "="))
+  $decl k    $call len (pre)
+  $decl hit  $if ($call lt ($call len (nm), k)) false
+                 ($call eq_str ($call slice (nm, 0, k), pre))
+  $decl ret  $if hit ($call slice (nm, k, $call len (nm))) ""
+}.ret
 $decl alias_of $func ($decl e env.node, $decl tx "") $match e (
-  $case {$prop tag "cons"} {
-    $decl nm   e.head.name
-    $decl pre  $call concat ("$al:", $call concat (tx, "="))
-    $decl k    $call len (pre)
-    $decl hit  $if ($call lt ($call len (nm), k)) false
-                   ($call eq_str ($call slice (nm, 0, k), pre))
-    $decl ret2 $if ($call eq_str (nm, tx)) tx
-        ($if hit ($call slice (nm, k, $call len (nm))) ($call alias_of (e.tail, tx)))
-  }.ret2,
+  $case {$prop tag "cons"}
+    $if ($call eq_str (e.head.name, tx)) tx
+        ($if ($call eq_str ($call alias_hit (e.head.name, tx), "")) ($call alias_of (e.tail, tx))
+             ($call alias_hit (e.head.name, tx))),
   $case e tx
 )
 // The constructor a body forwards to, as its callee is written with any alias followed
@@ -2216,17 +2220,21 @@ $decl ctor_dfrs $func ($decl cx proto_ctx, $decl e env.node, $decl xs Pa.nodes.n
   $case xs ()
 )
 // §5.3a's A0 for a constructed block, which is its caller's storage: a place the caller lent
-// was there before the call and outlives it, so a field may keep one. A place this call made
-// may not be kept — its storage is this call's and ends when the constructor returns.
+// was there before the call and outlives it, so a field may keep one. So may storage this
+// call makes with a frame `$new` or a constructing call (`fresh_x`): composition builds it in
+// place in the caller's frame, beside the block, and it ends with it. Any other place this
+// call made — a `$traitsof` over a local value, say — is this call's and ends when the
+// constructor returns.
 $decl ctor_place_err $func ($decl cx proto_ctx, $decl x Pa.proto_node, $decl nm "")
   $do ($call err (cx, $call concat ("this constructor's block would keep a place made in its own call",
       $call concat ($if ($call eq_str (nm, "")) "" ($call concat (" ('", $call concat (nm, "')"))),
-      ", which ends when the constructor returns: a constructed block keeps only places its caller lent (§5.3a)")), x)) ()
+      ", which ends when the constructor returns: a constructed block keeps the places its caller lent, and the storage its own $new and constructing calls make (§5.3a)")), x)) ()
 $decl ctor_places $func ($decl cx proto_ctx, $decl e owns.node, $decl xs Pa.nodes.node) $match xs (
   $case {$prop tag "cons"}
     $if ($call is_form (xs.head, "decl")) {
       $decl nm   $call name_of ($call op (xs.head, 0))
-      $decl ow   $call owns_x (cx, e, $call op (xs.head, 1))
+      $decl x    $call op (xs.head, 1)
+      $decl ow   $if ($call fresh_x (cx, x)) false ($call owns_x (cx, e, x))
       $decl r    $if ow ($call ctor_place_err (cx, xs.head, nm)) ()
       $decl ret2 $call ctor_places (cx, $call owns.cons ($call own_ent (nm, ow), e),
                      $call Pa.nodes.val (xs.tail))
@@ -5764,6 +5772,24 @@ $decl alloc_ctor $func ($decl cx proto_ctx, $decl x Pa.proto_node)
   $if ($call is_form (x, "call"))
       ($call in_strs ($call strs.val (cx.ctorcalls), $call fn_key_of (cx, x))) false
 
+// SPEC §5.3a, composition: `$alloc` of a constructing call allocates the block with the
+// storage its own call makes, so a frame place in the block is refused only when one could
+// have come in — an argument holding one (`placed`), or a callee that captured one.
+$decl any_placed $func ($decl cx proto_ctx, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call placed_at (cx, xs.head)) true ($call any_placed (cx, $call Pa.nodes.val (xs.tail))),
+  $case xs false
+)
+$decl alloc_lent $func ($decl cx proto_ctx, $decl e env.node, $decl x Pa.proto_node,
+                        $decl v T.proto_ty, $decl n Pa.proto_node) {
+  $decl c   $call op (x, 0)
+  $decl ct  $match c ($case {$prop tag "name"} ($call T.unroll ($call infer (cx, e, c))),
+                      $case c T.t_bot)
+  $decl cf  $match ct ($case {$prop tag "func"} ct.frame, $case ct true)
+  $decl ret $if ($if cf true ($call any_placed (cx, $call group_items ($call op (x, 1)))))
+                ($call escapes (cx, v, "this value", n)) v
+}.ret
+
 $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form) {
   $decl k n.keyword
   $decl ret
@@ -5781,7 +5807,10 @@ $decl infer_form $func ($decl cx proto_ctx, $decl e env.node, $decl n proto_form
       $decl v  $call deref_ty (r0)
       // §5.3a again: allocated storage is exactly "storage that is not
       // itself frame-bound", so putting a frame reference in one escapes.
-      $decl esc  $call escapes (cx, v, "this value", n)
+      $decl act  $call alloc_ctor (cx, $call op (n, 0))
+      $decl esc  $if ($if act ($call T.frame_bound (v, 0)) false)
+                     ($call alloc_lent (cx, e, $call op (n, 0), v, n))
+                     ($call escapes (cx, v, "this value", n))
       // §5.3a: of a constructing call, the block it constructs is what is allocated, so the
       // answer is the call's own with its frame reference made allocated — `<&^T, none>` for
       // one that can fail, where storing what it reads through to would be `&^<T, none>`.

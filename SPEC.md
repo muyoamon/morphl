@@ -580,7 +580,10 @@ together they are the whole of it:
 > - A frame `$new` may hold any place it can name. Each already exists, in the `$new`'s
 >   scope or an enclosing one, so it outlives the new storage.
 > - A constructed block is its caller's storage: it may keep a place its caller lent,
->   which was there before the call, and none its own call made.
+>   which was there before the call, and the storage its own call makes with a frame
+>   `$new` or a constructing call, which is **composed** into the caller's (below) and
+>   ends with the block. Any other place its own call made — a trait object over one of
+>   its values, say — ends when the constructor returns, and may not be kept.
 > - `$set` stores a place only into storage this activation made — a name bound to a
 >   `$new` or to a constructing call — and only a place lent to this activation. Storage
 >   that came in may be older than anything, and a place this activation made may be
@@ -685,6 +688,29 @@ frame, freed with it, and `$alloc $call mk (1)` on the heap, freed by its author
 constructor's call answers `<&T, none>`; allocated, `<&^T, none>`, and what survives a
 `$try` of it is the reference `$free` takes, so a name bound so is known to be the allocator's
 there.
+
+**Composition.** The storage a constructor's own call makes — each frame `$new` it runs, and
+the block (and composed storage) of each constructing call in it — is built **in place in
+its caller's frame**, in a region beside the block, and is released with it: so a
+constructed block may hold a cell of its own, or a text whose constructor it called. Each
+`$new` site runs at most once per call, so the region's size is known where the constructor
+is written, and the caller reserves it as it reserves the block. A constructor called in
+another's block builds its storage in that one's region in turn; `$alloc` of a constructing
+call allocates the block and its region as one object, which one `$free` releases; and a
+call through a constructor's *value*, which cannot know the region's size, has it
+allocated by the root and released by the block's `drop`. An `$alloc` of a constructing
+call is refused a frame place only where one could have come in — an argument holding one,
+or a callee that captured one — since every other place in the block is its own storage,
+allocated with it.
+
+```
+$decl cell $func ($decl n 0) $new { $decl a $mut $new n  $decl b a }
+$decl f    $func () {
+  $decl c   $call cell (4)                 // the block, and the cell `a` names, are f's
+  $decl w   $set c.b 7                     // `a` and `b` are one place
+  $decl ret $call add (c.a, 0)             // 7
+}.ret
+```
 
 A function that constructs and one that does not are not interchangeable, either way: the
 first is called differently (§7.6), so the flag is part of the type's identity and of

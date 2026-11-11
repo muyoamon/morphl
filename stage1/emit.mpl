@@ -3122,6 +3122,19 @@ $decl has_str $func ($decl xs strs.node, $decl n "") $match xs (
 // before its record (lowering's `init_first`), and this is the call — to the module's
 // initialiser, which returns at once after its first run. A module with no output has no
 // initialiser, and nothing in it to run.
+// Whether `n` starts with `pre`; the first `:` in `s` from `i`; and `s`'s digits as an `Int`.
+$decl has_pre $func ($decl n "", $decl pre "")
+  $if ($call lt ($call len (pre), $call len (n)))
+      ($call eq_str ($call slice (n, 0, $call len (pre)), pre)) false
+$decl colon_at $func ($decl s "", $decl i 0)
+  $if ($call lt (i, $call len (s)))
+      ($if ($call eq_int ($call byte (s, i), 58)) i ($call colon_at (s, $call add (i, 1))))
+      i
+$decl str_to_int0 $func ($decl s "", $decl i 0, $decl acc 0)
+  $if ($call lt (i, $call len (s)))
+      ($call str_to_int0 (s, $call add (i, 1), $call add ($call mul (acc, 10),
+          $call sub ($call byte (s, i), 48))))
+      acc
 $decl is_init_prim $func ($decl n "")
   $if ($call lt (5, $call len (n))) ($call eq_str ($call slice (n, 0, 5), "init:")) false
 $decl emit_init_call $func ($decl st proto_est, $decl n "", $decl dest "") {
@@ -3228,6 +3241,19 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
           $decl ret3 $call assign (st, dest, $call concat ("(", $call concat (vt,
                          $call concat (" *)mpl_alloc((int64_t)sizeof(", $call concat (vt, "))")))))
         }.ret3
+        // SPEC §5.3a, composition: a field of the region a constructor builds its own storage
+        // in, by the parameter's slot (`rgat:<slot>:<k>`), and a field of the block a
+        // reference points at (`faddr:<k>`) — lowering's `rg_at` and `field_at`.
+        ($if ($call has_pre (pnm, "rgat:")) {
+          $decl rest $call slice (pnm, 5, $call len (pnm))
+          $decl c    $call colon_at (rest, 0)
+          $decl ret3 $call assign (st, dest, $call concat ("&", $call concat ($call slot_name (
+                         $call str_to_int0 ($call slice (rest, 0, c))), $call concat ("->f",
+                         $call slice (rest, $call add (c, 1), $call len (rest))))))
+        }.ret3
+        ($if ($call has_pre (pnm, "faddr:"))
+          ($call assign (st, dest, $call concat ("&(", $call concat ($call strs.nth (as, 0),
+              $call concat (")->f", $call slice (pnm, 6, $call len (pnm)))))))
         ($if ($call eq_str (pnm, "fwd_hole"))
           ($call assign (st, dest, $call concat ("(", $call concat ($call c_type (st, ts, e.ty),
               "){0}"))))
@@ -3258,7 +3284,7 @@ $decl emit_call $func ($decl st proto_est, $decl fi 0, $decl e proto_call,
           ($call emit_res_prim (st, ts, rf, as, dest, e.ty))
         ($if ($call arr_prim (pnm))
           ($call emit_arr_prim (st, ts, pnm, as, dest, e.ty))
-          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm))))))))))))))
+          ($call eerr (st, $call concat ("cannot emit the intrinsic ", pnm))))))))))))))))
     }.ret2
     $match cal (
       $case cal {

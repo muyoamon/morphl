@@ -52,14 +52,26 @@ it — not that a block holds a place. `$new { $decl a $new 5 }` holds a place t
 it, and a constructed text holding its caller's arena holds one that dies after it. So A0
 is about age, read off provenance (SPEC §5.3a): a frame `$new` may hold any place it can
 name, since each already exists; a constructed block may keep the places its caller lent
-and none its own call made; `$set` stores a place only into storage the activation made,
-and only one lent to the activation; `$alloc`ed storage, arrays and `unbox`'s memory hold
-none. The `$set` case is decided at the function's close (`set_walk` in `infer.mpl`), and
+and the storage its own call makes (composition, below), and no other place its call made;
+`$set` stores a place only into storage the activation made, and only one lent to the
+activation; `$alloc`ed storage, arrays and `unbox`'s memory hold none. The `$set` case is decided at the function's close (`set_walk` in `infer.mpl`), and
 the constructor's in `ctor_check` (`ctor_places`). `T.frame_bound` still stops at a
 reference: frame storage may now hold a place, but a frame reference is frame-bound itself.
-What a constructor's block makes itself — composition, `$new` and constructing calls among
-its fields — is the next step: it would need that storage moved out of the constructor's
-own frame, and is refused until then.
+**Composition** (SPEC §5.3a) is how a constructed block keeps storage its own call makes —
+a `$new`, or a constructing call's block, `to_text`'s text among them. It is built in place in
+the caller's frame: a constructor whose block makes any takes a hidden last parameter, the
+address of a **region** the caller reserves beside the block (`rg_need` decides before the
+body is lowered, `rg_type` lays it out after), and each `$new` in its own call stores at a
+field of it (`rg_place`; emit's `rgat:<slot>:<k>`). A constructing call there builds its
+block and its own region in the outer region in turn, and the snapshot its `drop` reads is
+kept there too, so the outer `drop`, which takes the region last, can hand it on
+(`enc_bind`'s `rgcell`). A forwarding function passes its region on; a short call's wrapper
+too. `$alloc` of such a call allocates `{block, region}` as one object (`cta_store`); a call
+through a constructor's value has its shim allocate the region from the root and answer a
+`drop` that frees it (`rg_drop`). The block itself is still returned by value and copied
+into the caller's storage: nothing can name its place while it is built, so the copy cannot
+be observed. Not lowered yet: a constructing call in only some arms of a choice inside a
+constructor's block. `compose.mpl` (7358465) and `compose_alloc.mpl` (901524).
 
 `$new` and `$alloc` look alike and are not.
 

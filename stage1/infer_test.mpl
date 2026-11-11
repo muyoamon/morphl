@@ -1389,9 +1389,12 @@ $decl st06f $call check_str ("...nor a lent place into lent storage, whose ages 
   "storage cannot hold a place that may end before it: this storage is not one this call made — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")
 $decl st06g $call check_str ("a constructor may keep a place its caller lent",
   $call errs_of ("$decl k $func ($decl p $mut $new 0) $new { $decl r p }  $decl f $func () { $decl loc $mut $new 4  $decl c $call k (loc)  $decl ret 0 }.ret"), "")
-$decl st06h $call check_str ("...but not storage of its own call",
-  $call errs_of ("$decl k $func () $new { $decl c $mut $new 0 }"),
-  "this constructor's block would keep a place made in its own call ('c'), which ends when the constructor returns: a constructed block keeps only places its caller lent (§5.3a)")
+$decl st06h $call check_str ("...and storage its own call makes, built in its caller's frame",
+  $call errs_of ("$decl k2 $func () $new { $decl v 1 }  $decl k $func () $new { $decl c $mut $new 0  $decl d c  $decl e $call k2 () }"),
+  "")
+$decl st06h2 $call check_str ("...but no other place its own call made",
+  $call errs_of ("$decl k $func () $new { $decl v { $prop n 1 }  $decl c $traitsof v }"),
+  "this constructor's block would keep a place made in its own call ('c'), which ends when the constructor returns: a constructed block keeps the places its caller lent, and the storage its own $new and constructing calls make (§5.3a)")
 $decl st06i $call check_str ("...and allocating one that keeps a frame place is refused",
   $call errs_of ("$decl k $func ($decl p $mut $new 0) $new { $decl r p }  $decl f $func () { $decl loc $mut $new 4  $decl h $alloc $call k (loc)  $decl ret 0 }.ret"),
   "this value holds frame storage (&mut Int), which cannot outlive the scope its $new made it in. Write $alloc there instead (§4.2a, §5.3a)")

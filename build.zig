@@ -179,6 +179,11 @@ pub fn build(b: *std.Build) void {
         // may hold places made before it, `$set` a lent place into a cell made here, and a
         // constructor keep a place its caller lent. Each aliases.
         .{ .src = "stage1/fixtures/a0_age.mpl", .want = "111048" },
+        // SPEC §5.3a, composition: a constructor's own storage built in place in its caller's
+        // region — direct, nested, forwarded, through a value, local and short — and, compiled
+        // only since stage 0 has no `$free`, allocated with the block as one object.
+        .{ .src = "stage1/fixtures/compose.mpl", .want = "73584638\n" },
+        .{ .src = "stage1/fixtures/compose_alloc.mpl", .want = "901524\n", .stage0 = false },
         // DEFER.md step 5: an ephemeral place is released where it is consumed — before a
         // body's tail call, and mid-item — and a loop holding one stays in constant space.
         .{ .src = "stage1/fixtures/release.mpl", .want = "123456789101323 200000" },

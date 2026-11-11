@@ -572,9 +572,9 @@ $decl dfr_list  $specialize P.list proto_dfr
 $decl ctor_ent $func ($decl k 0, $decl d 0, $decl dt T.proto_ty, $decl vt T.proto_ty,
                       $decl rt T.proto_ty, $decl rs T.proto_ty, $decl ot T.proto_ty,
                       $decl f -1, $decl dn $union (false, true), $decl nm "", $decl fl "",
-                      $decl sp 0) {
+                      $decl sp 0, $decl rgt $call T.tval (T.t_bot)) {
   $decl key k  $decl drop d  $decl dty dt  $decl vty vt  $decl rty rt  $decl res rs  $decl out ot
-  $decl fn f  $decl dyn dn  $decl name nm  $decl file fl  $decl at sp
+  $decl fn f  $decl dyn dn  $decl name nm  $decl file fl  $decl at sp  $decl rg rgt
 }
 $decl proto_ctor $call ctor_ent (-1, -1, T.t_bot, T.t_bot, T.t_bot, T.t_bot, T.t_bot)
 // SPEC §5.3a: `$alloc` of a constructing call allocates the block the call constructs. While
@@ -592,12 +592,25 @@ $decl cta_val $func ($decl c proto_cta) c
 // `c` under another key.
 $decl ctor_as $func ($decl c proto_ctor, $decl k 0)
   $call ctor_ent (k, c.drop, c.dty, c.vty, c.rty, c.res, c.out, c.fn, c.dyn, c.name, c.file,
-      c.at)
+      c.at, c.rg)
 // `c` with `drop` replaced.
 $decl ctor_drop $func ($decl c proto_ctor, $decl d 0)
   $call ctor_ent (c.key, d, c.dty, c.vty, c.rty, c.res, c.out, c.fn, c.dyn, c.name, c.file,
-      c.at)
+      c.at, c.rg)
 $decl ctor_list  $specialize P.list proto_ctor
+// SPEC §5.3a, composition: the storage a constructor's own call makes — a frame `$new`, or the
+// block of a constructing call — is built in place in its caller's frame, in a region the
+// caller provides and passes as a hidden last parameter. While a constructor's body is
+// lowered, `slot` is that parameter's frame slot and `tys` the storage placed in it so far,
+// newest first; the region is a block of them in order (`rg_type`). A function forwarding to
+// such a constructor passes its own region on: `fs` is that parameter's slot. `rd` is the
+// slot a field of the region is read through (`rg_at`): the constructor's own parameter, or
+// in its `drop`, which reads what the body kept there, the `drop`'s. -1 is none.
+$decl rg_ent $func ($decl s -1, $decl ts T.tys.node, $decl f -1, $decl r -1) {
+  $decl slot s  $decl tys ts  $decl fs f  $decl rd r
+}
+$decl proto_rg $call rg_ent (-1, T.tys.nil, -1, -1)
+$decl rg_val $func ($decl r proto_rg) r
 
 // §3.4's defaults, which a short call needs. A known function's definition context —
 // its parameters' source and the scope they are evaluated in — and the wrappers built
@@ -888,6 +901,14 @@ $decl lstate $func () {
   $decl ualloc  $mut $alloc strs.node
   // SPEC §5.3a: the `$alloc` of a constructing call being lowered (`cta_ent`).
   $decl ctalloc $mut $alloc proto_cta
+  // SPEC §5.3a, composition (`rg_ent`): the region of the constructor being lowered, and the
+  // slot holding the object an `$alloc` of a constructing call allocates for the block and its
+  // region together (`ctor_rg_arg`), or -1.
+  $decl rgn     $mut $alloc proto_rg
+  $decl rgas    $mut $alloc -1
+  // Where the region handed to the constructing call being lowered is kept (`enc_bind`), for
+  // its `drop`, which takes it last: -1 for none.
+  $decl rgcr    $mut $alloc -1
 }
 
 $decl proto_lst $call lstate ()
@@ -1601,6 +1622,8 @@ $decl proto_lres $call lres4 ({ $prop tag "unit" $decl ty 0  $decl id 0 }, T.t_b
 // off it fails; passing it through here states the type and defers the check to
 // where the knot is tied.
 $decl lval $func ($decl r proto_lres) r
+// What a lowered expression is, off a result whose type is not known yet (a `$fwd`'s).
+$decl lres_ir $func ($decl r proto_lres) r.ir
 
 
 $decl args_res $func ($decl xs IR.exprs.node, $decl ts T.tys.node) { $decl irs xs  $decl tys ts }
@@ -1908,6 +1931,9 @@ $fwd alloc_fin
 // §5.3a's constructors (STORAGE.md R3); they need the deferral machinery further down.
 $fwd ctor_body
 $fwd ctor_site
+$fwd ctor_rg_arg
+$fwd save_in
+$fwd fn_ty_c
 $fwd ctor_in
 // ...and a constructor as a value (SPEC §5.3a): its shim, a call through one, and its types.
 $fwd ctor_value
@@ -2223,6 +2249,181 @@ $decl ctor_of $func ($decl st proto_lst, $decl f proto_lres) {
   $decl ret $if ($call eq_int (k, -1)) proto_ctor
                 ($call find_ctor ($call ctor_list.val (st.ctors), k))
 }.ret
+// A module's member `nm`, lowered already, by the module's id: its index, or -1.
+$decl member_idx $func ($decl st proto_lst, $decl mid 0, $decl nm "") {
+  $decl ms  $if ($call lt (-1, mid)) ($call find_mod_st (st, mid)) mods_list.nil
+  $decl ret $match ms (
+      $case {$prop tag "cons"} {
+        $decl d    $call find_mdone_m (ms.head, nm)
+        $decl ret2 $match d ($case {$prop tag "cons"} d.head.idx, $case d -1)
+      }.ret2,
+      $case ms -1)
+}.ret
+// The global or module member a callee names, or -1.
+$decl callee_idx $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_node) $match c (
+  // A global, or — in a module's own body — a sibling member.
+  $case {$prop tag "name"} {
+    $decl b    $call lookup (e, c.text)
+    $decl ret2 $if ($call not (b.hit)) -1
+        ($if ($call eq_str (b.bnd.kind, "global")) b.bnd.slot
+        ($if ($call eq_str (b.bnd.kind, "prop")) ($call member_idx (st, b.bnd.mod, c.text))
+             -1))
+  }.ret2,
+  $case {$prop tag "proj_name"} {
+    $decl t    c.target
+    $decl tn   $match t ($case {$prop tag "name"} t.text, $case t "")
+    $decl b    $call lookup (e, tn)
+    $decl ret2 $if b.hit ($call member_idx (st, b.bnd.mod, c.field)) -1
+  }.ret2,
+  $case c -1)
+
+// ------------------------------------------------------ composition (SPEC §5.3a)
+//
+// A constructor's own storage is built in place in its caller's frame: the region, a block
+// with a field per frame `$new` and per constructing call's block (and that call's own
+// region) its call makes, in the order they are made. The caller passes the region's address
+// as a hidden last argument; inside, each `$new` stores at its field's address (`rg_place`).
+
+// The region's type: a field per storage, oldest first. A region nothing was placed in still
+// has one, since the parameter was reserved before the body said so (`rg_need`) and a C
+// struct needs a member.
+$decl rg_fields $func ($decl ts T.tys.node, $decl i 0, $decl acc T.fields.node) $match ts (
+  $case {$prop tag "cons"}
+    $call rg_fields ($call T.tys.val (ts.tail), $call add (i, 1), $call T.fields.cons (
+        $call T.field ($call concat ("r", $call int_to_str (i)), ts.head), acc)),
+  $case ts $call T.fields.reverse (acc, T.fields.nil)
+)
+$decl rg_type $func ($decl ts T.tys.node) {
+  $decl xs  $call T.tys.reverse (ts, T.tys.nil)
+  $decl ret $call T.t_block ($call rg_fields ($if ($call T.tys.is_nil (xs))
+                ($call T.tys.cons (T.t_int, T.tys.nil)) xs, 0, T.fields.nil), T.props.nil)
+}.ret
+$decl has_rg $func ($decl c proto_ctor) $call not ($call T.same (c.rg, T.t_bot))
+// The region put aside, for a function lowered inside a constructor's body: that is another
+// activation, whose storage is its own.
+$decl rg_off $func ($decl st proto_lst) {
+  $decl o   $call rg_val (st.rgn)
+  $decl s   $set st.rgn proto_rg
+  $decl ret o
+}.ret
+// A field for storage of type `t` in the region: its position.
+$decl rg_take $func ($decl st proto_lst, $decl t T.proto_ty) {
+  $decl r   $call rg_val (st.rgn)
+  $decl k   $call T.tys.length (r.tys, 0)
+  $decl s   $set st.rgn ($call rg_ent (r.slot, $call T.tys.cons (t, r.tys), r.fs, r.rd))
+  $decl ret k
+}.ret
+// The address of the region's field `k`, of type `rt`: `&region->f<k>`.
+$decl rg_at $func ($decl st proto_lst, $decl k 0, $decl rt T.proto_ty) {
+  $decl r   $call rg_val (st.rgn)
+  $decl rid $call intern (st, rt)
+  $decl ft  $call T.t_func (T.tys.nil, rt)
+  $decl ret $call IR.e_call (rid, $call IR.e_prim ($call intern (st, ft),
+                $call concat ("rgat:", $call concat ($call int_to_str (r.rd), $call concat (":",
+                $call int_to_str (k))))), IR.exprs.nil, false)
+}.ret
+// The address of field `k` of the block reference `x` points at, as type `rt`.
+$decl field_at $func ($decl st proto_lst, $decl x IR.proto_expr, $decl xt T.proto_ty, $decl k 0,
+                      $decl rt T.proto_ty)
+  $call IR.e_call ($call intern (st, rt), $call IR.e_prim ($call intern (st, $call T.t_func (
+      $call T.tys.cons (xt, T.tys.nil), rt)), $call concat ("faddr:", $call int_to_str (k))),
+      $call IR.exprs.cons (x, IR.exprs.nil), false)
+// A zero of type `t` (`fwd_hole`): what storage holds before it is built in place.
+$decl hole_of $func ($decl st proto_lst, $decl t T.proto_ty)
+  $call IR.e_call ($call intern (st, t), $call IR.e_prim ($call intern (st, $call T.t_func (
+      T.tys.nil, t)), "fwd_hole"), IR.exprs.nil, false)
+// Storage holding `v` of type `vt`, its reference typed `rt`: in the region while a
+// constructor's body is lowered, and otherwise the frame's `$new`.
+$decl rg_place $func ($decl st proto_lst, $decl rt T.proto_ty, $decl vt T.proto_ty,
+                      $decl v IR.proto_expr) {
+  $decl rid $call intern (st, rt)
+  $decl ret $if ($call lt (($call rg_val (st.rgn)).slot, 0)) ($call IR.e_new (rid, v)) {
+    $decl k    $call rg_take (st, vt)
+    $decl ret2 $call IR.e_do (rid, $call IR.e_set ($call intern (st, vt), $call rg_at (st, k, rt),
+                   v), $call rg_at (st, k, rt))
+  }.ret2
+}.ret
+
+// A value of type `t` kept in the region rather than a frame slot, so that the constructor's
+// `drop` can read it (`build_drop`): its field, and the store, which answers `x`.
+$decl rg_saved $func ($decl k0 0, $decl x IR.proto_expr) { $decl k k0  $decl ir x }
+$decl rg_save $func ($decl st proto_lst, $decl t T.proto_ty, $decl x IR.proto_expr) {
+  $decl k   $call rg_take (st, t)
+  $decl rt  $call T.t_ref ("", t)
+  $decl tid $call intern (st, t)
+  $decl ret $call rg_saved (k, $call IR.e_do (tid, $call IR.e_set (tid, $call rg_at (st, k, rt),
+                x), $call IR.e_deref (tid, $call rg_at (st, k, rt))))
+}.ret
+// Where a deferral reads a saved value: a frame slot `e` when `e` is 0 or more, otherwise the
+// region's field `-2 - e`, reached through `rd` as a reference (`rgcell`).
+$decl enc_bind $func ($decl nm "", $decl e 0, $decl t T.proto_ty)
+  $if ($call lt (-1, e)) ($call bind_ent (nm, "local", e, t))
+      ($call bind_ent (nm, "rgcell", $call sub (-2, e), t))
+
+// Whether a constructor's block makes storage of its own, so that its region parameter is
+// reserved before the body is lowered: a frame `$new`, a constructing call (inference's
+// `note_ctor` keys), or a `$specialize`, whose body may hold either. Not inside a `$func` or a
+// `$template`, which are not evaluated there. Too many is a region with nothing in it.
+$fwd rg_need
+$decl rg_need_list $func ($decl st proto_lst, $decl xs Pa.nodes.node) $match xs (
+  $case {$prop tag "cons"}
+    $if ($call rg_need (st, xs.head)) true ($call rg_need_list (st, $call Pa.nodes.val (xs.tail))),
+  $case xs false
+)
+$decl rg_need $func ($decl st proto_lst, $decl n Pa.proto_node) $match n (
+  $case {$prop tag "form"}
+    $if ($call P.or ($call eq_str (n.keyword, "func"), $call eq_str (n.keyword, "template")))
+        false
+    ($if ($call P.or ($call eq_str (n.keyword, "new"), $call eq_str (n.keyword, "specialize")))
+        true
+    ($if ($if ($call eq_str (n.keyword, "call")) {
+           $decl sp   $call P.span_of (n)
+           $decl key  $call concat ("c:", $call concat ($call P.sval (st.isctx), $call concat ("|",
+                          $call concat ($call fshort (st, $call P.sval (st.curfile)),
+                          $call concat (":", $call keep_key (sp.line, sp.col))))))
+           $decl ret2 $call mem_strs ($call strs.val (st.ualloc), key)
+         }.ret2 false)
+        true ($call rg_need_list (st, $call Pa.nodes.val (n.operands))))),
+  $case {$prop tag "block"}      ($call rg_need_list (st, $call Pa.nodes.val (n.items))),
+  $case {$prop tag "group"}      ($call rg_need_list (st, $call Pa.nodes.val (n.items))),
+  $case {$prop tag "proj_name"}  ($call rg_need (st, n.target)),
+  $case {$prop tag "proj_index"} ($call rg_need (st, n.target)),
+  $case n false
+)
+
+// The region of the constructor a body forwards to (`fwd_sites`' shapes), or ⊥: its record,
+// found by the callee as written, since the call is not lowered yet.
+$fwd fwd_rg
+$decl fwd_rg_arms $func ($decl st proto_lst, $decl e benv.node, $decl xs Pa.nodes.node)
+    $match xs (
+  $case {$prop tag "cons"} {
+    $decl r    $call fwd_rg (st, e, $call op (xs.head, 1))
+    $decl ret2 $if ($call T.same (r, T.t_bot)) ($call fwd_rg_arms (st, e,
+                   $call Pa.nodes.val (xs.tail))) r
+  }.ret2,
+  $case xs T.t_bot
+)
+$decl fwd_rg $func ($decl st proto_lst, $decl e benv.node, $decl b Pa.proto_node)
+  $if ($call is_form (b, "call")) {
+    $decl c    $call op (b, 0)
+    $decl k0   $call callee_idx (st, e, c)
+    $decl lt0  $match c (
+        $case {$prop tag "name"} {
+          $decl f    $call lookup (e, c.text)
+          $decl ret3 $if f.hit ($if ($call lt (f.bnd.tmpl, -1)) f.bnd.tmpl -1) -1
+        }.ret3,
+        $case c -1)
+    $decl k    $if ($call lt (-1, k0)) k0 lt0
+    $decl cr   $if ($call eq_int (k, -1)) proto_ctor
+                   ($call find_ctor ($call ctor_list.val (st.ctors), k))
+    $decl ret2 cr.rg
+  }.ret2
+  ($if ($call is_form (b, "if")) {
+    $decl r    $call fwd_rg (st, e, $call op (b, 1))
+    $decl ret2 $if ($call T.same (r, T.t_bot)) ($call fwd_rg (st, e, $call op (b, 2))) r
+  }.ret2
+  ($if ($call is_form (b, "match")) ($call fwd_rg_arms (st, e, $call group_items ($call op (b, 1))))
+       T.t_bot))
 $decl ctor_ty $func ($decl t0 T.proto_ty) {
   $decl t   $call T.unroll (t0)
   $decl ret $match t ($case {$prop tag "func"} ($call T.ci_mem ($call T.cints.val (t.esc), 2000)),
@@ -2333,6 +2534,13 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
   $decl ret $if me ($call self_closure (st)) ($if ($call not (f.hit))
       ($call lres ($call IR.e_unit ($call err (st, $call concat ("unknown name '",
                 $call concat (nm, "'")), n)), T.t_bot))
+    // A value a constructor's call kept in its region for its `drop` (`enc_bind`): the
+    // field's address, read through where a value is wanted.
+    ($if ($call eq_str (f.bnd.kind, "rgcell")) {
+        $decl bt   $call T.tval (f.bnd.ty)
+        $decl rt   $call T.t_ref ("", bt)
+        $decl ret2 $call lres ($call rg_at (st, f.bnd.slot, rt), rt)
+      }.ret2
     ($if ($call is_fwd_kind (f.bnd.kind)) {
         $decl bt   $call T.tval (f.bnd.ty)
         $decl rid  $call intern (st, $call fwd_cell_ty (bt))
@@ -2360,7 +2568,7 @@ $decl lower_name $func ($decl st proto_lst, $decl e benv.node, $decl n Pa.proto_
                      ($do ($call seal_fn (st, bt)) id),
                      $call prim_name (f.bnd.kind, nm)))))
         $decl ret2  $call lres4 (ir, bt, f.bnd.mod, f.bnd.tmpl)
-      }.ret2)))
+      }.ret2))))
 }.ret
 
 // §4.6 as a layout position. The target is a value position, so a reference
@@ -4805,9 +5013,16 @@ $decl build_wrap $func ($decl st proto_lst, $decl d proto_fdef, $decl g 0, $decl
                         $decl wm "", $decl wn "", $decl n Pa.proto_node) {
   $decl msave $call enter_mod_in (st, d.mod, d.file, d.isctx, d.bfile)
   $decl outer $call take_slots (st)
+  $decl org   $call rg_off (st)
   $decl ps    $call params_of (fty)
   $decl rty   $call result_of (fty)
   $decl pv    $call wrap_params (st, $call ts_take (ps, k, T.tys.nil), 0, IR.ints.nil, IR.exprs.nil)
+  // SPEC §5.3a, composition: a constructor's region is passed through, after the arguments.
+  $decl gc    $call find_ctor ($call ctor_list.val (st.ctors), g)
+  $decl rpt   $if ($call has_rg (gc)) ($call intern (st, $call T.t_ref ("", gc.rg))) -1
+  $decl rsl   $if ($call lt (-1, rpt)) ($call fresh_slot (st, rpt)) -1
+  $decl rgv   $if ($call lt (-1, rpt)) ($call IR.exprs.cons ($call IR.e_local (rpt, rsl),
+                  IR.exprs.nil)) IR.exprs.nil
   $decl om    $call nodes_drop ($call Pa.nodes.val (d.params), k)
   $decl fr    $call frame_reads (st, $call benv.val (d.env), $call dflt_reads (om, strs.nil))
   $decl dv    $match fr (
@@ -4819,10 +5034,12 @@ $decl build_wrap $func ($decl st proto_lst, $decl d proto_fdef, $decl g 0, $decl
       $case fr ($call wrap_defaults (st, $call benv.val (d.env), om,
                   $call ts_drop (ps, k), IR.exprs.nil))
     )
-  $decl pty   $call ints_of_tys (st, $call ts_take (ps, k, T.tys.nil), IR.ints.nil)
+  $decl pty0  $call ints_of_tys (st, $call ts_take (ps, k, T.tys.nil), IR.ints.nil)
+  $decl pty   $if ($call lt (-1, rpt)) ($call IR.ints.reverse ($call IR.ints.cons (rpt,
+                  $call IR.ints.reverse (pty0, IR.ints.nil)), IR.ints.nil)) pty0
   $decl body  $call IR.e_call ($call intern (st, rty), $call IR.e_global ($call intern (st, fty),
       g),
-                  $call append_exprs (pv.irs, dv), true)
+                  $call append_exprs ($call append_exprs (pv.irs, dv), rgv), true)
   // Exported, since a call in any module's output may want it, and placed in the
   // callee's file. Named from the callee and the argument count — `pub` puts a name
   // in the module-member space (`fn_key`'s `_m`), so ranking it off the module's
@@ -4832,6 +5049,7 @@ $decl build_wrap $func ($decl st proto_lst, $decl d proto_fdef, $decl g 0, $decl
                   $call concat ($if ($call eq_str (wm, "")) "e" wm,
                       $call concat ("_", $call concat (wn, "_dflt"))))
   $decl back  $call restore_slots (st, outer)
+  $decl rgb   $set st.rgn org
   $decl mrest $call leave_mod (st, msave)
   $decl ret   f
 }.ret
@@ -4946,18 +5164,32 @@ $decl lower_call $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
   $decl fwd  $if isc ($if tail ($call mem_str ($call strs.val (st.ctorfwd), $call site_key (st, n)))
                  false) false
   $decl cf   $if loc f2.ir ($call short_callee (st, f2, na, n))
+  // SPEC §5.3a, composition: a constructor with storage of its own is handed the region it
+  // builds it in, last (`ctor_rg_arg`).
+  $decl rga  $if ($if isc ($call has_rg (cr)) false)
+                 ($call IR.exprs.cons ($call ctor_rg_arg (st, n, cr, fwd), IR.exprs.nil))
+                 IR.exprs.nil
   // DEFER.md step 5: storage its arguments made and its value does not hold is released
   // once it returns (`consume_at`), so a call that has any cannot be a tail call. §5.3a
   // leaves one such: a root intrinsic's, which A4 exempts.
   $decl held $call lt ($call dfr_list.length (d0, 0),
                  $call dfr_list.length ($call dfr_list.val (st.defers), 0))
-  $decl cl   $call call_through (st, $call intern (st, cty), cf, $call append_exprs (as.irs, dv),
+  // Through a value — a block's local constructor is a closure — the C signature is the
+  // callee's type's, so that type takes the region too.
+  $decl cfr  $if ($if ($call IR.exprs.is_nil (rga)) true isg) cf
+                 ($call lres_ir ($call at_dyn (st, $call lres (cf, vft), $call T.t_func (
+                     $call T.tys.reverse ($call T.tys.cons ($call T.t_ref ("", cr.rg),
+                         $call T.tys.reverse (ps, T.tys.nil)), T.tys.nil), cres))))
+  $decl cl   $call call_through (st, $call intern (st, cty), cfr,
+                 $call append_exprs ($call append_exprs (as.irs, dv), rga),
                  $if isc fwd ($if held false tail))
   $decl sp   $call P.span_of (n)
   $decl r0   $if fwd ($do ($set st.ctorhit cr) ($call lres (cl, cty)))
                  ($if isc ($call lval ($if cr.dyn ($call ctor_dyn_site (st, n, cr, cl))
                                            ($call ctor_site (st, n, cr, cl))))
                       ($call lres (cl, ty)))
+  $decl rgr  $set st.rgas -1
+  $decl rgc  $set st.rgcr -1
   $decl ret  $call lval ($call consume_at (st, d0, r0, false, $call keep_key (sp.line, sp.col)))
 }.ret
 
@@ -5035,7 +5267,7 @@ $decl lower_lam_pass $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.p
   $decl ld1   $set st.lamdepth ($call isub ($call P.ival (st.lamdepth), 1))
   $decl back  $call restore_slots (st, outer)
   $decl put   $call put_lifted (st, idx, lf)
-  $decl ret   $call lam_res (idx, $call fn_ty (st, lf))
+  $decl ret   $call lam_res (idx, $call fn_ty_c (st, lf))
 }.ret
 
 $decl lower_lambda $func ($decl st proto_lst, $decl ce benv.node, $decl n Pa.proto_node,
@@ -5233,7 +5465,8 @@ $decl lower_form $func ($decl st proto_lst, $decl e benv.node, $decl n proto_for
       $decl kp   $set st.keepat nk
       $decl v    $call as_value (st, $call lower (st, e, $call op (n, 0), false))
       $decl rt   $call T.t_ref ("", v.ty)
-      $decl nw   $call IR.e_new ($call intern (st, rt), v.ir)
+      // SPEC §5.3a, composition: in a constructor's own call, in place in its caller's region.
+      $decl nw   $call rg_place (st, rt, v.ty, v.ir)
       // Its address, for the item to compare what it binds against (`own_inits`).
       $decl ret2 $if ($call eq_str (nk, "")) ($call lres (nw, rt)) {
         $decl rid  $call intern (st, rt)
@@ -5651,6 +5884,15 @@ $decl join_exits $func ($decl t T.proto_ty, $decl xs T.tys.node) $match xs (
   $case xs t
 )
 
+// `xs` with its `i`th entry `v`.
+$decl ints_put $func ($decl xs IR.ints.node, $decl i 0, $decl v 0, $decl k 0,
+                      $decl acc IR.ints.node) $match xs (
+  $case {$prop tag "cons"}
+    $call ints_put (xs.tail, i, v, $call add (k, 1),
+        $call IR.ints.cons ($if ($call eq_int (k, i)) v xs.head, acc)),
+  $case xs ($call IR.ints.reverse (acc, IR.ints.nil))
+)
+
 // Lower one `$func` whose type inference already solved. `fty` is that type, so
 // the parameter types come from it rather than from re-reading the defaults.
 $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
@@ -5669,6 +5911,21 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl ps    $call group_items ($call op (n, 0))
   $decl ptys  $match fty ($case {$prop tag "func"} ($call T.tys.val (fty.params)), $case fty T.tys.nil)
   $decl b     $call bind_params (st, e, ps, ptys, IR.ints.nil, de)
+  // SPEC §5.3a, composition: a constructor whose block makes storage of its own builds it in
+  // a region its caller passes as a hidden last parameter — the slot after the parameters,
+  // whose type is known once the body is (`rg_type`) — and a function forwarding to such a
+  // constructor takes one to pass on. Any other function's storage is its own.
+  $decl orgn  $call rg_off (st)
+  $decl blk0  $if cnew ($call op ($if ($call is_form (body0, "new")) body0 ($call op (body0, 0)), 0))
+                  body0
+  $decl rneed $if cnew ($call rg_need (st, blk0)) false
+  $decl frg   $if cnew T.t_bot ($if ($call strs.is_nil ($call strs.val (st.ctorfwd))) T.t_bot
+                  ($call fwd_rg (st, b.env, body0)))
+  $decl hfrg  $call not ($call T.same (frg, T.t_bot))
+  $decl rsl   $if rneed ($call fresh_slot (st, $call intern (st, T.t_int)))
+                  ($if hfrg ($call fresh_slot (st, $call intern (st, $call T.t_ref ("", frg)))) -1)
+  $decl srg   $set st.rgn ($if rneed ($call rg_ent (rsl, T.tys.nil, -1, rsl))
+                  ($call rg_ent (-1, T.tys.nil, $if hfrg rsl -1, -1)))
   // §4.15a: `$try` returns from the nearest `$func`, so the enclosing one's deferrals are
   // not this body's to run.
   $decl odf   $call dfr_list.val (st.defers)
@@ -5688,6 +5945,9 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl body  $if cnew ($call lval ($call ctor_body (st, b.env, nm, body0)))
                   ($call lval ($call lower (st, b.env, body0, true)))
   $decl cinf  $if cnew ($call ctor_val (st.ctorlast)) ($call ctor_val (st.ctorhit))
+  $decl rgx   $call rg_val (st.rgn)
+  $decl rback $set st.rgn orgn
+  $decl rgt   $if rneed ($call rg_type (rgx.tys)) T.t_bot
   $decl rfw   $set st.ctorfwd ofw
   $decl rht   $set st.ctorhit oht
   $decl rdf   $set st.defers odf
@@ -5708,19 +5968,27 @@ $decl lower_func $func ($decl st proto_lst, $decl e benv.node, $decl nm "",
   $decl md   $call P.sval (st.curmod)
   $decl nsp  $call P.span_of (n)
   $decl cin1 $if cnew ($call ctor_ent (cinf.key, cinf.drop, cinf.dty, cinf.vty, cinf.rty,
-                 $call join_exits (cinf.vty, exits), $call join_exits (cinf.rty, exits))) cinf
+                 $call join_exits (cinf.vty, exits), $call join_exits (cinf.rty, exits), -1, false,
+                 "", "", 0, rgt)) cinf
   // It is called as itself: `fn` redirects a thunk's or a shim's call, and the record a
   // body forwards to (`ctorhit`) may be an alias thunk's, naming the constructor it aliases.
   $decl cin2 $call ctor_ent (cin1.key, cin1.drop, cin1.dty, cin1.vty, cin1.rty, cin1.res,
                  cin1.out, -1, cin1.dyn,
                  $call concat ($if ($call eq_str (md, "")) "e" md, $call concat ("_", nm)),
-                 $call P.sval (st.curfile), $call add ($call mul (nsp.line, 1000), nsp.col))
+                 $call P.sval (st.curfile), $call add ($call mul (nsp.line, 1000), nsp.col),
+                 cin1.rg)
   // A dynamic one — forwarding through a value — answers `{b, d}`, as a call through one does.
   $decl rty0 $if ctr ($if cin2.dyn ($call dyn_ty (cin2)) cin2.res)
                  ($match fty ($case {$prop tag "func"} ($call T.tval (fty.result)),
                  $case fty ($call join_exits (body.ty, exits))))
   $decl rty  $call intern (st, rty0)
-  $decl ret   $call IR.fn_p (nm, b.tys, rty, $call take_slots (st), body.ir, false, false,
+  // The region parameter, typed now that the body has said what it holds.
+  $decl rpt   $if ($call has_rg (cin2)) ($call intern (st, $call T.t_ref ("", cin2.rg))) -1
+  $decl pts   $if ($call lt (-1, rpt)) ($call IR.ints.reverse ($call IR.ints.cons (rpt,
+                  $call IR.ints.reverse (b.tys, IR.ints.nil)), IR.ints.nil)) b.tys
+  $decl sls0  $call take_slots (st)
+  $decl sls   $if rneed ($call ints_put (sls0, rsl, rpt, 0, IR.ints.nil)) sls0
+  $decl ret   $call IR.fn_p (nm, pts, rty, sls, body.ir, false, false,
                   ev, $call P.sval (st.curfile), $call next_rank (st), false,
                   $call P.sval (st.curmod))
   $decl last $set st.ctorlast cin2
@@ -5739,6 +6007,18 @@ $decl fn_ty $func ($decl st proto_lst, $decl f IR.proto_fn) {
   $decl ts T.tys.nil
   $decl ret  $call T.t_func ($call param_tys (st, ts, $call IR.ints.val (f.params), T.tys.nil),
                $call ty_at (st, f.result))
+}.ret
+// The type of a function `lower_func` just lowered, as its callers see it: a constructor's
+// region is a hidden last parameter (SPEC §5.3a, composition), which no call writes.
+$decl fn_ty_c $func ($decl st proto_lst, $decl f IR.proto_fn) {
+  $decl c   $call ctor_val (st.ctorlast)
+  $decl ps0 $call IR.ints.val (f.params)
+  $decl rv  $call IR.ints.reverse (ps0, IR.ints.nil)
+  $decl ps  $if ($call has_rg (c)) ($match rv (
+                $case {$prop tag "cons"} ($call IR.ints.reverse (rv.tail, IR.ints.nil)),
+                $case rv ps0)) ps0
+  $decl ts  T.tys.nil
+  $decl ret $call T.t_func ($call param_tys (st, ts, ps, T.tys.nil), $call ty_at (st, f.result))
 }.ret
 
 
@@ -6034,7 +6314,7 @@ $decl knot_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "", $decl
     $decl lk   $call lower_prop_body (st, pe, nm, pn, T.t_bot, $call prop_rank (m.props, nm, 0),
                    ets, dpe)
     // Read before the rollback, which `fn_ty`'s interned indices do not survive.
-    $decl fk   $call with_facts (st, $call fn_ty (st, lk), mkey)
+    $decl fk   $call with_facts (st, $call fn_ty_c (st, lk), mkey)
     $decl und  $do ($call put_snap (st, sn)) ($do ($set st.errs er0) 0)
     $decl ret2 $match fk (
         $case {$prop tag "func"} {
@@ -6130,7 +6410,7 @@ $decl lower_prop_func $func ($decl st proto_lst, $decl m proto_mod, $decl nm "",
   // structural, so once it is out it survives, and the second pass re-interns
   // whatever it needs. The other two rollback sites need no such care: they
   // read `v0.ty` / `b0.val.ty`, which are already structural.
-  $decl fty $call with_facts (st, $call fn_ty (st, lf0), mkey)
+  $decl fty $call with_facts (st, $call fn_ty_c (st, lf0), mkey)
   // A retry drops the first pass's diagnostics with its tree: the second reports what is
   // wrong, and a self-taken trait (`self_knot`) is a placeholder the first cannot project.
   $decl und $if again ($do ($call put_snap (st, sn)) ($do ($set st.errs er0) 0)) 0
@@ -6446,6 +6726,30 @@ $decl lower_prop $func ($decl st proto_lst, $decl mid 0, $decl nm "", $decl n Pa
 // Effects are kept in order by folding each one into the next slot's
 // initializer as a `$do` — which is exactly what `$do` is for (§4.8b) and costs
 // no tail position, since a slot initializer is not in one anyway.
+
+// A deferral's environment `env` with each frame value it names (`ns`) copied into the
+// constructor's region and rebound there (`rgcell`), and the copies, as effects run where the
+// deferral is registered, on `pend` (newest first).
+$decl rl_res $func ($decl en benv.node, $decl pd IR.exprs.node) { $decl env en  $decl pend pd }
+$decl rg_reloc $func ($decl st proto_lst, $decl e benv.node, $decl ns Pa.pstrs.node,
+                      $decl env benv.node, $decl pend IR.exprs.node) $match ns (
+  $case {$prop tag "cons"} {
+    $decl f    $call lookup (e, ns.head)
+    $decl k    $if f.hit f.bnd.kind ""
+    $decl loc  $call P.or ($call eq_str (k, "local"), $call eq_str (k, "capture"))
+    $decl ret2 $if loc {
+        $decl bt   $call T.tval (f.bnd.ty)
+        $decl id   $call intern (st, bt)
+        $decl ir   $if ($call eq_str (k, "local")) ($call IR.e_local (id, f.bnd.slot))
+                       ($call IR.e_capture (id, f.bnd.slot))
+        $decl sv   $call rg_save (st, bt, ir)
+        $decl ret3 $call rg_reloc (st, e, $call Pa.pstrs.val (ns.tail), $call benv.cons (
+                       $call bind_ent (ns.head, "rgcell", sv.k, bt), env),
+                       $call IR.exprs.cons (sv.ir, pend))
+      }.ret3 ($call rg_reloc (st, e, $call Pa.pstrs.val (ns.tail), env, pend))
+  }.ret2,
+  $case ns ($call rl_res (env, pend))
+)
 
 $decl blk_acc $func ($decl sl IR.bslots.node, $decl fl T.fields.node, $decl pr T.props.node,
                      $decl en benv.node, $decl pd IR.exprs.node)
@@ -6782,10 +7086,19 @@ $decl lower_item0 $func ($decl st proto_lst, $decl a proto_blk, $decl it Pa.prot
   }.ret
   ($if ($call is_form (it, "fwd")) ($call lower_fwd_item (st, a, it))
   // §4.15a: registered where it stands, lowered where it runs (`with_defers`, `$try`).
+  // SPEC §5.3a, composition: in a constructor's own call the deferral may run from its `drop`,
+  // which has none of this frame, so what it reads of the frame is copied into the region
+  // here (`rg_reloc`) and read from there.
   ($if ($call is_form (it, "defer")) {
-    $decl p   $set st.defers ($call dfr_list.cons ($call dfr_ent ($call op (it, 0),
-                  $call benv.val (a.env)), st.defers))
-    $decl ret a
+    $decl inrg $call lt (-1, ($call rg_val (st.rgn)).slot)
+    $decl rl   $if inrg ($call rg_reloc (st, $call benv.val (a.env),
+                   $call Pa.free_names ($call op (it, 0), Pa.pstrs.nil),
+                   $call benv.val (a.env), $call IR.exprs.val (a.pend)))
+                   ($call rl_res ($call benv.val (a.env), $call IR.exprs.val (a.pend)))
+    $decl p    $set st.defers ($call dfr_list.cons ($call dfr_ent ($call op (it, 0), rl.env),
+                   st.defers))
+    $decl ret  $call blk_acc ($call IR.bslots.val (a.slots), $call T.fields.val (a.flds),
+                   $call T.props.val (a.prps), $call benv.val (a.env), rl.pend)
   }.ret {
     // Runs for effect, discarded (§3.3). Held until the next slot. A block written as an
     // item is a scope (§4.15a).
@@ -7008,8 +7321,16 @@ $decl drop_ents $func ($decl xs dfr_list.node, $decl bs benv.node, $decl acc dfr
 $decl build_drop $func ($decl st proto_lst, $decl nm "", $decl vt T.proto_ty,
                         $decl top dfr_list.node, $decl n Pa.proto_node) {
   $decl outer $call take_slots (st)
+  $decl org   $call rg_off (st)
   $decl fs    $call blk_fields (vt)
   $decl sl    $call fld_slots (st, fs, IR.ints.nil)
+  // SPEC §5.3a, composition: a constructor with a region hands its `drop` the region too, last,
+  // since what its own call made — and the snapshots their deferrals read — is kept there.
+  // The body is lowered already, so the region is what it will be.
+  $decl hrg   $call lt (-1, org.slot)
+  $decl rgp   $call T.t_ref ("", $call rg_type (org.tys))
+  $decl rsl   $if hrg ($call fresh_slot (st, $call intern (st, rgp))) -1
+  $decl srg   $set st.rgn ($call rg_ent (-1, T.tys.nil, -1, rsl))
   $decl xs    $call drop_ents (top, $call fld_binds (fs, sl, benv.nil), dfr_list.nil)
   $decl odf   $call dfr_list.val (st.defers)
   $decl clr   $set st.defers dfr_list.nil
@@ -7021,7 +7342,9 @@ $decl build_drop $func ($decl st proto_lst, $decl nm "", $decl vt T.proto_ty,
   $decl uid   $call intern (st, T.t_unit)
   $decl body  $call with_pending ($call IR.exprs.reverse (run, IR.exprs.nil), $call IR.e_unit (uid),
                   uid)
-  $decl tys   $call fld_tys0 (fs, T.tys.nil)
+  $decl tys0  $call fld_tys0 (fs, T.tys.nil)
+  $decl tys   $if hrg ($call T.tys.reverse ($call T.tys.cons (rgp, $call T.tys.reverse (tys0,
+                  T.tys.nil)), T.tys.nil)) tys0
   $decl sp    $call P.span_of (n)
   $decl md    $call P.sval (st.curmod)
   $decl f     $call IR.fn_p ("drop", $call ints_of_tys (st, tys, IR.ints.nil), uid,
@@ -7030,6 +7353,7 @@ $decl build_drop $func ($decl st proto_lst, $decl nm "", $decl vt T.proto_ty,
                   $call concat ($if ($call eq_str (md, "")) "e" md,
                       $call concat ("_", $call concat (nm, "_drop"))))
   $decl back  $call restore_slots (st, outer)
+  $decl rgb   $set st.rgn org
   $decl idx   $call add_lifted (st, f)
   $decl ret   $call ctor_ent (0, idx, $call T.t_func (tys, T.t_unit), vt, T.t_bot, vt, T.t_bot)
 }.ret
@@ -7069,11 +7393,21 @@ $decl drop_args $func ($decl fs T.fields.node, $decl sp P.proto_span, $decl acc 
 // `$cd ($cs.f0, $cs.f1, …)`, through names no identifier can be (§2.1), and the environment
 // that reads them in: the block's `drop`, called over the snapshot of its fields in slot `ss`.
 // A dynamic call's `drop` is the slot it saved `d` in (`ctor_dyn_site`).
-$decl drop_site $func ($decl cr proto_ctor, $decl ss 0, $decl sp P.proto_span) {
-  $decl env  $call benv.cons ($call bind_ent ("$cd", $if cr.dyn "local" "global", cr.drop,
-                 cr.dty),
-                 $call benv.cons ($call bind_ent ("$cs", "local", ss, cr.vty), benv.nil))
-  $decl as   $call drop_args ($call blk_fields (cr.vty), sp, Pa.nodes.nil)
+// `ss`, a dynamic `drop` and the region (`rc`, the call's own, which its `drop` takes last)
+// are where `enc_bind` says: in a constructor's own call, in its region, so that its `drop`
+// can read them.
+$decl drop_site $func ($decl cr proto_ctor, $decl ss 0, $decl sp P.proto_span, $decl rc -1) {
+  $decl cd   $if cr.dyn ($call enc_bind ("$cd", cr.drop, cr.dty))
+                 ($call bind_ent ("$cd", "global", cr.drop, cr.dty))
+  $decl hr   $call has_rg (cr)
+  $decl env0 $call benv.cons (cd, $call benv.cons ($call enc_bind ("$cs", ss, cr.vty), benv.nil))
+  // A slot holds the region's address; a field of the caller's region is the region itself.
+  $decl crb  $if ($call lt (-1, rc)) ($call bind_ent ("$cr", "local", rc, $call T.t_ref ("", cr.rg)))
+                 ($call enc_bind ("$cr", rc, cr.rg))
+  $decl env  $if hr ($call benv.cons (crb, env0)) env0
+  $decl as0  $call drop_args ($call blk_fields (cr.vty), sp, Pa.nodes.nil)
+  $decl as   $if hr ($call Pa.nodes.reverse ($call Pa.nodes.cons ($call Pa.n_name ("$cr", sp.line,
+                 sp.col), $call Pa.nodes.reverse (as0, Pa.nodes.nil)), Pa.nodes.nil)) as0
   $decl call $call Pa.n_form ("call", $call Pa.nodes.cons ($call Pa.n_name ("$cd", sp.line,
                  sp.col), $call Pa.nodes.cons ($call Pa.n_group (as, sp.line, sp.col),
                  Pa.nodes.nil)), sp.line, sp.col)
@@ -7097,32 +7431,61 @@ $decl cta_new $func ($decl st proto_lst, $decl val IR.proto_expr, $decl vty T.pr
       $case ms ($call IR.e_new (rid, val)))
 }.ret
 
+// The object an `$alloc` of a constructing call with a region allocates (`ctor_rg_arg`): the
+// block, then its region, so that one `$free` releases both.
+$decl rg_obj $func ($decl c proto_ctor)
+  $call T.t_block ($call T.fields.cons ($call T.field ("b", c.vty), $call T.fields.cons (
+      $call T.field ("r", c.rg), T.fields.nil)), T.props.nil)
+// `$alloc` of a constructing call: the block `val` allocated, or, when the call has a region,
+// stored in place in the object allocated for both (`rgas`), its first field.
+$decl cta_store $func ($decl st proto_lst, $decl val IR.proto_expr, $decl c proto_ctor,
+                       $decl rt T.proto_ty) {
+  $decl ras $call P.ival (st.rgas)
+  $decl ret $if ($call lt (ras, 0)) ($call cta_new (st, val, c.vty, rt)) {
+    // The call first: it is what fills the object's slot, which the store's target reads.
+    $decl ot   $call T.t_ref_k ("", $call rg_obj (c), T.k_alloc)
+    $decl vid  $call intern (st, c.vty)
+    $decl vs   $call fresh_slot (st, vid)
+    $decl ob   $call IR.e_local ($call intern (st, ot), ras)
+    $decl rid  $call intern (st, rt)
+    $decl ret2 $call IR.e_do (rid, $call save_in (st, vs, c.vty, val), $call IR.e_do (rid,
+                   $call IR.e_set (vid, $call field_at (st, ob, ot, 0, rt), $call IR.e_local (vid,
+                   vs)), $call field_at (st, $call IR.e_local ($call intern (st, ot), ras), ot, 0,
+                   rt)))
+  }.ret2
+}.ret
+
 $decl ctor_built $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr proto_ctor,
                         $decl val IR.proto_expr, $decl fl 0, $decl am P.boolean) {
   $decl rt   cr.rty
   $decl rid  $call intern (st, rt)
+  // SPEC §5.3a, composition: in a constructor's own call, the block is built in its caller's
+  // region too (`rg_place`), as a `$new` there is.
+  // In a constructor's own call the snapshot `drop` reads is kept in its region (`rg_save`),
+  // since the deferral runs from that constructor's `drop`, not from this frame.
+  $decl inrg $if am false ($call lt (-1, ($call rg_val (st.rgn)).slot))
   $decl ret  $if ($call lt (cr.drop, 0))
-      ($if am ($call cta_new (st, val, cr.vty, rt)) ($call IR.e_new (rid, val))) {
+      ($if am ($call cta_store (st, val, cr, rt)) ($call rg_place (st, rt, cr.vty, val))) {
     $decl vid  $call intern (st, cr.vty)
-    $decl ss   $call fresh_slot (st, vid)
+    $decl rsv  $if inrg ($call rg_save (st, cr.vty, val)) ($call rg_saved (-1, val))
+    $decl ss   $if inrg ($call sub (-2, rsv.k)) ($call fresh_slot (st, vid))
     $decl sty  $call T.t_block ($call T.fields.cons ($call T.field ("s", cr.vty), T.fields.nil),
                    T.props.nil)
-    $decl snap $call IR.e_field (vid, $call IR.e_block ($call intern (st, sty),
-                   $call IR.bslots.cons ($call IR.bslot (ss, val), IR.bslots.nil)), 0)
+    $decl snap $if inrg rsv.ir ($call IR.e_field (vid, $call IR.e_block ($call intern (st, sty),
+                   $call IR.bslots.cons ($call IR.bslot (ss, val), IR.bslots.nil)), 0))
     $decl ret2 $if am {
         // Allocated, the block's `drop` is the allocator's: registered with its `defer_at`
         // straight after the storage is made (`alloc_fin`), as an `$alloc` block's own
         // deferrals are, and never the frame's.
         $decl ca   $call cta_val (st.ctalloc)
         $decl sp   $call P.span_of (n)
-        $decl ds   $call drop_site (cr, ss, sp)
+        $decl ds   $call drop_site (cr, ss, sp, $call P.ival (st.rgcr))
         $decl sv   $call dfr_list.val (st.defers)
         $decl pu   $set st.defers ($call dfr_list.cons ($call dfr_ent (ds.call, ds.env,
                        $call keep_key (sp.line, sp.col), -1), sv))
-        $decl ret3 $call alloc_fin (st, ca.env, ca.at, sv, $call cta_new (st, snap, cr.vty, rt),
-                       rt)
+        $decl ret3 $call alloc_fin (st, ca.env, ca.at, sv, $call cta_store (st, snap, cr, rt), rt)
       }.ret3 {
-        $decl nw   $call IR.e_new (rid, snap)
+        $decl nw   $call rg_place (st, rt, cr.vty, snap)
         $decl sp   $call P.span_of (n)
         $decl nk   $call keep_key (sp.line, sp.col)
         $decl pp   $call fresh_slot (st, rid)
@@ -7133,7 +7496,9 @@ $decl ctor_built $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr prot
                        T.props.nil)
         $decl ob   $call IR.e_field (rid, $call IR.e_block ($call intern (st, oty),
                        $call IR.bslots.cons ($call IR.bslot (pp, nw), IR.bslots.nil)), 0)
-        $decl ds   $call drop_site (cr, ss, sp)
+        $decl ds   $call drop_site (cr, ss, sp, $call P.ival (st.rgcr))
+        $decl fck  $if ($if inrg ($call lt (-1, fl)) false)
+            ($call err (st, "a constructor's block that constructs in only some arms is not lowered yet: construct in every arm, or outside the choice (§5.3a)", n)) 0
         $decl pu   $set st.defers ($call dfr_list.cons ($call dfr_ent (ds.call, ds.env, nk, fl),
                        st.defers))
         $decl ret3 $call with_flag (st, fl, true, ob, rid, rt)
@@ -7167,7 +7532,7 @@ $decl pass_arms $func ($decl st proto_lst, $decl ms T.tys.node, $decl i 0, $decl
 // then do its deferrals run — and anything else is answered as it is, into `out`.
 $decl ctor_alloc $func ($decl c proto_ctor)
   $call ctor_ent (c.key, c.drop, c.dty, c.vty, $call T.to_alloc (c.rty), c.res,
-      $call T.to_alloc (c.out), c.fn, c.dyn, c.name, c.file, c.at)
+      $call T.to_alloc (c.out), c.fn, c.dyn, c.name, c.file, c.at, c.rg)
 
 $decl ctor_site $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr0 proto_ctor,
                        $decl call IR.proto_expr) {
@@ -7261,6 +7626,41 @@ $decl at_dyn $func ($decl st proto_lst, $decl f proto_lres, $decl vft T.proto_ty
                 $call IR.e_local (vid, sl)), vft, f.mod, f.tmpl)
 }.ret
 
+// The region a call to constructor `cr` is handed (SPEC §5.3a, composition): a forwarding
+// function's own, passed on; in an `$alloc` of the call, the second half of the object
+// allocated for the block and the region together, kept in `rgas` for `cta_store`; in a
+// constructor's own call, a field of its region in turn; and otherwise the caller's frame.
+$decl ctor_rg_arg $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr proto_ctor,
+                         $decl fwd P.boolean) {
+  $decl r   $call rg_val (st.rgn)
+  $decl pt  $call T.t_ref ("", cr.rg)
+  $decl ca  $call cta_val (st.ctalloc)
+  $decl sp  $call P.span_of (n)
+  $decl am  $if ($call eq_str (ca.key, "")) false
+                ($call eq_str (ca.key, $call keep_key (sp.line, sp.col)))
+  $decl pid $call intern (st, pt)
+  $decl ret $if fwd ($call IR.e_local (pid, r.fs))
+      ($if ($if am true ($call lt (r.slot, 0))) {
+         // Kept in a slot for the call's `drop` (`rgcr`).
+         $decl rp   $call fresh_slot (st, pid)
+         $decl s0   $set st.rgcr rp
+         $decl ret2 $call save_in (st, rp, pt, $if am {
+             $decl ob   $call rg_obj (cr)
+             $decl ot   $call T.t_ref_k ("", ob, T.k_alloc)
+             $decl oid  $call intern (st, ot)
+             $decl rs   $call fresh_slot (st, oid)
+             $decl s    $set st.rgas rs
+             $decl al   $call cta_new (st, $call hole_of (st, ob), ob, ot)
+             $decl ret3 $call IR.e_do (pid, $call save_in (st, rs, ot, al),
+                            $call field_at (st, $call IR.e_local (oid, rs), ot, 1, pt))
+           }.ret3 ($call IR.e_new (pid, $call hole_of (st, cr.rg))))
+       }.ret2 {
+         $decl k    $call rg_take (st, cr.rg)
+         $decl s0   $set st.rgcr ($call sub (-2, k))
+         $decl ret2 $call rg_at (st, k, pt)
+       }.ret2)
+}.ret
+
 // The caller's half of a dynamic call: `{b, d}` saved, `d` in a slot of its own for the
 // deferral to call (`ctor_built` binds `$cd` to it), and `b` made into the storage as a call by
 // name's block is.
@@ -7270,9 +7670,13 @@ $decl ctor_dyn_site $func ($decl st proto_lst, $decl n Pa.proto_node, $decl cr p
   $decl did  $call intern (st, dt)
   $decl tid  $call intern (st, cr.dty)
   $decl sd   $call fresh_slot (st, did)
-  $decl dd   $call fresh_slot (st, tid)
+  // In a constructor's own call, `d` is kept in its region, which its `drop` reads (`enc_bind`).
+  $decl inrg $call lt (-1, ($call rg_val (st.rgn)).slot)
+  $decl dv   $call IR.e_field (tid, $call IR.e_local (did, sd), 1)
+  $decl rsv  $if inrg ($call rg_save (st, cr.dty, dv)) ($call rg_saved (-1, dv))
+  $decl dd   $if inrg ($call sub (-2, rsv.k)) ($call fresh_slot (st, tid))
   $decl s1   $call save_in (st, sd, dt, call)
-  $decl s2   $call save_in (st, dd, cr.dty, $call IR.e_field (tid, $call IR.e_local (did, sd), 1))
+  $decl s2   $if inrg rsv.ir ($call save_in (st, dd, cr.dty, dv))
   $decl b    $call IR.e_field ($call intern (st, cr.res), $call IR.e_local (did, sd), 0)
   $decl site $call lval ($call ctor_site (st, n, $call ctor_drop (cr, dd), b))
   $decl oid  $call intern (st, site.ty)
@@ -7302,6 +7706,51 @@ $decl noop_drop $func ($decl st proto_lst, $decl c proto_ctor) {
   }.ret2
 }.ret
 
+// A dynamic call cannot know a constructor's region (SPEC §5.3a, composition): its shim
+// allocates it from the root (`rg_dyn_arg`), and the `drop` it answers is this closure over
+// that storage, which runs the constructor's own `drop` and then frees it.
+$decl rg_drop $func ($decl st proto_lst, $decl c proto_ctor, $decl tr proto_ctor) {
+  $decl at    $call T.t_ref_k ("", c.rg, T.k_alloc)
+  $decl aid   $call intern (st, at)
+  $decl outer $call take_slots (st)
+  $decl ps    $call params_of (tr.dty)
+  $decl pv    $call wrap_params (st, ps, 0, IR.ints.nil, IR.exprs.nil)
+  $decl uid   $call intern (st, T.t_unit)
+  $decl bt    $call T.t_func ($call T.tys.cons (at, T.tys.nil), T.t_int)
+  $decl ft    $call T.t_func ($call T.tys.cons (T.t_int, T.tys.nil), T.t_unit)
+  $decl ad    $call IR.e_call ($call intern (st, T.t_int), $call IR.e_prim ($call intern (st, bt),
+                  "box_ptr"), $call IR.exprs.cons ($call IR.e_capture (aid, 0), IR.exprs.nil),
+                  false)
+  $decl fr    $call IR.e_call (uid, $call IR.e_prim ($call intern (st, ft), "raw_free"),
+                  $call IR.exprs.cons (ad, IR.exprs.nil), true)
+  $decl body  $if ($call lt (-1, c.drop))
+                  ($call IR.e_do (uid, $call IR.e_call (uid, $call IR.e_global ($call intern (st,
+                      c.dty), c.drop), $call append_exprs (pv.irs, $call IR.exprs.cons (
+                      $call IR.e_capture (aid, 0), IR.exprs.nil)), false), fr)) fr
+  $decl f     $call IR.fn_p ("drop_rg", $call ints_of_tys (st, ps, IR.ints.nil), uid,
+                  $call take_slots (st), body, false, false, $call IR.ints.cons (aid, IR.ints.nil),
+                  c.file, c.at, true, $call concat (c.name, "_rgdrop"))
+  $decl back  $call restore_slots (st, outer)
+  $decl ret   $call add_lifted (st, f)
+}.ret
+// The region a shim hands constructor `c`, saved in slot `sl`: allocated from the root.
+$decl rg_dyn_arg $func ($decl st proto_lst, $decl c proto_ctor, $decl sl 0) {
+  $decl at  $call T.t_ref_k ("", c.rg, T.k_alloc)
+  $decl aid $call intern (st, at)
+  $decl ret $call IR.exprs.cons ($call IR.e_do (aid, $call save_in (st, sl, at,
+                $call IR.e_new (aid, $call hole_of (st, c.rg))), $call IR.e_local (aid, sl)),
+                IR.exprs.nil)
+}.ret
+// What a shim answers as `d`: the constructor's `drop` (`dv`), or, with a region, `rg_drop`'s
+// closure over it.
+$decl dyn_drop $func ($decl st proto_lst, $decl c proto_ctor, $decl tr proto_ctor, $decl dv 0,
+                      $decl sl 0)
+  $if ($call has_rg (c))
+      ($call IR.e_closure ($call intern (st, tr.dty), $call rg_drop (st, c, tr),
+          $call IR.exprs.cons ($call IR.e_local ($call intern (st, $call T.t_ref_k ("", c.rg,
+              T.k_alloc)), sl), IR.exprs.nil)))
+      ($call IR.e_global ($call intern (st, tr.dty), dv))
+
 // The shim of constructor `g`, whose record is `c` and type `fty`: it takes `g`'s parameters,
 // calls it, and answers `{b, d}`. Once per constructor, in its own file and named from it, as
 // `drop` is; registered as a constructor itself, calling `g`, so a call naming the shim — a
@@ -7316,15 +7765,18 @@ $decl ctor_shim $func ($decl st proto_lst, $decl g 0, $decl c proto_ctor, $decl 
     $decl outer $call take_slots (st)
     $decl ps    $call params_of (fty)
     $decl pv    $call wrap_params (st, ps, 0, IR.ints.nil, IR.exprs.nil)
+    $decl rsl   $if ($call has_rg (c)) ($call fresh_slot (st, $call intern (st,
+                    $call T.t_ref_k ("", c.rg, T.k_alloc)))) -1
+    $decl rga   $if ($call has_rg (c)) ($call rg_dyn_arg (st, c, rsl)) IR.exprs.nil
     $decl call  $call IR.e_call ($call intern (st, c.res), $call IR.e_global ($call intern (st,
-                    $call T.t_func (ps, c.res)), sfn), pv.irs, false)
+                    $call T.t_func (ps, c.res)), sfn), $call append_exprs (pv.irs, rga), false)
     $decl bv    $if ($call T.same (c.res, tr.res)) call ($call IR.e_copy ($call intern (st, tr.res),
                     call))
     $decl sb    $call fresh_slot (st, $call intern (st, tr.res))
     $decl sd    $call fresh_slot (st, $call intern (st, tr.dty))
     $decl body  $call IR.e_block ($call intern (st, dt), $call IR.bslots.cons ($call IR.bslot (sb,
-                    bv), $call IR.bslots.cons ($call IR.bslot (sd, $call IR.e_global ($call intern (
-                    st, tr.dty), dv)), IR.bslots.nil)))
+                    bv), $call IR.bslots.cons ($call IR.bslot (sd, $call dyn_drop (st, c, tr, dv,
+                    rsl)), IR.bslots.nil)))
     $decl f     $call IR.fn_p ("ctor_dyn", $call ints_of_tys (st, ps, IR.ints.nil),
                     $call intern (st, dt), $call take_slots (st), body, false, false, IR.ints.nil,
                     c.file, c.at, true, $call concat (c.name, "_dyn"))
@@ -7333,7 +7785,7 @@ $decl ctor_shim $func ($decl st proto_lst, $decl g 0, $decl c proto_ctor, $decl 
     $decl m     $set st.wraps ($call wrap_list.cons ($call wrap_ent (g, -1, idx, fty,
                     $call Pa.n_unit (0, 0)), st.wraps))
     $decl r     $set st.ctors ($call ctor_list.cons ($call ctor_ent (idx, c.drop, c.dty, c.vty,
-                    c.rty, c.res, c.out, sfn, false, c.name, c.file, c.at), st.ctors))
+                    c.rty, c.res, c.out, sfn, false, c.name, c.file, c.at, c.rg), st.ctors))
     $decl ret2  idx
   }.ret2
 }.ret
@@ -7354,15 +7806,18 @@ $decl ctor_lshim $func ($decl st proto_lst, $decl key 0, $decl c proto_ctor,
     $decl outer $call take_slots (st)
     $decl ps    $call params_of (fty)
     $decl pv    $call wrap_params (st, ps, 0, IR.ints.nil, IR.exprs.nil)
-    $decl call  $call IR.e_call ($call intern (st, c.res), $call IR.e_capture (lid, 0), pv.irs,
-                    false)
+    $decl rsl   $if ($call has_rg (c)) ($call fresh_slot (st, $call intern (st,
+                    $call T.t_ref_k ("", c.rg, T.k_alloc)))) -1
+    $decl rga   $if ($call has_rg (c)) ($call rg_dyn_arg (st, c, rsl)) IR.exprs.nil
+    $decl call  $call IR.e_call ($call intern (st, c.res), $call IR.e_capture (lid, 0),
+                    $call append_exprs (pv.irs, rga), false)
     $decl bv    $if ($call T.same (c.res, tr.res)) call ($call IR.e_copy ($call intern (st, tr.res),
                     call))
     $decl sb    $call fresh_slot (st, $call intern (st, tr.res))
     $decl sd    $call fresh_slot (st, $call intern (st, tr.dty))
     $decl body  $call IR.e_block ($call intern (st, dt), $call IR.bslots.cons ($call IR.bslot (sb,
-                    bv), $call IR.bslots.cons ($call IR.bslot (sd, $call IR.e_global ($call intern (
-                    st, tr.dty), dv)), IR.bslots.nil)))
+                    bv), $call IR.bslots.cons ($call IR.bslot (sd, $call dyn_drop (st, c, tr, dv,
+                    rsl)), IR.bslots.nil)))
     $decl f     $call IR.fn_p ("ctor_dyn", $call ints_of_tys (st, ps, IR.ints.nil),
                     $call intern (st, dt), $call take_slots (st), body, false, false,
                     $call IR.ints.cons (lid, IR.ints.nil), c.file, c.at, false,
@@ -7422,33 +7877,6 @@ $decl ctor_value $func ($decl st proto_lst, $decl r proto_lres, $decl n Pa.proto
 // top-level item that does is the program's to own (`top_item`), as storage written there
 // with deferrals is (`Pa.storage_defers`).
 $fwd ctor_in_list
-// A module's member `nm`, lowered already, by the module's id: its index, or -1.
-$decl member_idx $func ($decl st proto_lst, $decl mid 0, $decl nm "") {
-  $decl ms  $if ($call lt (-1, mid)) ($call find_mod_st (st, mid)) mods_list.nil
-  $decl ret $match ms (
-      $case {$prop tag "cons"} {
-        $decl d    $call find_mdone_m (ms.head, nm)
-        $decl ret2 $match d ($case {$prop tag "cons"} d.head.idx, $case d -1)
-      }.ret2,
-      $case ms -1)
-}.ret
-// The global or module member a callee names, or -1.
-$decl callee_idx $func ($decl st proto_lst, $decl e benv.node, $decl c Pa.proto_node) $match c (
-  // A global, or — in a module's own body — a sibling member.
-  $case {$prop tag "name"} {
-    $decl b    $call lookup (e, c.text)
-    $decl ret2 $if ($call not (b.hit)) -1
-        ($if ($call eq_str (b.bnd.kind, "global")) b.bnd.slot
-        ($if ($call eq_str (b.bnd.kind, "prop")) ($call member_idx (st, b.bnd.mod, c.text))
-             -1))
-  }.ret2,
-  $case {$prop tag "proj_name"} {
-    $decl t    c.target
-    $decl tn   $match t ($case {$prop tag "name"} t.text, $case t "")
-    $decl b    $call lookup (e, tn)
-    $decl ret2 $if b.hit ($call member_idx (st, b.bnd.mod, c.field)) -1
-  }.ret2,
-  $case c -1)
 // Whether call `n` constructs through a constructor with deferrals: a named one by its record;
 // any other callee is a value, and whether the call constructs is inference's answer
 // (`note_ctor`), since its value may answer a `drop` with deferrals.
@@ -8378,6 +8806,7 @@ $decl spec_fn_body $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.
                           $decl gm 0) {
   $decl items $call body_items (r.body)
   $decl outer $call take_slots (st)
+  $decl org   $call rg_off (st)
   $decl odf   $call dfr_list.val (st.defers)
   $decl clr   $set st.defers dfr_list.nil
   $decl oad   $call P.ival (st.armdepth)
@@ -8413,6 +8842,7 @@ $decl spec_fn_body $func ($decl st proto_lst, $decl r proto_tmpl, $decl keys IR.
   $decl rad   $set st.armdepth oad
   $decl ss    $call take_slots (st)
   $decl back  $call restore_slots (st, outer)
+  $decl rgb   $set st.rgn org
   $decl ret   $call knot_pass (iir, ity, md,
                   $call IR.ints.reverse ($call IR.ints.reverse (b.tys, IR.ints.nil), c.tys), ss)
 }.ret
