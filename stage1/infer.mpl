@@ -5343,9 +5343,13 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
   $decl id   $call var_id ($call lookup (pe, nm)).ty
   // A member that names its receiver is typed here only for a provisional type, and
   // quietly: the receiver's block is not typed yet. `infer_block` types it for real
-  // once it is (§4.10).
+  // once it is (§4.10). What the provisional typing notes of its places goes with it: an
+  // argument read off the untyped receiver is ⊥, which `check_one` takes for a value
+  // coerced to a trait object, and the real typing has nothing to overwrite that with.
   $decl rcv  $if ($call is_form (init, "func")) ($call Pa.names_recv (init, rn)) false
   $decl q0   $call bval (cx.quiet)
+  $decl pl0  $call strs.val (cx.placed)
+  $decl sr0  $call strs.val (cx.slotref)
   $decl qq   $set cx.quiet ($if rcv true q0)
   $decl ret0 $if ($call is_form (init, "func"))
       ($call infer_rec_func (cx, pe, nm, init, env.nil)) {
@@ -5354,6 +5358,8 @@ $decl prop_ty $func ($decl cx proto_ctx, $decl pe env.node, $decl nm "", $decl i
         $decl ret2   $if ($call lt (-1, id)) ($call close_rec (cx, raw, id, it)) raw
       }.ret2
   $decl back $set cx.quiet q0
+  $decl bpl  $set cx.placed ($if rcv pl0 ($call strs.val (cx.placed)))
+  $decl bsr  $set cx.slotref ($if rcv sr0 ($call strs.val (cx.slotref)))
   $decl ret  ret0
 }.ret
 

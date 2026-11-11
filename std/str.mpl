@@ -372,14 +372,11 @@ $decl text $func ($decl from M.any) $new {
   // The whole of the text, as written so far.
   $prop view     $func () $call whole (text)
   // A `Str` or a view, copied in; so `t.write (t.view ())` doubles it. All of these answer
-  // unit, so a `show` member ending in a write conforms to `std/fmt`'s `show_proto`. None
-  // tail-calls with `text.al`: while the props are typed the receiver's fields are
-  // placeholders, so the checker cannot see `al` is already a trait object and not a value
-  // coerced to one over storage the tail call would end (§7.7).
-  $prop write    $func ($decl s $union ("", proto_view)) $do ($call put (text, s, text.al)) ()
+  // unit, so a `show` member ending in a write conforms to `std/fmt`'s `show_proto`.
+  $prop write    $func ($decl s $union ("", proto_view)) $call put (text, s, text.al)
   $prop line     $func ($decl s $union ("", proto_view))
-    $do ($call put (text, s, text.al)) ($do ($call put (text, "\n", text.al)) ())
-  $prop code     $func ($decl c 0) $do ($call put_code (text, text.al, c)) ()
+    $do ($call put (text, s, text.al)) ($call put (text, "\n", text.al))
+  $prop code     $func ($decl c 0) $call put_code (text, text.al, c)
   // The bytes written so far.
   $prop size     $func () $call C.ival (text.used)
   // Emptied, keeping the buffer; and the first `n` bytes kept. Either makes every view made

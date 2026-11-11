@@ -1442,6 +1442,13 @@ $decl tc03 $call check_str ("...or a reference the caller lent",
 $decl tc04 $call check_str ("a cell the caller lent may not hold an object over this call's parameter",
   $call errs_of ("$decl shape { $prop area $func () 0 }  $decl seven { $decl v 7  $prop area $func () seven.v }  $decl stash $func ($decl c $mut $new $traitsof shape, $decl r seven) { $decl w $set c r  $decl ret 0 }.ret"),
   "storage cannot hold a place that may end before it: this trait object refers to frame storage, and the storage is not one this call made — $set stores a place only into storage this call made, and only a place lent to this call (§5.3a)")
+// A member naming its receiver is typed provisionally before the block is, with the
+// receiver's fields unknown; what that typing notes must not outlive it.
+$decl tc05 $call check_str ("a member may tail-pass a trait object its receiver holds",
+  $call errs_of ($call concat (tr_pre, "$decl mk $func ($decl t $traitsof shape) $new { $decl o t  $prop go $func ($decl n 0) $call k (mk.o, n) }")), "")
+$decl tc06 $call check_str ("...but not coerce its own parameter in one",
+  $call errs_of ($call concat (tr_pre, "$decl mk $func ($decl t $traitsof shape) $new { $decl o t  $prop go $func ($decl r seven) $do (mk.o) ($call k (r, 1)) }")),
+  "this tail call makes a trait object referring to storage of this call (§6), and a tail call ends the call (§7.7): pass a reference the caller lent, or $alloc storage, or make the call non-tail")
 
 $decl done18 $call nl ("all trait storage tests passed")
 

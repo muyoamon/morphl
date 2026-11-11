@@ -410,7 +410,12 @@ without a new form, and widening types belongs to a different design.
    where it is, so a constructor naming a module whose type holds a top-level `$new` — every
    user of `std/str` — may still be `$alloc`ed; `alloc_lent` also reads a projected callee's
    type (`S.text`), not only a name's. `compose_alloc.mpl`'s `dropped` is a top-level `$new`
-   again. The heap-text-in-its-own-arena test `$alloc`s the arena.
+   again. The heap-text-in-its-own-arena test `$alloc`s the arena. A member naming its
+   receiver is first typed quietly, against a receiver whose block is not typed yet, and
+   what that typing noted of its places outlived it: `text.al` read as ⊥ there, which A4's
+   check takes for a value coerced to a trait object, so `write`'s tail call was refused.
+   `prop_ty` now puts `cx.placed` and `cx.slotref` back after it, and the members tail-call
+   again (`infer_test`'s `tc05`/`tc06`).
 6. **The root's allocating names removed.** Stage 0's `builtins.zig`, `infer.mpl`'s `root_env`,
    `emit.mpl`, the Zig test that the two root blocks name the same things, and every fixture
    and `std/` module that still calls them.
